@@ -147,10 +147,6 @@ void** malloc2d(const int nx, const int ny)
 
 void** malloc2d(const int nx, const int ny)
 { // Got help from ChatGPT to do the align version of my previous malloc func
-  const size_t pointer_bytes = nx * sizeof(double*);
-  const size_t data_bytes    = nx * ny * sizeof(double);
-  const size_t total_bytes   = pointer_bytes + data_bytes;
-
   void* raw_block = NULL;
   if (posix_memalign(&raw_block, 
                      64, 
@@ -160,10 +156,9 @@ void** malloc2d(const int nx, const int ny)
   }
 
   double** tab = (double**) raw_block;
-
   #pragma omp parallel for
   for (int i = 0; i < nx; ++i) {
-    tab[i] = (double*) ((char*) raw_block + nx * sizeof(double*)) + i * ny;
+    tab[i] = (double*) ((char*) raw_block + nx*sizeof(double*)) + i * ny;
   }
   return (void**) tab;
 }
@@ -304,20 +299,18 @@ double interpol1d(
   const double x) 
 {
   double ans;
-  if (x < a) 
-  {  
+  if (x < a) {  
     ans = f[0]; // constant extrapolation
   }
-  else
-  {
+  else {
     const double r = (x - a) / dx;
     const int i = (int) floor(r);
-    if (i + 1 >= n)
-    {
+    if (i + 1 >= n) {
       ans = f[n-1]; // constant extrapolation
     }
-    else 
+    else {
       ans = (r - i) * (f[i + 1] - f[i]) + f[i];
+    }
   }
   return ans;
 }

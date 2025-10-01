@@ -1,6 +1,7 @@
 #include <carma.h>
 #include <armadillo>
 #include <map>
+#include "structs.h"
 
 // Python Binding
 #include <pybind11/pybind11.h>
@@ -54,7 +55,6 @@ class RandomNumber
       mt_(rd_()),
       dist_(0.0, 1.0) {
       };
-  
     RandomNumber(RandomNumber const&) = delete;
 };
 
@@ -86,11 +86,17 @@ class IP
 
     // ----------------------------------------------
 
-    bool is_mask_set() const;
+    bool is_mask_set() const {
+      return this->is_mask_set_;
+    }
 
-    bool is_data_set() const;
+    bool is_data_set() const {
+      return this->is_data_set_;
+    }
 
-    bool is_inv_cov_set() const;
+    bool is_inv_cov_set() const {
+      return this->is_inv_cov_set_;
+    }
 
     // ----------------------------------------------
 
@@ -195,7 +201,7 @@ class IP
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Class IPCMB (InterfaceProducts - 6x2pt (includes CMB lensing))
+// Class IPCMB (Interface to Cosmolike C glocal struct CMBParams cmb)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -210,54 +216,70 @@ class IPCMB
     static IPCMB& get_instance()
     {
       static IPCMB instance;
+      if (instance.params_ == NULL) {
+        instance.params_ = &cmb;
+      }
       return instance;
     }
-
     ~IPCMB() = default;
 
     // ----------------------------------------------
-
-    bool is_cmb_binmat_set() const;
-
-    bool is_cmb_offset_set() const;
-
-    // ----------------------------------------------
-
-    void set_cmb_binning_mat(std::string cmb_binned_matrix_filename);
-
-    void set_cmb_theory_offset(std::string cmb_theory_offset_filename);
-
-    // ----------------------------------------------
-
-    double get_binning_matrix_with_correction(const int ci, const int cj) const;
-
-    double get_cmb_theory_offset(const int ci) const;
-
-    // ----------------------------------------------
-
-    arma::Mat<double> get_binning_matrix_with_correction() const;
-
-    arma::Mat<double> get_cmb_theory_offset() const;
-
-  private:   
-    bool is_cmb_binmat_set_ = false;
     
-    bool is_cmb_offset_set_ = false;
+    bool is_kk_bandpower() const {
+      return this->is_kk_bandpower_;
+    }
 
-    int nbp_ = 0;
-    
-    int ncl_ = 0;
+    void update_chache(const double random) {
+      this->params_->random = random;
+    }
 
-    std::string binmat_filename_;                // LSS x CMB
-    
-    std::string offset_filename_;                // LSS x CMB
-    
-    arma::Col<double> cmb_theory_offset_;                   // LSS x CMB, see Eqn 35 Planck 2018 VIII
+    void set_wxk_beam_size(const double fwhm) {
+      this->params_->fwhm = fwhm;
+      this->is_wxk_fwhm_set_ = true;
+    }
 
-    arma::Mat<double> cmb_binning_matrix_with_correction_;  // LSS x CMB, see Eqn 35 Planck 2018 VIII
+    void set_wxk_lminmax(const int lmin, const int lmax) {
+      this->params_->lmink_wxk = lmin;
+      this->params_->lmaxk_wxk = lmax;
+      this->is_wxk_lminmax_set_ = true;
+    }
+
+    void set_wxk_healpix_window(std::string healpixwin_filename);
+
+    void set_kk_binning_mat(std::string binned_matrix_filename);
+
+    void set_kk_theory_offset(std::string theory_offset_filename);
+
+    void set_kk_binning_bandpower(const int, const int, const int);
     
+    void set_alpha_Hartlap_cov_kkkk(const double alpha) {
+      this->params_->alpha_Hartlap_cov_kkkk = alpha;
+      this->is_alpha_Hartlap_cov_kkkk_set_ = true;
+    }
+
+    double get_kk_binning_matrix(const int, const int) const;
+
+    double get_kk_theory_offset(const int) const;
+
+    double get_alpha_Hartlap_cov_kkkk() const;
+
+    int get_nbins_kk_bandpower() const;
+
+    int get_lmin_kk_bandpower() const;
+
+    int get_lmax_kk_bandpower() const;
+    
+  private: 
+    CMBparams* params_ = NULL;
+    bool is_wxk_fwhm_set_ = false;
+    bool is_wxk_lminmax_set_ = false;
+    bool is_wxk_healpix_window_set_ = false;
+    bool is_kk_bandpower_ = false;
+    bool is_kk_binning_matrix_set_ = false; 
+    bool is_kk_offset_set_ = false; 
+    bool is_alpha_Hartlap_cov_kkkk_set_ = false; 
     IPCMB() = default;
-    IPCMB(IP const&) = delete;
+    IPCMB(IP const&) = delete; 
 };
 
 // ---------------------------------------------------------------------------
@@ -627,6 +649,83 @@ void set_source_sample(arma::Mat<double> input_table);
 
 void init_ntomo_powerspectra();
 
+// ------------------------------------------------------------------
+// Functions relevant for machine learning emulators
+// ------------------------------------------------------------------
+
+template <int N, int M, int P> 
+arma::Col<double> compute_add_fpm_Mx2pt_N_masked(
+    vector data_vector, 
+    arma::Col<int>::fixed<M> ord
+  )
+{
+  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
+  static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
+  static_assert(P == 0 || P == 1, "P must be 0/1 (exclude PM))");
+  arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
+  if constexpr (0 == N) {
+    compute_ss_real_add_shear_calib_and_mask(data_vector, start(0));
+    if constexpr (P == 1) {
+      compute_gs_real_add_pm(data_vector, start(1));
+    }
+    compute_gs_real_add_shear_calib_and_mask(data_vector, start(1));
+    compute_gg_real_add_mask(data_vector, start(2));
+    if constexpr (6 == M) {
+      compute_gk_real_add_mask(data_vector, start(3));
+      compute_ks_real_add_shear_calib_and_mask(data_vector, start(4));
+      compute_kk_real_add_mask(data_vector, start(5));
+    }
+  }
+  return data_vector;
+}
+
+template <int N, int M>
+arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts() 
+{
+  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
+  static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
+  using namespace arma;
+  Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
+  auto indices = conv_to<Col<int>>::from(stable_sort_index(order, "ascend"));
+  Col<int>::fixed<M> start = {0,0,0};
+  for(int i=0; i<M; i++) {
+    for(int j=0; j<indices(i); j++) {
+      start(i) += sizes(indices(j));
+    }
+  } 
+}
+
+template <int N, int M>
+arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_sizes() 
+{
+  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
+  static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
+  arma::Col<int>::fixed<M> sizes;
+  if constexpr (N == 0) {
+    sizes(0) = 2*Ntable.Ntheta*tomo.shear_Npowerspectra;
+    sizes(1) = Ntable.Ntheta*tomo.ggl_Npowerspectra;
+    sizes(2) = Ntable.Ntheta*tomo.clustering_Npowerspectra;
+    if constexpr (6 == M) {
+      IPCMB& cmb = IPCMB::get_instance();
+      sizes(3) = Ntable.Ntheta*redshift.clustering_nbin;
+      sizes(4) = Ntable.Ntheta*redshift.shear_nbin;
+      sizes(5) = cmb.is_kk_bandpower() == 1 ? cmb.get_nbins_kk_bandpower() : like.Ncl;
+    }
+  } 
+  else {
+    sizes(0) = 2*like.Ncl*tomo.shear_Npowerspectra;
+    sizes(1) = like.Ncl*tomo.ggl_Npowerspectra;
+    sizes(2) = like.Ncl*tomo.clustering_Npowerspectra;
+    if constexpr (6 == M) {
+      IPCMB& cmb = IPCMB::get_instance();
+      sizes(3) = like.Ncl*redshift.clustering_nbin;
+      sizes(4) = like.Ncl*redshift.shear_nbin;
+      sizes(5) = cmb.is_kk_bandpower() == 1 ? cmb.get_nbins_kk_bandpower() : like.Ncl;
+    }
+  }
+  return sizes;
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -645,49 +744,94 @@ void init_ntomo_powerspectra();
 
 arma::Col<double> compute_binning_real_space();
 
-arma::Mat<double> compute_baryon_pcas_3x2pt_real(
-    arma::Col<int>::fixed<3> order
-  );
+arma::Col<double> compute_add_baryons_pcs(arma::Col<double> Q, arma::Col<double> dv);
 
-arma::Mat<double> compute_baryon_pcas_3x2pt_fourier(
-    arma::Col<int>::fixed<3> order
-  );
+template <int N, int M> 
+matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
+{
+  using vector = arma::Col<double>;
+  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
+  static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
+  const string name = "compute_baryon_pcas_Mx2pt_N";
+  IP& ip = IP::get_instance();
+  const int ndata = ip.get_ndata();
+  const int ndata_sqzd = ip.get_ndata_sqzd();
+  const int nscenarios = BaryonScenario::get_instance().nscenarios();
 
-arma::Mat<double> compute_baryon_pcas_6x2pt(
-    arma::Col<int>::fixed<6> order
-  );
+  // Compute Cholesky Decomposition of the Covariance Matrix --------------
+  spdlog::debug("{}: Cholesky Decomposition of the Cov Matrix begins", name);
+  matrix L = arma::chol(ip.get_cov_masked_sqzd(), "lower");
+  matrix inv_L = arma::inv(L);
+  spdlog::debug("{}: Cholesky Decomposition of the Cov Matrix ends", name);
 
-arma::Col<double> compute_add_baryons_pcs(
-    arma::Col<double> Q, 
-    arma::Col<double> dv
-  );
+  // Compute Dark Matter data vector --------------------------------------
+  spdlog::debug("{}: Comp. DM only data vector begins", name);
+  cosmology.random = RandomNumber::get_instance().get();
+  reset_bary_struct(); // make sure there is no baryon contamination
+  vector dv_dm = ip.sqzd_theory_data_vector(compute_data_vector_Mx2pt_N_masked<N,M>(ord));
+  spdlog::debug("{}: Comp. DM only data vector ends", name);
+  
+  // Compute data vector for all Baryon scenarios -------------------------
+  matrix D = matrix(ndata_sqzd, nscenarios);
+  for (int i=0; i<nscenarios; i++) {
+    spdlog::debug("{}: Comp. data vector w/ baryon scenario {} begins", name, bs);
+    const string bs = BaryonScenario::get_instance().get_scenario(i);
+    cosmology.random = RandomNumber::get_instance().get(); // clear cosmolike cache
+    init_baryons_contamination(bs);
+    vector dv = ip.sqzd_theory_data_vector(compute_data_vector_Mx2pt_N_masked<N,M>(ord));
+    D.col(i) = dv - dv_dm;
+    spdlog::debug("{}: Comp. data vector w/ baryon scenario {} ends", name, bs);
+  }
+  reset_bary_struct();
+  cosmology.random = RandomNumber::get_instance().get();  // clear cosmolike cache
 
-arma::Col<double> compute_data_vector_6x2pt_real_masked_any_order(
-    arma::Col<int>::fixed<6> order
-  );
+  // weight the diff matrix by inv_L; then SVD ----------------------------  
+  matrix U, V;
+  vector s;
+  arma::svd(U, s, V, inv_L * D);
 
-arma::Col<double> compute_data_vector_3x2pt_real_masked_any_order(
-    arma::Col<int>::fixed<3> order
-  );
+  // compute PCs ----------------------------------------------------------
+  matrix PC = L * U; 
 
-arma::Col<double> compute_data_vector_3x2pt_fourier_masked_any_order(
-    arma::Col<int>::fixed<3> order
-  );
+  // Expand the number of dims --------------------------------------------
+  matrix R = matrix(ndata, nscenarios); 
+  for (int i=0; i<nscenarios; i++) {
+    R.col(i) = ip.expand_theory_data_vector_from_sqzd(PC.col(i));
+  }
 
-// ------------------------------------------------------------------
-// Functions relevant for machine learning emulators
-// ------------------------------------------------------------------
+  return R;
+}
 
-// ML emulators do not compute fast parameters (fp) nor mask (m)
-arma::Col<double> compute_add_fpm_3x2pt_real_any_order(
-    arma::Col<double> data_vector,
-    arma::Col<int>::fixed<3> order,
-    const int force_exclude_pm); // order = (1,2,3): Cosmic Shear, ggl, gg; 
-
-arma::Col<int>::fixed<6> compute_data_vector_6x2pt_real_sizes();
-arma::Col<int>::fixed<6> compute_data_vector_6x2pt_fourier_sizes();
-arma::Col<int>::fixed<3> compute_data_vector_3x2pt_real_sizes();
-arma::Col<int>::fixed<3> compute_data_vector_3x2pt_fourier_sizes();
+template <int N, int M> 
+arma::Col<double> compute_data_vector_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
+{
+  using vector = arma::Col<double>;
+  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
+  static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
+  arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
+  vector data_vector(like.Ndata, arma::fill::zeros); 
+  if constexpr (0 == N) {
+    compute_ss_real_masked(data_vector, start(0));
+    compute_gs_real_masked(data_vector, start(1));
+    compute_gg_real_masked(data_vector, start(2));
+    if constexpr (6 == M) {
+      compute_gk_real_masked(data_vector, start(3));
+      compute_ks_real_masked(data_vector, start(4));
+      compute_kk_fourier_masked(data_vector, start(5));
+    }
+  } 
+  else {
+    compute_ss_fourier_masked(data_vector, start(0));
+    compute_gs_fourier_masked(data_vector, start(1));
+    compute_gg_fourier_masked(data_vector, start(2));
+    if constexpr (6 == M) {
+      compute_gk_real_add_mask(data_vector, start(3));
+      compute_ks_real_add_shear_calib_and_mask(data_vector, start(4));
+      compute_kk_real_add_mask(data_vector, start(5));
+    }
+  }
+  return data_vector;
+}
 
 }  // namespace cosmolike_interface
 #endif // HEADER GUARD

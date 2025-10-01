@@ -20,10 +20,20 @@ pdeltapara pdeltaparams =
   .runmode = "Halofit"
 };
 
-Cmb cmb =
+CMBparams cmb =
 {
+  .random = 0.0,
   .fwhm = 0.0,
-  .sensitivity = 0.0
+  .healpixwin_ncls = 0,
+  .healpixwin = NULL,
+  .lmink_wxk = 0,
+  .lmaxk_wxk = 0,
+  .alpha_Hartlap_cov_kkkk = 1.0,
+  .nbp_kk = 0,
+  .lminbp_kk = 0,
+  .lmaxbp_kk = 0,
+  .binning_matrix_kk = NULL,
+  .theory_offset_kk = NULL
 };
 
 lim limits = 
@@ -63,7 +73,7 @@ Ntab Ntable;
 //  ----------------------------------------------------------------------------------
 //  ----------------------------------------------------------------------------------
 
-void reset_like_struct()
+void reset_like_struct(void)
 {
   like.bias = 0;
   like.Ncl = 0;
@@ -80,8 +90,6 @@ void reset_like_struct()
   like.Rmin_bias = 0;
   like.Rmin_shear = 0;
   like.lmax_shear = 0;
-  like.lmin_kappacmb = 0;
-  like.lmax_kappacmb = 0;
   
   like.bias = 0;
   like.clusterN = 0;
@@ -101,7 +109,7 @@ void reset_like_struct()
   like.adopt_limber_gg = 0;
 }
 
-void reset_cosmology_struct()
+void reset_cosmology_struct(void)
 {
   cosmology.Omega_nu = 0.;
   cosmology.coverH0 = 2997.92458;
@@ -127,7 +135,7 @@ void reset_cosmology_struct()
   cosmology.G = NULL;
 }
 
-void reset_tomo_struct()
+void reset_tomo_struct(void)
 {
   tomo.shear_Npowerspectra = 0;
   tomo.clustering_Npowerspectra = 0;
@@ -139,7 +147,7 @@ void reset_tomo_struct()
   tomo.N_ggl_exclude = 0;
 }
 
-void reset_redshift_struct()
+void reset_redshift_struct(void)
 {
   redshift.random_shear = 0.0;
   redshift.random_clustering = 0.0;
@@ -173,7 +181,7 @@ void reset_redshift_struct()
   }
 }
 
-void reset_survey_struct()
+void reset_survey_struct(void)
 {
   survey.area = 0.0;
   survey.n_gal = 0.0;
@@ -187,12 +195,12 @@ void reset_survey_struct()
   sprintf(survey.name, "%s", "");
 }
 
-void reset_pdeltaparams_struct()
+void reset_pdeltaparams_struct(void)
 {
   sprintf(pdeltaparams.runmode, "%s", "Halofit");
 }
 
-void reset_nuisance_struct()
+void reset_nuisance_struct(void)
 {
   nuisance.random_ia = 0.0;
   nuisance.random_photoz_shear = 0.0;
@@ -224,15 +232,27 @@ void reset_nuisance_struct()
   nuisance.IA_MODEL = 0;
 }
 
-void reset_cmb_struct()
+void reset_cmb_struct(void)
 {
-  sprintf(cmb.name, "%s", "");
+  cmb.random = 0.0;
   cmb.fwhm = 0.0;
-  cmb.sensitivity = 0.0;
-  sprintf(cmb.pathLensRecNoise, "%s", "");
+  cmb.healpixwin_ncls = 0;
+  if (cmb.healpixwin != NULL) {
+    free(cmb.healpixwin);
+  }
+  cmb.alpha_Hartlap_cov_kkkk = 1.0;
+  cmb.nbp_kk = 0;
+  cmb.lminbp_kk = 0;
+  cmb.lmaxbp_kk = 0;
+  if (cmb.theory_offset_kk != NULL) {
+    free(cmb.theory_offset_kk);
+  }
+  if (cmb.binning_matrix_kk != NULL) {
+    free(cmb.binning_matrix_kk);
+  }
 }
 
-void reset_Ntable_struct()
+void reset_Ntable_struct(void)
 {
   Ntable.LMAX     = 50000;
   Ntable.random   = 0.0;
@@ -249,7 +269,7 @@ void reset_Ntable_struct()
 }
 
 /*
-void reset_cluster_struct()
+void reset_cluster_struct(void)
 {
   Cluster.N200_min = 0.0;
   Cluster.N200_max = 0.0;

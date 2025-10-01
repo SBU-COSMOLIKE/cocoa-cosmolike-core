@@ -593,5 +593,3 @@ double sigma2(const double M)
   }
   return exp(interpol1d(table, Ntable.N_M, lim[0], lim[1], lim[2], log(M)));
 }
-
-

@@ -21,7 +21,7 @@ typedef struct
 
 extern barypara bary;
 
-void reset_bary_struct();
+void reset_bary_struct(void);
 
 void init_baryons(const char* sim);
 
