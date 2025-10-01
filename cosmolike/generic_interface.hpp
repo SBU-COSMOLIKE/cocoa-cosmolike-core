@@ -653,9 +653,128 @@ void init_ntomo_powerspectra();
 // Functions relevant for machine learning emulators
 // ------------------------------------------------------------------
 
+template <int N, int X, int P = 1> 
+void add_calib_and_set_mask_X_N(vector& dv, const int start)
+{
+  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
+  static_assert(P == 0 || P == 1, "P must be 0/1 (exclude PM))");
+  IP& survey = IP::get_instance();
+  arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
+
+  if constexpr (0 == X) {
+    if (1 == like.shear_shear) { 
+      for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
+        const int z1 = Z1(nz);
+        const int z2 = Z2(nz);
+        for (int i=0; i<Nlen[N]; i++) {
+          int index = start + Nlen[N]*nz + i;
+          if (survey.get_mask(index)) {
+            dv(index) *= (1.0 + nuisance.shear_calibration_m[z1])*
+                         (1.0 + nuisance.shear_calibration_m[z2]);
+          }
+          else {
+            dv(index) = 0.0;
+          }
+          if constexpr (N == 0) { 
+            index += Nlen[N]*tomo.shear_Npowerspectra;
+            if (survey.get_mask(index)) {
+              dv(index) *= (1.0 + nuisance.shear_calibration_m[z1])*
+                           (1.0 + nuisance.shear_calibration_m[z2]);
+            }
+            else {
+              dv(index) = 0.0;
+            }
+          }
+        }
+      }
+    }
+  }
+  else if constexpr (1 == X) {
+    if (1 == like.shear_pos) {
+      for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
+        const int zs = ZS(nz);
+        for (int i=0; i<Nlen[N]; i++) {
+          const int index = start + Nlen[N]*nz + i;
+          if (survey.get_mask(index)) {
+            if constexpr (0 == N && 1 == P) {
+              const int zl = ZL(nz);
+              dv(index) += compute_pm(zl, zs,theta(i));
+            }
+            dv(index) *= (1.0+nuisance.shear_calibration_m[zs]);
+          }
+          else {
+            dv(index) = 0.0;
+          }
+        }
+      }
+    }
+  }
+  else if constexpr (2 == X) {
+    if (1 == like.pos_pos) {
+      for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
+        for (int i=0; i<Nlen[N]; i++) {
+          const int index = start + Nlen[N]*nz + i;
+          if (!survey.get_mask(index)) {
+            dv(index) = 0.0;
+          }
+        }
+      }
+    }
+  }
+  else if constexpr (3 == X) {
+    if (1 == like.gk) {
+      for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+        for (int i=0; i<Nlen[N]; i++) {
+          const int index = start + Nlen[N]*nz + i;
+          if (!survey.get_mask(index)) {
+            dv(index) = 0.0;
+          }
+        }
+      }
+    }
+  }
+  else if constexpr (4 == X) {
+    if (1 == like.ks) {
+      for (int nz=0; nz<redshift.shear_nbin; nz++) {
+        for (int i=0; i<Nlen[N]; i++) {
+          const int index = start + Nlen[N]*nz + i; 
+          if (survey.get_mask(index)) {
+            dv(index) *= (1.0 + nuisance.shear_calibration_m[nz]);
+          }
+          else {
+            dv(index) = 0.0;
+          }
+        }
+      }
+    }
+  }
+  else if constexpr (5 == X) {
+    if (1 == like.kk) {
+      PCMB& cmb = IPCMB::get_instance();
+      if (0 == cmb.is_kk_bandpower()) {
+        for (int i=0; i<like.Ncl; i++) {
+          const int index = start + i; 
+          if (!survey.get_mask(index)) {
+            dv(index) = 0.0;
+          }
+        }
+      }
+      else {
+        const int nbp = cmb.get_nbins_kk_bandpower();
+        for (int j=0; j<nbp; j++) { // Loop through bandpower bins
+          const int index = start + j; 
+          if (!survey.get_mask(index)) {        
+            dv(index) = 0.0;
+          }
+        }
+      }
+    }
+  }
+}
+
 template <int N, int M, int P> 
-arma::Col<double> compute_add_fpm_Mx2pt_N_masked(
-    vector data_vector, 
+arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
+    arma::Col<double> data_vector, 
     arma::Col<int>::fixed<M> ord
   )
 {
@@ -663,18 +782,14 @@ arma::Col<double> compute_add_fpm_Mx2pt_N_masked(
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
   static_assert(P == 0 || P == 1, "P must be 0/1 (exclude PM))");
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
-  if constexpr (0 == N) {
-    compute_ss_real_add_shear_calib_and_mask(data_vector, start(0));
-    if constexpr (P == 1) {
-      compute_gs_real_add_pm(data_vector, start(1));
-    }
-    compute_gs_real_add_shear_calib_and_mask(data_vector, start(1));
-    compute_gg_real_add_mask(data_vector, start(2));
-    if constexpr (6 == M) {
-      compute_gk_real_add_mask(data_vector, start(3));
-      compute_ks_real_add_shear_calib_and_mask(data_vector, start(4));
-      compute_kk_real_add_mask(data_vector, start(5));
-    }
+  
+  add_calib_and_set_mask_X_N<N,0,P>(data_vector, start(0));
+  add_calib_and_set_mask_X_N<N,1,P>(data_vector, start(1));
+  add_calib_and_set_mask_X_N<N,2,P>(data_vector, start(2));
+  if constexpr (6 == M) {
+    add_calib_and_set_mask_X_N<N,3,P>(data_vector, start(3));
+    add_calib_and_set_mask_X_N<N,4,P>(data_vector, start(4));
+    add_calib_and_set_mask_X_N<N,5,P>(data_vector, start(5));
   }
   return data_vector;
 }
@@ -746,6 +861,175 @@ arma::Col<double> compute_binning_real_space();
 
 arma::Col<double> compute_add_baryons_pcs(arma::Col<double> Q, arma::Col<double> dv);
 
+template <int N, int X> 
+void compute_X_N_masked(vector& dv, const int start)
+{
+  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
+  IP& survey = IP::get_instance();
+  arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
+
+  if constexpr (0 == X) {
+    if (1 == like.shear_shear) {    
+      for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
+        const int z1 = Z1(nz);
+        const int z2 = Z2(nz);
+        if constexpr (N == 0) {
+          for (int i=0; i<Ntable.Ntheta; i++) {
+            int index = start + Ntable.Ntheta*nz + i;
+            if (survey.get_mask(index)) {
+              dv(index) = xi_pm_tomo(1, i, z1, z2, 1);
+            }  
+            index += Ntable.Ntheta*tomo.shear_Npowerspectra;
+            if (survey.get_mask(index)) {
+              dv(index) = xi_pm_tomo(-1, i, z1, z2, 1);
+            }
+          }
+        }
+        else {
+          for (int i=0; i<like.Ncl; i++) {
+            const int index = start + like.Ncl*nz + i;
+            if (survey.get_mask(index) && (like.ell[i]<like.lmax_shear)) {
+              dv(index) = C_ss_tomo_limber(like.ell[i], z1, z2, 1);
+            }
+          }
+        }
+      }
+      add_calib_and_set_mask_X_N<N,X>(dv, start);
+    }
+  }
+  else if constexpr (1 == X) {
+    if (1 == like.shear_pos) {
+      for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
+        const int zl = ZL(nz);
+        const int zs = ZS(nz);
+        for (int i=0; i<Nlen[N]; i++) {
+          const int index = start + Nlen[N]*nz + i;
+          if (survey.get_mask(index)) {
+            if constexpr (0 == N)
+              dv(index) = w_gammat_tomo(i,zl,zs,1);
+            else
+              dv(index) = C_gs_tomo_limber(like.ell[i], zl, zs);
+          }
+        }
+      }
+      add_calib_and_set_mask_X_N<N,X>(dv, start);
+    }
+  }
+  else if constexpr (2 == X) {
+    if (1 == like.pos_pos) {
+      for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
+        if constexpr (N == 0) {
+          for (int i=0; i<Ntable.Ntheta; i++) {
+            const int index = start + Ntable.Ntheta*nz + i;
+            if (survey.get_mask(index)) {
+              dv(index) = w_gg_tomo(i, nz, nz, like.adopt_limber_gg);
+            }
+          }
+        }
+        else {
+          for (int i=0; i<like.Ncl; i++) {
+            const int index = start + like.Ncl*nz + i;
+            if (survey.get_mask(index)) {
+              dv(index) = C_gg_tomo_limber(like.ell[i], nz, nz);
+            }
+          }
+        }
+      }
+      add_calib_and_set_mask_X_N<N,X>(dv, start);
+    }
+  }
+  else if constexpr (3 == X) {
+    if (1 == like.gk) {
+      for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+        if constexpr (N == 0) {
+          for (int i=0; i<Ntable.Ntheta; i++) {
+            const int index = start + Ntable.Ntheta*nz + i;
+            if (survey.get_mask(index)) {
+              data_vector(index) = w_gk_tomo(i, nz, 1);
+            }
+          }
+        }
+      }
+      add_calib_and_set_mask_X_N<N,X>(dv, start);
+    }
+  }
+  else if constexpr (4 == X) {
+    if (1 == like.ks) {
+      for (int nz=0; nz<redshift.shear_nbin; nz++) {
+        if constexpr (N == 0) {
+          for (int i=0; i<Ntable.Ntheta; i++) {
+            const int index = start + Ntable.Ntheta*nz + i; 
+            if (survey.get_mask(index)) {
+              dv(index) = w_ks_tomo(i, nz, 1);
+            }
+          }
+        }
+      }
+      add_calib_and_set_mask_X_N<N,X>(dv, start);
+    }
+  }
+  else if constexpr (5 == X) {
+    if (1 == like.kk) {
+      IPCMB& cmb = IPCMB::get_instance();
+      if (0 == cmb.is_kk_bandpower()) {
+        for (int i=0; i<like.Ncl; i++) {
+          const int index = start + i; 
+          if (survey.get_mask(index)) {
+            const double l = like.ell[i];
+            dv(index) = (l<=limits.LMIN_tab) ? C_kk_limber_nointerp(l,0) : C_kk_limber(l);
+          }
+        }
+      }
+      else {
+        const int nbp = cmb.get_nbins_kk_bandpower();
+        const int lminbp = cmb.get_lmin_kk_bandpower();
+        const int lmaxbp = cmb.get_lmax_kk_bandpower();
+        for (int j=0; j<nbp; j++) {
+          const int index = start + j; 
+          if (survey.get_mask(index)) {        
+            data_vector(index) = 0.0;
+          }
+        }
+        for (int L=lminbp; L<lmaxbp + 1; L++) {
+          const double Ckk = (L <= limits.LMIN_tab) ? 
+            C_kk_limber_nointerp((double) L, 0) : C_kk_limber((double) L);
+          for (int j=0; j<nbp; j++) { // Loop through bandpower bins
+            const int index = start + j; 
+            if (survey.get_mask(index)) {        
+              data_vector(index) += (Ckk*cmb.get_kk_binning_matrix(j, L-lminbp));
+            }
+          }
+        }
+        for (int j=0; j<nbp; j++) { // offset due to marginalizing over primary CMB
+          const int index = start + j;
+          if (survey.get_mask(index)) {
+            data_vector(index) -= cmb.get_kk_theory_offset(j);
+          }
+        }
+      }
+      add_calib_and_set_mask_X_N<N,X>(dv, start);
+    }
+  }
+}
+
+template <int N, int M> 
+arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
+{
+  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
+  static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
+  arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
+  arma::Col<double> data_vector(like.Ndata, arma::fill::zeros); 
+  compute_X_N_masked<N,0>(data_vector, start(0));
+  compute_X_N_masked<N,1>(data_vector, start(1));
+  compute_X_N_masked<N,2>(data_vector, start(2));
+  if constexpr (6 == M) {
+    compute_X_N_masked<N,3>(data_vector, start(3));
+    compute_X_N_masked<N,4>(data_vector, start(4));
+    compute_X_N_masked<N,5>(data_vector, start(5));
+  }
+  return data_vector;
+}
+
 template <int N, int M> 
 matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
 {
@@ -768,7 +1052,7 @@ matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
   spdlog::debug("{}: Comp. DM only data vector begins", name);
   cosmology.random = RandomNumber::get_instance().get();
   reset_bary_struct(); // make sure there is no baryon contamination
-  vector dv_dm = ip.sqzd_theory_data_vector(compute_data_vector_Mx2pt_N_masked<N,M>(ord));
+  vector dv_dm = ip.sqzd_theory_data_vector(compute_Mx2pt_N_masked<N,M>(ord));
   spdlog::debug("{}: Comp. DM only data vector ends", name);
   
   // Compute data vector for all Baryon scenarios -------------------------
@@ -778,7 +1062,7 @@ matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
     const string bs = BaryonScenario::get_instance().get_scenario(i);
     cosmology.random = RandomNumber::get_instance().get(); // clear cosmolike cache
     init_baryons_contamination(bs);
-    vector dv = ip.sqzd_theory_data_vector(compute_data_vector_Mx2pt_N_masked<N,M>(ord));
+    vector dv = ip.sqzd_theory_data_vector(compute_Mx2pt_N_masked<N,M>(ord));
     D.col(i) = dv - dv_dm;
     spdlog::debug("{}: Comp. data vector w/ baryon scenario {} ends", name, bs);
   }
@@ -798,39 +1082,7 @@ matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
   for (int i=0; i<nscenarios; i++) {
     R.col(i) = ip.expand_theory_data_vector_from_sqzd(PC.col(i));
   }
-
   return R;
-}
-
-template <int N, int M> 
-arma::Col<double> compute_data_vector_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
-{
-  using vector = arma::Col<double>;
-  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
-  static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
-  arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
-  vector data_vector(like.Ndata, arma::fill::zeros); 
-  if constexpr (0 == N) {
-    compute_ss_real_masked(data_vector, start(0));
-    compute_gs_real_masked(data_vector, start(1));
-    compute_gg_real_masked(data_vector, start(2));
-    if constexpr (6 == M) {
-      compute_gk_real_masked(data_vector, start(3));
-      compute_ks_real_masked(data_vector, start(4));
-      compute_kk_fourier_masked(data_vector, start(5));
-    }
-  } 
-  else {
-    compute_ss_fourier_masked(data_vector, start(0));
-    compute_gs_fourier_masked(data_vector, start(1));
-    compute_gg_fourier_masked(data_vector, start(2));
-    if constexpr (6 == M) {
-      compute_gk_real_add_mask(data_vector, start(3));
-      compute_ks_real_add_shear_calib_and_mask(data_vector, start(4));
-      compute_kk_real_add_mask(data_vector, start(5));
-    }
-  }
-  return data_vector;
 }
 
 }  // namespace cosmolike_interface
