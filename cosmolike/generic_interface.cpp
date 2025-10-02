@@ -729,7 +729,8 @@ void init_data_vector_size(
 {
   spdlog::debug("{}: Begins", "init_data_vector_size");
   like.Ndata = 0.0;
-  for(int i=0; i<static_cast<int>(exclude.n_elem); i++) {
+  for(int i=0; i<static_cast<int>(exclude.n_elem); i++) 
+  {
     if (exclude(i) > 0) {
       if (0 == i && 0 == tomo.shear_Npowerspectra) [[unlikely]] {
         spdlog::critical(
@@ -787,202 +788,6 @@ void init_data_vector_size(
     }
   }
   spdlog::debug("{}: Ends", "init_data_vector_size");
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-void init_data_vector_size_3x2pt_real_space()
-{
-  spdlog::debug("{}: Begins", "init_data_vector_size_3x2pt_real_space");
-  init_data_vector_size({1, 1, 1, -1, -1, -1}, 
-                        compute_data_vector_6x2pt_real_sizes());
-  spdlog::debug("{}: {} = {} selected.", 
-      "init_data_vector_size_3x2pt_real_space", 
-      "Ndata", 
-      like.Ndata
-    );
-  spdlog::debug("{}: Ends", "init_data_vector_size_3x2pt_real_space");
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-void init_data_vector_size_6x2pt_real_space()
-{
-  spdlog::debug("{}: Begins", "init_data_vector_size_6x2pt_real_space");
-  init_data_vector_size({1, 1, 1, 1, 1, 1}, 
-                        compute_data_vector_6x2pt_real_sizes());
-  spdlog::debug("{}: {} = {} selected.", 
-      "init_data_vector_size_6x2pt_real_space", 
-      "Ndata", 
-      like.Ndata
-    );
-  spdlog::debug("{}: Ends", "init_data_vector_size_6x2pt_real_space");
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-void init_data_vector_size_3x2pt_fourier_space()
-{
-  spdlog::debug("{}: Begins", "init_data_vector_size_3x2pt_fourier_space");
-  init_data_vector_size({1, 1, 1, -1, -1, -1}, 
-                        compute_data_vector_6x2pt_fourier_sizes());
-  spdlog::info(
-      "{}: {} = {} selected.", 
-      "init_data_vector_size_3x2pt_fourier_space", 
-      "Ndata", 
-      like.Ndata
-    );
-  spdlog::debug("{}: Ends", "init_data_vector_size_3x2pt_fourier_space");
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-void init_data_vector_size_6x2pt_fourier_space()
-{
-  spdlog::debug("{}: Begins", "init_data_vector_size_6x2pt_fourier_space");
-  init_data_vector_size({1, 1, 1, 1, 1, 1}, 
-                        compute_data_vector_6x2pt_fourier_sizes());
-  spdlog::debug(
-      "{}: {} = {} selected.", 
-      "init_data_vector_size_6x2pt_fourier_space", 
-      "Ndata", 
-      like.Ndata
-    );
-  spdlog::debug("{}: Ends", "init_data_vector_size_6x2pt_fourier_space");
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-void init_data_3x2pt_real_space(
-    std::string cov, 
-    std::string mask, 
-    std::string data, 
-    arma::Col<int>::fixed<3> order
-  )
-{
-  spdlog::debug("{}: Begins", "init_data_3x2pt_real_space");
-
-  init_data_vector_size_3x2pt_real_space();
-  
-  IP::get_instance().set_mask(mask, order, 1);  // set_mask must be called first
-  
-  IP::get_instance().set_data(data);
-  
-  IP::get_instance().set_inv_cov(cov);
-
-  spdlog::debug("{}: Ends", "init_data_3x2pt_real_space");
-
-  return;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-void init_data_3x2pt_fourier_space(
-    std::string cov, 
-    std::string mask, 
-    std::string data, 
-    arma::Col<int>::fixed<3> order
-  )
-{
-  spdlog::debug("{}: Begins", "init_data_3x2pt_fourier_space");
-
-  init_data_vector_size_3x2pt_fourier_space();
-  
-  IP::get_instance().set_mask(mask, order, 0);  // set_mask must be called first
-  
-  IP::get_instance().set_data(data);
-  
-  IP::get_instance().set_inv_cov(cov);
-
-  spdlog::debug("{}: Ends", "init_data_3x2pt_fourier_space");
-
-  return;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-void init_data_6x2pt_real_space(
-    std::string cov, 
-    std::string mask, 
-    std::string data,
-    arma::Col<int>::fixed<6> order)
-{
-  spdlog::debug("{}: Begins", "init_data_6x2pt_real_space");
-
-  init_data_vector_size_6x2pt_real_space();
-  
-  IP::get_instance().set_mask(mask, order, 1);  // set_mask must be called first
-  
-  IP::get_instance().set_data(data);
-  
-  IP::get_instance().set_inv_cov(cov);
-
-  spdlog::debug("{}: Ends", "init_data_6x2pt_real_space");
-
-  return;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-void init_data_6x2pt_fourier_space(
-    std::string cov, 
-    std::string mask, 
-    std::string data,
-    arma::Col<int>::fixed<6> order)
-{
-  spdlog::debug("{}: Begins", "init_data_6x2pt_fourier_space");
-
-  init_data_vector_size_6x2pt_fourier_space();
-  
-  IP::get_instance().set_mask(mask, order, 0);  // set_mask must be called first
-  
-  IP::get_instance().set_data(data);
-  
-  IP::get_instance().set_inv_cov(cov);
-
-  spdlog::debug("{}: Ends", "init_data_6x2pt_fourier_space");
-
-  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -2776,32 +2581,6 @@ vector compute_add_baryons_pcs(vector Q, vector dv)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // Class IP MEMBER FUNCTIONS
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -3317,46 +3096,6 @@ double IP::get_inv_cov_masked_sqzd(const int ci, const int cj) const
   return this->inv_cov_masked_sqzd_(ci, cj);
 }
 
-int IP::get_ndata() const
-{
-  return this->ndata_;
-}
-
-int IP::get_ndata_sqzd() const
-{
-  return this->ndata_sqzd_;
-}
-
-arma::Col<int> IP::get_mask() const
-{
-  return this->mask_;
-}
-
-arma::Col<double> IP::get_dv_masked() const
-{
-  return this->data_masked_;
-}
-
-arma::Col<double> IP::get_dv_masked_sqzd() const
-{
-  return this->data_masked_sqzd_;
-}
-
-matrix IP::get_inv_cov_masked() const
-{
-  return this->inv_cov_masked_;
-}
-
-matrix IP::get_inv_cov_masked_sqzd() const
-{
-  return this->inv_cov_masked_sqzd_;
-}
-
-matrix IP::get_cov_masked() const
-{
-  return this->cov_masked_;
-}
-
 double IP::get_chi2(arma::Col<double> datavector) const
 {
   if (!(this->is_data_set_)) [[unlikely]] {
@@ -3407,11 +3146,6 @@ double IP::get_chi2(arma::Col<double> datavector) const
     exit(1);
   }
   return chi2;
-}
-
-matrix IP::get_cov_masked_sqzd() const
-{
-  return this->cov_masked_sqzd_;
 }
 
 arma::Col<double> 
@@ -3566,104 +3300,6 @@ void ima::RealData::set_PMmarg(std::string U_PMmarg_file)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-int IPCMB::get_nbins_kk_bandpower() const
-{
-  if(!this->is_kk_bandpower_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} == 0, incompatible choice", 
-        "IPCMB::get_nbins_kk_bandpower", "is_kk_bandpower"
-      );
-    exit(1);
-  }
-  return this->params_->nbp_kk;
-}
-
-int IPCMB::get_lmin_kk_bandpower() const
-{
-  if(!this->is_kk_bandpower_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} == 0, incompatible choice", 
-        "IPCMB::get_lmin_kk_bandpower",  "is_kk_bandpower"
-      );
-    exit(1);
-  }
-  return this->params_->lminbp_kk; 
-}
-
-int IPCMB::get_lmax_kk_bandpower() const
-{
-  if(!this->is_kk_bandpower_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} == 0, incompatible choice", 
-        "IPCMB::get_lmax_kk_bandpower", "is_kk_bandpower"
-      );
-    exit(1);
-  }
-  return this->params_->lmaxbp_kk;
-}
-
-double IPCMB::get_kk_binning_matrix(const int ci, const int cj) const
-{
-  if (!this->is_kk_binning_matrix_set_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} not set prior to this function call", 
-        "get_kk_binning_matrix", "is_kk_binning_matrix_set_"
-      );
-    exit(1);
-  }
-  const int nbp = this->get_nbins_kk_bandpower();
-  const int lmax = this->get_lmax_kk_bandpower();
-  const int lmin = this->get_lmin_kk_bandpower();
-  const int ncl  = lmax - lmin + 1;
-  if (ci > nbp || ci < 0) [[unlikely]] {
-    spdlog::critical(
-        "{}: index i = {} is not valid (min = {}, max = {})",
-        "IPCMB::get_kk_binning_matrix", ci, 0, nbp
-      );
-    exit(1);
-  }
-  if (cj > ncl || cj < 0) [[unlikely]] {
-    spdlog::critical(
-        "{}: index j = {} is not valid (min = {}, max = {})",
-        "IPCMB::get_kk_binning_matrix", cj, 0, ncl
-      );
-    exit(1);
-  }
-  return this->params_->binning_matrix_kk[ci][cj];
-}
-
-double IPCMB::get_kk_theory_offset(const int ci) const
-{
-  if (!this->is_kk_offset_set_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} not set prior to this function call", 
-        "get_kk_theory_offset", "is_kk_offset_set_"
-      );
-    exit(1);
-  }
-  const int nbp = this->get_nbins_kk_bandpower();
-  if (ci > nbp || ci < 0) [[unlikely]] {
-    spdlog::critical(
-        "{}: index i = {} is not valid (min = {}, max = {})",
-        "IPCMB::get_kk_theory_offset", ci, 0.0, nbp
-      );
-    exit(1);
-  }
-  return this->params_->theory_offset_kk[ci];
-}
-
-double IPCMB::get_alpha_Hartlap_cov_kkkk() const
-{
-  if (!this->is_alpha_Hartlap_cov_kkkk_set_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} not set prior to this function call", 
-        "get_alpha_Hartlap_cov_kkkk", "is_alpha_Hartlap_cov_kkkk_set_"
-      );
-    exit(1);
-  }
-  return this->params_->alpha_Hartlap_cov_kkkk;
-}
-
 void IPCMB::set_wxk_healpix_window(std::string healpixwin_filename) {
   matrix table = read_table(healpixwin_filename);
   this->params_->healpixwin_ncls = static_cast<int>(table.n_rows);
@@ -3704,7 +3340,7 @@ void IPCMB::set_kk_binning_mat(std::string binned_matrix_filename)
       this->params_->binning_matrix_kk[i][j] = table(i,j);
     }
   }
-
+  
   spdlog::debug(
       "{}: CMB kk binning matrix from file {} has {} x {} elements",
       "IPCMB::set_kk_binning_mat", 
@@ -3783,7 +3419,6 @@ void IPCMB::set_kk_binning_bandpower(
     );
     exit(1);
   }
-
   spdlog::debug(
       "{}: {} = {} selected.", "init_binning_cmb_kk_bandpower", "NBins", nbp
     );
@@ -3793,7 +3428,6 @@ void IPCMB::set_kk_binning_bandpower(
   spdlog::debug(
       "{}: {} = {} selected.",  "init_binning_cmb_kk_bandpower", "lmax", lmax
     );
-
   this->params_->nbp_kk = nbp;
   this->params_->lminbp_kk = lmin;
   this->params_->lmaxbp_kk = lmax;
@@ -3809,19 +3443,6 @@ void IPCMB::set_kk_binning_bandpower(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
-void PointMass::set_pm_vector(
-    arma::Col<double> pm
-  )
-{
-  this->pm_ = pm;
-  return;
-}
-
-arma::Col<double> PointMass::get_pm_vector() const
-{
-  return this->pm_;
-}
 
 double PointMass::get_pm(
     const int zl, 
@@ -3845,42 +3466,6 @@ double PointMass::get_pm(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
-bool BaryonScenario::is_pcs_set() const
-{
-  return this->is_pcs_set_;
-}
-
-bool BaryonScenario::is_scenarios_set() const
-{
-  return this->is_scenarios_set_;
-}
-
-int BaryonScenario::nscenarios() const
-{
-  if (!this->is_scenarios_set_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} not set prior to this function call",
-        "BaryonScenario::nscenarios", 
-        "Baryon Scenarios"
-      );
-    exit(1);
-  }
-  return this->nscenarios_;
-}
-
-std::string BaryonScenario::get_scenario(const int i) const
-{
-  if (!this->is_scenarios_set_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} not set prior to this function call",
-        "BaryonScenario::get_scenario", 
-        "Baryon Scenarios"
-      );
-    exit(1);
-  }
-  return this->scenarios_.at(i);
-}
 
 void BaryonScenario::set_scenarios(std::string scenarios)
 {
@@ -3932,38 +3517,6 @@ void BaryonScenario::set_scenarios(std::string scenarios)
   
   this->is_scenarios_set_ = true;
   return;
-}
-
-void BaryonScenario::set_pcs(arma::Mat<double> eigenvectors)
-{
-  this->eigenvectors_ = eigenvectors;
-  this->is_pcs_set_ = true;
-}
-
-arma::Mat<double> BaryonScenario::get_pcs() const
-{
-  if (!this->is_pcs_set_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} not set prior to this function call",
-        "BaryonScenario::get_pcs", 
-        "PC eigenvectors"
-      );
-    exit(1);
-  }
-  return this->eigenvectors_;
-}
-
-double BaryonScenario::get_pcs(const int ci, const int cj) const
-{
-  if (!this->is_pcs_set_) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} not set prior to this function call",
-        "BaryonScenario::get_pcs", 
-        "PC eigenvectors"
-      );
-    exit(1);
-  }
-  return this->eigenvectors_(ci, cj); 
 }
 
 // ---------------------------------------------------------------------------
