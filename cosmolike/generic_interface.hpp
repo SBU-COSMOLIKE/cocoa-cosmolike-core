@@ -79,8 +79,7 @@ class IP
 
     template <int N, int M>
     void set_mask(std::string mask_filename, 
-                  arma::Col<int>::fixed<M> order, 
-                  const int real_space);
+                  arma::Col<int>::fixed<M> order);
 
     void set_inv_cov(std::string covariance_filename);
 
@@ -419,15 +418,10 @@ class BaryonScenario
     }
   private:
     bool is_pcs_set_;
-
     bool is_scenarios_set_;
-
     int nscenarios_;
-    
     std::map<int, std::string> scenarios_;
-    
     arma::Mat<double> eigenvectors_;
-
     BaryonScenario() = default;
     BaryonScenario(BaryonScenario const&) = delete;
 };
@@ -439,7 +433,9 @@ class BaryonScenario
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// AUX FUNCTIONS
+// ---------------------------------------------------------------------------
+// Global Functions
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -461,22 +457,6 @@ almost_equal(T x, T y, int ulp = 100)
       // unless the result is subnormal
       || std::fabs(x-y) < std::numeric_limits<T>::min();
 }
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// GLOBAL INIT FUNCTIONS
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 
 void init_ntable_lmax(
     const int lmax
@@ -700,16 +680,14 @@ void init_data_Mx2pt_N(
 {
   init_data_vector_size_Mx2pt_N<N,M>();
   IP& survey = IP::get_instance();
-  survey.set_mask<N>(mask, ord);  // set_mask must be called first
+  survey.set_mask<N,M>(mask, ord);  // set_mask must be called first
   survey.set_data(data);
   survey.set_inv_cov(cov);
   return;
 }
 
 template <int N, int M>
-arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(
-    arma::Col<int>::fixed<N> ord
-  ) 
+arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(arma::Col<int>::fixed<M> ord) 
 {
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
@@ -725,7 +703,7 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(
 }
 
 template <int N, int X, int P = 1> 
-void add_calib_and_set_mask_X_N(vector& dv, const int start)
+void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
 {
   using vector = arma::Col<double>;
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
@@ -977,7 +955,8 @@ void compute_X_N_masked(vector& dv, const int start)
           const int index = start + i; 
           if (survey.get_mask(index)) {
             const double l = like.ell[i];
-            dv(index) = (l<=limits.LMIN_tab) ? C_kk_limber_nointerp(l,0) : C_kk_limber(l);
+            dv(index) = (l<=limits.LMIN_tab) ? C_kk_limber_nointerp(l,0) : 
+                                               C_kk_limber(l);
           }
         }
       }
@@ -1084,6 +1063,125 @@ matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
     R.col(i) = ip.expand_theory_data_vector_from_sqzd(PC.col(i));
   }
   return R;
+}
+
+template <int N, int M> 
+void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> order)
+{
+  if (!(like.Ndata>0)) [[unlikely]] {
+    spdlog::critical(
+        "{}: {} not set prior to this function call",
+        "IP::set_mask", 
+        "like.Ndata"
+      );
+    exit(1);
+  }
+
+  this->ndata_ = like.Ndata;
+  this->mask_.set_size(this->ndata_);
+  this->mask_filename_ = mask_filename;
+  
+  matrix table = read_table(mask_filename);
+  if (static_cast<int>(table.n_rows) != this->ndata_) [[unlikely]] {
+    spdlog::critical("{}: inconsistent mask", "IP::set_mask");
+    exit(1);
+  }
+
+  for (int i=0; i<this->ndata_; i++) {
+    this->mask_(i) = static_cast<int>(table(i,1)+1e-13);
+    if (!(0 == this->mask_(i) || 1 == this->mask_(i))) [[unlikely]] {
+      spdlog::critical("{}: inconsistent mask", "IP::set_mask");
+      exit(1);
+    }
+  }
+
+  arma::Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
+
+  arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts(ord);
+
+  if (0 == like.shear_shear) {
+    const int N = start(0);
+    const int M = N + sizes(0);
+    for (int i=N; i<M; i++) {
+      this->mask_(i) = 0;
+    }
+  }
+  if (0 == like.shear_pos) {
+    const int N = start(1);
+    const int M = N + sizes(1);
+    for (int i=N; i<M; i++) {
+      this->mask_(i) = 0;
+    }
+  }
+  if (0 == like.pos_pos) {
+    const int N = start(2);
+    const int M = N + sizes(2);
+    for (int i=N; i<M; i++) {
+      this->mask_(i) = 0;
+    }
+  }
+  if constexpr (6 == M) {
+    if (0 == like.gk) {
+      const int N = start(3);
+      const int M = N + sizes(3);;
+      for (int i=N; i<M; i++) {
+        this->mask_(i) = 0.0;
+      }
+    }
+    if (0 == like.ks)  {
+      const int N = start(4);
+      const int M = N + sizes(4);
+      for (int i=N; i<M; i++) {
+        this->mask_(i) = 0.0;
+      }
+    }
+    if (0 == like.kk) {
+      const int N = start(5);
+      const int M = N + sizes(5);
+      for (int i=N; i<M; i++) {
+        this->mask_(i) = 0.0;
+      }
+    }
+  }
+  
+  this->ndata_sqzd_ = arma::accu(this->mask_);
+  if(!(this->ndata_sqzd_>0)) [[unlikely]] {
+    spdlog::critical(
+        "{}: mask file {} left no data points after masking",
+        "IP::set_mask", 
+        mask_filename
+      );
+    exit(1);
+  }
+  spdlog::debug(
+      "{}: mask file {} left {} non-masked elements "
+      "after masking",
+      "IP::set_mask", 
+      mask_filename, 
+      this->ndata_sqzd_
+    );
+
+  this->index_sqzd_.set_size(this->ndata_);
+  {
+    double j=0;
+    for(int i=0; i<this->ndata_; i++) {
+      if(this->get_mask(i) > 0) {
+        this->index_sqzd_(i) = j;
+        j++;
+      }
+      else {
+        this->index_sqzd_(i) = -1;
+      }
+    }
+    if(j != this->ndata_sqzd_) [[unlikely]] {
+      spdlog::critical(
+          "{}: logical error, internal "
+          "inconsistent mask operation", "IP::set_mask"
+        );
+      exit(1);
+    }
+  }
+  this->is_mask_set_ = true;
 }
 
 }  // namespace cosmolike_interface
