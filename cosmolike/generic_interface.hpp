@@ -1,10 +1,44 @@
+#include <string>
+#include <vector>
+#include <numeric>
+#include <algorithm>
+#include <iostream>
+#include <fstream>
+#include <stdio.h>
+#include <cmath>
+#include <stdexcept>
+#include <array>
+#include <random>
+#include <variant>
+#include <cmath> 
+
+// SPDLOG
+//#define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_DEBUG
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/cfg/env.h>
+
+// ARMADILLO LIB AND PYBIND WRAPPER (CARMA)
 #include <carma.h>
 #include <armadillo>
-#include <map>
-#include "structs.h"
+
+// cosmolike
+#include "cosmolike/basics.h"
+#include "cosmolike/bias.h"
+#include "cosmolike/baryons.h"
+#include "cosmolike/cosmo2D.h"
+#include "cosmolike/cosmo3D.h"
+#include "cosmolike/IA.h"
+#include "cosmolike/halo.h"
+#include "cosmolike/radial_weights.h"
+#include "cosmolike/pt_cfastpt.h"
+#include "cosmolike/redshift_spline.h"
+#include "cosmolike/structs.h"
 
 // Python Binding
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <pybind11/numpy.h>
 #include <pybind11/pytypes.h>
 
 #ifndef __COSMOLIKE_GENERIC_INTERFACE_HPP
@@ -12,7 +46,6 @@
 
 namespace cosmolike_interface
 {
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -23,23 +56,17 @@ namespace cosmolike_interface
 class RandomNumber
 { // Singleton Class that holds a random number generator
   public:
-    static RandomNumber& get_instance()
-    {
+    static RandomNumber& get_instance() {
       static RandomNumber instance;
       return instance;
     }
-    ~RandomNumber() = default;
-
-    double get()
-    {
+    double get() {
       return dist_(mt_);
     }
-
   protected:
     std::random_device rd_;
     std::mt19937 mt_;
     std::uniform_real_distribution<double> dist_;
-  
   private:
     RandomNumber() :
       rd_(),
@@ -58,12 +85,10 @@ class RandomNumber
 class IP
 { // InterfaceProducts: Singleton Class that holds data vector, covariance...
   public:
-    static IP& get_instance()
-    {
+    static IP& get_instance() {
       static IP instance;
       return instance;
     }
-    ~IP() = default;
 
     bool is_mask_set() const {
       return this->is_mask_set_;
@@ -78,26 +103,88 @@ class IP
     void set_data(std::string datavector_filename);
 
     template <int N, int M>
-    void set_mask(std::string mask_filename, 
-                  arma::Col<int>::fixed<M> order);
+    void set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord);
 
     void set_inv_cov(std::string covariance_filename);
 
     //void set_PMmarg(std::string U_PMmarg_file);
 
-    // ----------------------------------------------
+    int get_mask(const int ci) const {
+      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+        spdlog::critical(
+            "{}: index i = {} is not valid (min = {}, max = {})",
+            "IP::get_mask", ci, 0, like.Ndata
+          );
+        exit(1);
+      }
+      return this->mask_(ci);
+    }
 
-    int get_mask(const int ci) const;
+    double get_dv_masked(const int ci) const {
+      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+        spdlog::critical(
+            "{}: index i = {} is not valid (min = {}, max = {})",
+            "IP::get_dv_masked", ci, 0, like.Ndata
+          );
+        exit(1);
+      }
+      return this->data_masked_(ci);
+    }
 
-    double get_dv_masked(const int ci) const;
+    double get_inv_cov_masked(const int ci, const int cj) const {
+      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+        spdlog::critical(
+            "{}: index i = {} is not valid (min = {}, max = {})",
+            "IP::get_inv_cov_masked", ci, 0, like.Ndata);
+        exit(1);
+      }
+      if (cj > like.Ndata || cj < 0) [[unlikely]] {
+        spdlog::critical(
+            "{}: index j = {} is not valid (min = {}, max = {})",
+            "IP::get_inv_cov_masked",  cj,  0,  like.Ndata
+          );
+        exit(1);
+      }
+      return this->inv_cov_masked_(ci, cj);
+    }
 
-    double get_inv_cov_masked(const int ci, const int cj) const;
+    int get_index_sqzd(const int ci) const {
+      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+        spdlog::critical(
+            "{}: index i = {} is not valid (min = {}, max = {})", 
+            "IP::get_index_sqzd", ci, 0, like.Ndata
+          );
+        exit(1);
+      }
+      return this->index_sqzd_(ci);
+    }
 
-    int get_index_sqzd(const int ci) const;
+    double get_dv_masked_sqzd(const int ci) const {
+      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+        spdlog::critical(
+            "{}: index i = {} is not valid (min = {}, max = {})",
+            "IP::get_dv_masked_sqzd", ci, 0, like.Ndata
+          );
+        exit(1);
+      }
+      return this->data_masked_sqzd_(ci);
+    }
 
-    double get_dv_masked_sqzd(const int ci) const;
-
-    double get_inv_cov_masked_sqzd(const int ci, const int cj) const;
+    double get_inv_cov_masked_sqzd(const int ci, const int cj) const {
+      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+        spdlog::critical(
+            "{}: index i = {} is not valid (min = {}, max = {})",
+            "IP::get_inv_cov_masked_sqzd", ci,  0, like.Ndata);
+        exit(1);
+      }
+      if (cj > like.Ndata || cj < 0) [[unlikely]] {
+        spdlog::critical(
+            "{}: index j = {} is not valid (min = {}, max = {})",
+            "IP::get_inv_cov_masked_sqzd", cj, 0, like.Ndata );
+        exit(1);
+      }
+      return this->inv_cov_masked_sqzd_(ci, cj);
+    }
 
     arma::Col<double> expand_theory_data_vector_from_sqzd(arma::Col<double>) const;
 
@@ -513,11 +600,6 @@ void init_cmb_bandpower(
     const double alpha
   );
 
-void init_data_vector_size(
-    arma::Col<int>::fixed<6> exclude,
-    arma::Col<int>::fixed<6> ndv
-  );
-
 void init_IA(
     const int IA_MODEL, 
     const int IA_REDSHIFT_EVOL
@@ -631,6 +713,13 @@ arma::Col<double> compute_binning_real_space();
 
 arma::Col<double> compute_add_baryons_pcs(arma::Col<double> Q, arma::Col<double> dv);
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 template <int N, int M>
 arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_sizes() 
 {
@@ -655,20 +744,12 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_sizes()
   return sizes;
 }
 
-template <int N, int M>
-void init_data_vector_size_Mx2pt_N() 
-{
-  static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
-  static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
-  if constexpr (3 == M) {
-    init_data_vector_size({1, 1, 1, -1, -1, -1}, 
-                          compute_data_vector_Mx2pt_N_sizes<N,M>());
-  }
-  else {
-    init_data_vector_size({1, 1, 1, 1, 1, 1}, 
-                          compute_data_vector_Mx2pt_N_sizes<N,M>());
-  }
-}
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 template <int N, int M> 
 void init_data_Mx2pt_N(
@@ -678,13 +759,23 @@ void init_data_Mx2pt_N(
     arma::Col<int>::fixed<M> ord
   )
 {
-  init_data_vector_size_Mx2pt_N<N,M>();
+  arma::Col<int>::fixed<M> ndv = compute_data_vector_Mx2pt_N_sizes<N,M>();
+  for(int i=0; i<(int) ndv.n_elem; i++) {
+    like.Ndata += ndv(i);
+  }
   IP& survey = IP::get_instance();
   survey.set_mask<N,M>(mask, ord);  // set_mask must be called first
   survey.set_data(data);
   survey.set_inv_cov(cov);
   return;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 template <int N, int M>
 arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(arma::Col<int>::fixed<M> ord) 
@@ -694,20 +785,28 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(arma::Col<int>::fixe
   using namespace arma;
   Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
   auto indices = conv_to<Col<int>>::from(stable_sort_index(ord, "ascend"));
-  Col<int>::fixed<M> start = {0,0,0};
+  Col<int>::fixed<M> start(arma::fill::zeros);
   for(int i=0; i<M; i++) {
     for(int j=0; j<indices(i); j++) {
       start(i) += sizes(indices(j));
     }
-  } 
+  }
+  return start; 
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 template <int N, int X, int P = 1> 
 void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
 {
   using vector = arma::Col<double>;
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
-  static_assert(P == 0 || P == 1, "P must be 0/1 (exclude PM))");
+  static_assert(P == 0 || P == 1, "P must be 0/1 (include PM))");
   IP& survey = IP::get_instance();
   arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
 
@@ -749,7 +848,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
             if constexpr (0 == N && 1 == P) {
               vector theta = compute_binning_real_space();
               const int zl = ZL(nz);
-              dv(index) += compute_pm(zl, zs, theta(i));
+              dv(index) += PointMass::get_instance().get_pm(zl,zs,theta(i));
             }
             dv(index) *= (1.0+nuisance.shear_calibration_m[zs]);
           }
@@ -801,7 +900,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
   }
   else if constexpr (5 == X) {
     if (1 == like.kk) {
-      PCMB& cmb = IPCMB::get_instance();
+      IPCMB& cmb = IPCMB::get_instance();
       if (0 == cmb.is_kk_bandpower()) {
         for (int i=0; i<like.Ncl; i++) {
           const int index = start + i; 
@@ -823,6 +922,13 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
   }
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 template <int N, int M, int P> 
 arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
     arma::Col<double> data_vector, 
@@ -831,7 +937,7 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
 {
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
-  static_assert(P == 0 || P == 1, "P must be 0/1 (exclude PM))");
+  static_assert(P == 0 || P == 1, "P must be 0/1 (include PM))");
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
   add_calib_and_set_mask_X_N<N,0,P>(data_vector, start(0));
   add_calib_and_set_mask_X_N<N,1,P>(data_vector, start(1));
@@ -844,8 +950,15 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
   return data_vector;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 template <int N, int X> 
-void compute_X_N_masked(vector& dv, const int start)
+void compute_X_N_masked(arma::Col<double>& dv, const int start)
 {
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   IP& survey = IP::get_instance();
@@ -967,7 +1080,7 @@ void compute_X_N_masked(vector& dv, const int start)
         for (int j=0; j<nbp; j++) {
           const int index = start + j; 
           if (survey.get_mask(index)) {        
-            data_vector(index) = 0.0;
+            dv(index) = 0.0;
           }
         }
         for (int L=lminbp; L<lmaxbp + 1; L++) {
@@ -976,14 +1089,14 @@ void compute_X_N_masked(vector& dv, const int start)
           for (int j=0; j<nbp; j++) { // Loop through bandpower bins
             const int index = start + j; 
             if (survey.get_mask(index)) {        
-              data_vector(index) += (Ckk*cmb.get_kk_binning_matrix(j, L-lminbp));
+              dv(index) += (Ckk*cmb.get_kk_binning_matrix(j, L-lminbp));
             }
           }
         }
         for (int j=0; j<nbp; j++) { // offset due to marginalizing over primary CMB
           const int index = start + j;
           if (survey.get_mask(index)) {
-            data_vector(index) -= cmb.get_kk_theory_offset(j);
+            dv(index) -= cmb.get_kk_theory_offset(j);
           }
         }
       }
@@ -991,6 +1104,13 @@ void compute_X_N_masked(vector& dv, const int start)
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 template <int N, int M> 
 arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
@@ -1010,13 +1130,21 @@ arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
   return data_vector;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 template <int N, int M> 
-matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
+arma::Mat<double> compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
 {
+  using matrix = arma::Mat<double>;
   using vector = arma::Col<double>;
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
-  const string name = "compute_baryon_pcas_Mx2pt_N";
+  const std::string name = "compute_baryon_pcas_Mx2pt_N";
   IP& ip = IP::get_instance();
   const int ndata = ip.get_ndata();
   const int ndata_sqzd = ip.get_ndata_sqzd();
@@ -1038,8 +1166,8 @@ matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
   // Compute data vector for all Baryon scenarios -------------------------
   matrix D = matrix(ndata_sqzd, nscenarios);
   for (int i=0; i<nscenarios; i++) {
+    const std::string bs = BaryonScenario::get_instance().get_scenario(i);
     spdlog::debug("{}: Comp. data vector w/ baryon scenario {} begins", name, bs);
-    const string bs = BaryonScenario::get_instance().get_scenario(i);
     cosmology.random = RandomNumber::get_instance().get(); // clear cosmolike cache
     init_baryons_contamination(bs);
     vector dv = ip.sqzd_theory_data_vector(compute_Mx2pt_N_masked<N,M>(ord));
@@ -1065,9 +1193,17 @@ matrix compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
   return R;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 template <int N, int M> 
-void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> order)
+void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
 {
+  using matrix = arma::Mat<double>;
   if (!(like.Ndata>0)) [[unlikely]] {
     spdlog::critical(
         "{}: {} not set prior to this function call",
@@ -1096,9 +1232,7 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> order)
   }
 
   arma::Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
-
-  arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts(ord);
-
+  arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
   if (0 == like.shear_shear) {
     const int A = start(0);
     const int B = A + sizes(0);
