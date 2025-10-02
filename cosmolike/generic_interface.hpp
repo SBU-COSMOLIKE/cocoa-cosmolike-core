@@ -1100,45 +1100,45 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> order)
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts(ord);
 
   if (0 == like.shear_shear) {
-    const int N = start(0);
-    const int M = N + sizes(0);
-    for (int i=N; i<M; i++) {
+    const int A = start(0);
+    const int B = A + sizes(0);
+    for (int i=A; i<B; i++) {
       this->mask_(i) = 0;
     }
   }
   if (0 == like.shear_pos) {
-    const int N = start(1);
-    const int M = N + sizes(1);
-    for (int i=N; i<M; i++) {
+    const int A = start(1);
+    const int B = A + sizes(1);
+    for (int i=A; i<B; i++) {
       this->mask_(i) = 0;
     }
   }
   if (0 == like.pos_pos) {
-    const int N = start(2);
-    const int M = N + sizes(2);
-    for (int i=N; i<M; i++) {
+    const int A = start(2);
+    const int B = A + sizes(2);
+    for (int i=A; i<B; i++) {
       this->mask_(i) = 0;
     }
   }
   if constexpr (6 == M) {
     if (0 == like.gk) {
-      const int N = start(3);
-      const int M = N + sizes(3);;
-      for (int i=N; i<M; i++) {
+      const int A = start(3);
+      const int B = A + sizes(3);;
+      for (int i=A; i<B; i++) {
         this->mask_(i) = 0.0;
       }
     }
     if (0 == like.ks)  {
-      const int N = start(4);
-      const int M = N + sizes(4);
-      for (int i=N; i<M; i++) {
+      const int A = start(4);
+      const int B = A + sizes(4);
+      for (int i=A; i<B; i++) {
         this->mask_(i) = 0.0;
       }
     }
     if (0 == like.kk) {
-      const int N = start(5);
-      const int M = N + sizes(5);
-      for (int i=N; i<M; i++) {
+      const int A = start(5);
+      const int B = A + sizes(5);
+      for (int i=A; i<B; i++) {
         this->mask_(i) = 0.0;
       }
     }
