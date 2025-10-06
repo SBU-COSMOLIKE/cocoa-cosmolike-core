@@ -359,10 +359,10 @@ typedef struct
   // auto-correlation kk bandpower
   // ---------------------------------------------------
   // ---------------------------------------------------
+  int nbp_kk;
+  int lminbp_kk;
+  int lmaxbp_kk;
   double alpha_Hartlap_cov_kkkk;
-  int nbp_kk;         // number of bp bins
-  int lminbp_kk;      // minimum l mode of bp binning matrix (w/ corr)
-  int lmaxbp_kk;      // maximum l mode of bp binning matrix (w/ corr)
   double* theory_offset_kk;
   double** binning_matrix_kk;
 } CMBparams;

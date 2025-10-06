@@ -11,6 +11,8 @@
 #include <random>
 #include <variant>
 #include <cmath> 
+#include <string_view>
+using namespace std::literals; // enables "sv" literal
 
 // SPDLOG
 //#define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_DEBUG
@@ -110,80 +112,65 @@ class IP
     //void set_PMmarg(std::string U_PMmarg_file);
 
     int get_mask(const int ci) const {
+      static constexpr std::string_view fn = "IP::get_mask"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index i = {} is not valid (min = {}, max = {})",
-            "IP::get_mask", ci, 0, like.Ndata
-          );
+        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
         exit(1);
       }
       return this->mask_(ci);
     }
 
     double get_dv_masked(const int ci) const {
+      static constexpr std::string_view fn = "IP::get_dv_masked"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index i = {} is not valid (min = {}, max = {})",
-            "IP::get_dv_masked", ci, 0, like.Ndata
-          );
+        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
         exit(1);
       }
       return this->data_masked_(ci);
     }
 
     double get_inv_cov_masked(const int ci, const int cj) const {
+      static constexpr std::string_view fn = "IP::get_inv_cov_masked"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index i = {} is not valid (min = {}, max = {})",
-            "IP::get_inv_cov_masked", ci, 0, like.Ndata);
+        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
         exit(1);
       }
       if (cj > like.Ndata || cj < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index j = {} is not valid (min = {}, max = {})",
-            "IP::get_inv_cov_masked",  cj,  0,  like.Ndata
-          );
+        spdlog::critical("{}: idx j={} not valid (min={},max={})",fn,cj,0,like.Ndata);
         exit(1);
       }
-      return this->inv_cov_masked_(ci, cj);
+      return this->inv_cov_masked_(ci,cj);
     }
 
     int get_index_sqzd(const int ci) const {
+      static constexpr std::string_view fn = "IP::get_index_sqzd"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index i = {} is not valid (min = {}, max = {})", 
-            "IP::get_index_sqzd", ci, 0, like.Ndata
-          );
+        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
         exit(1);
       }
       return this->index_sqzd_(ci);
     }
 
     double get_dv_masked_sqzd(const int ci) const {
+      static constexpr std::string_view fn = "IP::get_dv_masked_sqzd"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index i = {} is not valid (min = {}, max = {})",
-            "IP::get_dv_masked_sqzd", ci, 0, like.Ndata
-          );
+        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
         exit(1);
       }
       return this->data_masked_sqzd_(ci);
     }
 
     double get_inv_cov_masked_sqzd(const int ci, const int cj) const {
+      static constexpr std::string_view fn = "IP::get_dv_masked_sqzd"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index i = {} is not valid (min = {}, max = {})",
-            "IP::get_inv_cov_masked_sqzd", ci,  0, like.Ndata);
+        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
         exit(1);
       }
       if (cj > like.Ndata || cj < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index j = {} is not valid (min = {}, max = {})",
-            "IP::get_inv_cov_masked_sqzd", cj, 0, like.Ndata );
+        spdlog::critical("{}: idx j={} not valid (min={},max={})",fn,cj,0,like.Ndata);
         exit(1);
       }
-      return this->inv_cov_masked_sqzd_(ci, cj);
+      return this->inv_cov_masked_sqzd_(ci,cj);
     }
 
     arma::Col<double> expand_theory_data_vector_from_sqzd(arma::Col<double>) const;
@@ -289,100 +276,65 @@ class IPCMB
     void set_kk_binning_mat(std::string binned_matrix_filename);
 
     void set_kk_theory_offset(std::string theory_offset_filename);
-
+    
     void set_kk_binning_bandpower(const int, const int, const int);
 
     double get_kk_binning_matrix(const int ci, const int cj) const {
+      static constexpr std::string_view fn = "IPCMB::get_kk_binning_matrix"sv;
       if (!this->is_kk_binning_matrix_set_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} not set prior to this function call", 
-            "get_kk_binning_matrix", "is_kk_binning_matrix_set_"
-          );
+        spdlog::critical("{}: {} not set", fn, "is_kk_binning_matrix_set_");
         exit(1);
       }
-      const int nbp = this->get_nbins_kk_bandpower();
+      const int nbp  = this->get_nbins_kk_bandpower();
       const int lmax = this->get_lmax_kk_bandpower();
       const int lmin = this->get_lmin_kk_bandpower();
       const int ncl  = lmax - lmin + 1;
       if (ci > nbp || ci < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index i = {} is not valid (min = {}, max = {})",
-            "IPCMB::get_kk_binning_matrix", ci, 0, nbp
-          );
+        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,nbp);
         exit(1);
       }
       if (cj > ncl || cj < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index j = {} is not valid (min = {}, max = {})",
-            "IPCMB::get_kk_binning_matrix", cj, 0, ncl
-          );
+        spdlog::critical("{}: idx j={} not valid (min={},max={})",fn,cj,0,ncl);
         exit(1);
       }
       return this->params_->binning_matrix_kk[ci][cj];
     }
 
     double get_kk_theory_offset(const int ci) const {
+      static constexpr std::string_view fn = "IPCMB::get_kk_theory_offset"sv;
       if (!this->is_kk_offset_set_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} not set prior to this function call", 
-            "get_kk_theory_offset", "is_kk_offset_set_"
-          );
+        spdlog::critical("{}: {} not set", fn, "is_kk_offset_set_");
         exit(1);
       }
       const int nbp = this->get_nbins_kk_bandpower();
       if (ci > nbp || ci < 0) [[unlikely]] {
-        spdlog::critical(
-            "{}: index i = {} is not valid (min = {}, max = {})",
-            "IPCMB::get_kk_theory_offset", ci, 0.0, nbp
-          );
+        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,nbp);
         exit(1);
       }
       return this->params_->theory_offset_kk[ci];
     }
 
     double get_alpha_Hartlap_cov_kkkk() const {
+      static constexpr std::string_view fn = "IPCMB::get_alpha_Hartlap_cov_kkkk"sv;
       if (!this->is_alpha_Hartlap_cov_kkkk_set_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} not set prior to this function call", 
-            "get_alpha_Hartlap_cov_kkkk", "is_alpha_Hartlap_cov_kkkk_set_"
-          );
+        spdlog::critical("{}: {} not set prior",fn,"is_alpha_Hartlap_cov_kkkk_set_");
         exit(1);
       }
       return this->params_->alpha_Hartlap_cov_kkkk;
     }
-
+    
     int get_nbins_kk_bandpower() const {
-      if(!this->is_kk_bandpower_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} == 0, incompatible choice", 
-            "IPCMB::get_nbins_kk_bandpower", "is_kk_bandpower"
-          );
-        exit(1);
-      }
-      return this->params_->nbp_kk;
+      return this->params_->nbp_kk; 
     }
-
+    
     int get_lmin_kk_bandpower() const {
-      if(!this->is_kk_bandpower_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} == 0, incompatible choice", 
-            "IPCMB::get_lmin_kk_bandpower",  "is_kk_bandpower"
-          );
-        exit(1);
-      }
       return this->params_->lminbp_kk; 
     }
-
+    
     int get_lmax_kk_bandpower() const {
-      if(!this->is_kk_bandpower_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} == 0, incompatible choice", 
-            "IPCMB::get_lmax_kk_bandpower", "is_kk_bandpower"
-          );
-        exit(1);
-      }
       return this->params_->lmaxbp_kk;
-    } 
+    }
+
   private: 
     CMBparams* params_ = NULL;
     bool is_wxk_fwhm_set_ = false;
@@ -443,12 +395,9 @@ class BaryonScenario
     ~BaryonScenario() = default;
 
     int nscenarios() const {
+      static constexpr std::string_view fn = "BaryonScenario::nscenarios"sv;
       if (!this->is_scenarios_set_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} not set prior to this function call",
-            "BaryonScenario::nscenarios", 
-            "Baryon Scenarios"
-          );
+        spdlog::critical("{}: {} not set",fn,"Baryon Scenarios");
         exit(1);
       }
       return this->nscenarios_;
@@ -471,34 +420,27 @@ class BaryonScenario
     std::tuple<std::string,int> select_baryons_sim(const std::string scenario);
     
     std::string get_scenario(const int i) const {
+      static constexpr std::string_view fn = "BaryonScenario::get_scenario"sv;
       if (!this->is_scenarios_set_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} not set prior to this function call",
-            "BaryonScenario::get_scenario", 
-            "Baryon Scenarios"
-          );
+        spdlog::critical("{}: {} not set", fn, "Baryon Scenarios");
         exit(1);
       }
       return this->scenarios_.at(i);
     }
+    
     arma::Mat<double> get_pcs() const {
+      static constexpr std::string_view fn = "BaryonScenario::get_pcs"sv;
       if (!this->is_pcs_set_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} not set prior to this function call",
-            "BaryonScenario::get_pcs", 
-            "PC eigenvectors"
-          );
+        spdlog::critical("{}: {} not set",fn,"PC eigenvectors");
         exit(1);
       }
       return this->eigenvectors_;
     }
+    
     double get_pcs(const int ci, const int cj) const {
+      static constexpr std::string_view fn = "BaryonScenario::get_pcs"sv;
       if (!this->is_pcs_set_) [[unlikely]] {
-        spdlog::critical(
-            "{}: {} not set prior to this function call",
-            "BaryonScenario::get_pcs", 
-            "PC eigenvectors"
-          );
+        spdlog::critical("{}: {} not set",fn,"PC eigenvectors");
         exit(1);
       }
       return this->eigenvectors_(ci, cj); 
@@ -577,26 +519,30 @@ void init_binning_real_space(
     const double theta_max_arcmin
   );
 
-void init_binning_cmb_bandpower(
-    const int Nbandpower, 
+void init_cmb_auto_bandpower (
+    const int nbins, 
     const int lmin, 
-    const int lmax
+    const int lmax,
+    std::string binning_matrix, 
+    std::string theory_offset,
+    const double alpha
   );
 
-void init_cosmo_runmode(
-    const bool is_linear
+void init_cosmo_runmode(const bool is_linear);
+
+void init_cmb_cross_correlation (
+    const int lmin, 
+    const int lmax, 
+    const double fwhm, // fwhm = beam size in arcmin
+    std::string healpixwin_filename
   );
 
-void init_cmb(
-    const double lmin_kappa_cmb, 
-    const double lmax_kappa_cmb, 
-    const double fwhm, 
-    std::string pixwin_file
-  );
-
-void init_cmb_bandpower(
-    const int is_cmb_bandpower, 
-    const int is_cmb_kkkk_covariance_from_simulation, 
+void init_cmb_auto_bandpower (
+    const int nbp, 
+    const int lmin, 
+    const int lmax,
+    std::string binning_matrix, 
+    std::string theory_offset,
     const double alpha
   );
 
@@ -672,9 +618,7 @@ void set_nuisance_clustering_photoz(
     arma::Col<double> CP
   );
 
-void set_nuisance_clustering_photoz_stretch(
-    arma::Col<double> CPS
-  );
+void set_nuisance_clustering_photoz_stretch(arma::Col<double> CPS);
 
 void set_nuisance_IA(
     arma::Col<double> A1, 
