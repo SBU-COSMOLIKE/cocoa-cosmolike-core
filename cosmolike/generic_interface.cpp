@@ -2382,7 +2382,7 @@ void IPCMB::set_wxk_healpix_window(std::string healpixwin_filename) {
   }
   this->params_->healpixwin = (double*) malloc1d(this->params_->healpixwin_ncls);
   for (int i=0; i<this->params_->healpixwin_ncls; i++) {
-    this->params_->healpixwin[i] = static_cast<double>(table(i,0));
+    this->params_->healpixwin[i] = static_cast<double>(table(i,1));
   }
   this->is_wxk_healpix_window_set_ = true;
   debug("{}: {}", fname, errends);

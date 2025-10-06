@@ -584,8 +584,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
   static double* w_vec = NULL;
   static double cache[MAX_SIZE_ARRAYS];
 
-  if (0 == Ntable.Ntheta)
-  {
+  if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
     exit(1);
   }
@@ -615,10 +614,8 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
     }
 
     #pragma omp parallel for collapse(2)
-    for (int i=0; i<Ntable.Ntheta; i++)
-    {
-      for (int l=0; l<Ntable.LMAX; l++)
-      {
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      for (int l=0; l<Ntable.LMAX; l++) {
         bin_avg r = set_bin_average(i,l);
         Pmin[i][l] = r.Pmin;
         Pmax[i][l] = r.Pmax;
@@ -635,8 +632,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
         const double tmp = (1.0/(xmin[i] - xmax[i]))*(1.0 / (4.0 * M_PI));
-        Pl[i][l] = tmp*(Pmin[i][l + 1] - Pmax[i][l + 1] 
-                        - Pmin[i][l - 1] + Pmax[i][l - 1]);
+        Pl[i][l] = tmp*(Pmin[i][l + 1] - Pmax[i][l + 1] - Pmin[i][l - 1] + Pmax[i][l - 1]);
       }
     }
     free(P);
@@ -703,7 +699,6 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = cmb.random;
   }
-
   if (ni < -1 || ni > redshift.clustering_nbin - 1)
   {
     log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
@@ -1561,6 +1556,7 @@ double int_for_C_gg_tomo_limber(double a, void* params)
     const double bs2 = gbs2(z, ni);
     const double b3 = gb3(z, ni);
     
+    oneloop = 1.0;
     oneloop *= WGALi*WGALi;
     oneloop *= g4*(b1i*b2*d1d2 + 0.25*b2*b2 * (d2d2 - 2.*s4) +
       b1i*bs2*d1s2 + 0.5*b2*bs2 * (d2s2 - 4. / 3.*s4) +
@@ -1750,27 +1746,25 @@ double int_for_C_gk_tomo_limber(double a, void* params)
   const double WGAL = W_gal(a, nl, hoverh0);
   const double WMAG = W_mag(a, fK, nl);
 
+
   const double ell_prefactor = l*(l + 1.)/(ell*ell); // prefactor correction (1812.05995 eqs 74-79)
 
   double res = WK; 
 
   if (include_HOD_GX == 1)
   {
-    if (include_RSD_GK == 1)
-    {
+    if (include_RSD_GK == 1) {
       log_fatal("RSD not implemented with (HOD = TRUE)");
       exit(1);
     }
-    else
-    { 
+    else { 
       res *= WGAL;
     }
     res *= p_gm(k, a, nl);
   }
   else
   {
-    if (include_RSD_GK == 1)
-    {
+    if (include_RSD_GK == 1) {
       const double chi_0 = f_K(ell/k);
       const double chi_1 = f_K((ell+1.)/k);
       const double a_0 = a_chi(chi_0);
@@ -1779,17 +1773,14 @@ double int_for_C_gk_tomo_limber(double a, void* params)
 
       res *= WGAL*b1 + WMAG*ell_prefactor*bmag + WRSD;
     }
-    else
-    {
+    else {
       res *= WGAL*b1 + WMAG*ell_prefactor*bmag;
     }
     const double PK = Pdelta(k,a);
     res *= PK;
   }
-
-  double oneloop = WK;
-  if (1 == nonlinear)
-  {
+  double oneloop = 0.0;
+  if (1 == nonlinear) {
     get_FPT_bias();
     const double growfac_a = growfac(a);
     const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
@@ -1809,6 +1800,7 @@ double int_for_C_gk_tomo_limber(double a, void* params)
     const double b2 = gb2(z, nl);
     const double bs2 = gbs2(z, nl);
     
+    oneloop = WK;
     oneloop *= WGAL;
     oneloop *= g4*(0.5*b2*d1d2 + 0.5*bs2*d1s2);
   }

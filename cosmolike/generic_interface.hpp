@@ -855,8 +855,8 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
       }
       else {
         const int nbp = cmb.get_nbins_kk_bandpower();
-        for (int j=0; j<nbp; j++) { // Loop through bandpower bins
-          const int index = start + j; 
+        for (int i=0; i<nbp; i++) { // Loop through bandpower bins
+          const int index = start + i; 
           if (!survey.get_mask(index)) {        
             dv(index) = 0.0;
           }
@@ -980,6 +980,10 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
               if constexpr (N == 0) {  
                 dv(index) = w_gk_tomo(i, nz, 1);
               }
+              else {
+                spdlog::critical("not implemented");
+                exit(1);
+              }
             }
           }
         }
@@ -996,6 +1000,10 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
             if (survey.get_mask(index)) {
               if constexpr (N == 0) { 
                 dv(index) = w_ks_tomo(i, nz, 1);
+              }
+              else {
+                spdlog::critical("not implemented");
+                exit(1);
               }
             }
           }
