@@ -632,7 +632,8 @@ void init_probes(std::string possible_probes)
         { "xi_gg",  arma::Col<int>::fixed<6>{{1,0,1,0,0,0}} },
         { "5x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,0}} },
         { "6x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,1}} },
-        { "c3x2pt", arma::Col<int>::fixed<6>{{0,0,0,1,1,1}} }
+        { "3x2pt_ks_gk_kk", arma::Col<int>::fixed<6>{{0,0,0,1,1,1}} },
+        { "3x2pt_ss_sk_sk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} }
     };
   static const std::unordered_map<std::string,std::string> 
     names = {
@@ -644,7 +645,8 @@ void init_probes(std::string possible_probes)
        {"xi_ggl", "xi + ggl (2x2pt)"},
        {"xi_gg",  "xi + ggl (2x2pt)"},
        {"5x2pt",  "5x2pt"},
-       {"c3x2pt", "c3x2pt (gk + sk + kk)"},
+       {"3x2pt_ks_gk_kk", "3x2pt (gk + sk + kk)"},
+       {"3x2pt_ss_sk_sk", "3x2pt (ss + sk + kk)"},
        {"6x2pt",  "6x2pt"},
     };
 
