@@ -23,7 +23,6 @@ static constexpr std::string_view debugsel = "{}: {} = {} selected."sv;
 static constexpr std::string_view errornset = "{}: {} not set (?ill-defined) prior to this function call"sv;
 static constexpr std::string_view errorsz1d = "{}: {} {} (!= {})"sv;
 
-
 static const int force_cache_update_test = 0;
 
 using vector = arma::Col<double>;

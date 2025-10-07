@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <gsl/gsl_sum.h>
 #include <gsl/gsl_integration.h>
 #include "../cfftlog/cfftlog.h"
 #include <fftw3.h>
@@ -159,12 +160,6 @@ double xi_pm_tomo(
       free(Cl);
     }
     Cl = (double***) malloc3d(2, NSIZE, Ntable.LMAX); // Cl_EE=Cl[0], Cl_BB=Cl[1]
-    for (int i=0; i<NSIZE; i++) {
-      for (int l=0; l<lmin; l++) {
-        Cl[0][i][l] = 0.0;
-        Cl[1][i][l] = 0.0;
-      }
-    }
   }
 
   if (fdiff(cache[0], cosmology.random) ||
@@ -173,6 +168,13 @@ double xi_pm_tomo(
       fdiff(cache[3], redshift.random_shear) ||
       fdiff(cache[4], Ntable.random))
   {
+    const int lmin = 1;
+    for (int i=0; i<NSIZE; i++) {
+      for (int l=0; l<lmin; l++) {
+        Cl[0][i][l] = 0.0;
+        Cl[1][i][l] = 0.0;
+      }
+    }
     if (1 == limber) {
       #pragma GCC diagnostic push
       #pragma GCC diagnostic ignored "-Wunused-variable"
@@ -181,7 +183,6 @@ double xi_pm_tomo(
       }
       #pragma GCC diagnostic pop
 
-      const int lmin = 1;
       #pragma omp parallel for collapse(2)
       for (int nz=0; nz<NSIZE; nz++)  {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
@@ -199,12 +200,12 @@ double xi_pm_tomo(
           }
         }
       }
+      #pragma omp parallel for collapse(2)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
           const int q = nz * Ntable.Ntheta + i;
           double sum0 = 0.0;
           double sum1 = 0.0;
-          #pragma omp parallel for reduction(+:sum0, sum1)
           for (int l=lmin; l<Ntable.LMAX; l++) {
             const double c0 = Cl[0][nz][l];
             const double c1 = Cl[1][nz][l];
@@ -325,11 +326,6 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       free(Cl);
     }
     Cl = (double**) malloc2d(NSIZE, Ntable.LMAX);
-    for (int i=0; i<NSIZE; i++) {
-      for (int l=0; l<lmin; l++) {
-        Cl[i][l] = 0.0;
-      }
-    }
   }
 
   if (fdiff(cache[0], cosmology.random) ||
@@ -340,8 +336,13 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       fdiff(cache[5], redshift.random_clustering) ||
       fdiff(cache[6], Ntable.random) ||
       fdiff(cache[7], nuisance.random_galaxy_bias))
-  { 
+  {
     const int lmin = 1;
+    for (int i=0; i<NSIZE; i++) {
+      for (int l=0; l<lmin; l++) {
+        Cl[i][l] = 0.0;
+      }
+    } 
     { // init static variables inside the C_XY_limber function
       (void) C_gs_tomo_limber(limits.LMIN_tab + 1, ZL(0), ZS(0));
     }
@@ -363,17 +364,16 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       log_fatal("NonLimber not implemented");
       exit(1);
     }
+    #pragma omp parallel for collapse(2)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
-        double sum = 0.0;
-        #pragma omp parallel for reduction(+:sum)
+        double sum = 0.0;     
         for (int l=lmin; l<Ntable.LMAX; l++) {
           sum += Pl[i][l] * Cl[nz][l];
         }
         w_vec[nz * Ntable.Ntheta + i] = sum;
       }
     }
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_photoz_clustering;
@@ -478,11 +478,6 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
       free(Cl);
     }
     Cl = (double**) malloc2d(NSIZE, Ntable.LMAX);
-    for (int i=0; i<NSIZE; i++) {
-      for (int l=0; l<lmin; l++) {
-        Cl[i][l] = 0.0;
-      }
-    }
   }
 
   if (fdiff(cache[0], cosmology.random) || 
@@ -490,8 +485,13 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
       fdiff(cache[2], redshift.random_clustering) ||
       fdiff(cache[3], Ntable.random) ||
       fdiff(cache[4], nuisance.random_galaxy_bias))
-  {            
-    const int lmin = 1;    
+  {
+    const int lmin = 1;
+    for (int i=0; i<NSIZE; i++) {
+      for (int l=0; l<lmin; l++) {
+        Cl[i][l] = 0.0;
+      }
+    }               
     { // init static variables inside the C_XY_limber function
       (void) C_gg_tomo_limber(limits.LMIN_tab + 1, 0, 0);
     }
@@ -527,26 +527,23 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         }
       }
     }
+    #pragma omp parallel for collapse(2)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
         double sum = 0.0;
-        #pragma omp parallel for reduction(+:sum)
         for (int l=lmin; l<Ntable.LMAX; l++) {
           sum += Pl[i][l]*Cl[nz][l];
         }
         w_vec[nz*Ntable.Ntheta + i] = sum;
       }
     }
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_clustering;
     cache[2] = redshift.random_clustering;
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
   }
-
-  if (nt < 0 || nt > Ntable.Ntheta - 1)
-  {
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
     exit(1); 
   }
@@ -558,19 +555,15 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
     log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
     exit(1);
   }
-  if (ni != nj)
-  {
+  if (ni != nj) {
     log_fatal("ni != nj tomography not supported");
     exit(1);
   }
-  
   const int q = ni * Ntable.Ntheta + nt;
-  if (q  < 0 || q > NSIZE*Ntable.Ntheta - 1)
-  {
+  if (q  < 0 || q > NSIZE*Ntable.Ntheta - 1) {
     log_fatal("internal logic error in selecting bin number");
     exit(1);
   }  
-  
   return w_vec[q];
 }
 
@@ -582,6 +575,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
+  static double** Cl = NULL; 
   static double cache[MAX_SIZE_ARRAYS];
 
   if (0 == Ntable.Ntheta) {
@@ -593,6 +587,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
   
   if (NULL == Pl ||
       NULL == w_vec || 
+      NULL == Cl || 
       fdiff(cache[3], Ntable.random))
   {
     if (Pl != NULL) free(Pl);
@@ -636,6 +631,11 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
       }
     }
     free(P);
+
+    if (Cl != NULL) {
+      free(Cl);
+    }
+    Cl = (double**) malloc2d(NSIZE, Ntable.LMAX);
   }
 
   if (fdiff(cache[0], cosmology.random) ||
@@ -645,14 +645,12 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
       fdiff(cache[4], nuisance.random_galaxy_bias) ||
       fdiff(cache[5], cmb.random))
   { 
-    double** Cl = (double**) malloc2d(NSIZE, Ntable.LMAX);
-
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
       for (int l=0; l<lmin; l++) {
         Cl[i][l] = 0.0;
       }
-    }
+    } 
     if (limber == 1) {
       { // init static variables inside the C_XY_limber function  
         (void) C_gk_tomo_limber(limits.LMIN_tab+1, 0);
@@ -678,10 +676,11 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
       #pragma omp parallel for collapse(2)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
-          w_vec[nz*Ntable.Ntheta+i] = 0;
+          double sum = 0;
           for (int l=lmin; l<Ntable.LMAX; l++) {
-            w_vec[nz*Ntable.Ntheta+i] += Pl[i][l]*Cl[nz][l];
+            sum += Pl[i][l]*Cl[nz][l];
           }
+          w_vec[nz*Ntable.Ntheta+i] = sum;
         }
       }
     }
@@ -689,9 +688,6 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
       log_fatal("NonLimber not implemented");
       exit(1);
     }
-
-    free(Cl);
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_clustering;
     cache[2] = redshift.random_clustering;
@@ -699,19 +695,16 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = cmb.random;
   }
-  if (ni < -1 || ni > redshift.clustering_nbin - 1)
-  {
+  if (ni < -1 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
     exit(1); 
   }
-  if (nt < 0 || nt > Ntable.Ntheta - 1)
-  {
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
     exit(1); 
   }
   const int q = ni * Ntable.Ntheta + nt;
-  if (q < 0 || q > NSIZE*Ntable.Ntheta - 1)
-  {
+  if (q < 0 || q > NSIZE*Ntable.Ntheta - 1) {
     log_fatal("internal logic error in selecting bin number");
     exit(1);
   }
@@ -726,6 +719,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
+  static double** Cl = NULL; 
   static double cache[MAX_SIZE_ARRAYS];
   
   if (0 == Ntable.Ntheta)
@@ -736,7 +730,10 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
 
   const int NSIZE = redshift.shear_nbin;
 
-  if (Pl == NULL || w_vec == NULL || fdiff(cache[4], Ntable.random))
+  if (Pl == NULL || 
+      w_vec == NULL || 
+      NULL == Cl || 
+      fdiff(cache[4], Ntable.random))
   {
     if (Pl != NULL) free(Pl);
     Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);;
@@ -768,23 +765,26 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
     }
 
     const int lmin = 1;
-    for (int i=0; i<Ntable.Ntheta; i++)
-      for (int l=0; l<lmin; l++)
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      for (int l=0; l<lmin; l++) {
         Pl[i][0] = 0.0;
+      }
+    }
 
     #pragma omp parallel for collapse(2)
-    for (int i=0; i<Ntable.Ntheta; i++)
-    {
-      for (int l=lmin; l<Ntable.LMAX; l++)
-      {
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      for (int l=lmin; l<Ntable.LMAX; l++) {
         Pl[i][l] = (2.*l+1)/(4.*M_PI*l*(l+1)*(xmin[i]-xmax[i]))
           *((l+2./(2*l+1.))*(Pmin[i][l-1]-Pmax[i][l-1])
           +(2-l)*(xmin[i]*Pmin[i][l]-xmax[i]*Pmax[i][l])
           -2./(2*l+1.)*(Pmin[i][l+1]-Pmax[i][l+1]));
       }
     }
-    
     free(P);
+    if (Cl != NULL) {
+      free(Cl);
+    }
+    Cl = (double**) malloc2d(NSIZE, Ntable.LMAX);
   }
 
   if (fdiff(cache[0], cosmology.random) ||
@@ -794,14 +794,12 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       fdiff(cache[4], Ntable.random) ||
       fdiff(cache[5], cmb.random))
   {
-    double** Cl = (double**) malloc2d(NSIZE, Ntable.LMAX);
-
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
       for (int l=0; l<lmin; l++) {
         Cl[i][l] = 0.0;
       }
-    }
+    } 
     if (limber == 1) {      
       { // init static variables inside the C_XY_limber function        
         (void) C_ks_tomo_limber(limits.LMIN_tab+1, 0);
@@ -827,21 +825,18 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       #pragma omp parallel for collapse(2)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
-          w_vec[nz*Ntable.Ntheta+i] = 0;
+          double sum = 0;
           for (int l=lmin; l<Ntable.LMAX; l++) {
-            w_vec[nz*Ntable.Ntheta+i] += Pl[i][l]*Cl[nz][l];
+            sum += Pl[i][l]*Cl[nz][l];
           }
+          w_vec[nz*Ntable.Ntheta+i] = sum;
         }
       }
     } 
-    else
-    {
+    else {
       log_fatal("NonLimber not implemented");
       exit(1);
-    }
-
-    free(Cl);
-    
+    }    
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
@@ -849,25 +844,19 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
     cache[4] = Ntable.random;
     cache[5] = cmb.random;
   }
-
-  if (nt < 0 || nt > Ntable.Ntheta - 1)
-  {
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
     exit(1); 
   }
-  if (ni < -1 || ni > redshift.shear_nbin - 1)
-  {
+  if (ni < -1 || ni > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.shear_nbin);
     exit(1);
   }
-  
   const int q = ni * Ntable.Ntheta + nt;
-  if (q  < 0 || q > NSIZE*Ntable.Ntheta - 1)
-  {
+  if (q  < 0 || q > NSIZE*Ntable.Ntheta - 1) {
     log_fatal("internal logic error in selecting bin number");
     exit(1);
   }  
-  
   return w_vec[q];
 }
 
