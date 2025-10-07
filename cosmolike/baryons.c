@@ -32,7 +32,7 @@ barypara bary =
   .interp2d = NULL,
 };
 
-void reset_bary_struct()
+void reset_bary_struct(void)
 {
   bary.is_Pk_bary = 0;
   bary.T = NULL;
@@ -10286,4 +10286,3 @@ void init_baryons_from_hdf5_file(const char* sim, int tag, const char* allsims)
   bary.is_Pk_bary = 1;
 }
 #endif
-

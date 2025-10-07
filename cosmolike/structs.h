@@ -208,7 +208,6 @@ typedef struct
   // ia[1][1] = eta_ia_tt    if IA_REDSHIFT_EVOLUTION
   // ------------------
   // ia[2][MAX_SIZE_ARRAYS] = b_ta_z[MAX_SIZE_ARRAYS]
-  
   int IA;
   int IA_MODEL;
   double ia[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS];
@@ -274,13 +273,9 @@ typedef struct
 
 typedef struct
 {
-  int is_cmb_bandpower;
-  int is_cmb_kkkk_cov_from_sim;// if kkkk covmat is from sim, apply Hartlap factor
-  double alpha_Hartlap_kkkk;
   int Ncl;
   int Ncos;
   int Ndata;
-  int Nbp; // number of band-power bins for CMB lensing
   int lmin;
   int lmax;
   double* ell;
@@ -288,10 +283,6 @@ typedef struct
   double Rmin_bias;
   double Rmin_shear;
   int lmax_shear;
-  int lmin_bp;      // minimum l mode of CMB band power binning matrix (w/ corr)
-  int lmax_bp;      // Note: for dv, only need binmat with corr
-  int lmin_kappacmb;
-  int lmax_kappacmb;
   int bias;
   int shear_shear;
   int shear_pos;
@@ -337,7 +328,6 @@ typedef struct
   char name[CHAR_MAX_SIZE];
 } sur;
 
-
 typedef struct
 {
   char runmode[CHAR_MAX_SIZE];
@@ -345,12 +335,37 @@ typedef struct
 
 typedef struct
 {
-  char name[CHAR_MAX_SIZE];
-  double fwhm;                            // beam fwhm in rad
-  double sensitivity;                     // white noise level in muK*rad
-  char pathLensRecNoise[CHAR_MAX_SIZE];   // path to precomputed noise on reconstructed kappa
-  char pathHealpixWinFunc[CHAR_MAX_SIZE]; // path to precomputed healpix window function
-} Cmb;
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // CACHE VARIABLES
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  double random;
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // To be applied on w_xk (real space cross-corr w/ cmb lensing)
+  // Why? cross-correlations are measured by projecting the CMB lensing
+  // potential into healpix map, then smoothed by a Gaussian beam  
+  // then cross-correlating with galaxy catalog using TreeCorr.
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  double fwhm;     // beam fwhm in rad (smoothed by a Gaussian beam)
+  int healpixwin_ncls; // Precomputed HealPix window function
+  double* healpixwin;
+  int lmink_wxk;
+  int lmaxk_wxk;
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // auto-correlation kk bandpower
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  int nbp_kk;
+  int lminbp_kk;
+  int lmaxbp_kk;
+  double alpha_Hartlap_cov_kkkk;
+  double* theory_offset_kk;
+  double** binning_matrix_kk;
+} CMBparams;
 
 typedef struct 
 {
@@ -467,7 +482,7 @@ extern pdeltapara pdeltaparams;
 
 extern nuisanceparams nuisance;
 
-extern Cmb cmb;
+extern CMBparams cmb;
 
 extern lim limits;
 
@@ -487,13 +502,14 @@ extern FPT FPTIA;
 // --------------------------------------------------------------------
 // --------------------------------------------------------------------
 
-void reset_like_struct();
-void reset_bary_struct();
-void reset_nuisance_struct();
-void reset_redshift_struct();
-void reset_cosmology_struct();
-void reset_tomo_struct();
-void reset_Ntable_struct();
+void reset_cmb_struct(void);
+void reset_like_struct(void);
+void reset_bary_struct(void);
+void reset_nuisance_struct(void);
+void reset_redshift_struct(void);
+void reset_cosmology_struct(void);
+void reset_tomo_struct(void);
+void reset_Ntable_struct(void);
 
 #ifdef __cplusplus
 }

@@ -94,4 +94,3 @@ void c_window_cfft(double complex *out, double c_window_width, long halfN) {
 		out[halfN-i] *= W;
 	}
 }
-
