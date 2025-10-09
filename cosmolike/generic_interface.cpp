@@ -357,7 +357,6 @@ void init_baryons_contamination(std::string sim)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-#ifdef HDF5LIB
 void init_baryons_contamination(std::string sim, std::string all_sims_file)
 { // NEW API
   static constexpr std::string_view fname = "init_baryons_contamination"sv;
@@ -367,7 +366,6 @@ void init_baryons_contamination(std::string sim, std::string all_sims_file)
   init_baryons_from_hdf5_file(name.c_str(), tag, all_sims_file.c_str());
   debug("{}: {}", fname, errends);
 }
-#endif
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -2238,7 +2236,7 @@ vector IP::expand_theory_data_vector_from_sqzd(vector input) const
 vector IP::sqzd_theory_data_vector(vector input) const
 {
   static constexpr std::string_view fname = "IP::sqzd_theory_data_vector"sv;
-  info("{}: {}", fname, errbegins);
+  debug("{}: {}", fname, errbegins);
   if (this->ndata_ != static_cast<int>(input.n_elem)) [[unlikely]] {
     critical("{}: invalid input data vector", fname);
     exit(1);
@@ -2249,7 +2247,7 @@ vector IP::sqzd_theory_data_vector(vector input) const
       result(this->get_index_sqzd(i)) = input(i);
     }
   }
-  info("{}: {}", fname, errends);
+  debug("{}: {}", fname, errends);
   return result;
 }
 
