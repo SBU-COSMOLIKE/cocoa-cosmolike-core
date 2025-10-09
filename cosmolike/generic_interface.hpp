@@ -87,12 +87,14 @@ class RandomNumber
 // ---------------------------------------------------------------------------
 class IP
 { // InterfaceProducts: Singleton Class that holds data vector, covariance...
+private:
+  static constexpr std::string_view errornset = "{}: {} not set (?ill-defined) prior to this function call"sv;
+  static constexpr std::string_view errornv = "{}: idx i={} not supported (min={},max={})"sv;
   public:
     static IP& get_instance() {
       static IP instance;
       return instance;
     }
-
     bool is_mask_set() const {
       return this->is_mask_set_;
     }
@@ -115,8 +117,7 @@ class IP
     int get_mask(const int ci) const {
       static constexpr std::string_view fn = "IP::get_mask"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
-        exit(1);
+        spdlog::critical(errornv, fn, ci, 0, like.Ndata); exit(1);
       }
       return this->mask_(ci);
     }
@@ -124,8 +125,7 @@ class IP
     double get_dv_masked(const int ci) const {
       static constexpr std::string_view fn = "IP::get_dv_masked"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
-        exit(1);
+        spdlog::critical(errornv,fn,ci,0,like.Ndata); exit(1);
       }
       return this->data_masked_(ci);
     }
@@ -133,12 +133,11 @@ class IP
     double get_inv_cov_masked(const int ci, const int cj) const {
       static constexpr std::string_view fn = "IP::get_inv_cov_masked"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
+        spdlog::critical(errornv,fn,ci,0,like.Ndata);
         exit(1);
       }
       if (cj > like.Ndata || cj < 0) [[unlikely]] {
-        spdlog::critical("{}: idx j={} not valid (min={},max={})",fn,cj,0,like.Ndata);
-        exit(1);
+        spdlog::critical(errornv,fn,cj,0,like.Ndata); exit(1);
       }
       return this->inv_cov_masked_(ci,cj);
     }
@@ -146,8 +145,7 @@ class IP
     int get_index_sqzd(const int ci) const {
       static constexpr std::string_view fn = "IP::get_index_sqzd"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
-        exit(1);
+        spdlog::critical(errornv, fn, ci, 0, like.Ndata); exit(1);
       }
       return this->index_sqzd_(ci);
     }
@@ -155,8 +153,7 @@ class IP
     double get_dv_masked_sqzd(const int ci) const {
       static constexpr std::string_view fn = "IP::get_dv_masked_sqzd"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
-        exit(1);
+        spdlog::critical(errornv, fn, ci, 0, like.Ndata); exit(1);
       }
       return this->data_masked_sqzd_(ci);
     }
@@ -164,12 +161,10 @@ class IP
     double get_inv_cov_masked_sqzd(const int ci, const int cj) const {
       static constexpr std::string_view fn = "IP::get_dv_masked_sqzd"sv;
       if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,like.Ndata);
-        exit(1);
+        spdlog::critical(errornv, fn, ci, 0, like.Ndata); exit(1);
       }
       if (cj > like.Ndata || cj < 0) [[unlikely]] {
-        spdlog::critical("{}: idx j={} not valid (min={},max={})",fn,cj,0,like.Ndata);
-        exit(1);
+        spdlog::critical(errornv, fn, cj, 0, like.Ndata); exit(1);
       }
       return this->inv_cov_masked_sqzd_(ci,cj);
     }
@@ -236,11 +231,13 @@ class IP
 // ---------------------------------------------------------------------------
 class IPCMB
 {
-  public:
-    static IPCMB& get_instance()
-    {
+private:
+  static constexpr std::string_view errornset = "{}: {} not set (?ill-defined) prior to this function call"sv;
+  static constexpr std::string_view errornv = "{}: idx i={} not supported (min={},max={})"sv;
+public:
+    static IPCMB& get_instance() {
       static IPCMB instance;
-      if (instance.params_ == NULL) {
+      if (NULL == instance.params_) {
         instance.params_ = &cmb;
       }
       return instance;
@@ -254,22 +251,26 @@ class IPCMB
 
     void update_chache(const double random) {
       this->params_->random = random;
+      return;
     }
     
     void set_wxk_beam_size(const double fwhm) {
       this->params_->fwhm = fwhm;
       this->is_wxk_fwhm_set_ = true;
+      return;
     }
     
     void set_wxk_lminmax(const int lmin, const int lmax) {
       this->params_->lmink_wxk = lmin;
       this->params_->lmaxk_wxk = lmax;
       this->is_wxk_lminmax_set_ = true;
+      return;
     }
     
     void set_alpha_Hartlap_cov_kkkk(const double alpha) {
       this->params_->alpha_Hartlap_cov_kkkk = alpha;
       this->is_alpha_Hartlap_cov_kkkk_set_ = true;
+      return;
     }
 
     void set_wxk_healpix_window(std::string healpixwin_filename);
@@ -283,20 +284,17 @@ class IPCMB
     double get_kk_binning_matrix(const int ci, const int cj) const {
       static constexpr std::string_view fn = "IPCMB::get_kk_binning_matrix"sv;
       if (!this->is_kk_binning_matrix_set_) [[unlikely]] {
-        spdlog::critical("{}: {} not set", fn, "is_kk_binning_matrix_set_");
-        exit(1);
+        spdlog::critical(errornset, fn, "is_kk_binning_matrix_set_"); exit(1);
       }
       const int nbp  = this->get_nbins_kk_bandpower();
       const int lmax = this->get_lmax_kk_bandpower();
       const int lmin = this->get_lmin_kk_bandpower();
       const int ncl  = lmax - lmin + 1;
       if (ci > nbp || ci < 0) [[unlikely]] {
-        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,nbp);
-        exit(1);
+        spdlog::critical(errornv, fn, ci, 0, nbp); exit(1);
       }
       if (cj > ncl || cj < 0) [[unlikely]] {
-        spdlog::critical("{}: idx j={} not valid (min={},max={})",fn,cj,0,ncl);
-        exit(1);
+        spdlog::critical(errornv, fn, cj, 0, ncl); exit(1);
       }
       return this->params_->binning_matrix_kk[ci][cj];
     }
@@ -304,13 +302,11 @@ class IPCMB
     double get_kk_theory_offset(const int ci) const {
       static constexpr std::string_view fn = "IPCMB::get_kk_theory_offset"sv;
       if (!this->is_kk_offset_set_) [[unlikely]] {
-        spdlog::critical("{}: {} not set", fn, "is_kk_offset_set_");
-        exit(1);
+        spdlog::critical(errornset, fn, "is_kk_offset_set_"); exit(1);
       }
       const int nbp = this->get_nbins_kk_bandpower();
       if (ci > nbp || ci < 0) [[unlikely]] {
-        spdlog::critical("{}: idx i={} not valid (min={},max={})",fn,ci,0,nbp);
-        exit(1);
+        spdlog::critical(errornv, fn, ci, 0, nbp); exit(1);
       }
       return this->params_->theory_offset_kk[ci];
     }
@@ -318,8 +314,7 @@ class IPCMB
     double get_alpha_Hartlap_cov_kkkk() const {
       static constexpr std::string_view fn = "IPCMB::get_alpha_Hartlap_cov_kkkk"sv;
       if (!this->is_alpha_Hartlap_cov_kkkk_set_) [[unlikely]] {
-        spdlog::critical("{}: {} not set prior",fn,"is_alpha_Hartlap_cov_kkkk_set_");
-        exit(1);
+        spdlog::critical(errornset , fn,"is_alpha_Hartlap_cov_kkkk_set_"); exit(1);
       }
       return this->params_->alpha_Hartlap_cov_kkkk;
     }
@@ -358,8 +353,7 @@ class IPCMB
 class PointMass
 {// Singleton Class that Evaluate Point Mass Marginalization
   public:
-    static PointMass& get_instance()
-    {
+    static PointMass& get_instance() {
       static PointMass instance;
       return instance;
     }
@@ -1218,14 +1212,15 @@ arma::Mat<double> compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
 template <int N, int M> 
 void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
 {
+  static constexpr std::string_view debug1 = "{}: mask file {} left {} non-masked elements after masking"sv;
+  static constexpr std::string_view errleii = "logical error, internal inconsistent"sv;
+  static constexpr std::string_view fname = "IP::set_mask"sv;
+  static constexpr std::string_view errornset = "{}: {} not set (?ill-defined) prior to this function call"sv;
+  static constexpr std::string_view errorndp = "{}: mask file {} left no data points after masking"sv;
+  static constexpr std::string_view errorim = "{}: inconsistent mask"sv;
   using matrix = arma::Mat<double>;
   if (!(like.Ndata>0)) [[unlikely]] {
-    spdlog::critical(
-        "{}: {} not set prior to this function call",
-        "IP::set_mask", 
-        "like.Ndata"
-      );
-    exit(1);
+    spdlog::critical(errornset,fname, "like.Ndata"); exit(1);
   }
 
   this->ndata_ = like.Ndata;
@@ -1234,15 +1229,13 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
   
   matrix table = read_table(mask_filename);
   if (static_cast<int>(table.n_rows) != this->ndata_) [[unlikely]] {
-    spdlog::critical("{}: inconsistent mask", "IP::set_mask");
-    exit(1);
+    spdlog::critical(errorim, fname); exit(1);
   }
 
   for (int i=0; i<this->ndata_; i++) {
     this->mask_(i) = static_cast<int>(table(i,1)+1e-13);
     if (!(0 == this->mask_(i) || 1 == this->mask_(i))) [[unlikely]] {
-      spdlog::critical("{}: inconsistent mask", "IP::set_mask");
-      exit(1);
+      spdlog::critical(errorim, fname); exit(1);
     }
   }
 
@@ -1295,20 +1288,10 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
   
   this->ndata_sqzd_ = arma::accu(this->mask_);
   if(!(this->ndata_sqzd_>0)) [[unlikely]] {
-    spdlog::critical(
-        "{}: mask file {} left no data points after masking",
-        "IP::set_mask", 
-        mask_filename
-      );
-    exit(1);
+    spdlog::critical(errorndp, fname, mask_filename); exit(1);
   }
-  spdlog::debug(
-      "{}: mask file {} left {} non-masked elements "
-      "after masking",
-      "IP::set_mask", 
-      mask_filename, 
-      this->ndata_sqzd_
-    );
+
+  spdlog::debug(debug1, fname, mask_filename, this->ndata_sqzd_);
 
   this->index_sqzd_.set_size(this->ndata_);
   {
@@ -1323,11 +1306,7 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
       }
     }
     if(j != this->ndata_sqzd_) [[unlikely]] {
-      spdlog::critical(
-          "{}: logical error, internal "
-          "inconsistent mask operation", "IP::set_mask"
-        );
-      exit(1);
+      spdlog::critical("{}: {} mask operation", fname, errleii); exit(1);
     }
   }
   this->is_mask_set_ = true;

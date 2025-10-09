@@ -18,11 +18,13 @@ static constexpr std::string_view errleii = "logical error, internal inconsisten
 static constexpr std::string_view erriiwz = "incompatible input vector with size = "sv;
 static constexpr std::string_view errnanit = "NaN found on interpolation table"sv;
 static constexpr std::string_view errnance = "common error if `params_values.get(p, None)` return None"sv;
+static constexpr std::string_view errnance2 = "{}: NaN found on index {} ({})."sv;
 static constexpr std::string_view errorns = "{}: {}={} not supported (max={})"sv;
 static constexpr std::string_view errorns2 = "{}: {} = {} not supported"sv;
 static constexpr std::string_view debugsel = "{}: {} = {} selected."sv;
 static constexpr std::string_view errornset = "{}: {} not set (?ill-defined) prior to this function call"sv;
 static constexpr std::string_view errorsz1d = "{}: {} {} (!= {})"sv;
+static constexpr std::string_view erroric0 ="{}: {} incompatible input"sv;
 
 static const int force_cache_update_test = 0;
 
@@ -270,6 +272,7 @@ void initial_setup()
   memcpy(pdeltaparams.runmode, mode.c_str(), mode.size() + 1);
 
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +288,7 @@ void init_ntable_lmax(const int lmax) {
   Ntable.LMAX = lmax;
   Ntable.random = RandomNumber::get_instance().get(); // update cache
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +334,7 @@ void init_accuracy_boost(
   Ntable.high_def_integration = int(integration_accuracy);
   Ntable.random = RandomNumber::get_instance().get();
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +353,7 @@ void init_baryons_contamination(std::string sim)
   std::string tmp = name + "-" + std::to_string(tag);
   init_baryons(tmp.c_str());
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +371,7 @@ void init_baryons_contamination(std::string sim, std::string all_sims_file)
   debug("{}: Baryon simulation w/ Name = {} & Tag = {} selected", fname, name, tag);
   init_baryons_from_hdf5_file(name.c_str(), tag, all_sims_file.c_str());
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -392,14 +399,14 @@ void init_bias(vector bias_z_evol_model)
   */
   for(int i=0; i<nsz; i++) {
     if (std::isnan(bias_z_evol_model(i))) [[unlikely]] {
-      critical("{}: NaN found on index {} ({}).", fname, i, errnance);
-      exit(1);
+      critical(errnance2, fname, i, errnance); exit(1);
     }
     const double bias = bias_z_evol_model(i);
     like.galaxy_bias_model[i] = bias;
     debug("{}: {}[{}] = {} selected.", fname, "like.galaxy_bias_model", i, bias);
   }
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +460,7 @@ void init_binning_fourier(
       );*/
   }
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +515,7 @@ void init_cmb_cross_correlation (
   cmb.set_wxk_healpix_window(healpixwin_filename);
   cmb.update_chache(RandomNumber::get_instance().get());
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +550,7 @@ void init_cmb_auto_bandpower (
   cmb.set_alpha_Hartlap_cov_kkkk(alpha);
   cmb.update_chache(RandomNumber::get_instance().get());
   debug("{}: Ends", fname);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +569,7 @@ void init_cosmo_runmode(const bool is_linear)
   memcpy(pdeltaparams.runmode, mode.c_str(), size + 1);
   debug(debugsel, fname, "runmode", mode);
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +603,7 @@ void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
     exit(1);
   }
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,9 +671,9 @@ void init_probes(std::string possible_probes)
   like.gk = flags(3);
   like.ks = flags(4);
   like.kk = flags(5);
-
   debug(debugsel, fname, "possible_probes", names.at(possible_probes));
   debug("{}: Ends", "init_probes");
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -709,6 +721,7 @@ void init_lens_sample(std::string multihisto_file, const int Ntomo)
   set_lens_sample_size(Ntomo);
   set_lens_sample(read_nz_sample(multihisto_file, Ntomo));
   debug("{}: Ends", "init_lens_sample v2.0");
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -725,6 +738,7 @@ void init_source_sample(std::string multihisto_file, const int Ntomo)
   set_source_sample_size(Ntomo);
   set_source_sample(read_nz_sample(multihisto_file, Ntomo));
   debug("{}: Ends", "init_source_sample");
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -739,12 +753,10 @@ void init_ntomo_powerspectra()
   static constexpr std::string_view fname = "init_ntomo_powerspectra"sv;
   debug("{}: {}", fname, errbegins);
   if (0 == redshift.shear_nbin) [[unlikely]] {
-    critical(errornset, fname, "redshift.shear_nbin");
-    exit(1);
+    critical(errornset, fname, "redshift.shear_nbin"); exit(1);
   }
   if (0 == redshift.clustering_nbin) [[unlikely]] {
-    critical(errornset, fname, "redshift.clustering_nbin");
-    exit(1);
+    critical(errornset, fname, "redshift.clustering_nbin"); exit(1);
   }
   tomo.shear_Npowerspectra = redshift.shear_nbin * (redshift.shear_nbin + 1) / 2;
   int n = 0;
@@ -763,6 +775,7 @@ void init_ntomo_powerspectra()
   debug("{}: tomo.ggl_Npowerspectra = {}", fname, tomo.ggl_Npowerspectra);
   debug("{}: tomo.clustering_Npowerspectra = {}", fname, tomo.clustering_Npowerspectra);
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -818,13 +831,13 @@ void init_survey(
     exit(1);
   }
   if (!(surveyname.size()>0)) {
-    critical("{}: incompatible input", fname);
-    exit(1);
+    critical(erroric0, fname, "surveyname.size()"); exit(1);
   }
   memcpy(survey.name, surveyname.c_str(), surveyname.size() + 1);
   survey.area = area;
   survey.sigma_e = sigma_e;
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -844,16 +857,14 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
   }
   tomo.ggl_exclude = (int*) malloc(sizeof(int)*nsize);
   if (NULL == tomo.ggl_exclude) {
-    critical("array allocation failed");
-    exit(1);
+    critical("array allocation failed"); exit(1);
   }
   tomo.N_ggl_exclude = int(nsize/2);  
   debug("{}: {} ggl pairs excluded", fname, tomo.N_ggl_exclude);
   #pragma omp parallel for
   for(int i=0; i<nsize; i++) {
     if (std::isnan(ggl_exclude(i))) {
-      critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-      exit(1);
+      critical(errnance2, fname, i, errnance); exit(1);
     }
     tomo.ggl_exclude[i] = ggl_exclude(i);
   }
@@ -900,6 +911,7 @@ void set_cosmological_parameters(
     cosmology.random = cosmolike_interface::RandomNumber::get_instance().get();
   }
   debug("{}: {}", fname, errends);
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -977,34 +989,17 @@ void set_growth(vector io_z, vector io_G)
 { // Growth: D = G * a
   static constexpr std::string_view fname = "set_growth"sv;
   debug("{}: {}", fname, errbegins);
-  bool debug_fail = false;
   if (io_z.n_elem != io_G.n_elem) [[unlikely]] {
-    debug_fail = true;
-  }
-  else {
-    if (io_z.n_elem == 0) [[unlikely]] {
-      debug_fail = true;
-    }
-  }
-  if (debug_fail) [[unlikely]] {
-    critical("{}: {} {} and G.size = {}", fname, erriiwz, io_z.n_elem, io_G.n_elem);
-    exit(1);
-  }
-  if(io_z.n_elem < 5) [[unlikely]] {
-    critical("{}: {} {} and G.size = {}", fname, erriiwz, io_z.n_elem, io_G.n_elem);
-    exit(1);
+    critical(errorsz1d, fname, erriiwz, io_z.n_elem, io_G.n_elem); exit(1);
   }
 
   int cache_update = 0;
-  if (cosmology.G_nz != static_cast<int>(io_z.n_elem) || 
-      NULL == cosmology.G) {
+  if (cosmology.G_nz != static_cast<int>(io_z.n_elem) || NULL == cosmology.G) {
     cache_update = 1;
   }
-  else
-  {
+  else {
     for (int i=0; i<cosmology.G_nz; i++) {
-      if (fdiff(cosmology.G[0][i], io_z(i)) ||
-          fdiff(cosmology.G[1][i], io_G(i))) {
+      if (fdiff(cosmology.G[0][i], io_z(i)) || fdiff(cosmology.G[1][i], io_G(i))) {
         cache_update = 1; 
         break;
       }    
@@ -1013,16 +1008,12 @@ void set_growth(vector io_z, vector io_G)
   if (1 == cache_update || 1 == force_cache_update_test)
   {
     cosmology.G_nz = static_cast<int>(io_z.n_elem);
-    if (cosmology.G != NULL) {
-      free(cosmology.G);
-    }
+    if (cosmology.G != NULL) { free(cosmology.G); }
     cosmology.G = (double**) malloc2d(2, cosmology.G_nz);
-
     #pragma omp parallel for
     for (int i=0; i<cosmology.G_nz; i++) {
       if (std::isnan(io_z(i)) || std::isnan(io_G(i))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit);
-        exit(1);
+        critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.G[0][i] = io_z(i);
       cosmology.G[1][i] = io_G(i);
@@ -1043,29 +1034,11 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 {
   static constexpr std::string_view fname = "set_linear_power_spectrum"sv;
   debug("{}: {}", fname, errbegins);
-
-  bool debug_fail = false;
   if (io_z.n_elem*io_log10k.n_elem != io_lnP.n_elem) [[unlikely]] {
-    debug_fail = true;
-  }
-  else {
-    if (io_z.n_elem == 0 || io_log10k.n_elem == 0) [[unlikely]] {
-      debug_fail = true;
-    }
-  }
-  if (debug_fail) [[unlikely]] {
-    critical("{}: {} {}, z.size = {}, and lnP.size = {}", 
-        fname, erriiwz, io_log10k.n_elem, io_z.n_elem, io_lnP.n_elem
-      );
+    critical(errorsz1d, fname, erriiwz, io_z.n_elem*io_z.n_elem, io_lnP.n_elem); 
     exit(1);
   }
-  if(io_z.n_elem < 5 || io_log10k.n_elem < 5) [[unlikely]] {
-    critical("{}: {} {}, z.size = {}, and lnP.size = {}", 
-        fname, erriiwz, io_log10k.n_elem, io_z.n_elem, io_lnP.n_elem
-      );
-    exit(1);
-  }
-
+  
   int cache_update = 0;
   if (cosmology.lnPL_nk != static_cast<int>(io_log10k.n_elem) ||
       cosmology.lnPL_nz != static_cast<int>(io_z.n_elem) || 
@@ -1084,40 +1057,37 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     for (int i=0; i<cosmology.lnPL_nk; i++) {
       if (fdiff(cosmology.lnPL[i][cosmology.lnPL_nz], io_log10k(i))) {
         cache_update = 1; 
-        break;
+        goto jump;
       }
     }
     for (int j=0; j<cosmology.lnPL_nz; j++) {
       if (fdiff(cosmology.lnPL[cosmology.lnPL_nk][j], io_z(j))) {
         cache_update = 1; 
-        break;
+        goto jump;
       }
     }
   }
 
   jump:
+
   if (1 == cache_update || 1 == force_cache_update_test) {
     cosmology.lnPL_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnPL_nz = static_cast<int>(io_z.n_elem);
 
-    if (cosmology.lnPL != NULL) {
-      free(cosmology.lnPL);
-    }
+    if (cosmology.lnPL != NULL) { free(cosmology.lnPL); }
     cosmology.lnPL = (double**) malloc2d(cosmology.lnPL_nk+1,cosmology.lnPL_nz+1);
 
     #pragma omp parallel for
     for (int i=0; i<cosmology.lnPL_nk; i++) {
       if (std::isnan(io_log10k(i))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit);
-        exit(1);
+        critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.lnPL[i][cosmology.lnPL_nz] = io_log10k(i);
     }
     #pragma omp parallel for
     for (int j=0; j<cosmology.lnPL_nz; j++) {
       if (std::isnan(io_z(j))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit);
-        exit(1);
+        critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.lnPL[cosmology.lnPL_nk][j] = io_z(j);
     }
@@ -1125,8 +1095,7 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     for (int i=0; i<cosmology.lnPL_nk; i++) {
       for (int j=0; j<cosmology.lnPL_nz; j++) {
         if (std::isnan(io_lnP(i*cosmology.lnP_nz+j))) [[unlikely]] {
-          critical("{}: {}", fname, errnanit);
-          exit(1);
+          critical("{}: {}", fname, errnanit); exit(1);
         }
         cosmology.lnPL[i][j] = io_lnP(i*cosmology.lnPL_nz+j);
       }
@@ -1147,26 +1116,8 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 {
   static constexpr std::string_view fname = "set_linear_power_spectrum"sv;
   debug("{}: {}", fname, errbegins);
-
-  bool debug_fail = false;
   if (io_z.n_elem*io_log10k.n_elem != io_lnP.n_elem) [[unlikely]] {
-    debug_fail = true;
-  }
-  else {
-    if (io_z.n_elem == 0) [[unlikely]] {
-      debug_fail = true;
-    }
-  }
-  if (debug_fail) [[unlikely]] {
-    critical("{}: {} {}, z.size = {}, and lnP.size = {}", 
-        fname, erriiwz, io_log10k.n_elem, io_z.n_elem, io_lnP.n_elem
-      );
-    exit(1);
-  }
-  if (io_z.n_elem < 5 || io_log10k.n_elem < 5) [[unlikely]] {
-    critical("{}: {} {}, z.size = {}, and lnP.size = {}", 
-        fname, erriiwz, io_log10k.n_elem, io_z.n_elem, io_lnP.n_elem
-      );
+    critical(errorsz1d, fname, erriiwz, io_z.n_elem*io_z.n_elem, io_lnP.n_elem); 
     exit(1);
   }
 
@@ -1189,13 +1140,13 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     for (int i=0; i<cosmology.lnP_nk; i++) {
       if (fdiff(cosmology.lnP[i][cosmology.lnP_nz], io_log10k(i))) {
         cache_update = 1; 
-        break;
+        goto jump;
       }
     }
     for (int j=0; j<cosmology.lnP_nz; j++) {
       if (fdiff(cosmology.lnP[cosmology.lnP_nk][j], io_z(j))) {
         cache_update = 1; 
-        break;
+        goto jump;
       }
     }
   }
@@ -1205,24 +1156,20 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
   if (1 == cache_update || 1 == force_cache_update_test) {
     cosmology.lnP_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnP_nz = static_cast<int>(io_z.n_elem);
-    if (cosmology.lnP != NULL) {
-      free(cosmology.lnP);
-    }
+    if (cosmology.lnP != NULL) { free(cosmology.lnP); }
     cosmology.lnP = (double**) malloc2d(cosmology.lnP_nk+1,cosmology.lnP_nz+1);
 
     #pragma omp parallel for
     for (int i=0; i<cosmology.lnP_nk; i++) {
       if (std::isnan(io_log10k(i))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit);
-        exit(1);
+        critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.lnP[i][cosmology.lnP_nz] = io_log10k(i);
     }
     #pragma omp parallel for
     for (int j=0; j<cosmology.lnP_nz; j++) {
       if (std::isnan(io_z(j))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit);
-        exit(1);
+        critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.lnP[cosmology.lnP_nk][j] = io_z(j);
     }
@@ -1230,8 +1177,7 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     for (int i=0; i<cosmology.lnP_nk; i++) {
       for (int j=0; j<cosmology.lnP_nz; j++) {
         if (std::isnan(io_lnP(i*cosmology.lnP_nz+j))) [[unlikely]] {
-          critical("{}: {}", fname, errnanit);
-          exit(1);
+          critical("{}: {}", fname, errnanit); exit(1);
         }
         cosmology.lnP[i][j] = io_lnP(i*cosmology.lnP_nz+j);
       }
@@ -1253,19 +1199,14 @@ void set_nuisance_shear_calib(vector M)
   static constexpr std::string_view fname = "set_nuisance_shear_calib"sv;
   debug("{}: {}", fname, errbegins);
   if (0 == redshift.shear_nbin) [[unlikely]] {
-    critical(errorns2, fname, "shear_Nbin", 0);
-    exit(1);
+    critical(errorns2, fname, "shear_Nbin", 0); exit(1);
   }
   if (redshift.shear_nbin != static_cast<int>(M.n_elem)) [[unlikely]] {
-    critical(errorsz1d, fname, erriiwz, M.n_elem, redshift.shear_nbin);
-    exit(1);
+    critical(errorsz1d, fname, erriiwz, M.n_elem, redshift.shear_nbin); exit(1);
   }
   for (int i=0; i<redshift.shear_nbin; i++) {
-    if (std::isnan(M(i))) [[unlikely]] {
-      // can't compile cosmolike with -O3 or -fast-math
-      // see: https://stackoverflow.com/a/47703550/2472169
-      critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-      exit(1);
+    if (std::isnan(M(i))) [[unlikely]] { // can't compile w/ -O3 or -fast-math
+      critical(errnance2, fname, i, errnance); exit(1);
     }
     nuisance.shear_calibration_m[i] = M(i);
   }
@@ -1283,23 +1224,16 @@ void set_nuisance_shear_photoz(vector SP)
 {
   static constexpr std::string_view fname = "set_nuisance_shear_photoz"sv;
   debug("{}: {}", fname, errbegins);
-
   if (0 == redshift.shear_nbin) [[unlikely]] {
-    critical(errorns2, fname, "shear_Nbin", 0);
-    exit(1);
+    critical(errorns2, fname, "shear_Nbin", 0); exit(1);
   }
   if (redshift.shear_nbin != static_cast<int>(SP.n_elem)) [[unlikely]] {
-    critical(errorsz1d, fname, erriiwz, SP.n_elem, redshift.shear_nbin);
-    exit(1);
+    critical(errorsz1d, fname, erriiwz, SP.n_elem, redshift.shear_nbin); exit(1);
   }
-
   int cache_update = 0;
   for (int i=0; i<redshift.shear_nbin; i++) {
     if (std::isnan(SP(i))) [[unlikely]] {
-      // can't compile cosmolike with -O3 or -fast-math
-      // see: https://stackoverflow.com/a/47703550/2472169
-      critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-      exit(1);
+      critical(errnance2, fname, i, errnance); exit(1);
     }
     if (fdiff(nuisance.photoz[0][0][i], SP(i))) {
       cache_update = 1;
@@ -1335,7 +1269,7 @@ void set_nuisance_clustering_photoz(vector CP)
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(CP(i))) [[unlikely]] {
-      critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
+      critical(errnance2, fname, i, errnance);
       exit(1);
     }
     if (fdiff(nuisance.photoz[1][0][i], CP(i))) { 
@@ -1373,7 +1307,7 @@ void set_nuisance_clustering_photoz_stretch(vector CPS)
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(CPS(i))) [[unlikely]] {
-      critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
+      critical(errnance2, fname, i, errnance);
       exit(1);
     }
     if (fdiff(nuisance.photoz[1][1][i], CPS(i))) {
@@ -1398,16 +1332,13 @@ void set_nuisance_linear_bias(vector B1)
 {
   static constexpr std::string_view fname = "set_nuisance_linear_bias"sv;
   debug("{}: {}", fname, errbegins);
-
   if (0 == redshift.clustering_nbin) [[unlikely]] {
-    critical(errorns2, fname, "clustering_Nbin", 0);
-    exit(1);
+    critical(errorns2, fname, "clustering_Nbin", 0); exit(1);
   }
   if (redshift.clustering_nbin != static_cast<int>(B1.n_elem)) [[unlikely]] {
     critical(errorsz1d, fname, erriiwz, B1.n_elem, redshift.clustering_nbin);
     exit(1);
   }
-
   // GALAXY BIAS ------------------------------------------
   // 1st index: b[0][i] = linear galaxy bias in clustering bin i (b1)
   //            b[1][i] = linear galaxy bias in clustering bin i (b2)
@@ -1416,8 +1347,7 @@ void set_nuisance_linear_bias(vector B1)
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B1(i))) [[unlikely]] {
-      critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-      exit(1);
+      critical(errnance2, fname, i, errnance); exit(1);
     }
     if(fdiff(nuisance.gb[0][i], B1(i))) {
       cache_update = 1;
@@ -1442,18 +1372,15 @@ void set_nuisance_nonlinear_bias(vector B1, vector B2)
   static constexpr std::string_view fname = "set_nuisance_nonlinear_bias"sv;
   debug("{}: {}", fname, errbegins);
   if (0 == redshift.clustering_nbin) [[unlikely]]{
-    critical(errorns2, fname, "clustering_Nbin", 0);
-    exit(1);
+    critical(errorns2, fname, "clustering_Nbin", 0); exit(1);
   }
   if (redshift.clustering_nbin != static_cast<int>(B1.n_elem)) [[unlikely]] {
     critical("{}: {} {}(!= {})",fname, erriiwz, B1.n_elem, redshift.clustering_nbin);
     exit(1);
   }
   if (redshift.clustering_nbin != static_cast<int>(B2.n_elem)) [[unlikely]] {
-    critical(errorsz1d,fname, erriiwz, B2.n_elem, redshift.clustering_nbin);
-    exit(1);
+    critical(errorsz1d,fname, erriiwz, B2.n_elem, redshift.clustering_nbin); exit(1);
   }
-
   // GALAXY BIAS ------------------------------------------
   // 1st index: b[0][i]: linear galaxy bias in clustering bin i
   //            b[1][i]: nonlinear b2 galaxy bias in clustering bin i
@@ -1463,8 +1390,7 @@ void set_nuisance_nonlinear_bias(vector B1, vector B2)
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B1(i)) || std::isnan(B2(i))) [[unlikely]] {
-      critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-      exit(1);
+      critical(errnance2, fname, i, errnance); exit(1);
     }
     if(fdiff(nuisance.gb[1][i], B2(i))) {
       cache_update = 1;
@@ -1490,8 +1416,7 @@ void set_nuisance_magnification_bias(vector B_MAG)
   static constexpr std::string_view fname = "set_nuisance_magnification_bias"sv;
   debug("{}: {}", fname, errbegins);
   if (0 == redshift.clustering_nbin) [[unlikely]] {
-    critical(errorns2, fname, "clustering_Nbin", 0);
-    exit(1);
+    critical(errorns2, fname, "clustering_Nbin", 0); exit(1);
   }
   if (redshift.clustering_nbin != static_cast<int>(B_MAG.n_elem)) [[unlikely]] {
     critical(errorsz1d, fname, erriiwz, B_MAG.n_elem, redshift.clustering_nbin);
@@ -1506,8 +1431,7 @@ void set_nuisance_magnification_bias(vector B_MAG)
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B_MAG(i))) [[unlikely]] {
-      critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-      exit(1);
+      critical(errnance2, fname, i, errnance); exit(1);
     }
     if(fdiff(nuisance.gb[4][i], B_MAG(i))) {
       cache_update = 1;
@@ -1546,20 +1470,16 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
   static constexpr std::string_view fname = "set_nuisance_IA"sv;
   debug("{}: {}", fname, errbegins);
   if (0 == redshift.shear_nbin) [[unlikely]] {
-    critical(errorns2, fname, "shear_Nbin", 0);
-    exit(1);
+    critical(errorns2, fname, "shear_Nbin", 0); exit(1);
   }
   if (redshift.shear_nbin > static_cast<int>(A1.n_elem)) [[unlikely]] {
-    critical("{}: {} {:d} (!= {:d})", fname, erriiwz, A1.n_elem, redshift.shear_nbin);
-    exit(1);
+    critical(errorsz1d, fname, erriiwz, A1.n_elem, redshift.shear_nbin); exit(1);
   }
   if (redshift.shear_nbin > static_cast<int>(A2.n_elem)) [[unlikely]] {
-    critical("{}: {} {:d} (!= {:d})", fname, erriiwz, A2.n_elem, redshift.shear_nbin);
-    exit(1);
+    critical(errorsz1d, fname, erriiwz, A2.n_elem, redshift.shear_nbin); exit(1);
   }
   if (redshift.shear_nbin > static_cast<int>(BTA.n_elem)) [[unlikely]] {
-    critical("{}: {} {:d} (!= {:d})", fname, erriiwz, BTA.n_elem, redshift.shear_nbin);
-    exit(1);
+    critical(errorsz1d, fname, erriiwz, BTA.n_elem, redshift.shear_nbin); exit(1);
   }
   // INTRINSIC ALIGMENT ------------------------------------------  
   // ia[0][0] = A_ia          if(IA_NLA_LF || IA_REDSHIFT_EVOLUTION)
@@ -1584,17 +1504,8 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
   if (nuisance.IA == IA_REDSHIFT_BINNING)
   {
     for (int i=0; i<redshift.shear_nbin; i++) {
-      if (std::isnan(A1(i))) [[unlikely]] {
-        critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-        exit(1);
-      }
-      if (std::isnan(A2(i))) [[unlikely]] {
-        critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-        exit(1);
-      }
-      if (std::isnan(BTA(i))) [[unlikely]] {
-        critical("{}: NaN found on index {:d} ({}).", fname, i, errnance);
-        exit(1);
+      if (std::isnan(A1(i)) || std::isnan(A2(i)) || std::isnan(BTA(i))) [[unlikely]] {
+        critical(errnance2, fname, i, errnance); exit(1);
       }
       if (fdiff(nuisance.ia[0][i],A1(i)) ||
           fdiff(nuisance.ia[1][i],A2(i)) ||
@@ -1627,7 +1538,6 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
   if(1 == cache_update || 1 == force_cache_update_test) {
     nuisance.random_ia = RandomNumber::get_instance().get();
   }
-
   debug("{}: {}", fname, errends);
 }
 
@@ -1663,8 +1573,7 @@ void set_lens_sample(arma::Mat<double> input_table)
 
   const int Ntomo = redshift.clustering_nbin;
   if (std::isnan(Ntomo) || !(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
-    critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS);
-    exit(1);
+    critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS); exit(1);
   }
 
   int cache_update = 0;
@@ -1768,9 +1677,8 @@ void set_source_sample(arma::Mat<double> input_table)
   debug("{}: {}", fname, errbegins);
 
   const int Ntomo = redshift.shear_nbin;
-  if (std::isnan(Ntomo) ||  !(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
-    critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS);
-    exit(1);
+  if (std::isnan(Ntomo) || !(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
+    critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS); exit(1);
   } 
 
   int cache_update = 0;
@@ -1830,16 +1738,11 @@ void set_source_sample(arma::Mat<double> input_table)
     // READ THE N(Z) FILE ENDS ------------
     if (redshift.shear_zdist_zmax_all < redshift.shear_zdist_zmax[Ntomo-1] || 
         redshift.shear_zdist_zmin_all > redshift.shear_zdist_zmin[0]) [[unlikely]] {
-      critical(
-          "{}: {} = {}, {} = {}", 
-          fname, "zhisto_min", redshift.shear_zdist_zmin_all, 
-          "zhisto_max", redshift.shear_zdist_zmax_all
-        );
-      critical(
-          "{}: {} = {}, {} = {}", 
-          fname, "shear_zdist_zmin[0]", redshift.shear_zdist_zmin[0], 
-          "shear_zdist_zmax[redshift.shear_nbin-1]", redshift.shear_zdist_zmax[Ntomo-1]
-        );
+      critical("{}: {} = {}, {} = {}", fname, "zhisto_min", 
+          redshift.shear_zdist_zmin_all, "zhisto_max", redshift.shear_zdist_zmax_all);
+      critical("{}: {} = {}, {} = {}", fname, "shear_zdist_zmin[0]", 
+          redshift.shear_zdist_zmin[0], "shear_zdist_zmax[redshift.shear_nbin-1]", 
+          redshift.shear_zdist_zmax[Ntomo-1]);
       exit(1);
     } 
     zdistr_photoz(0.1, 0); // init static variables
@@ -1902,12 +1805,10 @@ vector compute_binning_real_space()
   static constexpr std::string_view fname = "compute_binning_real_space"sv;
   debug("{}: {}", fname, errbegins);
   if (0 == Ntable.Ntheta)  [[unlikely]] {
-    critical(errornset, fname, "Ntable.Ntheta");
-    exit(1);
+    critical(errornset, fname, "Ntable.Ntheta"); exit(1);
   }
   if (!(Ntable.vtmax > Ntable.vtmin))  [[unlikely]] {
-    critical(errornset, fname, "Ntable.vtmax and Ntable.vtmin");
-    exit(1);
+    critical(errornset, fname, "Ntable.vtmax and Ntable.vtmin"); exit(1);
   }
   const double logvtmin = std::log(Ntable.vtmin);
   const double logvtmax = std::log(Ntable.vtmax);
@@ -1920,11 +1821,9 @@ vector compute_binning_real_space()
     const double thetamax = std::exp(logvtmin + (i + 1.)*logdt);
     theta(i) = fac * (std::pow(thetamax,3) - std::pow(thetamin,3)) /
                      (thetamax*thetamax    - thetamin*thetamin);
-    debug(
-        "{}: Bin {:d} - {} = {:.4e}, {} = {:.4e} and {} = {:.4e}",
+    debug("{}: Bin {:d} - {} = {:.4e}, {} = {:.4e} and {} = {:.4e}",
         fname, i, "theta_min [rad]", thetamin, "theta [rad]", 
-        theta(i), "theta_max [rad]", thetamax
-      );
+        theta(i), "theta_max [rad]", thetamax);
   }
   return theta;
   debug("{}: {}", fname, errends);
@@ -1943,15 +1842,13 @@ vector compute_add_baryons_pcs(vector Q, vector dv)
   debug("{}: {}", fname, errbegins);
   BaryonScenario& bs = BaryonScenario::get_instance();
   if (!bs.is_pcs_set()) [[unlikely]] {
-    critical(errornset, fname, "baryon PCs");
-    exit(1);
+    critical(errornset, fname, "baryon PCs"); exit(1);
   }
   if (bs.get_pcs().row(0).n_elem < Q.n_elem) [[unlikely]] {
-    critical("{}: invalid PC amplitude vector or PC eigenvectors", fname);
-    exit(1);
+    critical("{}: invalid PC amplitude vector / eigenvectors", fname); exit(1);
   }
   if (bs.get_pcs().col(0).n_elem != dv.n_elem) [[unlikely]] {
-    critical("{}: invalid datavector or PC eigenvectors", fname);
+    critical(errorsz1d, fname, erriiwz, bs.get_pcs().col(0).n_elem, dv.n_elem); 
     exit(1);
   }
   for (int j=0; j<static_cast<int>(dv.n_elem); j++) {
@@ -1984,8 +1881,7 @@ void IP::set_data(std::string datavector_filename)
   static constexpr std::string_view fname = "IP::set_data"sv;
   debug("{}: {}", fname, errbegins);
   if (!(this->is_mask_set_)) {
-    critical(errornset, fname, "mask");
-    exit(1);
+    critical(errornset, fname, "mask"); exit(1);
   }
 
   this->data_masked_.set_size(this->ndata_);
@@ -1996,16 +1892,14 @@ void IP::set_data(std::string datavector_filename)
 
   matrix table = read_table(datavector_filename);
   if (static_cast<int>(table.n_rows) != this->ndata_) {
-    critical("{}: inconsistent data vector", fname);
-    exit(1);
+    critical("{}: inconsistent data vector", fname); exit(1);
   }
   for(int i=0; i<like.Ndata; i++) {
     this->data_masked_(i) = table(i,1);
     this->data_masked_(i) *= this->get_mask(i);
     if(this->get_mask(i) == 1) {
       if(this->get_index_sqzd(i) < 0) {
-        critical("{}: {} mask operation", fname, errleii);
-        exit(1);
+        critical("{}: {} mask operation", fname, errleii); exit(1);
       }
       this->data_masked_sqzd_(this->get_index_sqzd(i)) = this->data_masked_(i);
     }
@@ -2019,8 +1913,7 @@ void IP::set_inv_cov(std::string cov_filename)
   static constexpr std::string_view fname = "IP::set_inv_cov"sv;
   debug("{}: {}", fname, errbegins);
   if (!(this->is_mask_set_)) [[unlikely]] {
-    critical(errornset, fname, "mask");
-    exit(1);
+    critical(errornset, fname, "mask"); exit(1);
   }
 
   this->cov_filename_ = cov_filename;
@@ -2096,11 +1989,8 @@ void IP::set_inv_cov(std::string cov_filename)
     IPCMB& cmb = IPCMB::get_instance();
     const int N5x2pt = this->ndata_ - cmb.get_nbins_kk_bandpower();
     if (!(N5x2pt>0)) [[unlikely]] {
-      critical(
-          "{}, {}: inconsistent dv size and number of binning in (kappa-kappa)",
-          fname, this->ndata_, cmb.get_nbins_kk_bandpower()
-        );
-      exit(1);
+      critical("{}, {}: inconsistent dv size and number of binning in (kk)",
+        fname, this->ndata_, cmb.get_nbins_kk_bandpower()); exit(1);
     }
     const double hartlap_factor = cmb.get_alpha_Hartlap_cov_kkkk();
     #pragma omp parallel for collapse(2)
@@ -2114,8 +2004,7 @@ void IP::set_inv_cov(std::string cov_filename)
   vector eigvals = arma::eig_sym(this->cov_masked_);
   for(int i=0; i<this->ndata_; i++) {
     if(eigvals(i) < 0) [[unlikely]] {
-      critical("{}: masked cov not positive definite", fname);
-      exit(-1);
+      critical("{}: masked cov not positive definite", fname); exit(1);
     }
   }
 
@@ -2140,12 +2029,10 @@ void IP::set_inv_cov(std::string cov_filename)
     {
       if((this->mask_(i)>0.99) && (this->mask_(j)>0.99)) {
         if(this->get_index_sqzd(i) < 0) [[unlikely]] {
-          critical("{}: {} mask operation", fname, errleii);
-          exit(1);
+          critical("{}: {} mask operation", fname, errleii); exit(1);
         }
         if(this->get_index_sqzd(j) < 0) [[unlikely]] {
-          critical("{}: {} mask operation", fname, errleii);
-          exit(1);
+          critical("{}: {} mask operation", fname, errleii); exit(1);
         }
         const int idxa = this->get_index_sqzd(i);
         const int idxb = this->get_index_sqzd(j);
@@ -2170,20 +2057,16 @@ double IP::get_chi2(vector datavector) const
   static constexpr std::string_view fname = "IP::get_chi2"sv;
   debug("{}: {}", fname, errbegins);
   if (!(this->is_data_set_)) [[unlikely]] {
-    critical(errornset, fname, "data_vector");
-    exit(1);
+    critical(errornset, fname, "data_vector"); exit(1);
   }
   if (!(this->is_mask_set_)) [[unlikely]] {
-    critical(errornset, fname, "mask");
-    exit(1);
+    critical(errornset, fname, "mask"); exit(1);
   }
   if (!(this->is_inv_cov_set_)) [[unlikely]] {
-    critical(errornset, fname, "inv_cov");
-    exit(1);
+    critical(errornset, fname, "inv_cov"); exit(1);
   }
   if (static_cast<int>(datavector.n_elem) != like.Ndata) [[unlikely]] { 
-    critical("{}: {} {:d} (!= {:d})", fname, erriiwz, datavector.n_elem, like.Ndata);
-    exit(1);
+    critical(errorsz1d, fname, erriiwz, datavector.n_elem, like.Ndata); exit(1);
   }
   double chi2 = 0.0;
   #pragma omp parallel for collapse (2) reduction(+:chi2) schedule(static)
@@ -2197,8 +2080,7 @@ double IP::get_chi2(vector datavector) const
     }
   }
   if (chi2 < 0.0) [[unlikely]] {
-    critical("{}: chi2 = {} (invalid)", fname, chi2);
-    exit(1);
+    critical("{}: chi2 = {} (invalid)", fname, chi2); exit(1);
   }
   debug("{}: {}", fname, errends);
   return chi2;
@@ -2209,15 +2091,13 @@ vector IP::expand_theory_data_vector_from_sqzd(vector input) const
   static constexpr std::string_view fname = "IP::expand_theory_data_vector_from_sqzd"sv;
   debug("{}: {}", fname, errbegins);
   if (this->ndata_sqzd_ != static_cast<int>(input.n_elem)) [[unlikely]] {
-    critical("{}: invalid input data vector", fname);
-    exit(1);
+    critical("{}: invalid input data vector", fname); exit(1);
   }
   vector result(this->ndata_, arma::fill::zeros);
   for(int i=0; i<this->ndata_; i++) {
     if(this->mask_(i) > 0.99) {
       if(this->get_index_sqzd(i) < 0) [[unlikely]] {
-        critical("{}: {} mask operation", fname, errleii);
-        exit(1);
+        critical("{}: {} mask operation", fname, errleii); exit(1);
       }
       result(i) = input(this->get_index_sqzd(i));
     }
@@ -2238,8 +2118,7 @@ vector IP::sqzd_theory_data_vector(vector input) const
   static constexpr std::string_view fname = "IP::sqzd_theory_data_vector"sv;
   debug("{}: {}", fname, errbegins);
   if (this->ndata_ != static_cast<int>(input.n_elem)) [[unlikely]] {
-    critical("{}: invalid input data vector", fname);
-    exit(1);
+    critical("{}: invalid input data vector", fname); exit(1);
   }
   vector result(this->ndata_sqzd_, arma::fill::zeros);
   for (int i=0; i<this->ndata_; i++) {
@@ -2397,8 +2276,7 @@ void IPCMB::set_kk_binning_mat(std::string binned_matrix_filename)
   static constexpr std::string_view fname = "IPCMB::set_kk_binning_mat"sv;
   debug("{}: {}", fname, errbegins);
   if(!this->is_kk_bandpower_) [[unlikely]] {
-    critical("{}: {} == 0, incompatible choice", fname, "is_kk_bandpower");
-    exit(1);
+    critical(erroric0, fname, "is_kk_bandpower"); exit(1);
   }
   matrix table = read_table(binned_matrix_filename);
 
@@ -2435,8 +2313,7 @@ void IPCMB::set_kk_theory_offset(std::string theory_offset_filename)
   static constexpr std::string_view fname = "IPCMB::set_kk_theory_offset"sv;
   debug("{}: {}", fname, errbegins);
   if(!this->is_kk_bandpower_) [[unlikely]] {
-    critical("{}: {} == 0, incompatible choice", fname, "is_kk_bandpower");
-    exit(1);
+    critical(erroric0, fname, "is_kk_bandpower"); exit(1);
   }
   const int nbp = this->get_nbins_kk_bandpower();
   if (this->params_->theory_offset_kk != NULL) {
@@ -2476,16 +2353,13 @@ void IPCMB::set_kk_binning_bandpower (
   static constexpr std::string_view fname = "IPCMB::set_kk_binning"sv;
   debug("{}: {}", fname, errbegins);
   if (!(nb > 0)) [[unlikely]] {
-    critical(errorns2, fname, "nbins", nb);
-    exit(1);
+    critical(errorns2, fname, "nbins", nb); exit(1);
   }
   if (!(lmin > 0)) [[unlikely]] {
-    critical(errorns2, fname, "lmin", lmin);
-    exit(1);
+    critical(errorns2, fname, "lmin", lmin); exit(1);
   }
   if (!(lmax > 0)) [[unlikely]] {
-    critical(errorns2, fname, "lmax", lmax);
-    exit(1);
+    critical(errorns2, fname, "lmax", lmax); exit(1);
   }
   debug(debugsel, fname, "nbins", nb);
   debug(debugsel, fname, "lmin", lmin);
@@ -2551,8 +2425,7 @@ void BaryonScenario::set_scenarios(std::string scenarios)
   boost::trim_if(scenarios, boost::is_any_of("\t "));
   boost::trim_if(scenarios, boost::is_any_of("\n"));
   if (scenarios.empty()) [[unlikely]] {
-    critical("{}: invalid string input (empty)", fname);
-    exit(1);
+    critical("{}: invalid string input (empty)", fname); exit(1);
   }
 
   debug("{}: Selecting baryon scenarios for PCA", fname);
