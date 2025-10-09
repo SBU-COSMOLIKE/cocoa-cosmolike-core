@@ -190,5 +190,3 @@ double gbmag(const double z, const int ni)
 
   return ans;
 }
-
-

@@ -198,15 +198,12 @@ py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
                         redshift.shear_nbin,
                         redshift.shear_nbin,
                         arma::fill::zeros);
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
   { // init static variables
     const int ni = Z1(0);
     const int nj = Z2(0);
-    double trash = C_ss_tomo_limber_nointerp(l(0), ni, nj, 1, 1);
-    trash = C_ss_tomo_limber_nointerp(l(0), ni, nj, 0, 1);
+    (void) C_ss_tomo_limber_nointerp(l(0), ni, nj, 1, 1);
+    (void) C_ss_tomo_limber_nointerp(l(0), ni, nj, 0, 1);
   }
-  #pragma GCC diagnostic pop
 
   #pragma omp parallel for collapse(2)
   for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
@@ -246,24 +243,19 @@ arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
                      l.n_elem);
     exit(1);
   }
-
   arma::Cube<double> result(l.n_elem,
                             redshift.clustering_nbin, 
                             redshift.shear_nbin,
                             arma::fill::zeros);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++)
-  { // init static variables
-    double tmp = C_gs_tomo_limber_nointerp(l(0),ZL(nz),ZS(nz),1);
+  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static variables
+    (void) C_gs_tomo_limber_nointerp(l(0),ZL(nz),ZS(nz),1);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++)
-    for (int i=0; i<static_cast<int>(l.n_elem); i++)
+  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
       result(i,ZL(nz),ZS(nz))=C_gs_tomo_limber_nointerp(l(i),ZL(nz),ZS(nz),0);
+    }
+  }
   return result;
 }
 
@@ -277,59 +269,50 @@ double C_gg_tomo_limber_cpp(const double l, const int nz)
 
 arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0)) {
+  if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
                      "C_gg_tomo_limber_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Cube<double> result(l.n_elem, 
                             redshift.clustering_nbin,
                             redshift.clustering_nbin,
                             arma::fill::zeros);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-  { // init static variables
-    double tmp = C_gg_tomo_limber_nointerp(l(0), 0, 0, 1);
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
+    (void) C_gg_tomo_limber_nointerp(l(0), 0, 0, 1);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    for (int i=0; i<static_cast<int>(l.n_elem); i++)
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
       result(i, nz, nz) = C_gg_tomo_limber_nointerp(l(i), nz, nz, 0);
+    }
+  }
   return result;
 }
 
 arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0)) {
+  if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
                      "C_gg_tomo_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Cube<double> result = C_gg_tomo_limber_cpp(l);
-
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-  {
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
     arma::uvec idxs = arma::find(l<limits.LMAX_NOLIMBER);
-
-    if (idxs.n_elem > 0)
-    {
+    if (idxs.n_elem > 0) {
       const int L = 1;
-      const double tolerance = 0.01;     // required fractional accuracy in C(l)
+      const double tolerance = 0.01;      // required fractional accuracy in C(l)
       const double dev = 10. * tolerance; // will be diff  exact vs Limber init to
 
       arma::Col<double> Cl(limits.LMAX_NOLIMBER+1);
       C_cl_tomo(L, nz, nz, Cl.memptr(), dev, tolerance);
-      
-      for (int i=0; i<static_cast<int>(idxs.n_elem); i++)
+  
+      for (int i=0; i<static_cast<int>(idxs.n_elem); i++) {
         result(idxs(i), nz, nz) = Cl(static_cast<int>(l(idxs(i))+1e-13));
+      }
     }
   }
   return result;
@@ -345,27 +328,22 @@ double C_gk_tomo_limber_cpp(const double l, const int ni)
 
 arma::Mat<double> C_gk_tomo_limber_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0)) {
+  if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
                      "C_gk_tomo_limber_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Mat<double> result(l.n_elem, redshift.clustering_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-  { // init static variables
-    double trash = C_gk_tomo_limber_nointerp(l(0), nz, 1);
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
+    (void) C_gk_tomo_limber_nointerp(l(0), nz, 1);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    for (int i=0; i<static_cast<int>(l.n_elem); i++)
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
       result(i, nz) = C_gk_tomo_limber_nointerp(l(i), nz, 0);
+    }
+  }
   return result;
 }
 
@@ -380,27 +358,22 @@ double C_ks_tomo_limber_cpp(const double l, const int ni)
 
 arma::Mat<double> C_ks_tomo_limber_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0)) {
+  if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
                      "C_ks_tomo_limber_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Mat<double> result(l.n_elem, redshift.shear_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  { // init static variables
-    double tmp = C_ks_tomo_limber_nointerp(l(0), nz, 1);
+  for (int nz=0; nz<redshift.shear_nbin; nz++) { // init static variables
+    (void) C_ks_tomo_limber_nointerp(l(0), nz, 1);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-    for (int i=0; i<static_cast<int>(l.n_elem); i++)
+  for (int nz=0; nz<redshift.shear_nbin; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
       result(i, nz) = C_ks_tomo_limber_nointerp(l(i), nz, 0);
+    }
+  }
   return result;
 }
 
@@ -416,28 +389,22 @@ double C_gy_tomo_limber_cpp(const double l, const int ni)
 
 arma::Mat<double> C_gy_tomo_limber_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0))
-  {
+  if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
                      "C_gy_tomo_limber_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Mat<double> result(l.n_elem, redshift.clustering_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-  { // init static variables
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
     double tmp = C_gy_tomo_limber_nointerp(l(0), nz, 0, 1);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    for (int i=0; i<static_cast<int>(l.n_elem); i++)
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
       result(i, nz) = C_gy_tomo_limber_nointerp(l(i), nz, 0, 0);
+    }
+  }
   return result;
 }
 
@@ -451,28 +418,23 @@ double C_ys_tomo_limber_cpp(const double l, const int ni)
 
 arma::Mat<double> C_ys_tomo_limber_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0))
+  if (l.n_elem == 0)
   {
     spdlog::critical("{}: l array size = {}", 
                      "C_ys_tomo_limber_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Mat<double> result(l.n_elem, redshift.shear_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  { // init static variables
-    double tmp = C_ys_tomo_limber_nointerp(l(0), nz, 0, 1);
+  for (int nz=0; nz<redshift.shear_nbin; nz++) { // init static variables
+    (void) C_ys_tomo_limber_nointerp(l(0), nz, 0, 1);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-    for (int i=0; i<l.n_elem; i++)
+  for (int nz=0; nz<redshift.shear_nbin; nz++) {
+    for (int i=0; i<l.n_elem; i++) {
       result(i, nz) = C_ys_tomo_limber_nointerp(l(i), nz, 0, 0);
+    }
+  }
   return result;
 }
 */
@@ -487,25 +449,20 @@ double C_kk_limber_cpp(const double l)
 
 arma::Col<double> C_kk_limber_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0)) {
+  if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
                      "C_kk_limber_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Col<double> result(l.n_elem);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
   { // init static variables
-    double tmp = C_kk_limber_nointerp(l(0), 1);
+    (void) C_kk_limber_nointerp(l(0), 1);
   }
-  #pragma GCC diagnostic pop
-
-  #pragma omp parallel for
-  for (int i=0; i<l.n_elem; i++)
+  #pragma omp parallel for 
+  for (int i=0; i<static_cast<int>(l.n_elem); i++) {
     result(i) = C_kk_limber_nointerp(l(i), 0);
+  }
   return result;
 }
 
@@ -520,22 +477,16 @@ double C_ky_limber_cpp(const double l)
 
 arma::Col<double> C_ky_limber_nointerp_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0)) {
+  if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
                      "C_ky_limber_nointerp_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Col<double> result(l.n_elem);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
   { // init static variables
-    double tmp = C_ky_limber_nointerp(l(0), 0, 1);
+    (void) C_ky_limber_nointerp(l(0), 0, 1);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for
   for (int i=0; i<l.n_elem; i++)
     result(i) = C_ky_limber_nointerp(l(i), 0, 0);
@@ -553,22 +504,16 @@ double C_yy_limber_cpp(double l)
 
 arma::Col<double> C_yy_limber_nointerp_cpp(const arma::Col<double> l)
 {
-  if (!(l.n_elem > 0)) {
+  if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
                      "C_yy_limber_nointerp_cpp", 
                      l.n_elem);
     exit(1);
   }
-
   arma::Col<double> result(l.n_elem);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
   { // init static variables
-    double tmp = C_yy_limber_nointerp(l(0), 0, 1);
+    (void) C_yy_limber_nointerp(l(0), 0, 1);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for
   for (int i=0; i<l.n_elem; i++)
     result(i) = C_yy_limber_nointerp(l(i), 0, 0);
@@ -607,22 +552,18 @@ arma::Cube<double> int_for_C_ss_EE_tomo_limber_cpp(
                       a.n_elem);
     exit(1);
   }
-
   arma::Cube<double> result(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++)
-  { // init static variables
-    double tmp = int_for_C_ss_EE_tomo_limber_cpp(a(0),l(0),Z1(nz),Z2(nz));
+  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static variables
+    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0),l(0),Z1(nz),Z2(nz));
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++)
-    for (int i=0; i<l.n_elem; i++)
-      for (int j=0; j<a.n_elem; j++)
+  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
+      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
         result(j,i,nz) = int_for_C_ss_EE_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
+      }
+    }
+  }
   return result;
 }
 
@@ -649,22 +590,18 @@ arma::Cube<double> int_for_C_ss_BB_tomo_limber_cpp(
                       a.n_elem);
     exit(1);
   }
-
   arma::Cube<double> result(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++)
-  { // init static variables
-    double tmp = int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
+  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static variables
+    (void) int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++)
-    for (int i=0; i<l.n_elem; i++)
-      for (int j=0; j<a.n_elem; j++)
+  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
+      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
         result(j,i,nz) = int_for_C_ss_BB_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
+      }
+    }
+  }
   return result;
 }
 
@@ -691,25 +628,16 @@ py::tuple int_for_C_ss_tomo_limber_cpp(
                       a.n_elem);
     exit(1);
   }
-
   arma::Cube<double> EE(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
   arma::Cube<double> BB(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
   { // init static variables
-    double tmp = int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(0), Z2(0));
-    tmp = int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(0), Z2(0));
+    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(0), Z2(0));
+    (void) int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(0), Z2(0));
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++)
-  {
-    for (int i=0; i<l.n_elem; i++)
-    {
-      for (int j=0; j<a.n_elem; j++)
-      {
+  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
+      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
         EE(j,i,nz) = int_for_C_ss_EE_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
         BB(j,i,nz) = int_for_C_ss_BB_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
       }
@@ -745,22 +673,18 @@ arma::Cube<double> int_for_C_gs_tomo_limber_cpp(
                       a.n_elem);
     exit(1);
   }
-
   arma::Cube<double> result(a.n_elem, l.n_elem, tomo.ggl_Npowerspectra);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++)
-  { // init static variables
-    double tmp = int_for_C_gs_tomo_limber_cpp(a(0),l(0),ZL(nz),ZS(nz));
+  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static variables
+    (void) int_for_C_gs_tomo_limber_cpp(a(0),l(0),ZL(nz),ZS(nz));
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++)
-    for (int i=0; i<l.n_elem; i++)
-      for (int j=0; j<a.n_elem; j++)
+  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
+      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
         result(j,i,nz) = int_for_C_gs_tomo_limber_cpp(a(j),l(i),ZL(nz),ZS(nz));
+      }
+    }
+  }
   return result;
 }
 
@@ -791,25 +715,20 @@ arma::Cube<double> int_for_C_gg_tomo_limber_cpp(
                       a.n_elem);
     exit(1);
   }
-
   arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-  { // init static variablesf
-    double tmp = int_for_C_gg_tomo_limber_cpp(a(0), l(0), nz, nz);
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
+    (void) int_for_C_gg_tomo_limber_cpp(a(0), l(0), nz, nz);
   }
-  #pragma GCC diagnostic pop
-
   #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    for (int i=0; i<l.n_elem; i++)
-      for (int j=0; j<a.n_elem; j++)
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
+      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
         result(j, i, nz) = int_for_C_gg_tomo_limber_cpp(a(j), l(i), nz, nz);
+      }
+    }
+  }
   return result;
 }
-
 
 /*
 // ---------------------------------------------------------------------------
@@ -848,22 +767,13 @@ arma::Cube<double> int_for_C_gk_tomo_limber_cpp(
   }
 
   arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-  { // init static variables
-    double tmp = int_for_C_gk_tomo_limber_cpp(a(0), l(0), nz);
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
+    (void) int_for_C_gk_tomo_limber_cpp(a(0), l(0), nz);
   }
-  #pragma GCC diagnostic pop
-
-  if (has_b2_galaxies())
-  {
+  if (has_b2_galaxies()) {
     #pragma omp parallel for collapse(3)
-    for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    {
-      for (int i=0; i<l.n_elem; i++)
-      {
+    for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+      for (int i=0; i<l.n_elem; i++) {
         for (int j=0; j<a.n_elem; j++)
         {
           double ar[3] = {(double) nz, l(i), (double) 0.0};
@@ -1127,20 +1037,16 @@ arma::Mat<double> int_for_C_kk_limber_cpp(
                       a.n_elem);
     exit(1);
   }
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  { // init static variables
-    double tmp = int_for_C_kk_limber_cpp(a(0), l(0));
-  }
-  #pragma GCC diagnostic pop
-
   arma::Mat<double> result(a.n_elem, l.n_elem);
-
+  { // init static variables
+    (void) int_for_C_kk_limber_cpp(a(0), l(0));
+  }
   #pragma omp parallel for collapse(2)
-  for (int i=0; i<l.n_elem; i++)
-    for (int j=0; j<a.n_elem; j++)
+  for (int i=0; i<static_cast<int>(l.n_elem); i++) {
+    for (int j=0; j<static_cast<int>(a.n_elem); j++) {
       result(j, i) = int_for_C_kk_limber_cpp(a(j), l(i));
+    }
+  }
   return result;
 }
 

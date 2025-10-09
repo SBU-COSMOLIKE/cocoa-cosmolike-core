@@ -56,7 +56,7 @@ static double KE[31] =
    -1.421, -1.541, -1.661
   };
 
-void set_LF_GAMA()
+void set_LF_GAMA(void)
 {
   for (int i = 0; i <5; i++)
   {
@@ -65,7 +65,7 @@ void set_LF_GAMA()
   }
 }
 
-void set_LF_DEEP2()
+void set_LF_DEEP2(void)
 {
   for (int i = 0; i <5; i++)
   {

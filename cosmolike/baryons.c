@@ -9,9 +9,7 @@
 #include <gsl/gsl_interp2d.h>
 
 // HDF5 lib
-#ifdef HDF5LIB
 #include <hdf5.h>
-#endif
 
 // log lib
 #include "log.c/src/log.h"
@@ -32,7 +30,7 @@ barypara bary =
   .interp2d = NULL,
 };
 
-void reset_bary_struct()
+void reset_bary_struct(void)
 {
   bary.is_Pk_bary = 0;
   bary.T = NULL;
@@ -9688,11 +9686,9 @@ void init_baryons(const char* sim)
 {
   reset_bary_struct();
   
-  if (strcmp(sim, "TNG100-1") == 0)
-  {
+  if (strcmp(sim, "TNG100-1") == 0) {
     bary.Nk_bins = 325;
     bary.Na_bins = 13;
-
     set_baryon_arrays_generic(
         zBins_TNG100, 
         logkBins_TNG100, 
@@ -9700,11 +9696,9 @@ void init_baryons(const char* sim)
         logPkR_TNG100
       );
   }
-  else if (strcmp(sim, "HzAGN-1") == 0)
-  {
+  else if (strcmp(sim, "HzAGN-1") == 0) {
     bary.Nk_bins = 675;
     bary.Na_bins = 11;
-    
     set_baryon_arrays_generic(
         zBins_HzAGN, 
         logkBins_HzAGN, 
@@ -9712,11 +9706,9 @@ void init_baryons(const char* sim)
         logPkR_HzAGN
       );
   }
-  else if (strcmp(sim, "mb2-1") == 0)
-  {
+  else if (strcmp(sim, "mb2-1") == 0) {
     bary.Nk_bins = 350;
     bary.Na_bins = 21;
-
     set_baryon_arrays_generic(
         zBins_mb2, 
         logkBins_mb2,
@@ -9724,11 +9716,9 @@ void init_baryons(const char* sim)
         logPkR_mb2
       );
   }
-  else if (strcmp(sim, "illustris-1") == 0)
-  {
+  else if (strcmp(sim, "illustris-1") == 0) {
     bary.Nk_bins = 323;
     bary.Na_bins = 23;
-    
     set_baryon_arrays_generic(
         zBins_illustris, 
         logkBins_illustris,
@@ -9736,11 +9726,9 @@ void init_baryons(const char* sim)
         logPkR_illustris
       );
   }
-  else if (strcmp(sim, "eagle-1") == 0)
-  {
+  else if (strcmp(sim, "eagle-1") == 0) {
     bary.Nk_bins = 309;
     bary.Na_bins = 13;
-    
     set_baryon_arrays_generic(
         zBins_eagle, 
         logkBins_eagle,
@@ -9748,12 +9736,9 @@ void init_baryons(const char* sim)
         logPkR_eagle
       );
   }
-  else if (strcmp(sim, "owls_AGN-1") == 0)
-  { // owls_AGN_T80 = owls_AGN-1
-    
+  else if (strcmp(sim, "owls_AGN-1") == 0) { // owls_AGN_T80 = owls_AGN-1
     bary.Nk_bins = 326;
     bary.Na_bins = 15;
-    
     set_baryon_arrays_generic(
         zBins_cowls_AGN, 
         logkBins_cowls_AGN_T80, 
@@ -9761,12 +9746,9 @@ void init_baryons(const char* sim)
         logPkR_cowls_AGN_T80
       );
   }
-  else if (strcmp(sim, "owls_AGN-2") == 0)
-  { // owls_AGN_T85 = owls_AGN-2
-    
+  else if (strcmp(sim, "owls_AGN-2") == 0) { // owls_AGN_T85 = owls_AGN-2
     bary.Nk_bins = 326;
     bary.Na_bins = 15;
-    
     set_baryon_arrays_generic(
         zBins_cowls_AGN, 
         logkBins_cowls_AGN_T85, 
@@ -9774,12 +9756,9 @@ void init_baryons(const char* sim)
         logPkR_cowls_AGN_T85
       );
   }
-  else if (strcmp(sim, "owls_AGN-3") == 0)
-  { // owls_AGN_T87 = owls_AGN-3
-    
+  else if (strcmp(sim, "owls_AGN-3") == 0) { // owls_AGN_T87 = owls_AGN-3
     bary.Nk_bins = 326;
     bary.Na_bins = 15;
-    
     set_baryon_arrays_generic(
         zBins_cowls_AGN, 
         logkBins_cowls_AGN_T87, 
@@ -9787,12 +9766,9 @@ void init_baryons(const char* sim)
         logPkR_cowls_AGN_T87
       );
   }
-  else if (strcmp(sim, "BAHAMAS-2") == 0)
-  { // "BAHAMAS_T76" = "BAHAMAS-2"
-    
+  else if (strcmp(sim, "BAHAMAS-2") == 0) { // "BAHAMAS_T76" = "BAHAMAS-2"
     bary.Nk_bins = 380;
     bary.Na_bins = 15;
-    
     set_baryon_arrays_generic(
         zBins_BAHAMAS, 
         logkBins_BAHAMAS_T76, 
@@ -9800,12 +9776,9 @@ void init_baryons(const char* sim)
         logPkR_BAHAMAS_T76
       );
   }
-  else if (strcmp(sim, "BAHAMAS-1") == 0)
-  { // "BAHAMAS_T78" = "BAHAMAS-1"
-    
+  else if (strcmp(sim, "BAHAMAS-1") == 0) { // "BAHAMAS_T78" = "BAHAMAS-1"
     bary.Nk_bins = 380;
     bary.Na_bins = 15;
-    
     set_baryon_arrays_generic(
         zBins_BAHAMAS, 
         logkBins_BAHAMAS_T78,
@@ -9813,8 +9786,7 @@ void init_baryons(const char* sim)
         logPkR_BAHAMAS_T78
       );
   }
-  else if (strcmp(sim, "BAHAMAS-3") == 0)
-  { // BAHAMAS_T80 = BAHAMAS-3
+  else if (strcmp(sim, "BAHAMAS-3") == 0) { // BAHAMAS_T80 = BAHAMAS-3
     bary.Nk_bins = 380;
     bary.Na_bins = 15;
     
@@ -9825,8 +9797,7 @@ void init_baryons(const char* sim)
         logPkR_BAHAMAS_T80
       );
   }
-  else
-  {
+  else {
     log_fatal("option not implemented");
     exit(1);
   }
@@ -9839,451 +9810,146 @@ void init_baryons(const char* sim)
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-#ifdef HDF5LIB
 void init_baryons_from_hdf5_file(const char* sim, int tag, const char* allsims)
 {
+  char ch[1000]; 
+  float* tmp; hid_t fid; herr_t status; hid_t dtset; hid_t att;  
   reset_bary_struct();
   
-  hid_t file_id = H5Fopen(allsims, H5F_ACC_RDONLY, H5P_DEFAULT);
-  if (file_id < 0)
-  {
-    log_fatal("Failed to open HDF5 file %s", allsims);
-    exit(1);
-  }
+  fid = H5Fopen(allsims, H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (fid < 0) {log_fatal("Failed to open HDF5 file %s", allsims); exit(1);}
 
   { // READ REDSHIFT
-    char sim[1000]; 
-    {
-      int status = sprintf(sim, "/%s/zBins", sim);
-      if (status < 0) 
-      {
-        log_fatal("array allocation failed");
-        exit(1);
-      }
+    if (sprintf(ch, "/%s/zBins", sim) < 0) {
+      log_fatal("array allocation failed"); exit(1);
     }
+    dtset = H5Dopen2(fid, ch, H5P_DEFAULT);
+    if (H5I_INVALID_HID == dtset) {
+      log_fatal("Failed to open dataset (file %s, dataset %s)", allsims, sim);
+      H5Fclose(fid); exit(1);
+    }
+    att = H5Aopen(dtset, "Na_bins", H5P_DEFAULT);
+    if (H5I_INVALID_HID == att) {
+      log_fatal("Failed to open attribute (file %s, dataset %s)", allsims, sim); 
+      H5Dclose(dtset); H5Fclose(fid); exit(1);
+    }
+    status = H5Aread(att, H5T_NATIVE_INT32, &bary.Na_bins);
+    if (status < 0) {
+      log_fatal("Failed to read metadata (file %s, dataset %s)", allsims, sim); 
+      H5Aclose(att); H5Dclose(dtset); H5Fclose(fid); exit(1);
+    }
+    H5Aclose(att);
+    tmp = (float*) calloc(bary.Na_bins, sizeof(float));
+    if (NULL == tmp) {
+      log_fatal("array allocation failed"); 
+      H5Dclose(dtset); H5Fclose(fid); exit(1);
+    }
+    status = H5Dread(dtset, H5T_NATIVE_FLOAT, H5S_ALL,H5S_ALL, H5P_DEFAULT, tmp);
+    if (status < 0) {
+      log_fatal("Failed to read data (file %s, dataset %s)", allsims, sim);  
+      free(tmp); H5Dclose(dtset); H5Fclose(fid); exit(1);
+    }
+    H5Dclose(dtset);
     
-    hid_t dataset = H5Dopen2(file_id, sim, H5P_DEFAULT);
-    
-    if (dataset == H5I_INVALID_HID) 
-    {
-      log_fatal(
-          "Failed to open dataset (file %s, dataset %s)",
-          allsims, 
-          sim
-        );
-      H5Fclose(file_id);
-      exit(1);
-    }
-
-    { // read dataset metadata
-      hid_t attribute = H5Aopen(
-        dataset, 
-        "Na_bins", 
-        H5P_DEFAULT
-      );
-      
-      if (attribute == H5I_INVALID_HID) 
-      {
-        log_fatal("Failed to open attribute (file %s, dataset %s, attribute %s)", 
-            allsims, 
-            sim,
-            "Na_bins"
-          );
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      herr_t status = H5Aread(
-          attribute, 
-          H5T_NATIVE_INT32, 
-          &bary.Na_bins
-        );
-      
-      if (status < 0)
-      {
-        log_fatal(
-            "Failed to read metadata (file %s, dataset %s, attribute %s)",
-            allsims,
-            sim,
-            "Na_bins"
-          );
-        H5Aclose(attribute);
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      H5Aclose(attribute);
-    }
-
-    // impl "problem" - HSF5 expects float*, not double*
-    float* tmp = (float*) calloc(bary.Na_bins, sizeof(float));
-    
-    if (tmp == NULL)
-    {
-      log_fatal("array allocation failed");
-      H5Dclose(dataset);
-      H5Fclose(file_id);
-      exit(1);
-    }
-
-    { // copy dataset data to a C buffer
-      hid_t dataspace = H5Dget_space(dataset);
-      
-      if (dataspace == H5I_INVALID_HID) 
-      {
-        log_fatal(
-            "Failed to open dataspace (file %s, dataset %s)", 
-            allsims, 
-            sim
-          );
-        
-        free(tmp);
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      herr_t status = H5Dread(
-          dataset, 
-          H5T_NATIVE_FLOAT, 
-          H5S_ALL, 
-          H5S_ALL, 
-          H5P_DEFAULT, 
-          tmp
-        );
-      
-      if (status < 0) 
-      {
-        log_fatal(
-            "Failed to read data from dataspace (file %s, dataset %s)", 
-            allsims, 
-            sim
-          );
-        
-        free(tmp);
-        H5Sclose(dataspace);
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      H5Sclose(dataspace);
-    }
-
-    H5Dclose(dataset);
-
-    // copy tmp float array to permanent storage (double array)    
     bary.a_bins = (double*) calloc(bary.Na_bins, sizeof(double));
-    
-    if (bary.a_bins == NULL)
-    {
-      log_fatal("array allocation failed");
-      free(tmp);
-      H5Fclose(file_id);
-      exit(1);
+    if (NULL == bary.a_bins) {
+      log_fatal("array allocation failed"); 
+      free(tmp); H5Fclose(fid); exit(1);
     }
-
-    for (int i=0; i<bary.Na_bins; i++)
-    {
-      bary.a_bins[i] =  1.0/(1.0 + (double) tmp[i]);
+    for (int i=0; i<bary.Na_bins; i++) {
+      bary.a_bins[i] = 1.0/(1.0 + (double) tmp[i]);
     }
-
     free(tmp);
   }
-
   { // READ LOG(K)
-    char sim[1000]; 
-    {
-      int status = sprintf(sim, "/%s/logkBins", sim);
-      if (status < 0) 
-      {
-        log_fatal("array allocation failed");
-        exit(1);
-      }
+    if (sprintf(ch, "/%s/logkBins", sim) < 0) {
+      log_fatal("array allocation failed"); exit(1);
     }
-    
-    hid_t dataset = H5Dopen2(file_id, sim, H5P_DEFAULT);
-    
-    if (dataset == H5I_INVALID_HID) 
-    {
-      log_fatal(
-        "Failed to open dataset (file %s, dataset %s)", 
-        allsims, 
-        sim
-      );
+    dtset = H5Dopen2(fid, ch, H5P_DEFAULT);
+    if (dtset == H5I_INVALID_HID) {
+      log_fatal("Failed to open dataset (file %s, dataset %s)", allsims, sim); 
       exit(1);
     }
-
-    { // read metadata
-      hid_t attribute = H5Aopen(
-        dataset, 
-        "Nk_bins", 
-        H5P_DEFAULT
-      );
-
-      if (attribute == H5I_INVALID_HID) 
-      {
-        log_fatal(
-            "Failed to open attribute (file %s, dataset %s, attribute %s)", 
-            allsims, 
-            sim,
-            "Nk_bins"
-          );
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      herr_t status = H5Aread(
-          attribute, 
-          H5T_NATIVE_INT32, 
-          &bary.Nk_bins
-        );
-      
-      if (status < 0)
-      {
-        log_fatal(
-            "Failed to read metadata (file %s, dataset %s, attribute %s)",
-            allsims,
-            sim,
-            "Nk_bins"
-          );
-        H5Aclose(attribute);
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      H5Aclose(attribute);
+    att = H5Aopen(dtset, "Nk_bins", H5P_DEFAULT);
+    if (H5I_INVALID_HID == att) {
+      log_fatal("Failed to open attribute (file %s, dataset %s)", allsims, sim); 
+      H5Dclose(dtset); H5Fclose(fid); exit(1);
     }
-
-    // impl "problem" - HSF5 expects float*, not double*
-    float* tmp = (float*) calloc(bary.Nk_bins, sizeof(float));
-    
-    if (tmp == NULL)
-    {
-      log_fatal("array allocation failed");
-      H5Dclose(dataset);
-      H5Fclose(file_id);
-      exit(1);
+    status = H5Aread(att, H5T_NATIVE_INT32,  &bary.Nk_bins);
+    if (status < 0) {
+      log_fatal("Failed to read metadata (file %s, dataset %s)", allsims, sim); 
+      H5Aclose(att); H5Dclose(dtset); H5Fclose(fid); exit(1);
     }
-
-    { // copy dataset to a C buffer
-      hid_t dataspace = H5Dget_space(dataset);
-      
-      if (dataspace == H5I_INVALID_HID) 
-      {
-        log_fatal(
-            "Failed to open dataspace (file %s, dataset %s)", 
-            allsims, 
-            sim
-          );
-        
-        free(tmp);
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      herr_t status = H5Dread(
-          dataset, 
-          H5T_NATIVE_FLOAT, 
-          H5S_ALL, 
-          H5S_ALL, 
-          H5P_DEFAULT, 
-          tmp
-        );
-      
-      if (status < 0) 
-      {
-        log_fatal(
-            "Failed to read data from dataspace (file %s, dataset %s)", 
-            allsims, 
-            sim
-          );
-        
-        free(tmp);
-        H5Sclose(dataspace);
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      H5Sclose(dataspace);
+    H5Aclose(att);
+    tmp = (float*) calloc(bary.Nk_bins, sizeof(float));
+    if (NULL == tmp) {
+      log_fatal("array allocation failed"); 
+      H5Dclose(dtset); H5Fclose(fid); exit(1);
     }
-
-    H5Dclose(dataset);
-
-    // copy tmp float array to permanent storage (double array)    
+    status = H5Dread(dtset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, tmp);
+    if (status < 0) {
+      log_fatal("Failed to read data (file %s, dataset %s)", allsims, sim);
+      free(tmp);H5Dclose(dtset); H5Fclose(fid); exit(1);
+    }
+    H5Dclose(dtset);
+ 
     bary.logk_bins = (double*) calloc(bary.Nk_bins, sizeof(double));
-    if (bary.logk_bins == NULL)
-    {
-      log_fatal("array allocation failed");
-      free(tmp);
-      H5Fclose(file_id);
-      exit(1);
+    if (NULL == bary.logk_bins) {
+      log_fatal("array allocation failed"); free(tmp); H5Fclose(fid); exit(1);
     }
-
-    for (int i=0; i<bary.Nk_bins; i++)
-    {
+    for (int i=0; i<bary.Nk_bins; i++) {
       bary.logk_bins[i] = (double) tmp[i];
     }
-
     free(tmp);
   }
-  
   { // READ P(K,Z)
-    char sim[1000]; 
-    {
-      int status = sprintf(sim, "/%s/logPkR/sim%d", sim, tag);
-      if (status < 0) 
-      {
-        log_fatal("array allocation failed");
-        exit(1);
-      }
+    if (sprintf(ch, "/%s/logPkR/sim%d", sim, tag) < 0)  {
+      log_fatal("array allocation failed"); exit(1);
     }
-    
-    hid_t dataset = H5Dopen2(file_id, sim, H5P_DEFAULT);
-    
-    if (dataset == H5I_INVALID_HID) 
-    {
-      log_fatal(
-          "Failed to open dataset (file %s, dataset %s)", 
-          allsims, 
-          sim
-        );
+    dtset = H5Dopen2(fid, ch, H5P_DEFAULT);
+    if (H5I_INVALID_HID == dtset) {
+      log_fatal("Failed to open dataset (file %s, dataset %s)", allsims, sim); 
       exit(1);
     }
-
-    // impl "problem" - HSF5 expects float*, not double*
-    float* tmp = (float*) calloc(bary.Nk_bins*bary.Na_bins, sizeof(float));
-    
-    if (tmp == NULL)
-    {
-      log_fatal("array allocation failed");
-      H5Fclose(file_id);
-      exit(1);
+    tmp = (float*) calloc(bary.Nk_bins*bary.Na_bins, sizeof(float));
+    if (NULL == tmp) {
+      log_fatal("array allocation failed"); H5Fclose(fid); exit(1);
     }
-    
-    { // copy dataset to a C buffer
-      hid_t dataspace = H5Dget_space(dataset);
-      
-      if (dataspace == H5I_INVALID_HID) 
-      {
-        log_fatal(
-            "Failed to open dataspace (file %s, dataset %s)", 
-            allsims, 
-            sim
-          );
-        
-        free(tmp);
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      herr_t status = H5Dread(
-          dataset, 
-          H5T_NATIVE_FLOAT, 
-          H5S_ALL, 
-          H5S_ALL, 
-          H5P_DEFAULT, 
-          tmp
-        );
-      
-      if (status < 0) 
-      {
-        log_fatal(
-            "Failed to read data from dataspace (file %s, dataset %s)", 
-            allsims, 
-            sim
-          );
-        
-        free(tmp);
-        H5Sclose(dataspace);
-        H5Dclose(dataset);
-        H5Fclose(file_id);
-        exit(1);
-      }
-
-      H5Sclose(dataspace);
+    status = H5Dread(dtset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, tmp);
+    if (status < 0) {
+      log_fatal("Failed to read data (file %s, dataset %s)", allsims, sim);
+      free(tmp); H5Dclose(dtset); H5Fclose(fid); exit(1);
     }
-
-    H5Fclose(file_id);
-
-    // copy tmp array to permanent storage
+    H5Dclose(dtset);
+    H5Fclose(fid);
 
     bary.T = (gsl_interp2d_type*) gsl_interp2d_bilinear;
-
-    bary.interp2d = gsl_interp2d_alloc(
-        (const gsl_interp2d_type*) bary.T,
-        bary.Nk_bins, 
-        bary.Na_bins
-      );
-    if (bary.interp2d == NULL)
-    {
-      free(tmp);
-      log_fatal("Failed Allocation of interp2d GSL struct");
-      exit(1);
+    bary.interp2d = gsl_interp2d_alloc((const gsl_interp2d_type*) bary.T, 
+                                        bary.Nk_bins, bary.Na_bins);
+    if (NULL == bary.interp2d) {
+      log_fatal("Failed Allocation GSL struct"); free(tmp); exit(1);
     }
-
     bary.log_PkR = (double*) calloc(bary.Nk_bins*bary.Na_bins, sizeof(double));
-    if (bary.log_PkR == NULL)
-    {
-      free(tmp);
-      log_fatal("array allocation failed");
-      exit(1);
+    if (NULL == bary.log_PkR) {
+      log_fatal("array allocation failed"); free(tmp); exit(1);
     }
-
     #pragma omp parallel for
-    for (int i=0; i<bary.Na_bins; i++)
-    {
-      for (int j=0; j<bary.Nk_bins; j++)
-      {
-        int status = gsl_interp2d_set(
-            bary.interp2d, 
-            bary.log_PkR, 
-            j, 
-            i, 
-            (double) tmp[j*bary.Na_bins+i]
-          );
-        
-        if (status)
-        {
-          free(tmp);
-          log_fatal("gsl error %s", gsl_strerror(status));
-          exit(1);
+    for (int i=0; i<bary.Na_bins; i++) {
+      for (int j=0; j<bary.Nk_bins; j++) {
+        int status2 = gsl_interp2d_set(bary.interp2d, bary.log_PkR, j, i, 
+                                      (double) tmp[j*bary.Na_bins+i]);
+        if (status2) {
+          log_fatal("gsl error %s", gsl_strerror(status2)); free(tmp); exit(1);
         }
       }
     }
-
     free(tmp);
   }
 
-  log_debug(
-      "Na_bins = %d; Nk_bins = %d (set_bary_parameters_to_sim)", 
-      bary.Na_bins, 
-      bary.Nk_bins
-    );
-
-  int status = gsl_interp2d_init(
-      bary.interp2d, 
-      bary.logk_bins, 
-      bary.a_bins,
-      bary.log_PkR, 
-      bary.Nk_bins, 
-      bary.Na_bins
-    );
-  
-  if (status)
-  {
-    log_fatal(gsl_strerror(status));
-    exit(1);
+  int status2 = gsl_interp2d_init(bary.interp2d, bary.logk_bins, bary.a_bins,
+                                  bary.log_PkR, bary.Nk_bins, bary.Na_bins);
+  if (status2) {
+    log_fatal(gsl_strerror(status2)); exit(1);
   }
-
   bary.is_Pk_bary = 1;
 }
-#endif
-
