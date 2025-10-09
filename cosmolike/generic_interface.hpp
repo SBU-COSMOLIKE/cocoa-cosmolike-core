@@ -12,6 +12,7 @@
 #include <variant>
 #include <cmath> 
 #include <string_view>
+#include <optional>
 using namespace std::literals; // enables "sv" literal
 
 // SPDLOG
@@ -402,15 +403,27 @@ class BaryonScenario
       }
       return this->nscenarios_;
     }
+    
     bool is_pcs_set() const {
       return this->is_pcs_set_;
     }
+
+    bool is_allsims_file_set() const {
+      return this->is_allsims_file_set_;
+    }
+
     bool is_scenarios_set() const {
       return this->is_scenarios_set_;
     }
+
     void set_pcs(arma::Mat<double> eigenvectors) {
       this->eigenvectors_ = eigenvectors;
       this->is_pcs_set_ = true;
+    }
+
+    void set_sims_file(std::string data_sims) {
+      this->allsims_file_ = data_sims;
+      this->is_allsims_file_set_ = true;
     }
 
     void set_scenarios(std::string data_sims, std::string scenarios);
@@ -445,10 +458,19 @@ class BaryonScenario
       }
       return this->eigenvectors_(ci, cj); 
     }
+
+    std::string get_allsims_file() const {
+      static constexpr std::string_view fn = "BaryonScenario::get_allsims_file"sv;
+      if (!this->is_allsims_file_set_) [[unlikely]] {
+        spdlog::critical("{}: {} not set", fn, "all sims HDF5 file");
+        exit(1);
+      }
+      return this->allsims_file_;
+    }
   private:
-    bool is_pcs_set_;
-    bool is_scenarios_set_;
+    bool is_allsims_file_set_, is_pcs_set_, is_scenarios_set_;
     int nscenarios_;
+    std::string allsims_file_;
     std::map<int, std::string> scenarios_;
     arma::Mat<double> eigenvectors_;
     BaryonScenario() = default;
@@ -497,9 +519,7 @@ void init_accuracy_boost(
   );
 
 #ifdef HDF5LIB
-void init_baryons_contamination(
-    std::string sim, std::string all_sims_hdf5_file
-  ); // NEW API
+void init_baryons_contamination(std::string sim, std::string all_sims_file); // NEW API
 #endif
 
 void init_baryons_contamination(std::string sim); // OLD API
@@ -667,6 +687,11 @@ arma::Col<double> compute_add_baryons_pcs(arma::Col<double> Q, arma::Col<double>
 template <int N, int M>
 arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_sizes() 
 {
+  static constexpr std::string_view errbegins = "Begins Execution"sv;
+  static constexpr std::string_view errends = "Ends Execution"sv;
+  static constexpr std::string_view fname = "compute_data_vector_Mx2pt_N_sizes"sv;
+  using spdlog::debug; using spdlog::info;
+  debug("{}: {}", fname, errbegins);
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
   arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
@@ -685,6 +710,7 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_sizes()
     sizes(4) = Nlen[N]*redshift.shear_nbin;
     sizes(5) = cmb.is_kk_bandpower() == 1 ? cmb.get_nbins_kk_bandpower() : like.Ncl;
   }
+  debug("{}: {}", fname, errends);
   return sizes;
 }
 
@@ -703,6 +729,11 @@ void init_data_Mx2pt_N(
     arma::Col<int>::fixed<M> ord
   )
 {
+  static constexpr std::string_view errbegins = "Begins Execution"sv;
+  static constexpr std::string_view errends = "Ends Execution"sv;
+  static constexpr std::string_view fname = "init_data_Mx2pt_N"sv;
+  using spdlog::debug; using spdlog::info;
+  debug("{}: {}", fname, errbegins);
   arma::Col<int>::fixed<M> ndv = compute_data_vector_Mx2pt_N_sizes<N,M>();
   for(int i=0; i<(int) ndv.n_elem; i++) {
     like.Ndata += ndv(i);
@@ -711,6 +742,7 @@ void init_data_Mx2pt_N(
   survey.set_mask<N,M>(mask, ord);  // set_mask must be called first
   survey.set_data(data);
   survey.set_inv_cov(cov);
+  debug("{}: {}", fname, errends);
   return;
 }
 
@@ -724,6 +756,11 @@ void init_data_Mx2pt_N(
 template <int N, int M>
 arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(arma::Col<int>::fixed<M> ord) 
 {
+  static constexpr std::string_view errbegins = "Begins Execution"sv;
+  static constexpr std::string_view errends = "Ends Execution"sv;
+  static constexpr std::string_view fname = "compute_data_vector_Mx2pt_N_starts"sv;
+  using spdlog::debug; using spdlog::info;
+  debug("{}: {}", fname, errbegins);
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
   using namespace arma;
@@ -735,6 +772,7 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(arma::Col<int>::fixe
       start(i) += sizes(indices(j));
     }
   }
+  debug("{}: {}", fname, errends);
   return start; 
 }
 
@@ -745,16 +783,21 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(arma::Col<int>::fixe
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-template <int N, int X, int P = 1> 
+template <int N, int M, int P = 1> 
 void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
 {
+  static constexpr std::string_view errbegins = "Begins Execution"sv;
+  static constexpr std::string_view errends = "Ends Execution"sv;
+  static constexpr std::string_view fname = "compute_add_calib_and_set_mask_Mx2pt_N"sv;
+  using spdlog::debug; using spdlog::info;
+  debug("{}<{},{},{}>: {}", fname, N, M, P, errbegins);
   using vector = arma::Col<double>;
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(P == 0 || P == 1, "P must be 0/1 (include PM))");
   IP& survey = IP::get_instance();
   arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
 
-  if constexpr (0 == X) {
+  if constexpr (0 == M) {
     if (1 == like.shear_shear) { 
       for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
         const int z1 = Z1(nz);
@@ -782,7 +825,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
       }
     }
   }
-  else if constexpr (1 == X) {
+  else if constexpr (1 == M) {
     if (1 == like.shear_pos) {
       for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
         const int zs = ZS(nz);
@@ -803,7 +846,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
       }
     }
   }
-  else if constexpr (2 == X) {
+  else if constexpr (2 == M) {
     if (1 == like.pos_pos) {
       for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
         for (int i=0; i<Nlen[N]; i++) {
@@ -815,7 +858,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
       }
     }
   }
-  else if constexpr (3 == X) {
+  else if constexpr (3 == M) {
     if (1 == like.gk) {
       for (int nz=0; nz<redshift.clustering_nbin; nz++) {
         for (int i=0; i<Nlen[N]; i++) {
@@ -827,7 +870,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
       }
     }
   }
-  else if constexpr (4 == X) {
+  else if constexpr (4 == M) {
     if (1 == like.ks) {
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         for (int i=0; i<Nlen[N]; i++) {
@@ -842,7 +885,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
       }
     }
   }
-  else if constexpr (5 == X) {
+  else if constexpr (5 == M) {
     if (1 == like.kk) {
       IPCMB& cmb = IPCMB::get_instance();
       if (0 == cmb.is_kk_bandpower()) {
@@ -864,6 +907,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
       }
     }
   }
+  debug("{}<{},{},{}>: {}", fname, N, M, P, errends);
 }
 
 // ---------------------------------------------------------------------------
@@ -879,6 +923,11 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
     arma::Col<int>::fixed<M> ord
   )
 {
+  static constexpr std::string_view errbegins = "Begins Execution"sv;
+  static constexpr std::string_view errends = "Ends Execution"sv;
+  static constexpr std::string_view fname = "compute_add_calib_and_set_mask_Mx2pt_N"sv;
+  using spdlog::debug; using spdlog::info;
+  debug("{}<{},{},{}>: {}", fname, N, M, P, errbegins);
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
   static_assert(P == 0 || P == 1, "P must be 0/1 (include PM))");
@@ -891,6 +940,7 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
     add_calib_and_set_mask_X_N<N,4,P>(data_vector, start(4));
     add_calib_and_set_mask_X_N<N,5,P>(data_vector, start(5));
   }
+  debug("{}<{},{},{}>: {}", fname, N, M, P, errends);
   return data_vector;
 }
 
@@ -901,14 +951,19 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-template <int N, int X> 
+template <int N, int M> 
 void compute_X_N_masked(arma::Col<double>& dv, const int start)
 {
+  static constexpr std::string_view errbegins = "Begins Execution"sv;
+  static constexpr std::string_view errends = "Ends Execution"sv;
+  static constexpr std::string_view fname = "compute_X_N_masked"sv;
+  using spdlog::debug; using spdlog::info;
+  debug("{}<{},{}>: {}", fname, N, M, errbegins);
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   IP& survey = IP::get_instance();
   arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
 
-  if constexpr (0 == X) {
+  if constexpr (0 == M) {
     if (1 == like.shear_shear) {    
       for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
         const int z1 = Z1(nz);
@@ -931,10 +986,10 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           }
         }
       }
-      add_calib_and_set_mask_X_N<N,X>(dv, start);
+      add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
   }
-  else if constexpr (1 == X) {
+  else if constexpr (1 == M) {
     if (1 == like.shear_pos) {
       for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
         const int zl = ZL(nz);
@@ -949,10 +1004,10 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           }
         }
       }
-      add_calib_and_set_mask_X_N<N,X>(dv, start);
+      add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
   }
-  else if constexpr (2 == X) {
+  else if constexpr (2 == M) {
     if (1 == like.pos_pos) {
       for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
         for (int i=0; i<Nlen[N]; i++) {
@@ -967,10 +1022,10 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           }
         }
       }
-      add_calib_and_set_mask_X_N<N,X>(dv, start);
+      add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
   }
-  else if constexpr (3 == X) {
+  else if constexpr (3 == M) {
     if (1 == like.gk) {
       for (int nz=0; nz<redshift.clustering_nbin; nz++) {
         if constexpr (N == 0) {
@@ -988,10 +1043,10 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           }
         }
       }
-      add_calib_and_set_mask_X_N<N,X>(dv, start);
+      add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
   }
-  else if constexpr (4 == X) {
+  else if constexpr (4 == M) {
     if (1 == like.ks) {
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         if constexpr (N == 0) {
@@ -1009,10 +1064,10 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           }
         }
       }
-      add_calib_and_set_mask_X_N<N,X>(dv, start);
+      add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
   }
-  else if constexpr (5 == X) {
+  else if constexpr (5 == M) {
     if (1 == like.kk) {
       IPCMB& cmb = IPCMB::get_instance();
       if (0 == cmb.is_kk_bandpower()) {
@@ -1052,9 +1107,10 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           }
         }
       }
-      add_calib_and_set_mask_X_N<N,X>(dv, start);
+      add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
   }
+  debug("{}<{},{}>: {}", fname, N, M, errends);
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,6 +1123,11 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
 template <int N, int M> 
 arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
 {
+  static constexpr std::string_view errbegins = "Begins Execution"sv;
+  static constexpr std::string_view errends = "Ends Execution"sv;
+  static constexpr std::string_view fname = "compute_Mx2pt_N_masked"sv;
+  using spdlog::debug; using spdlog::info;
+  debug("{}<{},{}>: {}", fname, N, M, errbegins);
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
@@ -1079,6 +1140,7 @@ arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
     compute_X_N_masked<N,4>(data_vector, start(4));
     compute_X_N_masked<N,5>(data_vector, start(5));
   }
+  debug("{}<{},{}>: {}", fname, N, M, errends);
   return data_vector;
 }
 
@@ -1092,39 +1154,42 @@ arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
 template <int N, int M> 
 arma::Mat<double> compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
 {
-  using matrix = arma::Mat<double>;
-  using vector = arma::Col<double>;
+  using spdlog::debug; using spdlog::info;
+  using matrix = arma::Mat<double>; using vector = arma::Col<double>;
+  static constexpr std::string_view fname = "compute_baryon_pcas_Mx2pt_N"sv;
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
-  const std::string name = "compute_baryon_pcas_Mx2pt_N";
   IP& ip = IP::get_instance();
   const int ndata = ip.get_ndata();
   const int ndata_sqzd = ip.get_ndata_sqzd();
-  const int nscenarios = BaryonScenario::get_instance().nscenarios();
+  BaryonScenario& bs = BaryonScenario::get_instance();
+  const int nscenarios = bs.nscenarios();
 
   // Compute Cholesky Decomposition of the Covariance Matrix --------------
-  spdlog::debug("{}: Cholesky Decomposition of the Cov Matrix begins", name);
+  debug("{}: Cholesky Decomposition of the cov Matrix begins", fname);
   matrix L = arma::chol(ip.get_cov_masked_sqzd(), "lower");
   matrix inv_L = arma::inv(L);
-  spdlog::debug("{}: Cholesky Decomposition of the Cov Matrix ends", name);
+  debug("{}: Cholesky Decomposition of the cov Matrix ends", fname);
 
   // Compute Dark Matter data vector --------------------------------------
-  spdlog::debug("{}: Comp. DM only data vector begins", name);
-  cosmology.random = RandomNumber::get_instance().get();
+  debug("{}: Comp. DM only data vector begins", fname);
+  cosmology.random = RandomNumber::get_instance().get(); // clear cosmolike cache
   reset_bary_struct(); // make sure there is no baryon contamination
   vector dv_dm = ip.sqzd_theory_data_vector(compute_Mx2pt_N_masked<N,M>(ord));
-  spdlog::debug("{}: Comp. DM only data vector ends", name);
-  
+  debug("{}: Comp. DM only data vector ends", fname);
   // Compute data vector for all Baryon scenarios -------------------------
   matrix D = matrix(ndata_sqzd, nscenarios);
   for (int i=0; i<nscenarios; i++) {
-    const std::string bs = BaryonScenario::get_instance().get_scenario(i);
-    spdlog::debug("{}: Comp. data vector w/ baryon scenario {} begins", name, bs);
+    debug("{}: comp. dv w/ scenario {} begins", fname, bs.get_scenario(i));
     cosmology.random = RandomNumber::get_instance().get(); // clear cosmolike cache
-    init_baryons_contamination(bs);
+    if (bs.is_allsims_file_set()) {// new api
+      init_baryons_contamination(bs.get_scenario(i), bs.get_allsims_file());
+    } else { // old api
+      init_baryons_contamination(bs.get_scenario(i));
+    }
     vector dv = ip.sqzd_theory_data_vector(compute_Mx2pt_N_masked<N,M>(ord));
     D.col(i) = dv - dv_dm;
-    spdlog::debug("{}: Comp. data vector w/ baryon scenario {} ends", name, bs);
+    debug("{}: comp. dv w/ scenario {} ends", fname, bs.get_scenario(i));
   }
   reset_bary_struct();
   cosmology.random = RandomNumber::get_instance().get();  // clear cosmolike cache

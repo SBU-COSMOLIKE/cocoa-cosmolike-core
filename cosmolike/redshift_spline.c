@@ -465,14 +465,12 @@ double zdistr_photoz(double zz, const int nj)
     #pragma omp parallel for reduction( + : norm )
     for (int i=0; i<ntomo; i++) {
       NORM[i] = 0.0;
-      for (int k=0; k<nzbins; k++) 
-      {    
+      for (int k=0; k<nzbins; k++) {    
         const double z = table[ntomo+1][k];  
         NORM[i] += zdistr_histo_n(z, i) * dz_histo;
       }
       norm += NORM[i];
-    }
-        
+    }  
     #pragma omp parallel for
     for (int k=0; k<nzbins; k++) { 
       table[0][k] = 0; // store normalization in table[0][:]
@@ -482,14 +480,12 @@ double zdistr_photoz(double zz, const int nj)
         table[0][k] += table[i+1][k] * NORM[i] / norm;
       }
     }
-
     for (int i=0; i<ntomo+1; i++) {
       if (photoz_splines[i] != NULL) {
         gsl_interp_free(photoz_splines[i]);
       }
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
-
     #pragma omp parallel for
     for (int i=0; i<ntomo+1; i++) {
       int status = gsl_interp_init(photoz_splines[i], 
@@ -501,7 +497,6 @@ double zdistr_photoz(double zz, const int nj)
         exit(1);
       }
     }
-
     cache_redshift_nz_params_shear = redshift.random_shear;
   }
   
@@ -557,30 +552,22 @@ double zmean_source(int ni)
       fdiff(cache_table_params, Ntable.random) ||
       fdiff(cache_redshift_nz_params_shear, redshift.random_shear))
   {    
-    if (table != NULL)  free(table);
+    if (table != NULL) free(table);
     table = (double*) malloc1d(redshift.shear_nbin);
    
     const size_t szint = 200 + 50 * (Ntable.high_def_integration);
     gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
 
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init = zdistr_photoz(0., 0);
-    }
-    #pragma GCC diagnostic pop
-
+    (void) zdistr_photoz(0., 0); // init static variables
     #pragma omp parallel for
     for (int i=0; i<redshift.shear_nbin; i++) {
       double ar[1] = {(double) i};
       gsl_function F;
       F.params = ar;
       F.function = int_for_zmean_source;
-      
-      table[i] = gsl_integration_glfixed(&F, 
-        redshift.shear_zdist_zmin[i], redshift.shear_zdist_zmax[i], w);
+      table[i] = gsl_integration_glfixed(&F, redshift.shear_zdist_zmin[i], 
+                                         redshift.shear_zdist_zmax[i], w);
     }
-
     gsl_integration_glfixed_table_free(w);
     cache_redshift_nz_params_shear = redshift.random_shear;
     cache_table_params = Ntable.random;
@@ -860,48 +847,37 @@ double g_tomo(double ainput, const int ni)
   if (NULL == table || 
       fdiff(cache_table_params, Ntable.random)) 
   {
-    if (table != NULL) {
-      free(table);
-    }
+    if (table != NULL) free(table);
     table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_a);
   }
-
   if (fdiff(cache_cosmo_params, cosmology.random) ||
       fdiff(cache_photoz_nuisance_params_shear, nuisance.random_photoz_shear) ||
       fdiff(cache_redshift_nz_params_shear, redshift.random_shear) ||
       fdiff(cache_table_params, Ntable.random)) 
   {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
     { // COCOA: init static variables - allows the OpenMP on the next loop
       double ar[2] = {(double) 0, chi(amin)};
-      double trash = int_for_g_tomo(amin, (void*) ar);
+      (void) int_for_g_tomo(amin, (void*) ar);
     }
-    #pragma GCC diagnostic pop
-    
     const size_t szint = 200 + 50 * (Ntable.high_def_integration);
     gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
-
     #pragma omp parallel for collapse(2)
     for (int j=0; j<redshift.shear_nbin; j++) {
       for (int i=0; i<Ntable.N_a; i++) {
         const double a = amin + i*da;       
         double ar[2] = {(double) j, chi(a)};
- 
         gsl_function F;
         F.params = ar;
         F.function = int_for_g_tomo;       
         table[j][i] = gsl_integration_glfixed(&F, amin, a, w);
       }
     }
-
     gsl_integration_glfixed_table_free(w);
     cache_cosmo_params = cosmology.random;
     cache_table_params = Ntable.random;
     cache_redshift_nz_params_shear = redshift.random_shear;
     cache_photoz_nuisance_params_shear = nuisance.random_photoz_shear;
   }
-
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni);
     exit(1);
@@ -959,13 +935,10 @@ double g2_tomo(double a, int ni)
       fdiff(cache_redshift_nz_params_shear, redshift.random_shear)  || 
       fdiff(cache_table_params, Ntable.random)) 
   {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
     { // init static variables
       double ar[2] = {(double) 0, chi(amin)};
-      double trash = int_for_g2_tomo(amin, (void*) ar);
+      (void) int_for_g2_tomo(amin, (void*) ar);
     }
-    #pragma GCC diagnostic pop
 
     const size_t szint = 250 + 50 * (Ntable.high_def_integration);
     gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);

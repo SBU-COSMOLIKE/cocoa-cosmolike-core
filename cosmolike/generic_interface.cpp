@@ -8,6 +8,7 @@ namespace py = pybind11;
 // boost library
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/replace.hpp>
+#include <boost/lexical_cast.hpp>
 
 // std::isnan: no compile w/ -O3 or -fast-math stackoverflow.com/a/47703550/2472169
 
@@ -28,6 +29,7 @@ static const int force_cache_update_test = 0;
 using vector = arma::Col<double>;
 using matrix = arma::Mat<double>;
 using cube = arma::Cube<double>;
+using spdlog::info;
 using spdlog::debug;
 using spdlog::critical;
 // Why the cpp functions accept and return STL vectors (instead of arma:Col)?
@@ -161,6 +163,7 @@ arma::Mat<double> read_table(const std::string file_name)
 
 std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 {
+  static constexpr std::string_view fname = "get_baryon_sim_name_and_tag"sv;
   // Desired Convention:
   // (1) Python input: not be case sensitive
   // (2) simulation names only have "_" as deliminator, e.g., owls_AGN.
@@ -173,56 +176,43 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
     size_t pos = 0; 
     size_t count = 0; 
     std::string tmp = sim;
-
-    while ((pos = tmp.rfind("-")) != std::string::npos) 
-    {
-      tmp = tmp.substr(pos+1);
-      ++count;
+    while ((pos = tmp.rfind("-")) != std::string::npos) {
+      tmp = tmp.substr(0, pos);
+      count++;
     }
-
-    if (count > 1)
-    {
-      critical(
-        "{}: Scenario {} not supported (too many dashes)", 
-        "get_baryon_sim_name_and_tag", sim);
+    if (count > 1) {
+      critical("{}: Scenario {} not supported (too many dashes)", fname, sim);
       exit(1);
     }
   }
 
-  if (sim.rfind("owls_agn") != std::string::npos)
-  {
+  if (sim.rfind("owls_agn") != std::string::npos) {
     boost::replace_all(sim, "owls_agn", "owls_AGN");
     boost::replace_all(sim, "_t80", "-1");
     boost::replace_all(sim, "_t85", "-2");
     boost::replace_all(sim, "_t87", "-3");
   } 
-  else if (sim.rfind("bahamas") != std::string::npos)
-  {
+  else if (sim.rfind("bahamas") != std::string::npos) {
     boost::replace_all(sim, "bahamas", "BAHAMAS");
     boost::replace_all(sim, "_t78", "-1");
     boost::replace_all(sim, "_t76", "-2");
     boost::replace_all(sim, "_t80", "-3");
   } 
-  else if (sim.rfind("hzagn") != std::string::npos)
-  {
+  else if (sim.rfind("hzagn") != std::string::npos) {
     boost::replace_all(sim, "hzagn", "HzAGN");
   }
-  else if (sim.rfind("tng") != std::string::npos)
-  {
+  else if (sim.rfind("tng") != std::string::npos) {
     boost::replace_all(sim, "tng", "TNG");
   }
   
   std::string name;
   int tag;
-
-  if (sim.rfind('-') != std::string::npos)
-  {
+  if (sim.rfind('-') != std::string::npos) {
     const size_t pos = sim.rfind('-');
     name = sim.substr(0, pos);
     tag = std::stoi(sim.substr(pos + 1));
   } 
-  else
-  { 
+  else { 
     name = sim;
     tag = 1; 
   }
@@ -368,15 +358,13 @@ void init_baryons_contamination(std::string sim)
 // ---------------------------------------------------------------------------
 
 #ifdef HDF5LIB
-void init_baryons_contamination(
-    std::string sim, std::string all_sims_hdf5_file
-  )
+void init_baryons_contamination(std::string sim, std::string all_sims_file)
 { // NEW API
   static constexpr std::string_view fname = "init_baryons_contamination"sv;
   debug("{}: {}", fname, errbegins);
   auto [name, tag] = get_baryon_sim_name_and_tag(sim);
-  debug("{}: Baryon simulation w/ Name = {} & Tag = {} selected",fname,name,tag);
-  init_baryons_from_hdf5_file(name.c_str(), tag, all_sims_hdf5_file.c_str());
+  debug("{}: Baryon simulation w/ Name = {} & Tag = {} selected", fname, name, tag);
+  init_baryons_from_hdf5_file(name.c_str(), tag, all_sims_file.c_str());
   debug("{}: {}", fname, errends);
 }
 #endif
@@ -627,12 +615,17 @@ void init_probes(std::string possible_probes)
         { "wtheta", arma::Col<int>::fixed<6>{{0,0,1,0,0,0}} },
         { "2x2pt",  arma::Col<int>::fixed<6>{{0,1,1,0,0,0}} },
         { "3x2pt",  arma::Col<int>::fixed<6>{{1,1,1,0,0,0}} },
-        { "xi_ggl", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
-        { "xi_gg",  arma::Col<int>::fixed<6>{{1,0,1,0,0,0}} },
         { "5x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,0}} },
         { "6x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,1}} },
         { "3x2pt_ks_gk_kk", arma::Col<int>::fixed<6>{{0,0,0,1,1,1}} },
-        { "3x2pt_ss_sk_sk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} }
+        { "3x2pt_ss_sk_sk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} },
+        { "xi_ggl", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
+        { "xi_gg", arma::Col<int>::fixed<6>{{1,0,1,0,0,0}} },
+        { "2x2pt_ss_sg", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
+        { "2x2pt_ss_gg", arma::Col<int>::fixed<6>{{1,0,1,0,0,0}} },
+        { "2x2pt_ss_sk", arma::Col<int>::fixed<6>{{1,0,0,0,1,0}} },
+        { "2x2pt_ss_gk", arma::Col<int>::fixed<6>{{1,0,0,1,0,0}} },
+        { "2x2pt_ss_kk", arma::Col<int>::fixed<6>{{1,0,0,0,0,1}} },
     };
   static const std::unordered_map<std::string,std::string> 
     names = {
@@ -642,7 +635,12 @@ void init_probes(std::string possible_probes)
        {"2x2pt", "2x2pt"},
        {"3x2pt", "3x2pt"},
        {"xi_ggl", "xi + ggl (2x2pt)"},
-       {"xi_gg",  "xi + ggl (2x2pt)"},
+       {"xi_gg",  "xi + gg (2x2pt)"},
+       {"2x2pt_ss_sg", "ss + sg (2x2pt)"},
+       {"2x2pt_ss_gg", "ss + gg (2x2pt)"},
+       {"2x2pt_ss_sk", "ss + sk (2x2pt)"},
+       {"2x2pt_ss_gk", "ss + gk (2x2pt)"},
+       {"2x2pt_ss_kk", "ss + kk (2x2pt)"},
        {"5x2pt",  "5x2pt"},
        {"3x2pt_ks_gk_kk", "3x2pt (gk + sk + kk)"},
        {"3x2pt_ss_sk_sk", "3x2pt (ss + sk + kk)"},
@@ -2240,7 +2238,7 @@ vector IP::expand_theory_data_vector_from_sqzd(vector input) const
 vector IP::sqzd_theory_data_vector(vector input) const
 {
   static constexpr std::string_view fname = "IP::sqzd_theory_data_vector"sv;
-  debug("{}: {}", fname, errbegins);
+  info("{}: {}", fname, errbegins);
   if (this->ndata_ != static_cast<int>(input.n_elem)) [[unlikely]] {
     critical("{}: invalid input data vector", fname);
     exit(1);
@@ -2251,7 +2249,7 @@ vector IP::sqzd_theory_data_vector(vector input) const
       result(this->get_index_sqzd(i)) = input(i);
     }
   }
-  debug("{}: {}", fname, errends);
+  info("{}: {}", fname, errends);
   return result;
 }
 
@@ -2552,24 +2550,74 @@ void BaryonScenario::set_scenarios(std::string scenarios)
   debug("{}: {}", fname, errbegins);
   std::vector<std::string> lines;
   lines.reserve(50);
-
   boost::trim_if(scenarios, boost::is_any_of("\t "));
   boost::trim_if(scenarios, boost::is_any_of("\n"));
-
   if (scenarios.empty()) [[unlikely]] {
     critical("{}: invalid string input (empty)", fname);
     exit(1);
   }
-  
+
   debug("{}: Selecting baryon scenarios for PCA", fname);
 
-  boost::split(lines, scenarios, boost::is_any_of("/ \t"), boost::token_compress_on);
-  
+  boost::split(lines,scenarios,boost::is_any_of("/ \t"),boost::token_compress_on);
   int nscenarios = 0;
   for (auto it=lines.begin(); it != lines.end(); ++it) {
     auto [name, tag] = get_baryon_sim_name_and_tag(*it);
     this->scenarios_[nscenarios++] = name + "-" + std::to_string(tag);
   }
+  this->nscenarios_ = nscenarios;
+  this->is_scenarios_set_ = true;
+  debug("{}: {} scenarios are registered", fname, this->nscenarios_);
+  debug("{}: Registering baryon scenarios for PCA done!", fname);
+  debug("{}: {}", fname, errends);
+}
+
+void BaryonScenario::set_scenarios(std::string data_sims, std::string scenarios) 
+{
+  static constexpr std::string_view fname = "BaryonScenario::set_scenarios"sv;
+  debug("{}: {}", fname, errbegins);
+  this->set_sims_file(data_sims);
+  std::vector<std::string> lines;
+  lines.reserve(50);
+  boost::trim_if(scenarios, boost::is_any_of("\t "));
+  boost::trim_if(scenarios, boost::is_any_of("\n"));
+  if (scenarios.empty()) [[unlikely]] {
+    critical("{}: invalid string input (empty)", fname);
+    exit(1);
+  }
+
+  debug("{}: Selecting baryon scenarios for PCA", fname);
+
+  boost::split(lines,scenarios,boost::is_any_of("/ \t"),boost::token_compress_on);
+
+  int nscenarios = 0;
+  for (auto it=lines.begin(); it != lines.end(); ++it)  {
+    // check if the name contains 2 dashes (range) begins ----------------------
+    std::vector<int> tags;
+    std::string root = *it;
+    size_t count = 0;
+    size_t pos = 0; 
+    while ((pos = root.rfind("-")) != std::string::npos) {
+      const int tag = boost::lexical_cast<int>(root.substr(pos+1));
+      tags.push_back(tag);
+      root = root.substr(0, pos);
+      count++;
+    }
+    // check if the name contains 2 dashes (range) ends ------------------------
+    if (2 == count) {
+      const int a = std::min(tags[0], tags[1]);
+      const int b = std::max(tags[0], tags[1]);
+      for (int i=a; i<b; i++) {
+        std::string sim = root + "-" + std::to_string(i);
+        auto [name, tag] = get_baryon_sim_name_and_tag(sim);
+        this->scenarios_[nscenarios++] = name + "-" + std::to_string(tag);
+      }
+    } 
+    else {
+      auto [name, tag] = get_baryon_sim_name_and_tag(*it);
+      this->scenarios_[nscenarios++] = name + "-" + std::to_string(tag);
+    }
+  } 
   this->nscenarios_ = nscenarios;
   this->is_scenarios_set_ = true;
   debug("{}: {} scenarios are registered", fname, this->nscenarios_);

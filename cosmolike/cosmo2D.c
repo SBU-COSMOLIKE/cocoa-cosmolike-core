@@ -200,7 +200,7 @@ double xi_pm_tomo(
           }
         }
       }
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
           const int q = nz * Ntable.Ntheta + i;
@@ -227,7 +227,6 @@ double xi_pm_tomo(
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
   }
-
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
     exit(1); 
@@ -906,7 +905,6 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   const double ell_prefactor = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4; 
 
   double ans;
-
   switch(nuisance.IA_MODEL) 
   {
     case IA_MODEL_TATT:
@@ -983,8 +981,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
     }
     case IA_MODEL_NLA:
     {
-      if (EE == 1)
-      { 
+      if (EE == 1) { 
         double IA_A1[2];
         IA_A1_Z1Z2(a, growfac_a, n1, n2, IA_A1);
         const double C11 = IA_A1[0];
@@ -994,8 +991,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
               - WS2*WK1*C12*PK
               + WS1*WS2*C11*C12*PK;
       }
-      else
-      {
+      else {
         ans = 0.0;
       }
       break;
@@ -1058,7 +1054,7 @@ double C_ss_tomo_limber_nointerp(
     F.function = int_for_C_ss_tomo_limber;
     res = gsl_integration_glfixed(&F, amin, amax, w);
   }
-  return res;     
+  return res;   
 }
 
 double C_ss_tomo_limber(const double l, const int ni, const int nj, const int EE)
@@ -1078,7 +1074,6 @@ double C_ss_tomo_limber(const double l, const int ni, const int nj, const int EE
     }
     table = (double***) malloc3d(2, tomo.shear_Npowerspectra, nell);
   }
-  
   if (fdiff(cache[0], cosmology.random) ||
       fdiff(cache[1], nuisance.random_photoz_shear) ||
       fdiff(cache[2], nuisance.random_ia) ||
@@ -1105,7 +1100,6 @@ double C_ss_tomo_limber(const double l, const int ni, const int nj, const int EE
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
   }
-  
   if (ni < 0 || 
       ni > redshift.shear_nbin - 1 || 
       nj < 0 ||
@@ -1126,7 +1120,7 @@ double C_ss_tomo_limber(const double l, const int ni, const int nj, const int EE
     log_fatal("internal logic error in selecting bin number");
     exit(1);
   }
-  return  interpol1d((1==EE)?table[0][q]:table[1][q],nell,lim[0],lim[1],lim[2],lnl);
+  return interpol1d((1==EE)?table[0][q]:table[1][q],nell,lim[0],lim[1],lim[2],lnl);
 }
 
 // ---------------------------------------------------------------------------
