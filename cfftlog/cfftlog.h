@@ -22,6 +22,32 @@ double** y, double** Fy);
 void cfftlog_ells_increment(double* x, double* fx, long N, config* config, int* ell, long Nell, 
 double** y, double** Fy);
 
+void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin 
+    double* const x,                // assume all fx have the same x-array
+    double* const* const* const fx,
+    int const Nx,                   // assume all bins and FFTs have the same N's
+    config* const cfg,              // assume all guns have the same config
+    int* const* const ell,
+    int* const LMAX,           
+    double* const* const* const y, 
+    double* const* const* const* const Fy,
+    int const SIZE1,
+    int const SIZE2
+  ) ; 
+
+void cfftlog_ells_cocoa2( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin 
+    double* const x,      // assume all fx have the same x-array
+    double* const* const* const fx,
+    long const Nx,       // assume all bins and FFTs have the same N's
+    config* const cfg,   // assume all guns have the same config
+    int* const ell,      // assume all gins and FFTs have same ell
+    long const Nell,     // assume all gins and FFTs have same ell
+    double** y, 
+    double**** Fy,
+    long const SIZE1,
+    long const SIZE2
+  );
+
 #ifdef __cplusplus
 }
 #endif

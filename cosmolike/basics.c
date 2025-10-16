@@ -74,6 +74,34 @@ gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n)
   return w;
 }
 
+void**** malloc4d(const long nx, const long ny, const long nz, const long nw) {
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, 64, sizeof(double***)*nx + 
+                                     sizeof(double**)*nx*ny+ 
+                                     sizeof(double*)*nx*ny*nz +
+                                     sizeof(double)*nx*ny*nz*nw) != 0) {
+    log_fatal("posix_memalign failed in malloc4d_aligned64");
+    exit(EXIT_FAILURE);
+  }
+  double**** tab = (double****) raw_block;
+  if (NULL == tab) {
+    log_fatal("array allocation failed"); exit(1);
+  }
+  double*** lvl3 = (double***)(tab + nx);
+  double**  lvl2 = (double** )(lvl3 + nx*ny);     
+  double*   data = (double*  )(lvl2 + nx*ny*nz);
+  #pragma omp parallel for
+  for (int i = 0; i < nx; ++i) {
+    tab[i] = lvl3 + i*ny;
+    for (int j = 0; j < ny; ++j) {
+      tab[i][j] = lvl2 + (ny*i+j)*nz;
+      for (int k = 0; k < nz; ++k)
+        tab[i][j][k] = data + ((ny*i+j)*nz + k)*nw;
+    }
+  }
+  return (void****)tab;
+}
+
 /*
 void*** malloc3d(const int nx, const int ny, const int nz)
 {
@@ -112,10 +140,10 @@ void*** malloc3d(const int nx, const int ny, const int nz)
 
   double*** tab = (double***) raw_block;
 
-  #pragma omp parallel for collapse(2)
+  #pragma omp parallel for
   for (int i = 0; i < nx; ++i) {
+    tab[i] = (double**) ((char*) raw_block + nx*sizeof(double**)) + ny*i;
     for (int j = 0; j < ny; ++j) {
-      tab[i]    = (double**) ((char*) raw_block + nx*sizeof(double**)) + ny*i;
       tab[i][j] = (double*)  ((char*) raw_block + 
                               nx*sizeof(double**) + 
                               nx*ny*sizeof(double*)) + nz*(ny*i + j);
@@ -144,6 +172,20 @@ void** malloc2d(const int nx, const int ny)
   return (void**) tab;
 }
 */
+
+void** malloc2d_int(const int nx, const int ny)
+{
+  int** tab = (int**) malloc(sizeof(int*)*nx + 
+                             sizeof(int)*nx*ny);
+  if (tab == NULL) {
+    log_fatal("array allocation failed"); exit(1);
+  }
+  #pragma omp parallel for
+  for (int i=0; i<nx; i++) {
+    tab[i] = (int*)(tab + nx) + ny*i;
+  }
+  return (void**) tab;
+}
 
 void** malloc2d(const int nx, const int ny)
 { // Got help from ChatGPT to do the align version of my previous malloc func
@@ -175,6 +217,15 @@ void* malloc1d(const int nx)
   return (void*) vec;
 }
 */
+
+void* malloc1d_int(const int nx)
+{
+  int* vec = (int*) malloc(sizeof(int)*nx);
+  if (NULL == vec) {
+    log_fatal("array allocation failed"); exit(1);
+  }
+  return (void*) vec;
+}
 
 void* malloc1d(const int nx)
 { // Got help from ChatGPT to do the align version of my previous malloc func

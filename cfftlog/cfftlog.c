@@ -10,13 +10,126 @@
 #include "utils.h"
 #include "utils_complex.h"
 
-
+#include "log.c/src/log.h"
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------	
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+typedef fftw_complex fftwc;
+typedef fftw_plan fftwp;
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------	
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+static void**** malloc4d_fftwc(const long nx, const long ny, 
+															 const long nz, const long nw) {       
+  fftwc**** tab = (fftwc****) malloc(sizeof(fftwc***)*nx +
+															       sizeof(fftwc**)*nx*ny +
+															       sizeof(fftwc*)*nx*ny*nz +
+															       sizeof(fftwc)*nx*ny*nz*nw);
+  if (NULL == tab) {
+    log_fatal("array allocation failed"); exit(1);
+  }
+	fftwc*** lvl3 = (fftwc***)(tab  + nx);
+  fftwc**  lvl2 = (fftwc** )(lvl3 + nx*ny);
+  fftwc*   data = (fftwc*  )(lvl2 + nx*ny*nz);
+  for (int i=0; i<nx; i++) {
+    tab[i] = lvl3 + ny*i;
+    for (int j=0; j<ny; j++) {
+      tab[i][j] = lvl2 + (ny*i+j)*nz;
+      for (int k=0; k<nz; k++) {
+        tab[i][j][k] = data + ((ny*i+j)*nz+k)*nw;
+      }
+    }
+  }
+  return (void****) tab;
+}
+static void**** malloc4d_complex(const long nx, const long ny, 
+															   const long nz, const long nw) {
+  double complex**** tab = (double complex****) malloc(sizeof(double complex***)*nx +
+																							         sizeof(double complex**)*nx*ny +
+																							         sizeof(double complex*)*nx*ny*nz +
+																							         sizeof(double complex)*nx*ny*nz*nw);
+  if (NULL == tab) { 
+    log_fatal("array allocation failed"); exit(1);
+  }
+  double complex***  lvl3 = (double complex*** )(tab + nx);
+  double complex**   lvl2 = (double complex**  )(lvl3 + nx*ny);     
+  double complex*    data = (double complex*   )(lvl2 + nx*ny*nz);
+  for (int i=0; i<nx; i++) {
+    tab[i] = lvl3 + i*ny;
+    for (int j=0; j<ny; j++) {
+      tab[i][j] = lvl2 + (ny*i+j)*nz;
+      for (int k=0; k<nz; k++) {
+        tab[i][j][k] = data + ((ny*i+j)*nz+k)*nw;
+       }
+    }
+  }
+  return (void****)tab;
+}
+static void*** malloc3d_fftwp(const long nx, const long ny, const long nz) {
+  fftwp*** tab = (fftwp***) malloc(sizeof(fftwp**)*nx +
+                             			 sizeof(fftwp*)*nx*ny + 
+                             			 sizeof(fftwp)*nx*ny*nz);
+  if (NULL == tab) {
+    log_fatal("array allocation failed"); 
+    exit(1);
+  }
+  #pragma omp parallel for
+  for (int i=0; i<nx; i++) {
+  	tab[i] = (fftwp**)(tab + nx) + ny*i;
+    for (int j=0; j<ny; j++) {
+      tab[i][j] = (fftwp*)((fftwp**)(tab+nx) + nx*ny) + (ny*i+j)*nz;
+    }
+  }
+  return (void***) tab;
+}
+static void*** malloc3d(const long nx, const long ny, const long nz) {
+  double*** tab = (double***) fftw_malloc(sizeof(double**)*nx +
+		                                      sizeof(double*)*nx*ny + 
+		                                      sizeof(double)*nx*ny*nz);
+  if (NULL == tab) {
+    log_fatal("array allocation failed"); 
+    exit(1);
+  }
+  #pragma omp parallel for
+  for (int i=0; i<nx; i++) {
+  	tab[i] = (double**)(tab + nx) + ny*i;
+    for (int j=0; j<ny; j++) {
+      tab[i][j] = (double*)((double**)(tab+nx) + nx*ny) + (ny*i+j)*nz;
+    }
+  }
+  return (void***) tab;
+}
+static void**** malloc3d_ptr(const long nx, const long ny, const long nz) {
+  double**** tab = (double****) fftw_malloc(sizeof(double***)*nx +
+		                                        sizeof(double**)*nx*ny + 
+		                                        sizeof(double*)*nx*ny*nz);
+  if (NULL == tab) {
+    log_fatal("array allocation failed"); exit(1);
+  }
+  #pragma omp parallel for
+  for (int i=0; i<nx; i++) {
+  	tab[i] = (double***)(tab + nx) + ny*i;
+    for (int j=0; j<ny; j++) {
+      tab[i][j] = (double**)((double***)(tab+nx) + nx*ny) + (ny*i+j)*nz;
+    }
+  }
+  return (void****) tab;
+}
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------	
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 void cfftlog(double *x, double *fx, long N, config *config, int ell, double *y, double *Fy) {
 	long N_original = N;
 	long N_pad = config->N_pad;
 	N += 2*N_pad;
 
-	if(N % 2) {printf("Please use even number of x !\n"); exit(0);}
+	if(N % 2) {
+		printf("Please use even number of x !\n"); 
+		exit(0);
+	}
 	long halfN = N/2;
 
 	double x0, y0;
@@ -56,9 +169,9 @@ void cfftlog(double *x, double *fx, long N, config *config, int ell, double *y, 
 		fb[i] = fx[i-N_pad] / pow(x[i-N_pad], config->nu) ;
 	}
 
-	fftw_complex *out;
-	fftw_plan plan_forward, plan_backward;
-	out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * (halfN+1) );
+	fftwc *out;
+	fftwp plan_forward, plan_backward;
+	out = (fftwc*) fftw_malloc(sizeof(fftwc) * (halfN+1) );
 	plan_forward = fftw_plan_dft_r2c_1d(N, fb, out, FFTW_ESTIMATE);
 
 	fftw_execute(plan_forward);
@@ -345,4 +458,693 @@ void cfftlog_ells_increment(double *x, double *fx, long N, config *config, int* 
 	fftw_destroy_plan(plan_forward);
 	fftw_free(out);
 	free(fb);
+}
+
+
+void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin 
+		double* const x, 	 		// assume all fx have the same x-array
+		double* const* const* const fx,
+		int const Nx, 				 					 // assume all bins and FFTs have the same N's
+		config* const cfg, 					 // assume all guns have the same config
+		int* const* const ell,
+		int* const LMAX, 					 
+    double* const* const* const y, 
+    double* const* const* const* const Fy,
+	  int const SIZE1,
+		int const SIZE2
+	) 
+{
+	int Nmax = 0;
+	int N[SIZE2][3];
+	for(int j=0; j<SIZE2; j++) {
+		N[j][0] = cfg[j].N_pad;
+		N[j][1] = Nx;
+		N[j][2] = 2*N[j][0] + N[j][1];
+		if(N[j][2] % 2) {
+			log_fatal("Please use even number of x"); 
+			exit(1);
+		}
+		if (N[j][2] > Nmax) 
+			Nmax = N[j][2];	
+	}
+	int imax, Nellmax = 0;
+	for(int i=0; i<SIZE1; i++) {
+		if (LMAX[i] > Nellmax) {
+			Nellmax = LMAX[i];
+			imax = i;
+		}
+	}
+	const double sqrtpi = sqrt(M_PI);
+	const double ln2 = log(2.);
+	const double x0   = x[0];
+	const double dlnx = log(x[1]/x[0]);
+	const double complex clogpi = clog(M_PI);
+	const double ln2pio2 = 0.5*log(2*M_PI);
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------	
+	#pragma omp parallel for collapse(2) schedule(static,1)
+	for(int i=0; i<SIZE1; i++) {
+		for(int q=0; q<Nx; q++) { // q < Nx
+			for (int k=0; k<LMAX[i]; k++) {
+				y[i][k][q] = (ell[i][k] + 1.) / x[Nx -1 -q];
+			}
+		}
+	}	
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------	
+	double*** fb = (double***) malloc3d(SIZE1, SIZE2, Nmax); // biased input func
+	#pragma omp parallel for collapse(2) schedule(static,1)
+	for(int i=0; i<SIZE1; i++) {
+		for(int j=0; j<SIZE2; j++) {
+			for(int k=0; k<N[j][0]; k++) {
+				fb[i][j][k] = 0.; // padding
+			}
+			for(int k=N[j][0]; k<N[j][0]+N[j][1]; k++) {
+				const int q = k - N[j][0];
+				if (q < 0 || q > Nx-1) {
+					log_fatal("logical error on the array indexes"); exit(1);
+				}
+				fb[i][j][k] = fx[i][j][q] / pow(x[q], cfg[j].nu) ;
+			}
+			for(int k=N[j][0]+N[j][1]; k<N[j][2]; k++) {
+				fb[i][j][k] = 0.; // padding
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------	
+	fftwc* toutfwd[SIZE1][SIZE2]; fftwp planf[SIZE1][SIZE2];
+	for(int i=0; i<SIZE1; i++) {
+		for(int j=0; j<SIZE2; j++) {
+			toutfwd[i][j] = (fftwc*) fftw_malloc(sizeof(fftwc)*(N[j][2]/2+1));
+			planf[i][j] = fftw_plan_dft_r2c_1d(N[j][2], fb[i][j], toutfwd[i][j], FFTW_ESTIMATE);
+		}
+	}
+	#pragma omp parallel for collapse(2) schedule(static,1)
+	for(int i=0; i<SIZE1; i++) {
+		for(int j=0; j<SIZE2; j++) {
+			fftw_execute(planf[i][j]);
+			// c_window_cfft function begins -----------------------------------------
+			const double cww = cfg[j].c_window_width;
+			if( !(cww > 0) || !(cww	< 1)) {
+				log_fatal("improper window width"); exit(1);
+			}
+			const int halfN = N[j][2]/2;
+			const int kmax = (int) (halfN * cww);
+			for(int k=0; k<(kmax+1); k++) { // window for right-side
+				const double tmp = (double)(k)/kmax;
+				const double W = (double)(k)/kmax - sin(2.*M_PI*k/kmax)/(2.*M_PI);
+				toutfwd[i][j][N[j][2]/2-k] *= W;
+			}
+		}
+	}
+	fftwc* const* const* const* const outfwd = 
+		(fftwc* const* const* const* const) malloc4d_fftwc(SIZE1,SIZE2,Nellmax,Nmax/2+1);
+	double eta_m[SIZE2][Nmax/2+1];
+	for(int j=0; j<SIZE2; j++) {
+		#pragma omp parallel for schedule(static,1)
+		for(int q=0; q<N[j][2]/2+1; q++) {
+			eta_m[j][q] = (2.0*M_PI/(dlnx * N[j][2])) * q;	
+		}
+	}
+	#pragma omp parallel for collapse(2) schedule(static,1)
+	for(int i=0; i<SIZE1; i++) {
+		for(int j=0; j<SIZE2; j++) {
+			for (int k=0; k<LMAX[i]; k++) {
+				for(int q=0; q<(N[j][2]/2+1); q++) { 
+					outfwd[i][j][k][q] = toutfwd[i][j][q];
+				}
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	double complex* const* const* const* const gl = 
+		(double complex* const* const* const* const) malloc4d_complex(SIZE1, SIZE2, Nellmax, Nmax/2+1);
+	double pfac[] = {0.99999999999980993227684700473478,
+									 676.520368121885098567009190444019,
+									-1259.13921672240287047156078755283,
+									 771.3234287776530788486528258894,
+									-176.61502916214059906584551354,
+									 12.507343278686904814458936853,
+									-0.13857109526572011689554707,
+									 9.984369578019570859563e-6,
+									 1.50563273514931155834e-7};
+	{
+		int i = imax;
+		for(int j=0; j<SIZE2; j++) {
+			const double nu = cfg[j].nu;
+			switch(cfg[j].derivative) 
+			{	
+				case 0: 
+				{
+					#pragma omp parallel for collapse(2) schedule(static,1)
+					for (int k=0; k<LMAX[i]; k++) {
+						for(int q=0; q<N[j][2]/2+1; q++) 
+						{
+							const double complex z = nu + I*eta_m[j][q];
+							double complex part1;
+							{
+								const double complex a = 0.5*(ell[i][k] + z);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part1 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							double complex part2;
+							{
+								const double complex a = 0.5*(3 + ell[i][k] - z);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part2 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							gl[i][j][k][q] = cexp(z*ln2 + part1 - part2);	
+						}
+					}
+					break;
+				}
+				case 1: 
+				{
+					#pragma omp parallel for collapse(2) schedule(static,1)
+					for (int k=0; k<LMAX[i]; k++) {
+						for(int q=0; q<N[j][2]/2+1; q++) {
+							const double complex z = nu + I*eta_m[j][q];
+							double complex part1;
+							{
+								const double complex a = 0.5*(ell[i][k] + z - 1.);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part1 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							double complex part2;
+							{
+								const double complex a = 0.5*(4 + ell[i][k] - z);
+								double complex tmp = pfac[0];
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part2 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							gl[i][j][k][q] = -(z-1)*cexp((z-1)*ln2 + part1 - part2);
+						}
+					}
+					break;
+				}
+				case 2: 
+				{
+					#pragma omp parallel for collapse(2) schedule(static,1)
+					for (int k=0; k<LMAX[i]; k++) {
+						for(int q=0; q<N[j][2]/2+1; q++) {
+							const double complex z = nu + I*eta_m[j][q];
+							double complex part1;
+							{
+								const double complex a = 0.5*(ell[i][k] + z - 2);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part1 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							double complex part2;
+							{
+								const double complex a = 0.5*(5 + ell[i][k] - z);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part2 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							gl[i][j][k][q] = (z-1)*(z-2)*cexp((z-2)*ln2+part1-part2);
+						}
+					}
+					break;
+				}
+			}
+		}
+	}
+	for(int i=0; i<imax; i++) {
+		for(int j=0; j<SIZE2; j++) {
+			#pragma omp parallel for collapse(2) schedule(static,1)
+			for (int k=0; k<LMAX[i]; k++) {
+				for(int q=0; q<N[j][2]/2+1; q++) {
+					gl[i][j][k][q] = gl[imax][j][k][q]; 
+				}
+			}
+		}
+	}
+	if (imax+1 < SIZE1) {
+		for(int i=imax+1; i<SIZE1; i++) {
+			for(int j=0; j<SIZE2; j++) {
+				#pragma omp parallel for collapse(2) schedule(static,1)
+				for (int k=0; k<LMAX[i]; k++) {
+					for(int q=0; q<N[j][2]/2+1; q++) {
+						gl[i][j][k][q] = gl[imax][j][k][q]; 
+					}
+				}
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	double**** outbcw = (double****) malloc3d_ptr(SIZE1, SIZE2, Nellmax);
+	fftwp*** planb = (fftwp***) malloc3d_fftwp(SIZE1, SIZE2, Nellmax);
+	for(int i=0; i<SIZE1; i++) {
+		for(int j=0; j<SIZE2; j++) {
+			for(int k=0; k<LMAX[i]; k++) {
+				outbcw[i][j][k] = (double*) fftw_malloc(sizeof(double)*N[j][2]);
+				planb[i][j][k] = fftw_plan_dft_c2r_1d(N[j][2], 
+																							outfwd[i][j][k], 
+																							outbcw[i][j][k], 
+																							FFTW_ESTIMATE);
+			}
+		}
+	}
+	for(int i=0; i<SIZE1; i++) {
+		for(int j=0; j<SIZE2; j++) {
+			#pragma omp parallel for collapse(2) schedule(static,1)
+			for (int k=0; k<LMAX[i]; k++) {
+				for(int q=0; q<(N[j][2]/2+1); q++) { 
+					const double y0 = y[i][k][0];			
+					outfwd[i][j][k][q] *= cpow(x0*y0/exp(2*N[j][0]*dlnx),-I*eta_m[j][q]);
+					outfwd[i][j][k][q] *= gl[i][j][k][q];
+					outfwd[i][j][k][q]  = conj(outfwd[i][j][k][q]);
+				}
+			}
+		}
+	}
+	for(int i=0; i<SIZE1; i++) {
+		#pragma omp parallel for collapse(2) schedule(static,1)
+		for(int j=0; j<SIZE2; j++) {
+			for (int k=0; k<LMAX[i]; k++) {
+				fftw_execute(planb[i][j][k]);
+			}
+		}
+	}
+	for(int i=0; i<SIZE1; i++) {
+		#pragma omp parallel for collapse(3) schedule(static,1)
+		for(int j=0; j<SIZE2; j++) {
+			for (int k=0; k<LMAX[i]; k++) {
+				for(int q=0; q<Nx; q++) {
+					Fy[i][j][k][q] = outbcw[i][j][k][N[j][0]+q] * sqrtpi / 
+													 (4.*N[j][2] * pow(y[i][k][q], cfg[j].nu));
+				}
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	for(int i=0; i<SIZE1; i++) {
+		for(int j=0; j<SIZE2; j++) {
+			free(toutfwd[i][j]);
+			fftw_destroy_plan(planf[i][j]);
+			for(int k=0; k<LMAX[i]; k++) {
+				free(outbcw[i][j][k]);
+				fftw_destroy_plan(planb[i][j][k]);
+			}
+		}
+	}
+	free((void*) outbcw); 
+	free((void*) outfwd); 
+	free((void*) gl); 
+	free((void*) fb);
+	free((void*) planb);
+	return;
+}
+
+void cfftlog_ells_cocoa2( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin 
+    double* const x,      // assume all fx have the same x-array
+    double* const* const* const fx,
+    long const Nx,       // assume all bins and FFTs have the same N's
+    config* const cfg, 	 // assume all guns have the same config
+    int* const ell,      // assume all gins and FFTs have same ell
+    long const Nell,     // assume all gins and FFTs have same ell
+    double** y, 
+    double**** Fy,
+    long const SIZE1,
+    long const SIZE2
+	) 
+{
+	long Nmax = 0;
+	long N[SIZE2][3];
+	for(long j=0; j<SIZE2; j++) {
+		N[j][0] = cfg[j].N_pad;
+		N[j][1] = Nx;
+		N[j][2] = 2*N[j][0] + N[j][1];
+		if(N[j][2] % 2) {
+			log_fatal("Please use even number of x"); 
+			exit(1);
+		}
+		if (N[j][2] > Nmax) 
+			Nmax = N[j][2];	
+	}
+	const double sqrtpi = sqrt(M_PI);
+	const double ln2 = log(2.);
+	const double x0   = x[0];
+	const double dlnx = log(x[1]/x[0]);
+	const double complex clogpi = clog(M_PI);
+	const double ln2pio2 = 0.5*log(2*M_PI);
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------	
+	#pragma omp parallel for collapse(2) schedule(static,1)
+	for (int k=0; k<Nell; k++) {
+		for(int q=0; q<Nx; q++) { // q < Nx
+			y[k][q] = (ell[k] + 1.) / x[Nx -1 -q];
+		}
+	}	
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------	
+	double*** fb = (double***) malloc3d(SIZE1, SIZE2, Nmax); // biased input func
+	#pragma omp parallel for collapse(2) schedule(static,1)
+	for(long i=0; i<SIZE1; i++) {
+		for(long j=0; j<SIZE2; j++) {
+			for(long k=0; k<N[j][0]; k++) {
+				fb[i][j][k] = 0.; // padding
+			}
+			for(int k=N[j][0]; k<N[j][0]+N[j][1]; k++) {
+				const int q = k - N[j][0];
+				if (q < 0 || q > Nx-1) {
+					log_fatal("logical error on the array indexes"); exit(1);
+				}
+				fb[i][j][k] = fx[i][j][q] / pow(x[q], cfg[j].nu) ;
+			}
+			for(int k=N[j][0]+N[j][1]; k<N[j][2]; k++) {
+				fb[i][j][k] = 0.; // padding
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------	
+	fftwc* toutfwd[SIZE1][SIZE2];
+	fftwp planf[SIZE1][SIZE2];
+	for(long i=0; i<SIZE1; i++) {
+		for(long j=0; j<SIZE2; j++) {
+			toutfwd[i][j] = (fftwc*) fftw_malloc(sizeof(fftwc)*(N[j][2]/2+1));
+			planf[i][j] = fftw_plan_dft_r2c_1d(N[j][2], fb[i][j], toutfwd[i][j], FFTW_ESTIMATE);
+		}
+	}
+	#pragma omp parallel for collapse(2) schedule(static,1)
+	for(long i=0; i<SIZE1; i++) {
+		for(long j=0; j<SIZE2; j++) {
+			fftw_execute(planf[i][j]);
+			// c_window_cfft function begins -----------------------------------------
+			const double cww = cfg[j].c_window_width;
+			if( !(cww > 0) || !(cww	< 1)) {
+				log_fatal("improper window width"); exit(1);
+			}
+			const long halfN = N[j][2]/2;
+			const long kmax = (long) (halfN * cww);
+			for(long k=0; k<(kmax+1); k++) { // window for right-side
+				const double tmp = (double)(k)/kmax;
+				const double W = (double)(k)/kmax - sin(2.*M_PI*k/kmax)/(2.*M_PI);
+				toutfwd[i][j][N[j][2]/2-k] *= W;
+			}
+		}
+	}
+	fftwc* const* const* const* const outfwd = 
+		(fftwc* const* const* const* const) malloc4d_fftwc(SIZE1, SIZE2, Nell, Nmax/2+1);
+	#pragma omp parallel for collapse(3) schedule(static,1)
+	for(long i=0; i<SIZE1; i++) {
+		for(long j=0; j<SIZE2; j++) {
+			for (long k=0; k<Nell; k++) {
+				for(long q=0; q<(N[j][2]/2+1); q++) { 
+					outfwd[i][j][k][q] = toutfwd[i][j][q];
+				}
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	double eta_m[SIZE2][Nmax/2+1];
+	for(long j=0; j<SIZE2; j++) {
+		for(long q=0; q<N[j][2]/2+1; q++) {
+			eta_m[j][q] = (2.0*M_PI/(dlnx * N[j][2])) * q;	
+		}
+	}
+	double complex* const* const* const* const gl = 
+		(double complex* const* const* const* const) malloc4d_complex(SIZE1, SIZE2, Nell, Nmax/2+1);
+	double pfac[] = {0.99999999999980993227684700473478,
+									 676.520368121885098567009190444019,
+									-1259.13921672240287047156078755283,
+									 771.3234287776530788486528258894,
+									-176.61502916214059906584551354,
+									 12.507343278686904814458936853,
+									-0.13857109526572011689554707,
+									 9.984369578019570859563e-6,
+									 1.50563273514931155834e-7};
+	#pragma omp parallel for collapse(3) schedule(static,1)
+	for(long i=0; i<SIZE1; i++) {
+		for(long j=0; j<SIZE2; j++) {
+			for (long k=0; k<Nell; k++) {
+				const double nu = cfg[j].nu;
+				switch(cfg[j].derivative) 
+				{	
+					case 0: 
+					{
+						for(long q=0; q<N[j][2]/2+1; q++) 
+						{
+							const double complex z = nu + I*eta_m[j][q];
+							double complex part1;
+							{
+								const double complex a = 0.5*(ell[k] + z);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part1 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							double complex part2;
+							{
+								const double complex a = 0.5*(3 + ell[k] - z);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part2 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							gl[i][j][k][q] = cexp(z*ln2 + part1 - part2);	
+						}
+						break;
+					}
+					case 1: 
+					{
+						for(long q=0; q<N[j][2]/2+1; q++) {
+							const double complex z = nu + I*eta_m[j][q];
+							double complex part1;
+							{
+								const double complex a = 0.5*(ell[k] + z - 1.);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part1 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							double complex part2;
+							{
+								const double complex a = 0.5*(4 + ell[k] - z);
+								double complex tmp = pfac[0];
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part2 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							gl[i][j][k][q] = -(z-1)*cexp((z-1)*ln2 + part1 - part2);
+						}
+						break;
+					}
+					case 2: 
+					{
+						for(long q=0; q<N[j][2]/2+1; q++) {
+							const double complex z = nu + I*eta_m[j][q];
+							double complex part1;
+							{
+								const double complex a = 0.5*(ell[k] + z - 2);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part1 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							double complex part2;
+							{
+								const double complex a = 0.5*(5 + ell[k] - z);
+								if(creal(a) < 0.5) {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+									const double complex t = (-a) + 7.5;
+									part2 = clogpi - clog(csin(M_PI*a)) - 
+													(ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+								}
+								else {
+									double complex tmp = pfac[0];
+									for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+									const double complex t = (a-1) + 7.5;
+									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+								}
+							}
+							gl[i][j][k][q] = (z-1)*(z-2)*cexp((z-2)*ln2+part1-part2);
+						}
+						break;
+					}
+				}
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	double**** outbcw = (double****) malloc3d_ptr(SIZE1, SIZE2, Nell);
+	fftwp*** planb = (fftwp***) malloc3d_fftwp(SIZE1, SIZE2, Nell);
+	for(long i=0; i<SIZE1; i++) {
+		for(long j=0; j<SIZE2; j++) {
+			for(int k=0; k<Nell; k++) {
+				outbcw[i][j][k] = (double*) fftw_malloc(sizeof(double)*N[j][2]);
+				planb[i][j][k] = fftw_plan_dft_c2r_1d(N[j][2], 
+																							outfwd[i][j][k], 
+																							outbcw[i][j][k], 
+																							FFTW_ESTIMATE);
+			}
+		}
+	}
+	#pragma omp parallel for collapse(3) schedule(static,1)
+	for(long i=0; i<SIZE1; i++) {
+		for(long j=0; j<SIZE2; j++) {
+			for (long k=0; k<Nell; k++) {
+				for(long q=0; q<(N[j][2]/2+1); q++) { 
+					const double y0 = y[k][0];			
+					outfwd[i][j][k][q] *= cpow(x0*y0/exp(2*N[j][0]*dlnx),-I*eta_m[j][q]);
+					outfwd[i][j][k][q] *= gl[i][j][k][q];
+					outfwd[i][j][k][q]  = conj(outfwd[i][j][k][q]);
+				}
+				fftw_execute(planb[i][j][k]);
+				for(int q=0; q<Nx; q++) {
+					Fy[i][j][k][q] = outbcw[i][j][k][N[j][0]+q] * sqrtpi / 
+													 (4.*N[j][2] * pow(y[k][q], cfg[j].nu));
+				}
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	for(long i=0; i<SIZE1; i++) {
+		for(long j=0; j<SIZE2; j++) {
+			free(toutfwd[i][j]);
+			fftw_destroy_plan(planf[i][j]);
+			for(int k=0; k<Nell; k++) {
+				free(outbcw[i][j][k]);
+				fftw_destroy_plan(planb[i][j][k]);
+			}
+		}
+	}
+	free((void*) outbcw); 
+	free((void*) outfwd); 
+	free((void*) gl); 
+	free((void*) fb);
+	free((void*) planb);
+	return;
 }
