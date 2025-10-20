@@ -528,8 +528,8 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         const int Z1 = nz; // cross redshift bin not supported so not using ZCL1(k)
         const int Z2 = nz; // cross redshift bin not supported so not using ZCL2(k)
         
-        C_cl_tomo(L, Z1, Z2, Cl[nz], dev, tolerance);
-        //C_cl_tomo2(L, Z1, Z2, Cl[nz], LNLMAX);
+        //C_cl_tomo(L, Z1, Z2, Cl[nz], dev, tolerance);
+        C_cl_tomo2(L, Z1, Z2, Cl[nz], 50);
       }*/
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) { // LIMBER PART
@@ -2639,7 +2639,7 @@ double C_yy_limber(double l)
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-
+/*
 void C_cl_tomo(
     int L, 
     const int ni, 
@@ -2771,7 +2771,6 @@ void C_cl_tomo(
       const double ell_prefactor = ell_ar[i] * (ell_ar[i] + 1.);
 
       double cl_temp = 0.;
-      //#pragma omp parallel for reduction(+:cl_temp)
       for (int j=0; j<Ntable.NL_Nchi; j++) {
         Fk1[0][i][j] += gbmag(0.0, ni)*ell_prefactor*Fk1[1][i][j]/(Fk1[2][i][j]*Fk1[2][i][j]);
         const double k1cH0 = Fk1[2][i][j] * real_coverH0;
@@ -2785,8 +2784,6 @@ void C_cl_tomo(
     dev = Cl[L]/C_gg_tomo_limber_nointerp(L, ni, nj, 0) - 1;
   }
   L++;
-  //printf("%d %e %d\n", ni, redshift.clustering_zdist_zmean[ni], L);
-
   Cl[limits.LMAX_NOLIMBER] = C_gg_tomo_limber(limits.LMAX_NOLIMBER, ni, nj);
   
   #pragma omp parallel for
@@ -2798,7 +2795,6 @@ void C_cl_tomo(
   free(f1_chi);
   free(ell_ar);
 }
-
 void C_cl_tomo2(
     int L, 
     const int ni, 
@@ -2912,7 +2908,7 @@ void C_cl_tomo2(
   }
   free(Fk1);
   free(f1_chi); free(ell_ar);
-}
+}*/
 
 void C_cl_tomo_cocoa(double* const* const Cl)
 {
@@ -3091,7 +3087,7 @@ void C_cl_tomo_cocoa(double* const* const Cl)
   }
   for (int i=0; i<nbins; i++) {
     #pragma omp parallel for schedule(static,1)
-    for (int k=LMAX[i]; k<limits.LMAX_NOLIMBER; k++) {
+    for (int k=LMAX[i]; k<limits.LMAX_NOLIMBER+1; k++) {
       Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) :
                                          C_gg_tomo_limber_nointerp(k, i, i, 0);
     }

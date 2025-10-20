@@ -120,9 +120,10 @@ double int_for_C_yy_limber(double a, void *params);
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
-void C_cl_tomo(int L, int ni, int nj, double *Cl, double dev, double tolerance);
-
 void C_cl_tomo_cocoa(double* const* const Cl);
+
+/*
+void C_cl_tomo(int L, int ni, int nj, double *Cl, double dev, double tolerance);
 
 void C_cl_tomo2(
     int L, 
@@ -131,6 +132,8 @@ void C_cl_tomo2(
     double *const Cl,
     const int nell 
   );
+*/
+
 
 #ifdef __cplusplus
 }
