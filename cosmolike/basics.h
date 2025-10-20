@@ -30,11 +30,17 @@ gsl_spline* malloc_gsl_spline(const int n);
 
 gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n);
 
+void* malloc1d_int(const int nx);
+
 void* malloc1d(const int nx);
 
 void** malloc2d(const int nx, const int ny);
 
+void** malloc2d_int(const int nx, const int ny);
+
 void*** malloc3d(const int nx, const int ny, const int nz);
+
+void**** malloc4d(const long nx, const long ny, const long nz, const long nw);
 
 void* calloc1d(const int nx);
 

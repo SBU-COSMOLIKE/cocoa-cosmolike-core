@@ -270,7 +270,6 @@ void initial_setup()
 
   std::string mode = "Halofit";
   memcpy(pdeltaparams.runmode, mode.c_str(), mode.size() + 1);
-
   debug("{}: {}", fname, errends);
   return;
 }
@@ -763,7 +762,7 @@ void init_ntomo_powerspectra()
   for (int i=0; i<redshift.clustering_nbin; i++) {
     for (int j=0; j<redshift.shear_nbin; j++) {
       n += test_zoverlap(i, j);
-      if(test_zoverlap(i, j) == 0) {
+      if(test_zoverlap(i,j) == 0) {
         spdlog::info("{}: GGL pair L{:d}-S{:d} is excluded", fname, i, j);
       }
     }

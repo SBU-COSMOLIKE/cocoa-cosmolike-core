@@ -30,6 +30,7 @@
 namespace py = pybind11;
 
 // cosmolike
+#include "cosmolike/basics.h"
 #include "cosmolike/bias.h"
 #include "cosmolike/IA.h"
 #include "cosmolike/cosmo2D.h"
@@ -300,21 +301,44 @@ arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
     exit(1);
   }
   arma::Cube<double> result = C_gg_tomo_limber_cpp(l);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+  /*for (int nz=0; nz<redshift.clustering_nbin; nz++) {
     arma::uvec idxs = arma::find(l<limits.LMAX_NOLIMBER);
     if (idxs.n_elem > 0) {
       const int L = 1;
       const double tolerance = 0.01;      // required fractional accuracy in C(l)
       const double dev = 10. * tolerance; // will be diff  exact vs Limber init to
-
       arma::Col<double> Cl(limits.LMAX_NOLIMBER+1);
       C_cl_tomo(L, nz, nz, Cl.memptr(), dev, tolerance);
-  
+      
       for (int i=0; i<static_cast<int>(idxs.n_elem); i++) {
         result(idxs(i), nz, nz) = Cl(static_cast<int>(l(idxs(i))+1e-13));
       }
     }
+  }*/
+  int cnl = 0; // compute nonlimber
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+    arma::uvec idxs = arma::find(l<limits.LMAX_NOLIMBER);
+    if (idxs.n_elem > 0) {
+      cnl = 1;
+      break;
+    }
   }
+  double* const* const Cl = (1 == cnl) ? 
+      (double* const* const) malloc2d(redshift.clustering_nbin,
+                                      limits.LMAX_NOLIMBER+1) : NULL;
+  if (1 == cnl && NULL != Cl) {
+    C_cl_tomo_cocoa(Cl);
+  }
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+    arma::uvec idxs = arma::find(l<limits.LMAX_NOLIMBER);
+    if (idxs.n_elem > 0) {
+      for (int i=0; i<static_cast<int>(idxs.n_elem); i++) {
+        const int ell = static_cast<int>(l(idxs(i))+1e-13);
+        result(idxs(i), nz, nz) = Cl[nz][ell];
+      }
+    }
+  }
+  if (1 == cnl && NULL != Cl) free((void*) Cl);
   return result;
 }
 
