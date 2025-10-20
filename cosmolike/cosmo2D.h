@@ -133,8 +133,6 @@ void C_cl_tomo2(
     const int nell 
   );
 */
-
-
 #ifdef __cplusplus
 }
 #endif

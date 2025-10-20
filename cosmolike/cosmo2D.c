@@ -528,12 +528,11 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         const int Z1 = nz; // cross redshift bin not supported so not using ZCL1(k)
         const int Z2 = nz; // cross redshift bin not supported so not using ZCL2(k)
         
-        //C_cl_tomo(L, Z1, Z2, Cl[nz], dev, tolerance);
-        C_cl_tomo2(L, Z1, Z2, Cl[nz], 50);
+        C_cl_tomo(L, Z1, Z2, Cl[nz], dev, tolerance);
+        //C_cl_tomo2(L, Z1, Z2, Cl[nz], 50);
       }*/
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) { // LIMBER PART
-        //for (int l=LNLMAX; l<Ntable.LMAX; l++) {
         for (int l=limits.LMAX_NOLIMBER; l<Ntable.LMAX; l++) {
           Cl[nz][l] = C_gg_tomo_limber(l, nz, nz);
         }
@@ -2639,7 +2638,7 @@ double C_yy_limber(double l)
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-/*
+
 void C_cl_tomo(
     int L, 
     const int ni, 
@@ -2908,7 +2907,7 @@ void C_cl_tomo2(
   }
   free(Fk1);
   free(f1_chi); free(ell_ar);
-}*/
+}
 
 void C_cl_tomo_cocoa(double* const* const Cl)
 {
@@ -3016,7 +3015,7 @@ void C_cl_tomo_cocoa(double* const* const Cl)
       LMAX[i] = (int) fmin((45.55*1.5+8.85) + 6, limits.LMAX_NOLIMBER);
     }
   }
-  #pragma omp parallel for collapse(2)
+  #pragma omp parallel for
   for (int i=0; i<nbins; i++) {
     for (int k=0; k<LMAX[i]; k++) {
       ell[i][k] = k;
