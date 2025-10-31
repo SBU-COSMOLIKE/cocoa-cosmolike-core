@@ -75,7 +75,7 @@ double xi_pm_tomo(
   static double** xipm = NULL;  //xipm[0] = xi+, xipm[1] = xi-
   static double cache[MAX_SIZE_ARRAYS];
   static double*** Cl = NULL;
-  
+
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
     exit(1);
@@ -110,11 +110,9 @@ double xi_pm_tomo(
       xmax[i] = r.xmax;
     }
 
-    #pragma omp parallel for collapse(2)
-    for (int i=0; i<Ntable.Ntheta; i++)
-    {
-      for (int l=0; l<(Ntable.LMAX+1); l++)
-      {
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      for (int l=0; l<(Ntable.LMAX+1); l++) {
         bin_avg r   = set_bin_average(i, l);
         Pmin[i][l]  = r.Pmin;
         Pmax[i][l]  = r.Pmax;
@@ -130,7 +128,7 @@ double xi_pm_tomo(
         Glpm[1][i][l] = 0.0;
       }
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
         Glpm[0][i][l] = (2.*l+1)/(2.*M_PI*l*l*(l+1)*(l+1))*(
@@ -183,7 +181,7 @@ double xi_pm_tomo(
       }
       #pragma GCC diagnostic pop
 
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++)  {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
           const int Z1NZ = Z1(nz);
@@ -192,7 +190,7 @@ double xi_pm_tomo(
           Cl[1][nz][l] = C_ss_tomo_limber_nointerp(l, Z1NZ, Z2NZ, 0, 0);
         }
       }
-      #pragma omp parallel for collapse(3)
+      #pragma omp parallel for collapse(3) schedule(static,1)
       for (int i=0; i<2; i++) {
         for (int nz=0; nz<NSIZE; nz++) {
           for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
@@ -200,7 +198,7 @@ double xi_pm_tomo(
           }
         }
       }
-      #pragma omp parallel for collapse(2) schedule(static)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
           const int q = nz * Ntable.Ntheta + i;
@@ -296,7 +294,7 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       xmax[i] = r.xmax;
     }
 
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i ++) {
       for (int l=0; l<(Ntable.LMAX+1); l++) {
         bin_avg r = set_bin_average(i, l);
@@ -309,7 +307,7 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
         Pl[i][l] = 0.0;
       }
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
         Pl[i][l] = (2.*l+1)/(4.*M_PI*l*(l+1)*(xmin[i]-xmax[i]))
@@ -346,16 +344,24 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       (void) C_gs_tomo_limber(limits.LMIN_tab + 1, ZL(0), ZS(0));
     }
     if (1 == limber) {
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
-          Cl[nz][l] = C_gs_tomo_limber_nointerp(l, ZL(nz), ZS(nz), 0);
+          const int zlens   = ZL(nz);
+          const int zsource = ZS(nz);
+          if(0 != test_zoverlap(zlens, zsource)) {
+            Cl[nz][l] = C_gs_tomo_limber_nointerp(l, ZL(nz), ZS(nz), 0);
+          }
         }
       }
-      #pragma omp parallel for collapse(2)
       for (int nz=0; nz<NSIZE; nz++) {
-        for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {    
-          Cl[nz][l] = C_gs_tomo_limber(l, ZL(nz), ZS(nz));
+        const int zlens   = ZL(nz);
+        const int zsource = ZS(nz);
+        if(0 != test_zoverlap(zlens, zsource)) {
+          #pragma omp parallel for schedule(static,1)
+          for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {     
+            Cl[nz][l] = C_gs_tomo_limber(l, zlens, zsource);
+          }
         }
       }
     }
@@ -363,12 +369,16 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       log_fatal("NonLimber not implemented");
       exit(1);
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
-        double sum = 0.0;     
-        for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += Pl[i][l] * Cl[nz][l];
+        const int zlens   = ZL(nz);
+        const int zsource = ZS(nz);
+        double sum = 0.0;
+        if(0 != test_zoverlap(zlens, zsource)) {
+          for (int l=lmin; l<Ntable.LMAX; l++) {
+            sum += Pl[i][l] * Cl[nz][l];
+          }
         }
         w_vec[nz * Ntable.Ntheta + i] = sum;
       }
@@ -448,7 +458,7 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
       xmax[i] = r.xmax;
     }
 
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=0; l<(Ntable.LMAX+1); l++) {
         bin_avg r = set_bin_average(i,l);
@@ -462,7 +472,7 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         Pl[i][l] = 0.0;
       }
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) { 
         const double tmp = (1.0/(xmin[i] - xmax[i]))*(1. / (4.0 * M_PI));
@@ -495,13 +505,13 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
       (void) C_gg_tomo_limber(limits.LMIN_tab + 1, 0, 0);
     }
     if (1 == limber) {
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
           Cl[nz][l] = C_gg_tomo_limber_nointerp(l, nz, nz, 0);
         }
       }
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
           Cl[nz][l] = C_gg_tomo_limber(l, nz, nz);
@@ -509,24 +519,26 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
       }
     }
     else {
-      for (int nz=0; nz<NSIZE; nz++) { // NONLIMBER PART
+      C_cl_tomo_cocoa(Cl);
+      /*for (int nz=0; nz<NSIZE; nz++) { // NONLIMBER PART
         const int L = 1;
-        const double tolerance = 0.01;     // required fractional accuracy in C(l)
+        const double tolerance = 0.01;      // required fractional accuracy in C(l)
         const double dev = 10. * tolerance; // will be diff  exact vs Limber init to
                                             // large value in order to start while loop
         const int Z1 = nz; // cross redshift bin not supported so not using ZCL1(k)
         const int Z2 = nz; // cross redshift bin not supported so not using ZCL2(k)
         
         C_cl_tomo(L, Z1, Z2, Cl[nz], dev, tolerance);
-      }
-      #pragma omp parallel for collapse(2)
+        //C_cl_tomo2(L, Z1, Z2, Cl[nz], 50);
+      }*/
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) { // LIMBER PART
-        for (int l=limits.LMAX_NOLIMBER+1; l<Ntable.LMAX; l++) {
+        for (int l=limits.LMAX_NOLIMBER; l<Ntable.LMAX; l++) {
           Cl[nz][l] = C_gg_tomo_limber(l, nz, nz);
         }
       }
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
         double sum = 0.0;
@@ -607,7 +619,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
       xmax[i] = r.xmax;
     }
 
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=0; l<Ntable.LMAX; l++) {
         bin_avg r = set_bin_average(i,l);
@@ -622,7 +634,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
         Pl[i][l] = 0.0;
       }
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
         const double tmp = (1.0/(xmin[i] - xmax[i]))*(1.0 / (4.0 * M_PI));
@@ -654,7 +666,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
       { // init static variables inside the C_XY_limber function  
         (void) C_gk_tomo_limber(limits.LMIN_tab+1, 0);
       }
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
           Cl[nz][l] = C_gk_tomo_limber_nointerp(l, nz, 0)*beam_cmb(l);
@@ -663,7 +675,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
           }
         }
       }
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
           Cl[nz][l] = C_gk_tomo_limber(l, nz)*beam_cmb(l);
@@ -672,7 +684,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
           }
         }
       }
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
           double sum = 0;
@@ -752,11 +764,9 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       xmax[i] = r.xmax;
     }
 
-    #pragma omp parallel for collapse(2)
-    for (int i=0; i<Ntable.Ntheta; i++)
-    {
-      for (int l=0; l<Ntable.LMAX; l++)
-      {
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      for (int l=0; l<Ntable.LMAX; l++) {
         bin_avg r = set_bin_average(i,l);
         Pmin[i][l] = r.Pmin;
         Pmax[i][l] = r.Pmax;
@@ -770,7 +780,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       }
     }
 
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
         Pl[i][l] = (2.*l+1)/(4.*M_PI*l*(l+1)*(xmin[i]-xmax[i]))
@@ -803,7 +813,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       { // init static variables inside the C_XY_limber function        
         (void) C_ks_tomo_limber(limits.LMIN_tab+1, 0);
       }
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
           Cl[nz][l] = C_ks_tomo_limber_nointerp(l, nz, 0)*beam_cmb(l);
@@ -812,7 +822,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
           }
         }
       }
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
           Cl[nz][l] = C_ks_tomo_limber(l, nz)*beam_cmb(l);
@@ -821,7 +831,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
           }
         }
       }
-      #pragma omp parallel for collapse(2)
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
           double sum = 0;
@@ -1084,7 +1094,7 @@ double C_ss_tomo_limber(const double l, const int ni, const int nj, const int EE
       (void) C_ss_tomo_limber_nointerp(exp(lim[0]),Z1(0),Z2(0),1,1);
       (void) C_ss_tomo_limber_nointerp(exp(lim[0]),Z1(0),Z2(0),0,1);
     }   
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<tomo.shear_Npowerspectra; k++) {  
       for (int i=0; i<nell; i++) { 
         const double l = exp(lim[0]+i*lim[2]);
@@ -1388,7 +1398,7 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     for (int k=0; k<tomo.ggl_Npowerspectra; k++) { // init static variables     
       (void) C_gs_tomo_limber_nointerp(exp(lim[0]), ZL(k), ZS(k), 1);
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<tomo.ggl_Npowerspectra; k++) {
       for (int i=0; i<nell; i++) {
         if (test_zoverlap(ZL(k), ZS(k))) {
@@ -1649,7 +1659,7 @@ double C_gg_tomo_limber(const double l, const int ni, const int nj)
     for (int k=0; k<NSIZE; k++)  { // init static variables
       (void) C_gg_tomo_limber_nointerp(exp(lnlmin), k, k, 1);
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<NSIZE; k++) {
       for (int p=0; p<nell; p++) {
         table[k][p] = C_gg_tomo_limber_nointerp(exp(lnlmin+p*dlnl), k, k, 0);
@@ -1860,7 +1870,7 @@ double C_gk_tomo_limber(const double l, const int ni)
     { // init static variables inside the C_XY_limber_nointerp function      
       (void) C_gk_tomo_limber_nointerp(exp(lim[0]), 0, 1);
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<redshift.clustering_nbin; k++) {
       for (int i=0; i<Ntable.N_ell; i++)  {
         table[k][i] = C_gk_tomo_limber_nointerp(exp(lim[0] + i*lim[2]), k, 0);
@@ -1999,7 +2009,7 @@ double C_ks_tomo_limber(double l, int ni)
     { // init static variables inside the C_XY_limber_nointerp function
       (void) C_ks_tomo_limber_nointerp(exp(lim[0]), 0, 1);
     } 
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<redshift.shear_nbin; k++) {
       for (int i=0; i<Ntable.N_ell; i++) {
         table[k][i] = C_ks_tomo_limber_nointerp(exp(lim[0] + i*lim[2]), k, 0);
@@ -2110,7 +2120,7 @@ double C_kk_limber(const double l)
     { // init static variables inside the C_XY_limber_nointerp function
       (void) C_kk_limber_nointerp(exp(lim[0]), 1);
     }    
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static,1)
     for (int i=0; i<Ntable.N_ell; i++) {
       table[i] = C_kk_limber_nointerp(exp(lim[0] + i*lim[2]), 0);
     }
@@ -2257,7 +2267,7 @@ double C_gy_tomo_limber(double l, int ni)
     { // init static variables inside the C_XY_limber_nointerp function
       (void) C_gy_tomo_limber_nointerp(exp(lim[0]), 0, 1);
     }    
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<redshift.clustering_nbin; k++) {
       for (int i=0; i<Ntable.N_ell; i++) {
         table[k][i]= C_gy_tomo_limber_nointerp(exp(lim[0] + i*lim[2]), k, 0);
@@ -2392,7 +2402,7 @@ double C_ys_tomo_limber(double l, int ni)
     { // init static variables inside the C_XY_limber_nointerp function
       (void) C_ys_tomo_limber_nointerp(exp(lim[0]), 0, 1);
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<redshift.shear_nbin; k++) {
       for (int i=0; i<Ntable.N_ell; i++) {
         table[k][i] = C_ys_tomo_limber_nointerp(exp(lim[0] + i*lim[2]), k, 0);
@@ -2509,7 +2519,7 @@ double C_ky_limber(double l)
     { // init static variables inside the C_XY_limber_nointerp function
       (void) C_ky_limber_nointerp(exp(lim[0]), 1);
     }
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static,1)
     for (int i=0; i<Ntable.N_ell; i++) {
       table[i] = log(C_ky_limber_nointerp(exp(lim[0] + i*lim[2]), 0));
     }
@@ -2604,7 +2614,7 @@ double C_yy_limber(double l)
     { // init static variables inside the C_XY_limber_nointerp function
       (void) C_yy_limber_nointerp(exp(lim[0]), 1);
     }
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static,1)
     for (int i=0; i<Ntable.N_ell; i++) {
       table[i] = C_yy_limber_nointerp(exp(lim[0] + i*lim[2]), 0);
     }
@@ -2729,7 +2739,7 @@ void C_cl_tomo(
     if (L >= limits.LMAX_NOLIMBER - Ntable.NL_Nell_block) {
       break; // Xiao: break before memory leak in next iteration
     }
-  
+
     L = i_block * Ntable.NL_Nell_block - 1;
 
     //VM: TODO - I can combine these 3 functions in one and thread them w/ OpenMP
@@ -2743,17 +2753,23 @@ void C_cl_tomo(
                  Ntable.NL_Nell_block, Fk1[2], Fk1[1]);    
     
 
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wunused-variable"
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
     { // init static variables inside the C_XY_limber_nointerp function
-      (void) p_lin(Fk1[2][0][0]*real_coverH0, 1.0);
-      (void) C_gg_tomo_limber_nointerp((double) 100, 0, 0, 1);
+      double ini = p_lin(Fk1[2][0][0]*real_coverH0, 1.0);
+      ini = C_gg_tomo_limber_nointerp((double) 100, 0, 0, 1);
     }
+    #pragma GCC diagnostic pop
+    #pragma GCC diagnostic pop
+
     #pragma omp parallel for
     for (int i=0; i<Ntable.NL_Nell_block; i++)
     {
       const double ell_prefactor = ell_ar[i] * (ell_ar[i] + 1.);
 
       double cl_temp = 0.;
-      //#pragma omp parallel for reduction(+:cl_temp)
       for (int j=0; j<Ntable.NL_Nchi; j++) {
         Fk1[0][i][j] += gbmag(0.0, ni)*ell_prefactor*Fk1[1][i][j]/(Fk1[2][i][j]*Fk1[2][i][j]);
         const double k1cH0 = Fk1[2][i][j] * real_coverH0;
@@ -2767,7 +2783,6 @@ void C_cl_tomo(
     dev = Cl[L]/C_gg_tomo_limber_nointerp(L, ni, nj, 0) - 1;
   }
   L++;
-
   Cl[limits.LMAX_NOLIMBER] = C_gg_tomo_limber(limits.LMAX_NOLIMBER, ni, nj);
   
   #pragma omp parallel for
@@ -2778,4 +2793,302 @@ void C_cl_tomo(
   free(Fk1);
   free(f1_chi);
   free(ell_ar);
+}
+void C_cl_tomo2(
+    int L, 
+    const int ni, 
+    const int nj, 
+    double *const Cl,
+    const int nell 
+  )
+{
+  if (ni < -1 || ni > redshift.clustering_nbin - 1 || 
+      nj < -1 || nj > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
+    exit(1);
+  }
+  if (ni != nj) {
+    log_fatal("Cocoa disabled cross-spectrum w_gg");
+    exit(1);
+  }
+    
+  const double real_coverH0 = cosmology.coverH0/cosmology.h0;
+  const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // DIMENSIONELESS
+  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // DIMENSIONELESS
+  const double dlnchi = log(chi_max/chi_min) / ((double) Ntable.NL_Nchi - 1.0);
+  const double dlnk = dlnchi;
+
+  int* ell_ar = (int*) malloc(sizeof(int)*nell);
+  double*** Fk1 = (double***) malloc3d(3, nell, Ntable.NL_Nchi); // (Fk1, Fk1_Mag, k1)    
+  double** f1_chi = (double**) malloc2d(4, Ntable.NL_Nchi); // (f1, f1_RSD, f1_MAG, chi)
+
+  #pragma omp parallel for schedule(static,1)
+  for (int i=0; i<Ntable.NL_Nchi; i++)
+  {
+    f1_chi[3][i] = chi_min * exp(dlnchi * i); 
+    const double a = a_chi(f1_chi[3][i]/real_coverH0);
+    const double z = 1. / a - 1.;
+    
+    if (z < redshift.clustering_zdist_zmin[ni] || 
+        z > redshift.clustering_zdist_zmax[ni]) { 
+      f1_chi[0][i] = 0.;
+      f1_chi[1][i] = 0.;
+      f1_chi[2][i] = 0.;
+    }
+    else {
+      const double pf = pf_photoz(z,ni);
+      const double hoverh0_a = hoverh0(a);
+      const double fK = f_K(f1_chi[3][i]/real_coverH0); 
+      const double WM = W_mag(a, fK, ni);
+      struct growths growfac_a = growfac_all(a);
+      const double D = growfac_a.D;
+      const double f = growfac_a.f;
+
+      f1_chi[0][i] = gb1(z, ni)*f1_chi[3][i]*pf*D*hoverh0_a/real_coverH0;
+      f1_chi[1][i] = -f1_chi[3][i]*pf*D*f*hoverh0_a/real_coverH0;
+      f1_chi[2][i] = (WM/fK/(real_coverH0*real_coverH0)) * D; // [Mpc^-2] 
+    }
+  }
+
+  config cfg;
+  cfg.nu = 1.;
+  cfg.c_window_width = 0.25;
+  cfg.derivative = 0;
+  cfg.N_pad = 200;
+  cfg.N_extrap_low = 0;
+  cfg.N_extrap_high = 0;
+
+  config cfg_RSD;
+  cfg_RSD.nu = 1.01;
+  cfg_RSD.c_window_width = 0.25;
+  cfg_RSD.derivative = 2;
+  cfg_RSD.N_pad = 500;
+  cfg_RSD.N_extrap_low = 0;
+  cfg_RSD.N_extrap_high = 0;
+
+  config cfg_Mag;
+  cfg_Mag.nu = 1.;
+  cfg_Mag.c_window_width = 0.25;
+  cfg_Mag.derivative = 0;
+  cfg_Mag.N_pad = 500;
+  cfg_Mag.N_extrap_low = 0;
+  cfg_Mag.N_extrap_high = 0;
+
+
+  for (int i=0; i<nell; i++) {
+    ell_ar[i] = i; 
+  }
+
+  cfftlog_ells(f1_chi[3], f1_chi[0], Ntable.NL_Nchi, &cfg, ell_ar, nell, Fk1[2], Fk1[0]);
+  cfftlog_ells_increment(f1_chi[3], f1_chi[1], Ntable.NL_Nchi, &cfg_RSD, ell_ar, nell, Fk1[2], Fk1[0]);   
+  cfftlog_ells(f1_chi[3], f1_chi[2], Ntable.NL_Nchi, &cfg_Mag, ell_ar, nell, Fk1[2], Fk1[1]);   
+  { // init static variables inside the C_XY_limber_nointerp function
+    (void) p_lin(Fk1[2][0][0]*real_coverH0, 1.0);
+    (void) C_gg_tomo_limber_nointerp((double) 100, 0, 0, 1);
+  }
+  #pragma omp parallel for schedule(static,1)
+  for (int i=0; i<nell; i++)
+  {
+    const double ell_prefactor = ell_ar[i] * (ell_ar[i] + 1.);
+    double cl_temp = 0.;
+    for (int j=0; j<Ntable.NL_Nchi; j++) {
+      Fk1[0][i][j] += gbmag(0.0, ni)*ell_prefactor*Fk1[1][i][j]/(Fk1[2][i][j]*Fk1[2][i][j]);
+      const double k1cH0 = Fk1[2][i][j] * real_coverH0;
+      cl_temp += Fk1[0][i][j]*Fk1[0][i][j]*(k1cH0*k1cH0*k1cH0)*p_lin(k1cH0,1);
+    }
+    Cl[ell_ar[i]] = cl_temp * dlnk * 2. / M_PI + 
+       C_gg_tomo_limber_linpsopt_nointerp((double) ell_ar[i], ni, nj, 0, 0)
+      -C_gg_tomo_limber_linpsopt_nointerp((double) ell_ar[i], ni, nj, 1, 0);
+  }  
+  #pragma omp parallel for schedule(static,1)
+  for (int l=nell; l<limits.LMAX_NOLIMBER; l++) {
+    Cl[l] = (l > limits.LMIN_tab) ? C_gg_tomo_limber(l, ni, nj) :
+                                    C_gg_tomo_limber_nointerp(l, ni, nj, 0);
+  }
+  free(Fk1);
+  free(f1_chi); free(ell_ar);
+}
+
+void C_cl_tomo_cocoa(double* const* const Cl)
+{
+  static double cache[MAX_SIZE_ARRAYS];
+  static int** ell = NULL;
+  static int* LMAX = NULL;
+  static double* x = NULL;
+  static double*** fx= NULL;
+  static double*** y = NULL;
+  static double**** Fy = NULL;
+  static double*** vres = NULL;
+  static config cfg[3];
+  
+  const int nbins = redshift.clustering_nbin; 
+  const int nchi = Ntable.NL_Nchi;
+  if (NULL == ell || NULL == LMAX || NULL == x || 
+      NULL == y || NULL == Fy || NULL == fx ||
+      fdiff(cache[0], Ntable.random))
+  {
+    if (ell != NULL) free((void*) ell);
+    ell  = (int**) malloc2d_int(nbins, limits.LMAX_NOLIMBER);
+    if (LMAX != NULL) free((void*) LMAX);
+    LMAX = (int*) malloc1d_int(nbins);
+    if (x != NULL) free((void*) x);
+    x =  (double*) malloc1d(nchi);
+    if (y != NULL) free((void*) y);
+    y  = (double***) malloc3d(nbins, limits.LMAX_NOLIMBER, nchi);
+    if (Fy != NULL) free((void*) Fy);
+    Fy = (double****) malloc4d(nbins, 3, limits.LMAX_NOLIMBER, nchi);
+    if (fx != NULL) free((void*) fx);
+    fx = (double***) malloc3d(nbins,3,nchi); 
+    if (vres != NULL) free((void*) vres);
+    vres = (double***) malloc3d(nbins, limits.LMAX_NOLIMBER, nchi); 
+    cfg[0].nu = 1.;
+    cfg[0].c_window_width = 0.25;
+    cfg[0].derivative = 0;
+    cfg[0].N_pad = 200;
+    // RSD
+    cfg[1].nu = 1.01;
+    cfg[1].c_window_width = 0.25;
+    cfg[1].derivative = 2;
+    cfg[1].N_pad = 500;
+    // MAG
+    cfg[2].nu = 1.;
+    cfg[2].c_window_width = 0.25;
+    cfg[2].derivative = 0;
+    cfg[2].N_pad = 500;
+    cache[0] = Ntable.random;
+  }
+  const double real_coverH0 = cosmology.coverH0/cosmology.h0;
+  const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // DIMENSIONELESS
+  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // DIMENSIONELESS
+  const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
+  const double dlnk    = dlnchi;
+  { // INIT: make sure static init variables inside the funcs are defined
+    const int i = 0;
+    const double chi = chi_min/real_coverH0;
+    const double a   = a_chi(chi);
+    const double z   = 1. / a - 1.;
+    const double fK = f_K(chi);
+    (void) growfac_all(a);
+    (void) hoverh0(a);
+    for (int i=0; i<nbins; i++) {
+      (void) pf_photoz(z,i);
+      (void) W_mag(a,fK,i);
+      (void) gb1(z,i);
+    }
+    (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
+    (void) C_gg_tomo_limber_nointerp((double) 100, 0, 0, 1);
+  }
+  #pragma omp parallel for schedule(static,1)
+  for (int j=0; j<nchi; j++) {
+    x[j] = chi_min * exp(dlnchi * j);
+    for (int i=0; i<nbins; i++) {
+      const double chi = x[j]/real_coverH0;
+      const double a   = a_chi(chi);
+      const double z   = 1. / a - 1.;
+      if (z < redshift.clustering_zdist_zmin[i] || 
+          z > redshift.clustering_zdist_zmax[i]) { 
+        fx[i][0][j] = 0.;
+        fx[i][1][j] = 0.;
+        fx[i][2][j] = 0.;
+      }
+      else {
+        const double pf = pf_photoz(z,i);
+        const double hoverh0_a = hoverh0(a);
+        const double fK = f_K(chi);
+        const double WM = W_mag(a, fK, i);
+        struct growths growfac_a = growfac_all(a);
+        const double D = growfac_a.D;
+        const double f = growfac_a.f;
+        fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
+        fx[i][1][j] = -chi*pf*D*hoverh0_a*f;
+        fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2] 
+      }
+    }
+  }
+  for (int i=0; i<nbins; i++) { 
+    // based on a fit to what lmax get ~1% accuracy on LSST-Y1. (+6=extra safety)
+    const double zmean = redshift.clustering_zdist_zmean[i];
+    if (zmean < 1.5) {
+      LMAX[i] = (int) fmin((45.55*zmean+8.85) + 6, limits.LMAX_NOLIMBER);
+    }
+    else {
+      LMAX[i] = (int) fmin((45.55*1.5+8.85) + 6, limits.LMAX_NOLIMBER);
+    }
+  }
+  #pragma omp parallel for
+  for (int i=0; i<nbins; i++) {
+    for (int k=0; k<LMAX[i]; k++) {
+      ell[i][k] = k;
+    }
+  }  
+  int is_bmag_zero = 1;
+  for (int i=0; i<nbins; i++) {
+    if (fabs(gbmag(0.,i)) > 1.e-12) {
+      is_bmag_zero = 0;
+    }    
+  }
+  if (0 == is_bmag_zero) {
+    cfftlog_ells_cocoa((double* const) x, 
+                       (double* const* const* const) fx, 
+                       nchi, 
+                       cfg, 
+                       (int* const* const) ell, 
+                       (int* const) LMAX, 
+                       (double* const* const* const) y, 
+                       (double* const* const* const* const) Fy, 
+                       nbins, 
+                       3);
+  }
+  else {
+    cfftlog_ells_cocoa((double* const) x, 
+                       (double* const* const* const) fx, 
+                       nchi, 
+                       cfg, 
+                       (int* const* const) ell, 
+                       (int* const) LMAX, 
+                       (double* const* const* const) y, 
+                       (double* const* const* const* const) Fy, 
+                       nbins, 
+                       2);  
+    for (int i=0; i<nbins; i++) { 
+      #pragma omp parallel for collapse(2) schedule(static,1)
+      for (int k=0; k<LMAX[i]; k++) {
+        for (int q=0; q<nchi; q++) {
+          Fy[i][2][k][q] = 0.0;
+        }
+      }
+    }
+  }
+  for (int i=0; i<nbins; i++) {
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int k=0; k<LMAX[i]; k++) {
+      for (int q=0; q<nchi; q++) {
+        const int l = ell[i][k];
+        const double ell_prefactor = l * (l + 1.);
+        const double ty    = y[i][k][q];
+        const double k1cH0 = ty*real_coverH0;
+        const double F = Fy[i][0][k][q] + Fy[i][1][k][q] + 
+                         gbmag(0.,i)*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
+        vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*p_lin(k1cH0,1);
+      }
+    }
+  }
+  for (int i=0; i<nbins; i++) {
+    #pragma omp parallel for
+    for (int k=0; k<LMAX[i]; k++) {
+      double tcl = 0.0;
+      for (int q=0; q<nchi; q++) tcl += vres[i][k][q];
+      const int l = ell[i][k];
+      Cl[i][l] = tcl * dlnk * 2. / M_PI + 
+                     C_gg_tomo_limber_linpsopt_nointerp((double) ell[i][k], i, i, 0, 0)
+                    -C_gg_tomo_limber_linpsopt_nointerp((double) ell[i][k], i, i, 1, 0);
+    }
+  }
+  for (int i=0; i<nbins; i++) {
+    #pragma omp parallel for schedule(static,1)
+    for (int k=LMAX[i]; k<limits.LMAX_NOLIMBER+1; k++) {
+      Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) :
+                                         C_gg_tomo_limber_nointerp(k, i, i, 0);
+    }
+  }
 }
