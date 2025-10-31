@@ -918,7 +918,12 @@ void set_IA_PS(
     const int io_IA_code
   )
 {
-  cosmology.IA_PS = io_IA_PS;
+  cosmology.IA_PS = (double**) malloc2d(3, 2000);
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 2000; ++j) {
+        cosmology.IA_PS[i][j] = io_IA_PS[i][j];
+    }
+  }
   //need more implementation
 }
 
