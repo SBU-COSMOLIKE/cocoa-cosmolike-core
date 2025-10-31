@@ -168,7 +168,7 @@ typedef struct
   double** G;
 
   double** IA_PS;
-  int IA_code;
+
 } cosmopara;
 
 typedef struct
