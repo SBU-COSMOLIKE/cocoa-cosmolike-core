@@ -133,6 +133,8 @@ void reset_cosmology_struct(void)
   cosmology.chi = NULL;
   cosmology.G_nz = 0;
   cosmology.G = NULL;
+  cosmology.IA_PS = NULL;
+  cosmology.IA_code = 0;
 }
 
 void reset_tomo_struct(void)

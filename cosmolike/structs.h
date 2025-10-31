@@ -166,6 +166,9 @@ typedef struct
   // chi = G[1,j<chi_nz]
   int G_nz;
   double** G;
+
+  double** IA_PS;
+  int IA_code;
 } cosmopara;
 
 typedef struct

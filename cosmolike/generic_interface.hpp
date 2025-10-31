@@ -613,6 +613,10 @@ void set_linear_power_spectrum(
     arma::Col<double> io_z, 
     arma::Col<double> io_lnP
   );
+void set_IA_PS(
+    arma::Mat<double> io_IA_PS,
+    const int io_IA_code
+  );
 
 void set_non_linear_power_spectrum(
     arma::Col<double> io_log10k,
