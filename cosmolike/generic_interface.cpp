@@ -918,7 +918,7 @@ void set_IA_PS(
     const int io_IA_code
   )
 {
-  cosmology.IA_PS = io_IA_PS
+  cosmology.IA_PS = io_IA_PS;
   //need more implementation
 }
 
