@@ -7,9 +7,8 @@
 #include "log.c/src/log.h"
 
 #include "basics.h"
-#include "bias.h"
 #include "cosmo3D.h"
-#include "redshift_spline.h"
+#include "redshift_spline_cluster.h"
 #include "radial_weights_cluster.h"
 #include "structs.h"
 
@@ -26,7 +25,7 @@ double W_cluster(const int nl, const int nz, const double a, const double hoverh
   return zdistr_cluster(nl, nz, 1. / a - 1.)*hoverh0;
 }
 
-double W_mag_cluster(const double a, const double fK, const int nz)
+double W_mag_cluster(const int nz, const double a, const double fK)
 {
   if (!(a>0) || !(a<1))  {
     log_fatal("a>0 and a<1 not true");

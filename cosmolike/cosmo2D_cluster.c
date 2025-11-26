@@ -526,7 +526,7 @@ double int_for_C_cs_tomo_limber(double a, void* params)
   
   const double bc     = weighted_bias(nl, z);
   const double WCL    = W_cluster(nl, ni, a, hoverh0);
-  const double WMAGCL = W_mag_cluster(a, fK, nz1);
+  const double WMAGCL = W_mag_cluster(ni, a, fK);
   const double WK     = W_kappa(a, fK, ns);
   const double WS     = W_source(a, ns, hoverh0);
 
@@ -705,12 +705,12 @@ double int_for_C_cc_tomo_limber(double a, void* params)
   double res = 1.0;
   if (1 == include_exclusion) {
     res  = WCNL1*WCNL2*chidchi.dchida/(fK*fK);
-    res *= pcce(k, a, nl1, nl2, use_linear_ps);
-  } 
+    res *= pcc_exclusion_const_lambda(k, a, nl1, nl2, use_linear_ps);
+  }
   else {
     const double bc1    = weighted_bias(nl1, z);
     const double bc2    = (nl1 == nl2) ? bc1 : weighted_bias(nl2, z);
-    const double WMAGCL = W_mag_cluster(a, fK, ni);
+    const double WMAGCL = W_mag_cluster(ni, a, fK);
     res  = (bc1*WCNL1 - 2*WMAGCL)*(bc2*WCNL2 - 2*WMAGCL)*chidchi.dchida/(fK*fK);
     res *= (1 == use_linear_ps) ? p_lin(k,a) : Pdelta(k,a);
   }
@@ -948,12 +948,7 @@ double C_cg_tomo_limber_nointerp(
   return C_cg_tomo_limber_linpsopt_nointerp(l, nl, ni, nj, 0, init);
 }
 
-double C_cg_tomo_limber(
-    const double l, 
-    const int nl, // lambda_obs bin
-    const int ni, // cluster redshift bin
-    const int nj  // galaxy redshift bin
-  )
+double C_cg_tomo_limber(const double l, const int nl, const int ni, const int nj)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;

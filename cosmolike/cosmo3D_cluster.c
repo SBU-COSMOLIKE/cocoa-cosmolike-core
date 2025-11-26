@@ -23,6 +23,92 @@
 
 #include "log.c/src/log.h"
 
+//Halo exclusion routine//
+ 
+
+double P_cluster_x_cluster_clustering_exclusion_constant_lambd_exact(double k, double a, int N_lambda1, int N_lambda2){
+       double z = 1./a-1;
+       double cluster_bias1, cluster_bias2;
+       double pk, R, VexclWR;
+       //static int count =1;
+       cluster_bias1 = weighted_bias(N_lambda1, z); 
+       if (N_lambda1==N_lambda2){
+            cluster_bias2 = cluster_bias1;
+       }
+       else{
+          cluster_bias2 = weighted_bias(N_lambda2, z); 
+       }
+       R=1.5*pow(0.25*(Cluster.N_min[N_lambda1]+Cluster.N_min[N_lambda2]+Cluster.N_max[N_lambda1]+Cluster.N_max[N_lambda2])/100., 0.2)/cosmology.coverH0/a; // RedMaPPer exclusion radius (Rykoff et al. 2014  eq4) in units coverH0 [change to comoving]
+       //R = pow((3*mass_mean(N_lambda1, z)/(M_PI*4*(200*cosmology.rho_crit*cosmology.Omega_m))), (1./3.));;
+       //R = pow((3*mass_mean(N_lambda1, z)/(M_PI*4*(30*cosmology.rho_crit*cosmology.Omega_m))), (1./3.))/a;
+       //printf("R_compare: R_200 %e, Rperco %e \n", R2, R);
+       VexclWR = 4*M_PI*(sin(k*R) - k*R*cos(k*R))/pow(k, 3.);
+       double cutoff =1.;
+       //if (k*R>cutoff){ // to avoid high k oscillation. 1/x**2 damping term is motivated by the envelop of 3(sinkx-kx*coskx)/kx**3
+       //     pk = pow(cutoff/R,2)/pow(k,2); 
+       //     k = cutoff/R;
+       //}
+       if (k*R> cutoff){
+            pk = Pdelta(k,a)*cluster_bias1*cluster_bias2;
+            double Pdeltacutoff = Pdelta(cutoff/R,a)*cluster_bias1*cluster_bias2;
+            double VexclWRcutoff = (4*M_PI*(sin(cutoff) - cutoff*cos(cutoff))/pow(cutoff/R, 3.));
+            double Pexclusioncutoff = (pk_halo_with_exclusion(cutoff/R, R, a, 1, 1, 1)+VexclWRcutoff)*cluster_bias1*cluster_bias2-VexclWRcutoff;
+            double kcutoff = cutoff/R;
+            //pk = Pexclusioncutoff*(pk-VexclWR)/(Pdeltacutoff-VexclWRcutoff)*(VexclWR)/VexclWRcutoff;
+            pk = (pk-VexclWR-VexclWR*(-1*Pexclusioncutoff+(Pdeltacutoff-VexclWRcutoff))/VexclWRcutoff)*pow((k/kcutoff),-0.7);
+            return pk;
+       }
+
+       if(R==0){
+            pk = Pdelta(k,a)*cluster_bias1*cluster_bias2;
+       }else{
+            pk = (pk_halo_with_exclusion(k, R, a, 1, 1, 1)+VexclWR)*cluster_bias1*cluster_bias2-VexclWR; // Check it out!! This is my cool trick!! 
+       }
+       return pk;
+}
+
+double P_cluster_x_cluster_clustering_exclusion_constant_lambd_tab(double k, double a, int N_lambda1, int N_lambda2, double linear){
+          if(linear>0) return  P_cluster_x_cluster_clustering_mass_given_Dlambda_obs(k, a, N_lambda1, N_lambda2, linear);
+          static cosmopara C;
+          static nuisancepara N;
+          static int N_lambda1_in=-1;
+          static int N_lambda2_in=-1;
+          static double logkmin = 0., logkmax = 0., dk = 0., da = 0.;
+          static double **table_P_NL=0;
+          const double amin = 1./(1+tomo.cluster_zmax[tomo.cluster_Nbin-1]);
+          const double amax = 1./(1+tomo.cluster_zmin[0]-1E-6);
+          double klog,val;
+          int i,j;
+          double kin;
+          logkmin = log(1E-2);
+          logkmax = log(1E8);
+          dk = (logkmax - logkmin)/(Ntable_cluster.N_k_exclusion_pk_for_cell-1.);
+          da = (amax - amin)/(Ntable_cluster.N_a-1.);
+
+          if (recompute_DESclusters(C, N)|| (N_lambda1_in != N_lambda1)|| (N_lambda2_in != N_lambda2)){
+            update_cosmopara(&C);
+            update_nuisance(&N);
+            N_lambda1_in = N_lambda1;
+            N_lambda2_in = N_lambda2;
+            if (table_P_NL!=0) free_double_matrix(table_P_NL,0, Ntable_cluster.N_a-1, 0, Ntable_cluster.N_k_exclusion_pk_for_cell-1);
+            table_P_NL = create_double_matrix(0, Ntable_cluster.N_a-1, 0, Ntable_cluster.N_k_exclusion_pk_for_cell-1);     
+            double aa = amin;
+            for (i=0; i<Ntable_cluster.N_a; i++, aa +=da) { 
+                for (j=0; j<Ntable_cluster.N_k_exclusion_pk_for_cell; ++j) { 
+                    if(aa>1.0) aa=1.0;
+                    kin   = exp(logkmin+j*dk);
+                    table_P_NL[i][j] = log(pow(kin,3)*pow(aa, 0.5)*P_cluster_x_cluster_clustering_exclusion_constant_lambd_exact(kin, aa, N_lambda1, N_lambda2)+1E8);
+                }
+            }
+
+          }
+          klog = log(k);
+          val = interpol2d(table_P_NL, Ntable_cluster.N_a, amin, amax, da, a, Ntable_cluster.N_k_exclusion_pk_for_cell, logkmin, logkmax, dk, klog, 1.0, 1.0);
+          return (exp(val)-1E8)/k/k/k*pow(a, -0.5);
+}
+
+//End halo exclusion routine 
+
 double P_cluster_x_cluster_clustering_mass_given_Dlambda_obs(double k, double a, int N_lambda1, int N_lambda2, double linear){
        double z = 1./a-1;
        //static int count =1;
@@ -398,6 +484,13 @@ double P_cluster_mass_given_Dlambda_obs_darkemu_tab(double k, double a, int N_la
     if ((klog > logkmin)&(klog < logkmax)) val = interpol2d(table_P_k_a, Ntable.N_ell, logkmin, logkmax, dk, klog, N_a, amin, amax, da, a, 1.0, 1.0);
     else val=0;
     return val;
+}
+double P_cluster_x_galaxy_clustering_mass_given_Dlambda_obs(double k, double a, int N_lambda, int nz_cluster, int nz_galaxy, double linear){
+   double z = 1./a-1.;
+   double cluster_bias = weighted_bias(N_lambda, z); 
+   if(linear>0)
+        return cluster_bias * gbias.b1_function(z, nz_galaxy)* p_lin(k,a);
+   else return cluster_bias * gbias.b1_function(z, nz_galaxy)* Pdelta(k,a);
 }
 
 #endif

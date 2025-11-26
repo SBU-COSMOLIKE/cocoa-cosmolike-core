@@ -383,11 +383,14 @@ typedef struct
   int clustering_Npowerspectra;  // num galaxy-galaxy clustering tomo combinations
   int* ggl_exclude;              // l-s pairs that are excluded in ggl
   int N_ggl_exclude;             // number of l-s ggl pairs excluded
-  /*
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // CLUSTER ROUTINES
+  // ---------------------------------------------------
+  // ---------------------------------------------------
   int cs_npowerspectra;  // num cluster-galaxy lensing tomo combinations
   int cg_npowerspectra   // num cluster-galaxy clustering tomo combinations
   int cc_npowerspectra;  // num cluster-cluster clustering tomo combinations 
-  */
 } tomopara;
 
 typedef struct
@@ -464,8 +467,6 @@ typedef struct
   double n200_max_all;                // global lambda_obs_max (observed richness)
   double n200_min[MAX_SIZE_ARRAYS];  // lambda_obs_min in each bin in lambda_obs (observed richness)
   double n200_max[MAX_SIZE_ARRAYS];  // lambda_obs_max in each bin in lambda_obs (observed richness)
-  
-  char model[CHAR_MAX_SIZE];
 } clusterparams;
 */
 
