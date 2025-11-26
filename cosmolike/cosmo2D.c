@@ -1110,11 +1110,8 @@ double C_ss_tomo_limber(const double l, const int ni, const int nj, const int EE
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
   }
-  if (ni < 0 || 
-      ni > redshift.shear_nbin - 1 || 
-      nj < 0 ||
-      nj > redshift.shear_nbin - 1)
-  {
+  if (ni < 0 || ni > redshift.shear_nbin - 1 || 
+      nj < 0 || nj > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
     exit(1);
   }
@@ -1417,6 +1414,11 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     cache[5] = redshift.random_clustering;
     cache[6] = Ntable.random;
     cache[7] = nuisance.random_galaxy_bias;
+  }
+  if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
+    exit(1);
   }
   double res = 0.0;
   if (test_zoverlap(ni,nj)) {

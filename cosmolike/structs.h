@@ -185,9 +185,11 @@ typedef struct
   // ---------------------------------------------------
   double random_photoz_shear;
   double random_photoz_clustering;
+  double random_photoz_clusters;
   double random_ia;
   double random_galaxy_bias;
   double random_gas;
+  double random_clusters;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // INTRINSIC ALIGMENT --------------------------------
@@ -261,14 +263,13 @@ typedef struct
   double gas[MAX_SIZE_ARRAYS]; // Compton-Y related variables
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // CLUSTER ROUTINES (ALPHA STAGE)
+  // CLUSTER ROUTINES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  /*
   // Variables for the 4x2pt+N (see: 2008.10757 & 2010.01138)
-  double cluster_MOR[MAX_SIZE_ARRAYS];
+  // mor = mass observable relation
+  double cluster_mor[MAX_SIZE_ARRAYS];
   double cluster_selection[MAX_SIZE_ARRAYS];
-  */
 } nuisanceparams;
 
 typedef struct
@@ -314,6 +315,14 @@ typedef struct
                                    // [1] = BIAS, 
                                    // [2] = CONCENTRATION
                                    // [3] = HALO PROFILE
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // Cluster MODEL CHOICES
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  int cluster_bias_model;
+  int cluster_hmf_model;
+  int cluster_include_sz;
 } likepara;
 
 typedef struct
@@ -369,11 +378,16 @@ typedef struct
 
 typedef struct 
 {
-  int shear_Npowerspectra;       // number of shear-shear tomography power spectra
-  int ggl_Npowerspectra;         // number of galaxy-galaxy lensing tomography power spectra
-  int clustering_Npowerspectra;  // number of galaxy-galaxy clustering tomography power spectra
+  int shear_Npowerspectra;       // num shear-shear tomo power combinations
+  int ggl_Npowerspectra;         // num galaxy-galaxy lensing tomo combinations
+  int clustering_Npowerspectra;  // num galaxy-galaxy clustering tomo combinations
   int* ggl_exclude;              // l-s pairs that are excluded in ggl
   int N_ggl_exclude;             // number of l-s ggl pairs excluded
+  /*
+  int cs_npowerspectra;  // num cluster-galaxy lensing tomo combinations
+  int cg_npowerspectra   // num cluster-galaxy clustering tomo combinations
+  int cc_npowerspectra;  // num cluster-cluster clustering tomo combinations 
+  */
 } tomopara;
 
 typedef struct
@@ -385,6 +399,7 @@ typedef struct
   // ---------------------------------------------------
   double random_shear;
   double random_clustering;
+  double random_clusters;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // SOURCE n(Z)
@@ -405,7 +420,7 @@ typedef struct
   // ---------------------------------------------------
   int clustering_nbin;    // number of lens galaxy bins
   int clustering_photoz;
-  int clustering_nzbins;
+  int clustering_nzbins;    
   double** clustering_zdist_table;
   double clustering_zdist_zmin_all;
   double clustering_zdist_zmax_all;
@@ -414,23 +429,17 @@ typedef struct
   double clustering_zdist_zmean[MAX_SIZE_ARRAYS];
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // CLUSTER ROUTINES (ALPHA STAGE)
+  // CLUSTER ROUTINES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  /*
-  int cluster_Nbin;       // number of lens cluster redshift bins
-  int clusters_photoz;
-  char clusters_REDSHIFT_FILE[CHAR_MAX_SIZE];
-  */
-  /*
-  int cgl_Npowerspectra;             // number of cluster-galaxy lensing tomography combinations
-  int cg_clustering_Npowerspectra;   // number of cluster-galaxy clustering tomography combinations
-  int cc_clustering_Npowerspectra;   // number of cluster-cluster clustering tomography combinations 
-  double cluster_zmax[MAX_SIZE_ARRAYS];
-  double cluster_zmin[MAX_SIZE_ARRAYS];
-  // we assume cluster bin = galaxy bin (no cross)
-  int external_selection_cg_clustering[MAX_SIZE_ARRAYS];
-  */
+  int clusters_nbin;       // number of lens cluster redshift bins
+  int clusters_photoz; 
+  int clusters_nzbins;     
+  double** clusters_zdist_table;
+  double clusters_zdist_zmin_all;
+  double clusters_zdist_zmax_all;
+  double clusters_zdist_zmin[MAX_SIZE_ARRAYS];
+  double clusters_zdist_zmax[MAX_SIZE_ARRAYS];
 } redshiftparams;
 
 /*
@@ -450,11 +459,11 @@ typedef struct
   int halo_exclusion_model;
   double delta_exclusion;  // delta for exclusion radius (halo_exclusion) according to Baldauf 2013
 
-  int N200_Nbin;                  // number of cluster bins in lambda_obs (observed richness)
-  double N200_min;                // global lambda_obs_min (observed richness)
-  double N200_max;                // global lambda_obs_max (observed richness)
-  double N_min[MAX_SIZE_ARRAYS];  // lambda_obs_min in each bin in lambda_obs (observed richness)
-  double N_max[MAX_SIZE_ARRAYS];  // lambda_obs_max in each bin in lambda_obs (observed richness)
+  int n200_nbin;                  // number of cluster bins in lambda_obs (observed richness)
+  double n200_min_all;                // global lambda_obs_min (observed richness)
+  double n200_max_all;                // global lambda_obs_max (observed richness)
+  double n200_min[MAX_SIZE_ARRAYS];  // lambda_obs_min in each bin in lambda_obs (observed richness)
+  double n200_max[MAX_SIZE_ARRAYS];  // lambda_obs_max in each bin in lambda_obs (observed richness)
   
   char model[CHAR_MAX_SIZE];
 } clusterparams;
