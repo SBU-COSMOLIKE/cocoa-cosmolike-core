@@ -114,12 +114,10 @@ int test_kmax(double l, int ni) // return 1 if true, 0 otherwise
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-int test_zoverlap(int ni, int nj) // test whether source bin nj is behind lens bin ni
-{ // Galaxy-Galaxy Lensing bins (redshift overlap tests)
-  if (ni < 0 || 
-      ni > redshift.clustering_nbin - 1 || 
-      nj < 0 || 
-      nj > redshift.shear_nbin - 1) {
+int test_zoverlap(int ni, int nj) 
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
+      nj < 0 || nj > redshift.shear_nbin - 1) {
     log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj);
     exit(1);
   }
@@ -142,18 +140,6 @@ int test_zoverlap(int ni, int nj) // test whether source bin nj is behind lens b
       } 
     }
     return  N[ni][nj];
-    /*
-    int res = 1;
-    for (int k=0; k<tomo.N_ggl_exclude; k++) {
-      const int i = k*2+0;
-      const int j = k*2+1;
-      if ((ni == tomo.ggl_exclude[i]) && (nj == tomo.ggl_exclude[j])) {
-        res = 0;
-        break;
-      }
-    }
-    //printf("testing %d %d \n", N[ni][nj], res);
-    return res;*/
   }
   else {
     return 1;
@@ -398,30 +384,23 @@ int N_CL(int ni, int nj)
 
 double zdistr_histo_n(double z, const int ni)
 {
-  if (redshift.shear_zdist_table == NULL) 
-  {
+  if (redshift.shear_zdist_table == NULL) {
     log_fatal("redshift n(z) not loaded");
     exit(1);
   } 
-  
   double res = 0.0;
-  if ((z >= redshift.shear_zdist_zmin_all) && 
-      (z < redshift.shear_zdist_zmax_all)) 
+  if ((z >= redshift.shear_zdist_zmin_all) && (z<redshift.shear_zdist_zmax_all)) 
   {
-    // alias
     const int ntomo = redshift.shear_nbin;
     const int nzbins = redshift.shear_nzbins;
     double** tab = redshift.shear_zdist_table;
-    double* z_v = redshift.shear_zdist_table[ntomo];
-    
+    double* z_v  = redshift.shear_zdist_table[ntomo];
+
     const double dz_histo = (z_v[nzbins - 1] - z_v[0]) / ((double) nzbins - 1.);
     const double zhisto_min = z_v[0];
     const double zhisto_max = z_v[nzbins - 1] + dz_histo;
-
     const int nj = (int) floor((z - zhisto_min) / dz_histo);
-    
-    if (ni < 0 || ni > ntomo - 1 || nj < 0 || nj > nzbins - 1)
-    {
+    if (ni < 0 || ni > ntomo-1 || nj < 0 || nj > nzbins-1) {
       log_fatal("invalid bin input (zbin = ni, bin = nj) = (%d, %d)", ni, nj);
       exit(1);
     } 
@@ -432,13 +411,11 @@ double zdistr_histo_n(double z, const int ni)
 
 double zdistr_photoz(double zz, const int nj) 
 {
-  static double cache_redshift_nz_params_shear;
+  static double cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
   
-  if (table == NULL || 
-      fdiff(cache_redshift_nz_params_shear, redshift.random_shear))
-  { 
+  if (table == NULL || fdiff(cache[0], redshift.random_shear)) { 
     if (table == NULL) {
       for (int i=0; i<MAX_SIZE_ARRAYS+1; i++) {
         photoz_splines[i] = NULL;
@@ -448,9 +425,7 @@ double zdistr_photoz(double zz, const int nj)
     const int ntomo  = redshift.shear_nbin;
     const int nzbins = redshift.shear_nzbins;
 
-    if (table != NULL) {
-      free(table);
-    }
+    if (table != NULL) free(table);
     table = (double**) malloc2d(ntomo + 2, nzbins);
     
     const double zmin = redshift.shear_zdist_zmin_all;
@@ -497,21 +472,21 @@ double zdistr_photoz(double zz, const int nj)
         exit(1);
       }
     }
-    cache_redshift_nz_params_shear = redshift.random_shear;
+    cache[0] = redshift.random_shear;
   }
   
   const int ntomo  = redshift.shear_nbin;
   const int nzbins = redshift.shear_nzbins;
 
   if (nj < 0 || nj > ntomo - 1) {
-    log_fatal("nj = %d bin outside range (max = %d)", nj, redshift.shear_nbin);
+    log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo);
     exit(1);
   }
 
   zz = zz - nuisance.photoz[0][0][nj];
   
   double res; 
-  if (zz <= table[ntomo+1][0] || zz >= table[ntomo+1][nzbins-1]) { // z_v = table[ntomo+1]
+  if (zz < table[ntomo+1][0] || zz > table[ntomo+1][nzbins-1]) { // z_v = table[ntomo+1]
     res = 0.0;
   }
   else {
@@ -844,8 +819,7 @@ double g_tomo(double ainput, const int ni)
   const double amax = 0.999999;
   const double da = (amax - amin)/((double) Ntable.N_a - 1.0);
 
-  if (NULL == table || 
-      fdiff(cache_table_params, Ntable.random)) 
+  if (NULL == table || fdiff(cache_table_params, Ntable.random)) 
   {
     if (table != NULL) free(table);
     table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_a);
@@ -1007,12 +981,8 @@ double g_lens(double a, int ni)
   const double da = (amax - amin)/((double) Ntable.N_a - 1.0);
   const double amin_shear = 1. / (redshift.shear_zdist_zmax_all + 1.);
 
-  if (table == NULL || 
-      fdiff(cache_table_params, Ntable.random)) 
-  {
-    if (table != NULL) {
-      free(table);
-    }
+  if (table == NULL || fdiff(cache_table_params, Ntable.random)) {
+    if (table != NULL) free(table);
     table = (double**) malloc2d(redshift.clustering_nbin , Ntable.N_a);
   }
 
@@ -1021,17 +991,13 @@ double g_lens(double a, int ni)
       fdiff(cache_redshift_nz_params_clustering, redshift.random_clustering)  ||
       fdiff(cache_table_params, Ntable.random)) 
   {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
     { // COCOA: init static variables - allows the OpenMP on the next loop
       double ar[2] = {(double) 0, chi(amin)};
-      double trash = int_for_g_lens(amin_shear, (void*) ar);
+     (void) int_for_g_lens(amin_shear, (void*) ar);
     }
-    #pragma GCC diagnostic pop 
-
     const size_t szint = 150 + 50 * (Ntable.high_def_integration);
     gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
-
+    // -------------------------------------------------------------------------
     #pragma omp parallel for collapse(2)
     for (int j=0; j<redshift.clustering_nbin; j++) {
       for (int i=0; i<Ntable.N_a; i++) {
@@ -1044,7 +1010,7 @@ double g_lens(double a, int ni)
         table[j][i] = gsl_integration_glfixed(&F, amin_shear, a, w);
       }
     }
-
+    // -------------------------------------------------------------------------
     gsl_integration_glfixed_table_free(w);
     cache_cosmo_params = cosmology.random;
     cache_table_params = Ntable.random;

@@ -388,9 +388,13 @@ typedef struct
   // CLUSTER ROUTINES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  int cs_npowerspectra;  // num cluster-galaxy lensing tomo combinations
-  int cg_npowerspectra   // num cluster-galaxy clustering tomo combinations
-  int cc_npowerspectra;  // num cluster-cluster clustering tomo combinations 
+  int n_cggl_exclude;   // number of l-s ggl pairs excluded
+  int* cggl_exclude;    // l-s pairs that are excluded in ggl
+  int n_cg_exclude;     // number of c-g cluster-galaxy pairs excluded
+  int* cg_exclude;      // c-g cluster-galaxy pairs excluded in cg clustering
+  int cs_npowerspectra; // num cluster-galaxy lensing tomo combinations
+  int cg_npowerspectra;  // num cluster-galaxy clustering tomo combinations
+  int cc_npowerspectra; // num cluster-cluster clustering tomo combinations 
 } tomopara;
 
 typedef struct

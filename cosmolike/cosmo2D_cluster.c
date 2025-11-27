@@ -166,12 +166,17 @@ double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const i
     log_fatal("error in bin number (nl,ni,ns,nt) = [%d,%d,%d,%d]",nl,ni,ns,nt);
     exit(1); 
   } 
-  const int q = nl*N_cgl(ni,ns)*Ntable.Ntheta + nt;
-  if (q > NSIZE*Ntable.Ntheta - 1) {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
+  if (test_zoverlap_cggl(ni, nj)) {
+    const int q = nl*NCGL(ni,ns)*Ntable.Ntheta + nt;
+    if (q > NSIZE*Ntable.Ntheta - 1) {
+      log_fatal("internal logic error in selecting bin number");
+      exit(1);
+    }
+    return w_vec[q];
   }
-  return w_vec[q];
+  else {
+    return 0.0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -418,8 +423,7 @@ double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const i
         Cl[i][l] = 0.0;
       }
     } 
-    // init static vars
-    (void) C_cg_tomo_limber(limits.LMIN_tab+1, 0, ZCGCL1(0), ZCGCL2(0));
+    (void) C_cg_tomo_limber(limits.LMIN_tab+1, 0, ZCG1(0), ZCG2(0)); // init static vars
     // -------------------------------------------------------------------------
     if (1==limber) {
       #pragma omp parallel for collapse(3)
@@ -427,7 +431,7 @@ double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const i
         for (int j=0; j<tomo.cg_npowerspectra; j++) {
           for (int l=lmin; l<limits.LMIN_tab; l++) {
             const int q = i*tomo.cg_npowerspectra + j;
-            Cl[q][l] = C_cg_tomo_limber_nointerp(l, i, ZCGCL1(j), ZCGCL2(j), 0);
+            Cl[q][l] = C_cg_tomo_limber_nointerp(l, i, ZCG1(j), ZCG2(j), 0);
           }
         }
       }
@@ -436,7 +440,7 @@ double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const i
         for (int j=0; j<tomo.cg_npowerspectra; j++) {
           for (int l=limits.LMIN_tab; l<limits.LMAX; l++) {
             const int q = i*tomo.cg_npowerspectra + j;
-            Cl[q][l] = C_cg_tomo_limber(l, i, ZCGCL1(j), ZCGCL2(j));
+            Cl[q][l] = C_cg_tomo_limber(l, i, ZCG1(j), ZCG2(j));
           }
         }
       }
@@ -477,13 +481,18 @@ double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const i
       nt < 0 || nt > like.Ntheta - 1) {
     log_fatal("error in bin number (nl,ni,nj,nt) = [%d,%d,%d,%d]",nl,ni,nj,nt);
     exit(1); 
-  } 
-  const int q = nl*N_CGCL(ni, nj)*like.Ntheta + nt;
-  if (q < 0 || q > NSIZE*like.Ntheta - 1) {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
   }
-  return w_vec[q];
+  if (test_zoverlap_cg(ni, nj)) {
+    const int q = nl*NCG(ni, nj)*like.Ntheta + nt;
+    if (q < 0 || q > NSIZE*like.Ntheta - 1) {
+      log_fatal("internal logic error in selecting bin number");
+      exit(1);
+    }
+    return w_vec[q];
+  }
+  else {
+    return 0.0;
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -666,7 +675,7 @@ double C_cs_tomo_limber(const double l, const int nl, const int ni, const int ns
     if (lnl > lim[1]) {
       log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
     }
-    const int q = nl*tomo.cs_npowerspectra + N_cgl(ni, ns);
+    const int q = nl*tomo.cs_npowerspectra + NCGL(ni, ns);
     if (q < 0 || q > Cluster.n200_nbin*tomo.cs_npowerspectra - 1) {
       log_fatal("internal logic error in selecting bin number");
       exit(1);
@@ -972,14 +981,14 @@ double C_cg_tomo_limber(const double l, const int nl, const int ni, const int nj
       fdiff(cache[6], nuisance.random_clusters) ||
       fdiff(cache[7], redshift.random_clusters))
   {
-    (void) C_cg_tomo_limber_nointerp(exp(lnlmin), 0, ZCGCL1(0), ZCGCL2(0), 1);
+    (void) C_cg_tomo_limber_nointerp(exp(lnlmin), 0, ZCG1(0), ZCG2(0), 1);
     #pragma omp parallel for collapse(3)
     for (int i=0; i<Cluster.n200_nbin; i++) {
       for (int j=0; j<tomo.cg_clustering_Npowerspectra; j++) {
         for (int p=0; p<Ntable.N_ell; ++p) {
           const int q = i*tomo.cg_clustering_Npowerspectra + j;
           table[q][p] = log(C_cg_tomo_limber_nointerp(exp(lnlmin + p*dlnl), i, 
-                                                      ZCGCL1(j), ZCGCL2(j), 0));
+                                                      ZCG1(j), ZCG2(j), 0));
         }
       }
     }
@@ -1000,7 +1009,7 @@ double C_cg_tomo_limber(const double l, const int nl, const int ni, const int nj
     exit(1); 
   }
   double res = 0.0;
-  const int ntomo = N_CGCL(ni,nj);
+  const int ntomo = NCG(ni,nj);
   if (ntomo>0) {
     const double lnl = log(l);
     if (lnl < lim[0]) {

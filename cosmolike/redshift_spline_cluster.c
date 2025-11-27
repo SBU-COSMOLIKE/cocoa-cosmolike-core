@@ -17,100 +17,26 @@
 
 #include "log.c/src/log.h"
 
-double pf_cluster_histo_n(double z,  void* params) 
+double pf_cluster_histo_n(double z, const int ni)
 {
-  static int njmax;
-  static double** table;
-  static double zhisto_max, zhisto_min, dz;
-
-  if (table == 0)
-  {
-    const int zbins = line_count(redshift.clusters_REDSHIFT_FILE);
-    njmax = zbins;
-    table = (double**) malloc(sizeof(double*)*redshift.cluster_nbin);
-    for (int i=0; i<redshift.cluster_nbin; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*zbins);
-    }
-    double* z_v = (double*) malloc(sizeof(double)*zbins);
-    
-    FILE* ein = fopen(redshift.clusters_REDSHIFT_FILE, "r");
-    if (ein == NULL)
-    {
-      log_fatal("file not opened");
-      exit(1);
-    }
-    int p = 0;
-    for (int i=0; i<zbins; i++)
-    {
-      fscanf(ein, "%le", &z_v[i]);
-      p++;
-      if (i > 0 && z_v[i] < z_v[i-1]) 
-      {
-        break;
-      }
-      for (int k=0; k<redshift.cluster_nbin; k++)
-      {
-        fscanf(ein," %le", &table[k][i]);
-      }
-    }
-    fclose(ein);
-
-    dz = (z_v[p - 1] - z_v[0]) / ((double) p - 1.0);
-    zhisto_max = z_v[p - 1] + dz;
-    zhisto_min = z_v[0];
-    
-    for (int k=0; k<redshift.cluster_nbin; k++)
-    { // now, set tomography bin boundaries
-      double max = table[k][0];
-      for (int i=1; i<zbins; i++)
-      {
-        if (table[k][i]> max)
-        {
-          max = table[k][i];
-        }
-      }
-      {
-        int i = 0;
-        while (table[k][i] <1.e-8*max && i < zbins-2)
-        {
-          i++;
-        }
-        tomo.cluster_zmin[k] = z_v[i];
-      }
-      {
-        int i = zbins-1;
-        while (table[k][i] <1.e-8*max && i > 0)
-        {
-          i--;
-        }
-        tomo.cluster_zmax[k] = z_v[i];
-      }
-      log_info("tomo.cluster_zmin[%d] = %.3f,tomo.cluster_zmax[%d] = %.3f",
-        k, tomo.cluster_zmin[k], k, tomo.cluster_zmax[k]);
-    }
-    free(z_v);
-    
-    if (zhisto_max < tomo.cluster_zmax[redshift.cluster_nbin - 1] || zhisto_min > tomo.cluster_zmin[0])
-    {
-      log_fatal("%e %e %e %e", zhisto_min,tomo.cluster_zmin[0], 
-        zhisto_max,tomo.cluster_zmax[redshift.cluster_nbin-1]);
-      log_fatal("pf_cluster_histo_n: redshift file = %s is incompatible with bin choice", 
-        redshift.clusters_REDSHIFT_FILE);
-      exit(1);
-    }
-  }
-
+  if (redshift.clusters_zdist_table == NULL) {
+    log_fatal("redshift n(z) not loaded");
+    exit(1);
+  } 
   double res = 0.0;
-  if ((z >= zhisto_min) && (z < zhisto_max)) 
+  if ((z >= redshift.clusters_zdist_zmin_all) && 
+      (z < redshift.clusters_zdist_zmax_all)) 
   {
-    double *ar = (double*) params;
-    const int ni = (int) ar[0];
-    const int nj = (int) floor((z - zhisto_min)/dz);
-
-    if (ni < 0 || ni > redshift.cluster_nbin - 1 || nj < 0 || nj > njmax - 1)
-    {
-      log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj);
+    const int ntomo  = redshift.clusters_nbin;
+    const int nzbins = redshift.clusters_nzbins;
+    double** tab = redshift.clusters_zdist_table;
+    double* z_v  = redshift.clusters_zdist_table[ntomo];
+    const double dz_histo = (z_v[nzbins - 1] - z_v[0]) / ((double) nzbins - 1.);
+    const double zhisto_min = z_v[0];
+    const double zhisto_max = z_v[nzbins - 1] + dz_histo;
+    const int nj = (int) floor((z - zhisto_min) / dz_histo);
+    if (ni < 0 || ni > ntomo-1 || nj < 0 || nj > nzbins-1) {
+      log_fatal("invalid bin input (zbin = ni, bin = nj) = (%d, %d)", ni, nj);
       exit(1);
     } 
     res = table[ni][nj];
@@ -118,589 +44,478 @@ double pf_cluster_histo_n(double z,  void* params)
   return res;
 }
 
-double pz_cluster(const double zz, const int nz)
+double pz_cluster(double zz, const int nj) 
 {
-  static double** table = 0;
-  static double* z_v = 0;
-  static int zbins = -1;
-  static gsl_spline* photoz_splines[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = 0;
+  static double cache[MAX_SIZE_ARRAYS];
+  static double** table = NULL;
+  static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
 
-  if (nz < -1 || nz > redshift.cluster_nbin - 1)
-  {
-    log_fatal("invalid bin input nz = %d (max %d)", nz, redshift.cluster_nbin);
-    exit(1);
-  }
-
-  if (redshift.clusters_photoz == 0)
-  {
-    if ((zz >= tomo.cluster_zmin[nz]) & (zz <= tomo.cluster_zmax[nz])) 
-    {
-      return 1;
-    }
-    else
-    { 
-      return 0;
-    }
-  }
-
-  if (table == 0)
-  {
-    const size_t nsize_integration = 2250 + 500 * (Ntable.high_def_integration);
-    w = gsl_integration_glfixed_table_alloc(nsize_integration);
-
-    zbins = line_count(redshift.clusters_REDSHIFT_FILE);
- 
-    table = (double**) malloc(sizeof(double*)*(redshift.cluster_nbin+1));
-    for (int i=0; i<(redshift.cluster_nbin+1); i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*zbins);
-    }
-    z_v = (double*) malloc(sizeof(double)*zbins);
-
-    for (int i=0; i<redshift.clustering_nbin+1; i++) 
-    {
-      if (Ntable.photoz_interpolation_type == 0)
-      {
-        photoz_splines[i] = gsl_spline_alloc(gsl_interp_cspline, zbins);
-      }
-      else if (Ntable.photoz_interpolation_type == 1)
-      {
-        photoz_splines[i] = gsl_spline_alloc(gsl_interp_linear, zbins);
-      }
-      else
-      {
-        photoz_splines[i] = gsl_spline_alloc(gsl_interp_steffen, zbins);
-      }
-      if (photoz_splines[i] == NULL)
-      {
-        log_fatal("fail allocation");
-        exit(1);
+  if (table == NULL || fdiff(cache[0], redshift.random_shear)) {
+    // -------------------------------------------------------------------------
+    if (table == NULL) {
+      for (int i=0; i<MAX_SIZE_ARRAYS+1; i++) {
+        photoz_splines[i] = NULL;
       }
     }
-
-    FILE* ein = fopen(redshift.clusters_REDSHIFT_FILE,"r");
-    int p = 0;
-    for (int i=0; i<zbins; i++)
-    {
-      fscanf(ein, "%le", &z_v[i]);
-      p++;
-      if (i > 0 && z_v[i] < z_v[i-1]) 
-      {
-        break;
-      }
-      for (int k=0; k<redshift.cluster_nbin; k++)
-      {
-        double space;
-        fscanf(ein,"%le",&space);
-      }
+    const int ntomo  = redshift.clusters_nbin;
+    const int nzbins = redshift.clusters_nzbins;
+    if (table != NULL) free(table);
+    table = (double**) malloc2d(ntomo+2, nzbins);
+    // -------------------------------------------------------------------------
+    const double zmin = redshift.clusters_zdist_zmin_all;
+    const double zmax = redshift.clusters_zdist_zmax_all;
+    const double dz_histo = (zmax - zmin) / ((double) nzbins);  
+    for (int k=0; k<nzbins; k++) { // redshift stored at zv = table[ntomo+1]
+      table[ntomo+1][k] = zmin + (k + 0.5) * dz_histo;
     }
-    fclose(ein);
-
-    {
-      const double zhisto_min = fmax(z_v[0], 1.e-5);
-      const double zhisto_max = z_v[p - 1] + (z_v[p - 1] - z_v[0])/((double) p - 1.0);  
-      const double da = (zhisto_max - zhisto_min)/((double) zbins);
-      for (int i=0; i<zbins; i++)
-      { 
-        z_v[i] = zhisto_min + (i + 0.5)*da;
+    // -------------------------------------------------------------------------
+    double NORM[MAX_SIZE_ARRAYS];    
+    double norm = 0; 
+    #pragma omp parallel for reduction( + : norm )
+    for (int i=0; i<ntomo; i++) {
+      NORM[i] = 0.0;
+      for (int k=0; k<nzbins; k++) {    
+        const double z = table[ntomo+1][k];  
+        NORM[i] += pf_cluster_histo_n(z, i) * dz_histo;
       }
-    }
-    
-    { // init the function pf_cluster_histo_n
-      double ar[1] = {(double) 0};
-      pf_cluster_histo_n(0., (void*) ar);
-    }
-
-    double NORM[MAX_SIZE_ARRAYS]; 
-    
-    #pragma omp parallel for
-    for (int i=0; i<redshift.cluster_nbin; i++)
-    {
-      double ar[1] = {(double) i};
-
-      gsl_function F;
-      F.params = (void*) ar;
-      F.function = pf_cluster_histo_n;
-      const double norm = gsl_integration_glfixed(&F, 1E-5, tomo.cluster_zmax[i] + 1.0, w) / 
-        (tomo.cluster_zmax[i] - tomo.cluster_zmin[i]);
-      
-      if (norm == 0) 
-      {
-        log_fatal("pz_cluster: norm(nz = %d) = 0", i);
-        exit(1);
-      }
-
-      for (int k=0; k<zbins; k++)
-      { 
-        table[i + 1][k] = pf_cluster_histo_n(z_v[k], (void*) ar)/norm;
-      }
-      NORM[i] = norm;
-    }
-    
-    double norm = 0;
-    for (int i=0; i<redshift.cluster_nbin; i++)
-    { // calculate normalized overall redshift distribution (without bins), store in table[0][:]
       norm += NORM[i];
     }
-
-    for (int k=0; k<zbins; k++)
-    {
-      table[0][k] = 0; 
-      for (int i=0; i<redshift.cluster_nbin; i++)
-      {
-        table[0][k] += table[i+1][k]*NORM[i]/norm;
+    #pragma omp parallel for
+    for (int k=0; k<nzbins; k++) { 
+      table[0][k] = 0; // store normalization in table[0][:]
+      for (int i=0; i<ntomo; i++) {
+        const double z = table[ntomo+1][k];
+        table[i + 1][k] = pf_cluster_histo_n(z, i)/NORM[i];
+        table[0][k] += table[i+1][k] * NORM[i] / norm;
       }
     }
-
+    // -------------------------------------------------------------------------
+    for (int i=0; i<ntomo+1; i++) {
+      if (photoz_splines[i] != NULL) {
+        gsl_interp_free(photoz_splines[i]);
+      }
+      photoz_splines[i] = malloc_gsl_interp(nzbins);
+    }
     #pragma omp parallel for
-    for (int i=-1; i<redshift.cluster_nbin; i++) 
-    {
-      int status = gsl_spline_init(photoz_splines[i + 1], z_v, table[i + 1], zbins);
-      if (status) 
-      {
+    for (int i=0; i<ntomo+1; i++) {
+      int status = gsl_interp_init(photoz_splines[i], 
+                                   table[ntomo+1], // z_v = table[ntomo+1]
+                                   table[i], 
+                                   nzbins);
+      if (status) {
         log_fatal(gsl_strerror(status));
         exit(1);
       }
     }
+    cache[0] = redshift.random_clusters;
   }
+  // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  const int ntomo  = redshift.clusters_nbin;
+  const int nzbins = redshift.clusters_nzbins;
 
-  if (nz > redshift.cluster_nbin - 1 || nz < -1)
-  {
-    log_fatal("pz_cluster(z, %d) outside redshift.cluster_nbin range", nz);
+  if (nj < 0 || nj > ntomo-1) {
+    log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo);
     exit(1);
   }
 
-  double res;
-  if (zz <= z_v[0] || zz >= z_v[zbins - 1]) 
-  {
+  double res; 
+  if (zz < table[ntomo+1][0] || zz > table[ntomo+1][nzbins-1]) { // z_v = table[ntomo+1]
     res = 0.0;
   }
-  else
-  {
-    double result = 0.0;
-    int status = gsl_spline_eval_e(photoz_splines[nz + 1], zz, NULL, &result);
-    if (status) 
-    {
+  else {
+    int status = gsl_interp_eval_e(photoz_splines[nj+1], 
+                                   table[ntomo+1],
+                                   table[nj+1],
+                                   zz, 
+                                   NULL, 
+                                   &res);
+    if (status) {
       log_fatal(gsl_strerror(status));
       exit(1);
     }
-    res = result;
   }
   return res;
 }
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
 double dV_cluster(double z, void* params)
 {
   double* ar = (double*) params;
-  const int nz = ar[0];
+  const int ni = (int) ar[0];
   const double a = 1.0/(1.0 + z);
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
   const double fK = f_K(chidchi.chi);
-  return (fK*fK/hoverh0)*pz_cluster(z, nz);
+  return (fK*fK/hoverh0)*pz_cluster(z, ni);
 }
 
-double norm_z_cluster(const int nz)
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double norm_z_cluster(const int ni)
 {
-  static double cache_cosmo_params;
+  static double cache[MAX_SIZE_ARRAYS];
   static double* table;
-  static gsl_integration_glfixed_table* w = 0;
-
-  const int N_z = redshift.clustering_nbin;
-  const double zmin = tomo.cluster_zmin[nz];
-  const double zmax = tomo.cluster_zmax[nz];
   
-  if (table == 0) 
-  {
-    table = (double*) malloc(sizeof(double)*N_z);
-    const size_t nsize_integration = 2500 + 50 * (Ntable.high_def_integration);
-    w = gsl_integration_glfixed_table_alloc(nsize_integration);
+  if (NULL == table || fdiff(cache[0], Ntable.random)) {
+    if (table != NULL) free(table);
+    table = (double**) malloc1d(redshift.clusters_nbin);
   }
-  if (recompute_cosmo3D(C))
+  if (fdiff(cache[0], Ntable.random) || 
+      fdiff(cache[1], cosmology.random) ||
+      fdiff(cache[2], redshift.random_clusters)) 
   {
+    const size_t szint = 200 + 50 * (Ntable.high_def_integration);
+    gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
     { // init static vars only 
-      const int i = 0;
       double params[1] = {0.0};
-      dV_cluster(tomo.cluster_zmin[i], (void*) params);
+      (void) dV_cluster(tomo.cluster_zmin[0], (void*) params);
     }
+    // -------------------------------------------------------------------------
     #pragma omp parallel for
-    for (int i=0; i<N_z; i++)
-    {
-      double ar[1] = {(double) i};
-
+    for (int i=0; i<redshift.clusters_nbin; i++) {
+      double params[1] = {(double) i};
       gsl_function F;
-      F.params = (void*) ar;
+      F.params = (void*) params;
       F.function = dV_cluster;
-      table[i] = gsl_integration_glfixed(&F, zmin, zmax, w);
+      table[i] = gsl_integration_glfixed(&F, tomo.cluster_zmin[ni], 
+                                             tomo.cluster_zmax[ni], w);
     }
-    update_cosmopara(&C);
+    // -------------------------------------------------------------------------
+    gsl_integration_glfixed_table_free(w);
+    cache[0] = Ntable.random;
+    cache[1] = cosmology.random;
+    cache[2] = redshift.random_clusters;
   }
   return table[nz];
 }
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
 double zdistr_cluster(const int nz, const double z)
-{ //simplfied selection function, disregards evolution of N-M relation+mass function within z bin
+{ // disregards evolution of N-M relation+mass function within z bin
   double params[1] = {nz};
   return dV_cluster(z, (void*) params)/norm_z_cluster(nz);
 }
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
-double int_for_g_lens_cl(double aprime, void* params)
+double int_for_g_lens_cluster(double aprime, void* params)
 {
   double* ar = (double*) params;
-  const int ni = (int) ar[0];
+  const int ni   = (int) ar[0];
   const double a = ar[1];
-  const int nl = (int) ar[2];
-  
-  if (ni < -1 || ni > redshift.cluster_nbin - 1)
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", ni, redshift.cluster_nbin);
-    exit(1);
-  }
-  if (nl < 0 || nl > Cluster.N200_Nbin - 1)
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", nl, Cluster.N200_Nbin);
-    exit(1);
-  } 
-  
+    
   const double zprime = 1.0/aprime - 1.0;
   const double chi1 = chi(a);
   const double chiprime = chi(aprime);
-  return zdistr_cluster(zprime, ni)*f_K(chiprime - chi1)/f_K(chiprime)/(aprime*aprime);
+  
+  const double res = zdistr_cluster(1./aprime - 1., ni)*f_K(chiprime - chi1);
+  return res/(f_K(chiprime)*(aprime*aprime));
 }
 
-double g_lens_cluster(const double a, const int nz, const int nl)
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double g_lens_cluster(const double a, const int nz)
 { 
-  static double cache_cosmo_params;
+  static double cache[MAX_SIZE_ARRAYS];
   static double** table = 0;
-  static gsl_integration_glfixed_table* w = 0;
-
-  const int N_z = redshift.cluster_nbin;
-  const int N_l = Cluster.N200_Nbin;
-  if (nl < 0 || nl > N_l - 1)
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", nl, N_l);
-    exit(1);
-  } 
+  static double lim[3];
   
-  const double amin = 1.0/(tomo.cluster_zmax[redshift.cluster_nbin - 1] + 1.);
-  const double amax = 0.999999;
-  const double da = (amax - amin)/((double) Ntable.N_a - 1.0);
-  
-  if (table == 0) 
-  {
-    table = (double**) malloc(sizeof(double*)*(redshift.cluster_nbin + 1));
-    for (int i=0; i<redshift.cluster_nbin+1; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*Ntable.N_a);
-    }
+  if (table == NULL || fdiff(cache_table_params, Ntable.random)) {
+    if (table != NULL) free(table);
+    table = (double**) malloc2d(redshift.clusters_nbin+1, Ntable.N_a);   
 
-    const size_t nsize_integration = 300 + 50 * (Ntable.high_def_integration);
-    w = gsl_integration_glfixed_table_alloc(nsize_integration);
   }
-
-  if (recompute_cosmo3D(C)) // there is no nuisance bias/sigma parameters yet
+  if (fdiff(cache[0], Ntable.random) || 
+      fdiff(cache[1], cosmology.random) ||
+      fdiff(cache[2], redshift.random_clusters))
   {
-    { // init static vars only, if j=-1, no tomography is being done
-      double ar[3];
-      ar[0] = (double) -1; // j = -1 no tomography is being done
-      ar[1] = amin;
-      ar[2] = (double) 0;
-      int_for_g_lens_cl(amin, (void*) ar);
-      if (N_z > 0)
-      {
-        ar[0] = (double) 0;
-        int_for_g_lens_cl(amin, (void*) ar);
-      }
+    lim[0] = 1.0/(redshift.clusters_zdist_zmax_all + 1.);
+    lim[1] = 0.999999;
+    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_a - 1.);
+    // -------------------------------------------------------------------------
+    const size_t szint = 200 + 50 * (Ntable.high_def_integration);
+    gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
+    for (int j=-1; j<redshift.clusters_nbin; j++) { // init static vars
+      double params[2] = {(double) j, lim[0]} // j = -1: no tomography
+      (void) int_for_g_lens_cluster(lim[0], (void*) params);
     }
-
+    // -------------------------------------------------------------------------
     #pragma omp parallel for collapse(2)
-    for (int j=-1; j<N_z; j++) 
-    { 
-      for (int i=0; i<Ntable.N_a; i++) 
-      {
-        const double aa = amin + i*da;
-        double ar[3];
-        ar[0] = (double) j; 
-        ar[1] = aa;
-        ar[2] = nl;
-
+    for (int j=-1; j<redshift.clusters_nbin; j++) { 
+      for (int i=0; i<Ntable.N_a; i++) {
+        const double aa = lim[0] + i*lim[2];
+        double ar[2] = {(double) j, aa}
         gsl_function F;
         F.params = ar;
-        F.function = int_for_g_lens_cl;
-
-        table[j + 1][i] = 
-          gsl_integration_glfixed(&F, 1.0/(redshift.shear_zdist_zmax_all + 1.0), aa, w);
+        F.function = int_for_g_lens_cluster;
+        table[j+1][i] = gsl_integration_glfixed(&F,lim[0], aa, w);
       }      
     } 
-
-    update_cosmopara(&C);
+    // -------------------------------------------------------------------------
+    gsl_integration_glfixed_table_free(w);
+    cache[0] = Ntable.random;
+    cache[1] = cosmology.random;
+    cache[2] = redshift.random_clusters;
   }
-
-  if (nz < -1 || nz > N_z - 1)
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", nz, N_z);
+  // ---------------------------------------------------------------------------
+  if (nz < -1 || nz > redshift.clusters_nbin - 1) {
+    log_fatal("invalid bin input ni = %d", nz);
     exit(1);
   }
-  if (a < amin || a > amax)
-  {
-    log_fatal("a = %e outside look-up table range [%e,%e]", a, amin, amax);
-    exit(1);
-  }
-  return interpol(table[nz + 1], Ntable.N_a, amin, amax, da, a, 1.0, 1.0); 
+  return (a < lim[0] || a > lim[1]) ? 0.0 :
+    interpol1d(table[nz+1], Ntable.N_a, lim[0], lim[1], lim[2], a);
 }
 
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
-// Cluster-Galaxy Cross Clustering
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
 
-int ZCGCL1(const int ni)
+int test_zoverlap_cg(const int nc, const int ng)
 {
-  if (ni < 0 || ni > tomo.cg_clustering_Npowerspectra - 1)
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", ni, tomo.cg_clustering_Npowerspectra);
+  if (nc < 0 || nc > redshift.clusters_nbin - 1 || 
+      ng < 0 || ng > redshift.clustering_nbin - 1) {
+    log_fatal("error in bin number (nc, ng) = [%d, %d]", nc, ng);
     exit(1);
   }
-  // we assume cluster bin = galaxy bin (no cross)
-  return tomo.external_selection_cg_clustering[ni];
-}
-
-int ZCGCL2(const int nj)
-{
-  if (nj < 0 || nj > tomo.cg_clustering_Npowerspectra - 1)
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", nj, tomo.cg_clustering_Npowerspectra);
-    exit(1);
-  }
-  // we assume cluster bin = galaxy bin (no cross)
-  return tomo.external_selection_cg_clustering[nj];
-}
-
-int N_CGCL(const int ni, const int nj)
-{ // ni = Cluster Nbin, nj = Galaxy Nbin
-  static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
-  if (N[0][0] < 0)
-  {
-    int n = 0;
-    for (int i=0; i<redshift.cluster_nbin; i++)
-    {
-      for (int j=0; j<redshift.clustering_nbin; j++)
-      {
-        if (i == j) // we are not considering cross spectrum
-        {
-          for (int k=0; k<tomo.cg_clustering_Npowerspectra; k++)
-          {
-            if (i == tomo.external_selection_cg_clustering[k])
-            {
-              N[i][j] = n;
-              n++;
-            }
-            else
-            {
-              N[i][j] = -1;
+  if (tomo.cg_exclude != NULL) {
+    static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
+    if (N[0][0] < -1) {
+      for (int i=0; i<redshift.clusters_nbin; i++) {
+        for (int j=0; j<redshift.clustering_nbin; j++) {
+          N[i][j] = 1;
+          for (int k=0; k<tomo.n_cg_exclude; k++) {
+            const int p = k*2+0;
+            const int q = k*2+1;
+            if ((i == tomo.cg_exclude[p]) && 
+                (j == tomo.cg_exclude[q])) {
+              N[i][j] = 0;
+              break;
             }
           }
         }
-        else
-        {
-          N[i][j] = -1;
-        }
-      }
+      } 
     }
+    return  N[nc][ng];
   }
-  if (ni < 0 || ni > redshift.cluster_nbin - 1 || nj < 0 || nj > redshift.clustering_nbin - 1)
-  {
-    log_fatal("invalid bin input (ni (cluster nbin), nj (galaxy nbin)) = (%d, %d)", ni, nj);
-    exit(1);
-  }
-  return N[ni][nj];
-}
-
-
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// Cluster-Galaxy Lensing bins (redshift overlap tests)
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-
-int test_zoverlap_c(int zc, int zs) // test whether source bin zs is behind lens bin zl
-{
-  if (redshift.shear_photoz < 4 && tomo.cluster_zmax[zc] <= tomo.shear_zmin[zs]) 
-  {
+  else {
     return 1;
   }
-  if (redshift.shear_photoz == 4 && tomo.cluster_zmax[zc] < zmean_source(zs)) 
-  {
-    return 1;
-  }
-  return 0;
 }
 
-int ZCL(int ni) 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+int ZCG1(const int ni)
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) 
-  {
+  if (N[0] < -1) {
     int n = 0;
-    for (int i=0; i<redshift.cluster_nbin; i++) 
-    {
-      for (int j=0; j<redshift.shear_nbin; j++) 
-      {
-        if (test_zoverlap_c(i, j)) 
-        {
+    for (int i=0; i<redshift.clusters_nbin; i++) {
+      for (int j=0; j<redshift.clustering_nbin; j++) {
+        if (test_zoverlap_cg(i, j)) {
           N[n] = i;
           n++;
         }
       }
     }
   }
-  if (ni < 0 || ni > tomo.cgl_Npowerspectra - 1)
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", ni, tomo.cgl_Npowerspectra);
+  if (ni < 0 || ni > tomo.cg_clustering_Npowerspectra - 1) {
+    log_fatal("error in cg bin number nc = %d", ni);
     exit(1);
   }
   return N[ni];
 }
 
-int ZCS(int nj) 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+int ZCG2(const int nj)
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) 
-  {
+  if (N[0] < -1) {
     int n = 0;
-    for (int i=0; i<redshift.cluster_nbin; i++) 
-    {
-      for (int j=0; j<redshift.shear_nbin; j++) 
-      {
-        if (test_zoverlap_c(i, j)) 
-        {
+    for (int i=0; i<redshift.clusters_nbin; i++) {
+      for (int j=0; j<redshift.clustering_nbin; j++) {
+        if (test_zoverlap_cg(i, j)) {
           N[n] = j;
           n++;
         }
       }
     }
   }
-  if (nj < 0 || nj > tomo.cgl_Npowerspectra - 1)
-  {
-    log_fatal("invalid bin input nj = %d (max %d)", nj, tomo.cgl_Npowerspectra);
+  if (nj < 0 || nj > tomo.cg_clustering_Npowerspectra - 1) {
+    log_fatal("error in cg bin number ng = %d", nj);
     exit(1);
   }
   return N[nj];
 }
 
-int N_cgl(int ni, int nj) 
-{
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+int NCG(const int nc, const int ng)
+{ 
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
-  if (N[0][0] < 0) 
-  {
+  if (N[0][0] < 0) {
     int n = 0;
-    for (int i=0; i<redshift.cluster_nbin; i++) 
-    {
-      for (int j=0; j<redshift.shear_nbin; j++) 
-      {
-        if (test_zoverlap_c(i, j)) 
-        {
+    for (int i=0; i<redshift.clusters_nbin; i++) {
+      for (int j=0; j<redshift.clustering_nbin; j++) {
+        if (test_zoverlap_cg(i,j)) {
           N[i][j] = n;
           n++;
         } 
-        else 
-        {
+        else {
           N[i][j] = -1;
         }
       }
     }
   }
-  if (ni < 0 || ni > redshift.cluster_nbin - 1 || nj < 0 || nj > redshift.shear_nbin - 1)
+  if (nc < 0 || nc > redshift.clusters_nbin - 1 || 
+      ng < 0 || ng > redshift.clustering_nbin - 1)
   {
-    log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj);
+    log_fatal("error in cg bin number (nc,ng) = [%d,%d]",nc,ng);
     exit(1);
   }
-  return N[ni][nj];
+  return N[nc][ng];
 }
 
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
-// Cluster Clustering (redshift overlap tests)
+// -----------------------------------------------------------------------------
+
+int test_zoverlap_cggl(const int nl, const int ns)
+{
+  if (nl < 0 || nl > redshift.clusters_nbin - 1 || 
+      ns < 0 || ns > redshift.shear_nbin - 1) {
+    log_fatal("invalid bin cs input (nl, ns) = [%d, %d]", nl, ns);
+    exit(1);
+  }
+  if (tomo.cggl_exclude != NULL) {
+    static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
+    if (N[0][0] < -1) {
+      for (int i=0; i<redshift.clustering_nbin; i++) {
+        for (int j=0; j<redshift.shear_nbin; j++) {
+          N[i][j] = 1;
+          for (int k=0; k<tomo.n_cggl_exclude; k++) {
+            const int p = k*2+0;
+            const int q = k*2+1;
+            if ((i == tomo.cggl_exclude[p]) && 
+                (j == tomo.cggl_exclude[q])) {
+              N[i][j] = 0;
+              break;
+            }
+          }
+        }
+      } 
+    }
+    return  N[nl][ns];
+  }
+  else {
+    return 1;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-int ZCCL1(const int ni)
-{ // find ZCCL1 of tomography combination (zccl1, zccl2) constituting c-clustering tomo bin Nbin
+int ZCL(const int ni) 
+{
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) 
-  {
+  if (N[0] < -1) {
     int n = 0;
-    for (int i=0; i<redshift.cluster_nbin; i++) 
-    {
-      for (int j=i; j<redshift.cluster_nbin; j++) 
-      {
-        N[n] = i;
-        n++;
+    for (int i=0; i<redshift.clusters_nbin; i++) {
+      for (int j=0; j<redshift.shear_nbin; j++) {
+        if (test_zoverlap_cggl(i, j)) {
+          N[n] = i;
+          n++;
+        }
       }
     }
   }
-  if (ni < 0 || ni > tomo.cc_clustering_Npowerspectra - 1)
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", ni, tomo.cc_clustering_Npowerspectra);
+  if (ni < 0 || ni > tomo.cgl_Npowerspectra - 1) {
+    log_fatal("error in cs bin number nl = %d", ni);
     exit(1);
   }
   return N[ni];
 }
 
-int ZCCL2(const int nj)
-{ // find ZCCL2 of tomography combination (zcl1, zcl2) constituting c-clustering tomo bin Nbin
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+int ZCS(const int nj) 
+{
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
   if (N[0] < -1) 
   {
     int n = 0;
-    for (int i=0; i<redshift.cluster_nbin; i++) 
-    {
-      for (int j=i; j<redshift.cluster_nbin; j++) 
-      {
-        N[n] = j;
-        n++;
+    for (int i=0; i<redshift.clusters_nbin; i++) {
+      for (int j=0; j<redshift.shear_nbin; j++) {
+        if (test_zoverlap_cggl(i,j)) {
+          N[n] = j;
+          n++;
+        }
       }
     }
   }
-  if (nj < 0 || nj > tomo.cc_clustering_Npowerspectra - 1)
-  {
-    log_fatal("invalid bin input nj = %d (max %d)", nj, tomo.cc_clustering_Npowerspectra);
+  if (nj < 0 || nj > tomo.cgl_Npowerspectra - 1) {
+    log_fatal("error in cs bin number ns = %d", nj);
     exit(1);
   }
   return N[nj];
 }
 
-int N_CCL(const int ni, const int nj)
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+int NCGL(const int nl, const int ns) 
 {
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
-  if (N[0][0] < -1) 
-  {
+  if (N[0][0] < 0) {
     int n = 0;
-    for (int i=0; i<redshift.cluster_nbin; i++) 
-    {
-      for (int j=i; j<redshift.cluster_nbin; j++) 
-      {
-        N[i][j] = n;
-        N[j][i] = n;
-        n++;
+    for (int i=0; i<redshift.clusters_nbin; i++) {
+      for (int j=0; j<redshift.shear_nbin; j++) {
+        if (test_zoverlap_cggl(i,j)) {
+          N[i][j] = n;
+          n++;
+        } 
+        else {
+          N[i][j] = -1;
+        }
       }
     }
   }
-  if (ni < 0 || ni > redshift.cluster_nbin - 1 || nj < 0 || nj > redshift.cluster_nbin - 1)
-  {
-    log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj);
+  if (nl < 0 || nl > redshift.clusters_nbin - 1 || 
+      ns < 0 || ns > redshift.shear_nbin - 1) {
+    log_fatal("invalid bin input (nl, ns) = [%d, %d]", nl, ns);
     exit(1);
   }
   return N[ni][nj];
 }
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------

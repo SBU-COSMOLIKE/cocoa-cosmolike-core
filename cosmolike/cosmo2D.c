@@ -340,28 +340,18 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
         Cl[i][l] = 0.0;
       }
     } 
-    { // init static variables inside the C_XY_limber function
-      (void) C_gs_tomo_limber(limits.LMIN_tab + 1, ZL(0), ZS(0));
-    }
+    (void) C_gs_tomo_limber(limits.LMIN_tab + 1, ZL(0), ZS(0)); // init static vars
     if (1 == limber) {
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
-          const int zlens   = ZL(nz);
-          const int zsource = ZS(nz);
-          if(0 != test_zoverlap(zlens, zsource)) {
-            Cl[nz][l] = C_gs_tomo_limber_nointerp(l, ZL(nz), ZS(nz), 0);
-          }
+          Cl[nz][l] = C_gs_tomo_limber_nointerp(l, ZL(nz), ZS(nz), 0);
         }
       }
+      #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
-        const int zlens   = ZL(nz);
-        const int zsource = ZS(nz);
-        if(0 != test_zoverlap(zlens, zsource)) {
-          #pragma omp parallel for schedule(static,1)
-          for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {     
-            Cl[nz][l] = C_gs_tomo_limber(l, zlens, zsource);
-          }
+        for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {  
+          Cl[nz][l] = C_gs_tomo_limber(l, ZL(nz), ZS(nz));
         }
       }
     }
@@ -372,13 +362,9 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
-        const int zlens   = ZL(nz);
-        const int zsource = ZS(nz);
         double sum = 0.0;
-        if(0 != test_zoverlap(zlens, zsource)) {
-          for (int l=lmin; l<Ntable.LMAX; l++) {
-            sum += Pl[i][l] * Cl[nz][l];
-          }
+        for (int l=lmin; l<Ntable.LMAX; l++) {
+          sum += Pl[i][l] * Cl[nz][l];
         }
         w_vec[nz * Ntable.Ntheta + i] = sum;
       }
@@ -392,7 +378,7 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
     cache[6] = Ntable.random;
     cache[7] = nuisance.random_galaxy_bias;
   }
-
+  // ---------------------------------------------------------------------------
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
     exit(1); 
@@ -404,14 +390,19 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
     log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
     exit(1);
   }
-  const int q = N_ggl(ni, nj)*Ntable.Ntheta + nt;
-  if (q < 0 || q > NSIZE*Ntable.Ntheta - 1) {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
+  if (test_zoverlap(ni,nj)) {
+    const int q = N_ggl(ni,nj)*Ntable.Ntheta + nt;
+    if (q < 0 || q > NSIZE*Ntable.Ntheta - 1) {
+      log_fatal("internal logic error in selecting bin number");
+      exit(1);
+    }
+    return w_vec[q];
   }
-  return w_vec[q];
+  else {
+    return 0.0;
+  }
 }
-
+//
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -1392,18 +1383,13 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       fdiff(cache[6], Ntable.random) ||
       fdiff(cache[7], nuisance.random_galaxy_bias))
   {
-    for (int k=0; k<tomo.ggl_Npowerspectra; k++) { // init static variables     
+    for (int k=0; k<tomo.ggl_Npowerspectra; k++) { // init static vars     
       (void) C_gs_tomo_limber_nointerp(exp(lim[0]), ZL(k), ZS(k), 1);
     }
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<tomo.ggl_Npowerspectra; k++) {
       for (int i=0; i<nell; i++) {
-        if (test_zoverlap(ZL(k), ZS(k))) {
-          table[k][i] = C_gs_tomo_limber_nointerp(exp(lim[0]+i*lim[2]),ZL(k),ZS(k),0);
-        }
-        else {
-          table[k][i] = 0.0;
-        }
+        table[k][i] = C_gs_tomo_limber_nointerp(exp(lim[0]+i*lim[2]),ZL(k),ZS(k),0);
       }
     }
     cache[0] = cosmology.random;
