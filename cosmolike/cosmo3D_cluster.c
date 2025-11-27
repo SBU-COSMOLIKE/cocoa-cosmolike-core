@@ -107,83 +107,84 @@ double P_cluster_x_cluster_clustering_exclusion_constant_lambd_tab(double k, dou
           return (exp(val)-1E8)/k/k/k*pow(a, -0.5);
 }
 
-//End halo exclusion routine 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
-double P_cluster_x_cluster_clustering_mass_given_Dlambda_obs(double k, double a, int N_lambda1, int N_lambda2, double linear){
-       double z = 1./a-1;
-       //static int count =1;
-       double cluster_bias1 = weighted_bias(N_lambda1, z); 
-       double P_1loop=0;
-       if ((gbias.b2[0] || (clusterAnalysisChoice.nonlinear_bias>0))&(linear<1)){
-            double g4 = pow(growfac(a)/growfac(1.0),4.);
-            double b1g = cluster_bias1;
-            double b2g = cbias.b2[(int)N_lambda1];// weighted_bias2((int)N_lambda1, 1./a-1.);
-            double bs2gminus1plus1 = weighted_biasminus1((int)N_lambda1, 1./a-1.)+1;
-            double b1c =  weighted_bias(N_lambda2, z);
-            double b2c = cbias.b2[(int)N_lambda2];//weighted_bias2((int)N_lambda2, 1./a-1.);
-            double bs2cminus1plus1 = weighted_biasminus1((int)N_lambda2, 1./a-1.)+1;
-            double bs2g = bs2_from_b1(bs2gminus1plus1);
-            double bs2c = bs2_from_b1(bs2cminus1plus1);
-            P_1loop = 0.5*(b1c*b2g+b2c*b1g)*PT_d1d2(k) + 0.25*b2g*b2c*PT_d2d2(k) + 0.5*(b1c*bs2g+b1g*bs2c)*PT_d1s2(k)
-                +0.25*(b2c*bs2g+b2g*bs2c)*PT_d2s2(k) + 0.25*(bs2g*bs2c)*PT_s2s2(k)
-                +0.5*(b1c*b3nl_from_b1(bs2gminus1plus1) + b1g*b3nl_from_b1(bs2cminus1plus1))*PT_d1d3(k);
-            P_1loop *= g4;
-        }
-
-       if (N_lambda1==N_lambda2){
-         if(linear>0.1) return pow(cluster_bias1,2.0)*p_lin(k,a);
-         return pow(cluster_bias1,2.0)*Pdelta(k,a)+P_1loop;
-       }
-       else{
-          double cluster_bias2 = weighted_bias(N_lambda2, z); 
-          if(linear>0) return cluster_bias1*cluster_bias2*p_lin(k,a);
-          return cluster_bias1*cluster_bias2*Pdelta(k,a)+P_1loop;
-       }
+double pcc_given_lambda_nointerp(
+    const double k, 
+    const double a, 
+    const int nl1, 
+    const int nl2, 
+    const int linear
+  )
+{
+  const double z   = 1./a - 1.;
+  const double cb1 = weighted_bias(nl1, z); 
+  const double cb2 = (nl1 == nl2) ? cb1 : weighted_bias(nl2, z);
+  const double pk = (linear == 1) ? p_lin(k,a) : Pdelta(k,a);
+  return cb1*cb2*pk;
 }
 
-double P_cluster_x_cluster_clustering_exclusion_constant_lambd_exact(double k, double a, int N_lambda1, int N_lambda2){
-   double z = 1./a-1;
-   double cluster_bias1, cluster_bias2;
-   double pk, R, VexclWR;
-   //static int count =1;
-   cluster_bias1 = weighted_bias(N_lambda1, z); 
-   if (N_lambda1==N_lambda2){
-        cluster_bias2 = cluster_bias1;
-   }
-   else{
-      cluster_bias2 = weighted_bias(N_lambda2, z); 
-   }
-   R=1.5*pow(0.25*(Cluster.N_min[N_lambda1]+Cluster.N_min[N_lambda2]+Cluster.N_max[N_lambda1]+Cluster.N_max[N_lambda2])/100., 0.2)/cosmology.coverH0/a; // RedMaPPer exclusion radius (Rykoff et al. 2014  eq4) in units coverH0 [change to comoving]
-   //R = pow((3*mass_mean(N_lambda1, z)/(M_PI*4*(200*cosmology.rho_crit*cosmology.Omega_m))), (1./3.));;
-   //R = pow((3*mass_mean(N_lambda1, z)/(M_PI*4*(30*cosmology.rho_crit*cosmology.Omega_m))), (1./3.))/a;
-   //printf("R_compare: R_200 %e, Rperco %e \n", R2, R);
-   VexclWR = 4*M_PI*(sin(k*R) - k*R*cos(k*R))/pow(k, 3.);
-   double cutoff =1.;
-   //if (k*R>cutoff){ // to avoid high k oscillation. 1/x**2 damping term is motivated by the envelop of 3(sinkx-kx*coskx)/kx**3
-   //     pk = pow(cutoff/R,2)/pow(k,2); 
-   //     k = cutoff/R;
-   //}
-   if (k*R> cutoff){
-        pk = Pdelta(k,a)*cluster_bias1*cluster_bias2;
-        double Pdeltacutoff = Pdelta(cutoff/R,a)*cluster_bias1*cluster_bias2;
-        double VexclWRcutoff = (4*M_PI*(sin(cutoff) - cutoff*cos(cutoff))/pow(cutoff/R, 3.));
-        double Pexclusioncutoff = (pk_halo_with_exclusion(cutoff/R, R, a, 1, 1, 1)+VexclWRcutoff)*cluster_bias1*cluster_bias2-VexclWRcutoff;
-        double kcutoff = cutoff/R;
-        //pk = Pexclusioncutoff*(pk-VexclWR)/(Pdeltacutoff-VexclWRcutoff)*(VexclWR)/VexclWRcutoff;
-        pk = (pk-VexclWR-VexclWR*(-1*Pexclusioncutoff+(Pdeltacutoff-VexclWRcutoff))/VexclWRcutoff)*pow((k/kcutoff),-0.7);
-        return pk;
-   }
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
-   if(R==0){
-        pk = Pdelta(k,a)*cluster_bias1*cluster_bias2;
-   }else{
-        pk = (pk_halo_with_exclusion(k, R, a, 1, 1, 1)+VexclWR)*cluster_bias1*cluster_bias2-VexclWR; // Check it out!! This is my cool trick!! 
-   }
-   return pk;
+double pcc_with_excl_given_lambda_nointerp(
+    const double k, 
+    const double a, 
+    const int nl1, 
+    const int nl2
+  )
+{
+  const double z   = 1./a - 1.;
+  const double cb1 = weighted_bias(nl1, z); 
+  const double cb2 = (nl1 == nl2) ? cb1 : weighted_bias(nl2, z);
+  const double R = 1.5*pow(0.25*(Cluster.N_min[N_lambda1]+
+                                 Cluster.N_min[N_lambda2] +
+                                 Cluster.N_max[N_lambda1] +
+                                 Cluster.N_max[N_lambda2])/100., 0.2)/cosmology.coverH0/a; 
+  double pcc = 0.0;
+  if(0 == R) {
+    pcc = Pdelta(k,a)*cb1*cb2;
+  }
+  else {
+    const double VexclWR = 4*M_PI*(sin(k*R) - k*R*cos(k*R))/(k*k*k);
+    const double coff = 1.; // cff = cut off
+    const double kcff = coff/R;
+    if (k > kcoff) {
+      const double VexclWRcff = 4*M_PI*(sin(coff) -coff*cos(coff))/(kcff*kcff*kcff);
+      const double pcccff = (phh_with_excl(kcff,R,a,1,1,1) + VexclWRcff)*cb1*cb2 - VexclWRcff;
+      pcc  = Pdelta(k,a)*cb1*cb2 - VexclWR;
+      pcc -= (-pcccff + (Pdelta(kcff,a)*cb1*cb2 - VexclWRcoff))*VexclWR/VexclWRcoff;
+      pcc *= pow((k/kcoff),-0.7); 
+    }
+    else {
+      // original cosmolike: Check it out!! This is my cool trick!! 
+      pcc = (phh_with_excl(k,R,a,1,1,1) + VexclWR)*cb1*cb2 - VexclWR; 
+    }
+  }
+  return pcc;
 }
 
-double pcce(double k, double a, int N_lambda1, int N_lambda2, double linear){
-  if(linear>0) return  P_cluster_x_cluster_clustering_mass_given_Dlambda_obs(k, a, N_lambda1, N_lambda2, linear);
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double pcc_with_excl_given_lambda(
+    const double k, 
+    const double a, 
+    const int nl1, 
+    const int nl2, 
+    const int linear
+  )
+{
+
+
+
   static cosmopara C;
   static nuisancepara N;
   static int N_lambda1_in=-1;
@@ -217,115 +218,174 @@ double pcce(double k, double a, int N_lambda1, int N_lambda2, double linear){
     }
 
   }
+ if(linear>0) return  pcc_given_lambda_nointerp(k, a, N_lambda1, N_lambda2, linear);
+
   klog = log(k);
   val = interpol2d(table_P_NL, Ntable_cluster.N_a, amin, amax, da, a, Ntable_cluster.N_k_exclusion_pk_for_cell, logkmin, logkmax, dk, klog, 1.0, 1.0);
   return (exp(val)-1E8)/k/k/k*pow(a, -0.5);
 }
 
-double int_P_cluster_mass_given_Dlambda_obs_1halo(double logM, void *params){
-   double mass = exp(logM);  
-   double *array = (double*) params; //n_lambda, z,k
-   double a = 1./(1+array[1]);
-   double k = array[2];
-   double P_cm_1h;
-   P_cm_1h =  mass/(cosmology.rho_crit*cosmology.Omega_m)*u_nfw_c(c_m_relation_tab(mass,a),k,mass,a); //density profile
-   return mass*(P_cm_1h)*massfunc_probability_observed_richness_given_mass_tab((int) array[0], mass , array[1]);
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double int_pcm_given_lambda_obs_1halo(double logM, void* params) {
+  double* ar = (double *) params;
+  const int nl   = (int) ar[0];
+  const double a = ar[1];
+  const double k = ar[2];
+  const double M = exp(logM); 
+  const double z = 1.0/a-1.0; 
+  const double cmr   = c_m_relation_tab(M, a);
+  const double unfw  = u_nfw_c(cmr, k, M, a);
+  const double PCM1H = M/(cosmology.rho_crit*cosmology.Omega_m)*unfw;
+  return M*PCM1H*p_lambda_obs_given_m(nl, M, 1.0/a-1.0);
 }
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
-
-double int_P_cluster_mass_given_Dlambda_obs_tab(double logM, void *params){
-   double *array = (double*) params; //n_lambda, z,k
-   static double Nlambda=-1, z, k;
-   static cosmopara C;
-   static nuisancepara N;
-   static double **table_P1= 0;
-   static double dm =0.,logmmin = 12.0,logmmax = 15.9;
-   static int NM = 50;
-   if (table_P1 ==0){
-      table_P1 = create_double_matrix(0,1, 0, NM-1);
-      dm = (logmmax-logmmin)/(NM-1.);
-   }
-   if( ((Nlambda != array[0])|| (z != array[1]) || (k != array[2]) )|| recompute_DESclusters(C,N) ){
-        update_cosmopara(&C);
-        update_nuisance(&N);
-         Nlambda = array[0];
-         z = array[1];
-         k = array[2];
-         int j = 0;
-         for (double lgM = logmmin; lgM < logmmax; lgM+= dm){
-                double mass = pow(10.,lgM);
-                table_P1[0][j] = int_P_cluster_mass_given_Dlambda_obs_1halo(log(mass), params);
-                j++;
-         }
+double pcm_given_lambda_obs_1halo_nointerp(
+    const double k, 
+    const double a, 
+    const int nl, // cluster richness bin
+    const int ni, // cluster redshift bin
+    const int init
+  )
+{
+  static double cache[MAX_SIZE_ARRAYS];
+  static gsl_integration_glfixed_table* w = NULL;
+  if (nl < 0 || nl > Cluster.n200_nbin - 1 ||
+      ni < 0 || ni > redshift.clusters_nbin - 1) {
+    log_fatal("error in bin number (nl,ni) = [%d,%d]", nl,ni);
+    exit(1); 
+  }
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+    const size_t szint = 50 + 40 * abs(Ntable.high_def_integration);
+    if (w != NULL)  {
+      gsl_integration_glfixed_table_free(w);
     }
-    double mass = exp(logM);  
-    if (mass <  pow(10.,logmmax) && (mass > pow(10., logmmin))){
-      return interpol(table_P1[0], NM, logmmin, logmmax, dm, log10(mass), 1.0, 1.0);
+    w = malloc_gslint_glfixed(szint);
+    cache[0] = Ntable.random;
+  }
+
+  const double norm = n_lambda_obs_z(nl, 1./a-1.0);
+  double ar[3] = {(double) nl, a, k};
+  
+  double res = 0.0; 
+  if (1 == init) {
+    (void) int_pcm_given_lambda_obs_1halo(amin, (void*) ar);
+  }
+  else {
+    gsl_function F;
+    F.params = (void*) ar;
+    F.function = int_pcm_given_lambda_obs_1halo;
+    res = gsl_integration_glfixed(&F, log(pow(10.,12)), log(pow(10.,15.9)), w);
+  }
+  return (1 == init) ? 0.0 : 
+          (norm<1.E-14) ? 0.0 : 
+            (res/norm>1.E5) ? 0.0 : res/norm;
+}
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double pcm_given_lambda_obs_1halo(
+    const double k, 
+    const double a, 
+    const int nl,   // cluster richness bin
+    const int ni   // cluster redshift bin
+  )
+{
+  static double cache[MAX_SIZE_ARRAYS];
+  static double*** table = NULL;
+  static double lim[6*MAX_SIZE_ARRAYS];
+  // ---------------------------------------------------------------------------
+  const int NSIZE = Cluster.n200_nbin*redshift.clusters_nbin;
+  const int nlnk = Ntable.nlnk_pcm_given_lambda_obs_1halo;
+  const int na = Ntable.na_pcm_given_lambda_obs_1halo;
+  if (NULL == table || fdiff(cache[3], Ntable.random)) {
+    if (table != NULL) free(table);
+    table = (double***) malloc3d(NSIZE, nlnk, na);
+  }
+  // ---------------------------------------------------------------------------
+  if (fdiff(cache[0], cosmology.random) || 
+      fdiff(cache[1], nuisance.random_clusters) ||
+      fdiff(cache[2], redshift.random_clusters) ||
+      fdiff(cache[3], Ntable.random))
+  {
+    for (int i=0; i<redshift.clusters_nbin; i++) {
+      lim[6*i+0] = 1./(1.+tomo.cluster_zmax[i]);                 // amin
+      lim[6*i+1] = 1./(1.+tomo.cluster_zmin[i]);                 // amax
+      lim[6*i+2] = (lim[6*i+1]-lim[6*i+0])/((double) na - 1.);   // da
+      lim[6*i+3] = log(limits.k_min_cH0);                        // logkmin
+      lim[6*i+4] = log(limits.k_max_cH0);                        // logkmax
+      lim[6*i+5] = (lim[6*i+4]-lim[6*i+3])/((double) nlnk - 1.); // dlnk 
     }
-    else return 0;
-}
-
-
-
-double P_cluster_mass_given_Dlambda_obs_1halo(double k, double a, int N_lambda, int nz_cluster, int nz_galaxy){
-   double z = 1./a-1;
-   double params[3] = {1.0*N_lambda, z, k};
-   double result; 
-   double norm =  n_lambda_obs_z_tab(N_lambda, z);
-   if (norm<1E-14) return 0; 
-   result = int_gsl_integrate_low_precision(int_P_cluster_mass_given_Dlambda_obs_tab,params,log(pow(10.,12.)),log(pow(10.,15.9)),NULL,1000)/norm; 
-   
-   if(result>1E5) return 0;
-
-   if(isnan(result)) return 0;
-   else return result;
-}
-double P_cluster_mass_given_Dlambda_obs_1halo_tab(double k, double a, int N_lambda, int nz_cluster, int nz_galaxy){
-    static cosmopara C;
-    static nuisancepara N;
-    static double dk = 0., da = 0.;
-    static int N_lambda_in, nz_cluster_in, nz_galaxy_in;
-    static double logkmin, logkmax;
-    static double **table_P_k_a=0;
-    double klog,val, result; 
-    double zmin, zmax, aa, kin;
-    static double amin, amax;
-    int N_a = 30;
-    int i, j;
-    if (recompute_DESclusters(C, N) || (N_lambda_in != N_lambda) || (nz_cluster_in != nz_cluster) || (nz_galaxy_in != nz_galaxy)){
-        update_cosmopara(&C);
-        update_nuisance(&N);
-        N_lambda_in = N_lambda; 
-        nz_cluster_in = nz_cluster; 
-        nz_galaxy_in = nz_galaxy;
-        zmin = tomo.cluster_zmin[nz_cluster];
-        zmax = tomo.cluster_zmax[nz_cluster];
-        amin = 1./(1.+zmax); amax = 1./(1.+zmin);
-        da = (amax-amin)/(N_a-1.);
-
-        if (table_P_k_a!=0) free_double_matrix(table_P_k_a,0, Ntable.N_ell-1, 0, N_a-1);
-        table_P_k_a = create_double_matrix(0, Ntable.N_ell-1, 0, N_a-1);     
-        logkmin = log(limits.k_min_cH0);
-        logkmax = log(limits.k_max_cH0);
-        dk = (logkmax - logkmin)/(Ntable.N_ell-1);     
-        aa = amin;
-        for (j=0; j<N_a; ++j, aa+=da) { 
-            for (i=0; i<Ntable.N_ell; i++) { 
-                kin   = exp(logkmin+i*dk);
-                result = P_cluster_mass_given_Dlambda_obs_1halo(kin, aa, N_lambda, nz_cluster, nz_galaxy); 
-                if(result<0) result=0;
-                //if (result ==0) table_P_k_a[i][j] = -1E10; 
-                table_P_k_a[i][j] = result; 
-            }
+    // -------------------------------------------------------------------------
+    for (int k=0; k<Cluster.n200_nbin; k++) { // init static vars
+      for (int l=0; l<redshift.clusters_nbin; l++) { 
+        const double kin = exp(lim[6*l+3]);
+        const double ain = lim[6*l+0];
+        (void) pcm_given_lambda_obs_1halo_nointerp(kin, ain, k, l, 1); 
+      }
+    }
+    #pragma omp parallel for collapse(4) schedule(static,1)
+    for (int k=0; k<Cluster.n200_nbin; k++) { 
+      for (int l=0; l<redshift.clusters_nbin; l++) { 
+        for (int i=0; i<na; i++) { 
+          for (int j=0; j<nlnk; j++) { 
+            const double kin = exp(lim[6*l+3] + j*lim[6*l+5]);
+            const double ain = lim[6*l+0] + i*lim[6*l+2];
+            double tmp = pcm_given_lambda_obs_1halo_nointerp(kin, ain, k, l, 0); 
+            table[k*redshift.clusters_nbin+l][i][j] = (tmp<0) ? 0.0 : tmp; 
+          }
         }
-        
+      }
     }
-    klog = log(k);
-    if ((klog > logkmin)&(klog < logkmax)) val = interpol2d(table_P_k_a, Ntable.N_ell, logkmin, logkmax, dk, klog, N_a, amin, amax, da, a, 1.0, 1.0);
-    else val=0;
-    return val;
+    // -------------------------------------------------------------------------
+    cache[0] = cosmology.random;
+    cache[1] = nuisance.random_clusters;
+    cache[2] = redshift.random_clusters;
+    cache[3] = Ntable.random;
+  }
+  // -------------------------------------------------------------------------
+  if (nl < 0 || nl > Cluster.n200_nbin - 1 ||
+      ni < 0 || ni > redshift.clusters_nbin - 1) {
+    log_fatal("error in bin number (nl,ni) = [%d,%d]", nl, ni);
+    exit(1); 
+  }
+  const int q = nl*redshift.clusters_nbin + ni;
+  if (q < 0 || q > NSIZE - 1) {
+    log_fatal("internal logic error in selecting bin number");
+    exit(1);
+  }
+
+  double res = 0.0;
+  const double amin   = lim[6*ni+0];
+  const double amax   = lim[6*ni+1];
+  const double da     = lim[6*ni+2];
+  const double lnkmin = lim[6*ni+3];
+  const double lnkmax = lim[6*ni+4];
+  const double dlnk   = lim[6*ni+5];
+  return ((lnk > lnkmin) & (lnk < lnkmax)) ?
+    interpol2d(table[q],nlnk,lnkmin,lnkmax,dlnk,log(k),na,amin,amax,da,a) : 0.0;
+   
 }
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 #ifdef darkemu
 double calculate_p_darkemu(double mass, double k, double z){

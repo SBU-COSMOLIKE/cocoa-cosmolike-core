@@ -17,6 +17,10 @@
 
 #include "log.c/src/log.h"
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
 double pf_cluster_histo_n(double z, const int ni)
 {
   if (redshift.clusters_zdist_table == NULL) {
@@ -27,13 +31,16 @@ double pf_cluster_histo_n(double z, const int ni)
   if ((z >= redshift.clusters_zdist_zmin_all) && 
       (z < redshift.clusters_zdist_zmax_all)) 
   {
+    // -------------------------------------------------------------------------
     const int ntomo  = redshift.clusters_nbin;
     const int nzbins = redshift.clusters_nzbins;
     double** tab = redshift.clusters_zdist_table;
     double* z_v  = redshift.clusters_zdist_table[ntomo];
+    // -------------------------------------------------------------------------
     const double dz_histo = (z_v[nzbins - 1] - z_v[0]) / ((double) nzbins - 1.);
     const double zhisto_min = z_v[0];
     const double zhisto_max = z_v[nzbins - 1] + dz_histo;
+    // -------------------------------------------------------------------------
     const int nj = (int) floor((z - zhisto_min) / dz_histo);
     if (ni < 0 || ni > ntomo-1 || nj < 0 || nj > nzbins-1) {
       log_fatal("invalid bin input (zbin = ni, bin = nj) = (%d, %d)", ni, nj);
@@ -43,6 +50,10 @@ double pf_cluster_histo_n(double z, const int ni)
   }
   return res;
 }
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 double pz_cluster(double zz, const int nj) 
 {
@@ -214,11 +225,11 @@ double int_for_g_lens_cluster(double aprime, void* params)
   double* ar = (double*) params;
   const int ni   = (int) ar[0];
   const double a = ar[1];
-    
+  // ---------------------------------------------------------------------------
   const double zprime = 1.0/aprime - 1.0;
   const double chi1 = chi(a);
   const double chiprime = chi(aprime);
-  
+  // ---------------------------------------------------------------------------
   const double res = zdistr_cluster(1./aprime - 1., ni)*f_K(chiprime - chi1);
   return res/(f_K(chiprime)*(aprime*aprime));
 }
@@ -232,11 +243,10 @@ double g_lens_cluster(const double a, const int nz)
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = 0;
   static double lim[3];
-  
+  // ---------------------------------------------------------------------------
   if (table == NULL || fdiff(cache_table_params, Ntable.random)) {
     if (table != NULL) free(table);
     table = (double**) malloc2d(redshift.clusters_nbin+1, Ntable.N_a);   
-
   }
   if (fdiff(cache[0], Ntable.random) || 
       fdiff(cache[1], cosmology.random) ||

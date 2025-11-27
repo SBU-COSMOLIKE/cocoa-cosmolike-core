@@ -89,7 +89,7 @@ typedef struct
   int FPTboost;
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // CLUSTER ROUTINES (ALPHA STAGE)
+  // CLUSTER ROUTINES
   // ---------------------------------------------------
   // ---------------------------------------------------
   int N_a_halo_exclusion;        // N_a for binned_p_cc_incl_halo_exclusion (cluster_util.c)
@@ -101,6 +101,8 @@ typedef struct
   int binned_p_cm_size_a_table;
   int halo_uKS_nc;               // halo.c u_KS(double c, double k, double rv)
   int halo_uks_nx;               // halo.c u_KS(double c, double k, double rv)
+  int na_pcm_given_lambda_obs_1halo;
+  int nlnk_pcm_given_lambda_obs_1halo;
 } Ntab;
 
 typedef struct
@@ -394,7 +396,6 @@ typedef struct
   int* cg_exclude;      // c-g cluster-galaxy pairs excluded in cg clustering
   int cs_npowerspectra; // num cluster-galaxy lensing tomo combinations
   int cg_npowerspectra;  // num cluster-galaxy clustering tomo combinations
-  int cc_npowerspectra; // num cluster-cluster clustering tomo combinations 
 } tomopara;
 
 typedef struct

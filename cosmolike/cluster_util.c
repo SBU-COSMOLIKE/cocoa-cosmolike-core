@@ -840,7 +840,7 @@ const int init_static_vars_only)
   }
 }
 
-double binned_P_lambda_obs_given_M(const int nl, const double M, const double z) 
+double p_lambda_obs_given_m(const int nl, const double M, const double z) 
 {
   static cosmopara C;
   static nuisancepara N;

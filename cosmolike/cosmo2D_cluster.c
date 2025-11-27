@@ -25,9 +25,9 @@
 static int include_exclusion = 0; // 0 or 1
 static int adopt_dark_emulator = 0; // 0 or 1
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const int limber)
 {
@@ -179,9 +179,9 @@ double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const i
   }
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 double w_cc_tomo(const int nt, const int nl1, const int nl2, const int ni, const int limber)
 {
@@ -301,7 +301,7 @@ double w_cc_tomo(const int nt, const int nl1, const int nl2, const int ni, const
       exit(1);
     }
     // -------------------------------------------------------------------------
-    #pragma omp parallel for collapse(4)
+    #pragma omp parallel for collapse(4) schedule(static,1)
     for (int i=0; i<Cluster.n200_nbin; i++) { 
       for (int j=0; j<Cluster.n200_nbin; j++) {
         for (int k=0; k<redshift.clusters_nbin; k++) {
@@ -344,9 +344,9 @@ double w_cc_tomo(const int nt, const int nl1, const int nl2, const int ni, const
   return w_vec[q];
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const int limber)
 {
@@ -426,7 +426,7 @@ double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const i
     (void) C_cg_tomo_limber(limits.LMIN_tab+1, 0, ZCG1(0), ZCG2(0)); // init static vars
     // -------------------------------------------------------------------------
     if (1==limber) {
-      #pragma omp parallel for collapse(3)
+      #pragma omp parallel for collapse(3) schedule(static,1)
       for (int i=0; i<Cluster.n200_nbin; i++) {
         for (int j=0; j<tomo.cg_npowerspectra; j++) {
           for (int l=lmin; l<limits.LMIN_tab; l++) {
@@ -435,7 +435,7 @@ double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const i
           }
         }
       }
-      #pragma omp parallel for collapse(3)
+      #pragma omp parallel for collapse(3) schedule(static,1)
       for (int i=0; i<Cluster.n200_nbin; i++) {
         for (int j=0; j<tomo.cg_npowerspectra; j++) {
           for (int l=limits.LMIN_tab; l<limits.LMAX; l++) {
@@ -450,7 +450,7 @@ double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const i
       exit(1);
     }
     // -------------------------------------------------------------------------
-    #pragma omp parallel for collapse(3)
+    #pragma omp parallel for collapse(3) schedule(static,1)
     for (int i=0; i<Cluster.n200_nbin; i++) {
       for (int j=0; j<tomo.cg_npowerspectra; j++) {
         for (int p=0; p<like.Ntheta; p++) {
@@ -509,12 +509,6 @@ double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const i
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// cluster lensing 
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-
 double int_for_C_cs_tomo_limber(double a, void* params)
 {
   if (!(a>0) || !(a<1)) {
@@ -525,7 +519,7 @@ double int_for_C_cs_tomo_limber(double a, void* params)
 
   const int nl = (int) ar[0];
   const int ni = (int) ar[1];
-  const int ns = (int) ar[2];
+  const int nj = (int) ar[2];
   const double ell = ar[3] + 0.5;
 
   struct chis chidchi = chi_all(a);
@@ -536,15 +530,15 @@ double int_for_C_cs_tomo_limber(double a, void* params)
   const double bc     = weighted_bias(nl, z);
   const double WCL    = W_cluster(nl, ni, a, hoverh0);
   const double WMAGCL = W_mag_cluster(ni, a, fK);
-  const double WK     = W_kappa(a, fK, ns);
-  const double WS     = W_source(a, ns, hoverh0);
+  const double WK     = W_kappa(a, fK, nj);
+  const double WS     = W_source(a, nj, hoverh0);
 
   double res = 1.0;
   switch(nuisance.IA_MODEL)
   {
     case IA_MODEL_NLA:
     {
-      const double C1ZS = IA_A1_Z1(a, growfac_a, ns);
+      const double C1ZS = IA_A1_Z1(a, growfac_a, nj);
       res  = (bc*WCL - 2*WMAGCL)*chidchi.dchida/(fK*fK);
       res *= (WK - WS*C1ZS)
     }
@@ -555,27 +549,31 @@ double int_for_C_cs_tomo_limber(double a, void* params)
     }
   }
   if (1 == adopt_dark_emulator) {
-    res *= pcm_given_lambda_obs_darkemu(k, a, nl, ni, ns)
+    res *= pcm_given_lambda_obs_darkemu(k, a, nl, ni, nj)
   }
   else {
     res *= Pdelta(k,a);
-    double one_halo = pcm_given_lambda_obs_1halo(k, a, nl, ni, ns);
+    double one_halo = pcm_given_lambda_obs_1halo(k, a, nl, ni, nj);
     one_halo *= WK*WCL*chidchi.dchida/(fK*fK);
     res += one_halo;
   }
   return (res > 1E10) ? 0.0 : res; // COSMOLIKE (in the original code)
 }
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
 double C_cs_tomo_limber_nointerp(const double l, const int nl, const int ni, 
-  const int ns, const int init)
+  const int nj, const int init)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
   if (nl < 0 || nl > Cluster.n200_nbin - 1 ||
       ni < 0 || ni > redshift.clusters_nbin - 1 ||
-      ns < 0 || ns > redshift.shear_nbin - 1) {
-    log_fatal("error in bin number (nl,ni,ns) = [%d,%d,%d]", nl,ni,ns);
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    log_fatal("error in bin number (nl,ni,nj) = [%d,%d,%d]", nl,ni,nj);
     exit(1); 
   }
   if (NULL == w || fdiff(cache[0], Ntable.random)) {
@@ -595,7 +593,7 @@ double C_cs_tomo_limber_nointerp(const double l, const int nl, const int ni,
   } 
   const double amin = 1./(1. + zmax);
   const double amax = 1./(1. + zmin);
-  double ar[4] = {(double) nl, (double) ni, (double) ns, l};
+  double ar[4] = {(double) nl, (double) ni, (double) nj, l};
   // ---------------------------------------------------------------------------
   double res = 0.0;
   if (1 == init) {
@@ -610,13 +608,21 @@ double C_cs_tomo_limber_nointerp(const double l, const int nl, const int ni,
   return res;
 }
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
 double C_cs_tomo_limber_nointerp(const double l, const int nl, const int ni, 
   const int ns, const int init) 
 {
   return C_cs_tomo_limber_linpsopt_nointerp(l, nl, ni, ns, 0, init);
 }
 
-double C_cs_tomo_limber(const double l, const int nl, const int ni, const int ns)
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double C_cs_tomo_limber(const double l, const int nl, const int ni, const int nj)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
@@ -640,7 +646,7 @@ double C_cs_tomo_limber(const double l, const int nl, const int ni, const int ns
       fdiff(cache[7], nuisance.random_clusters))
   {
     (void) C_cs_tomo_limber_nointerp(exp(lnlmin), 0, ZCL(0), ZCS(0), 1); // init static vars
-    #pragma omp parallel for collapse(3)
+    #pragma omp parallel for collapse(3) schedule(static,1)
     for (int i=0; i<Cluster.n200_nbin; i++) { 
       for (int j=0; j<tomo.cs_npowerspectra; j++) {
         for (int p=0; p<Ntable.N_ell; p++) {
@@ -662,12 +668,12 @@ double C_cs_tomo_limber(const double l, const int nl, const int ni, const int ns
   // ---------------------------------------------------------------------------
   if (nl < 0 || nl > Cluster.n200_nbin - 1 ||
       ni < 0 || ni > redshift.clusters_nbin - 1 ||
-      ns < 0 || ns > redshift.shear_nbin - 1) {
-    log_fatal("error in bin number (nl,ni,ns) = [%d,%d,%d]", nl, ni, ns);
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    log_fatal("error in bin number (nl,ni,nj) = [%d,%d,%d]", nl, ni, nj);
     exit(1); 
   } 
   double res = 0.0;
-  if (test_zoverlap_c(ni, ns)) {
+  if (test_zoverlap_c(ni, nj)) {
     const double lnl = log(l);
     if (lnl < lim[0]) {
       log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
@@ -675,7 +681,7 @@ double C_cs_tomo_limber(const double l, const int nl, const int ni, const int ns
     if (lnl > lim[1]) {
       log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
     }
-    const int q = nl*tomo.cs_npowerspectra + NCGL(ni, ns);
+    const int q = nl*tomo.cs_npowerspectra + NCGL(ni, nj);
     if (q < 0 || q > Cluster.n200_nbin*tomo.cs_npowerspectra - 1) {
       log_fatal("internal logic error in selecting bin number");
       exit(1);
@@ -687,7 +693,8 @@ double C_cs_tomo_limber(const double l, const int nl, const int ni, const int ns
 
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
-// Cluster clustering 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
@@ -714,7 +721,7 @@ double int_for_C_cc_tomo_limber(double a, void* params)
   double res = 1.0;
   if (1 == include_exclusion) {
     res  = WCNL1*WCNL2*chidchi.dchida/(fK*fK);
-    res *= pcc_exclusion_const_lambda(k, a, nl1, nl2, use_linear_ps);
+    res *= pcc_with_excl_given_lambda(k, a, nl1, nl2, use_linear_ps);
   }
   else {
     const double bc1    = weighted_bias(nl1, z);
@@ -725,6 +732,10 @@ double int_for_C_cc_tomo_limber(double a, void* params)
   }
   return res;
 }
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 double C_cc_tomo_limber_linpsopt_nointerp(
     const double l, 
@@ -780,6 +791,10 @@ double C_cc_tomo_limber_linpsopt_nointerp(
   return res;
 }
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
 double C_cc_tomo_limber_nointerp(
     const double l, 
     const int nl1, 
@@ -788,6 +803,10 @@ double C_cc_tomo_limber_nointerp(
     const int init) {
   return C_cc_tomo_limber_linpsopt_nointerp(l, nl1, ni, nl2, ni, 0, init);
 }
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 double C_cc_tomo_limber(const double l, const int nl1, const int nl2, const int ni) 
 {
@@ -799,8 +818,7 @@ double C_cc_tomo_limber(const double l, const int nl1, const int nl2, const int 
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0]) / ((double) Ntable.N_ell - 1.0);
-    const int NSIZE = Cluster.n200_nbin*
-                      Cluster.n200_nbin*tomo.cc_clustering_Npowerspectra;
+    const int NSIZE = Cluster.n200_nbin*Cluster.n200_nbin*redshift.clusters_nbin;
     if (table != NULL) free(table);
     table = (double**) malloc2d(NSIZE, Ntable.N_ell);
   }
@@ -812,16 +830,16 @@ double C_cc_tomo_limber(const double l, const int nl1, const int nl2, const int 
       fdiff(cache[4], nuisance.random_clusters))
   {
     (void) C_cc_tomo_limber_nointerp(exp(lnlmin), 0, 0, 0, 1); // init static vars
-    #pragma omp parallel for collapse(3)
+    #pragma omp parallel for collapse(3) schedule(static,1)
     for (int i=0; i<Cluster.n200_nbin; i++) {
-      for (int k=0; k<tomo.cc_clustering_Npowerspectra; k++) {
+      for (int k=0; k<redshift.clusters_nbin; k++) {
         for (int p=0; p<Ntable.N_ell; ++p) {
           for (int j=i; j<Cluster.n200_nbin; j++) {
-            const int q  = i*Cluster.n200_nbin*tomo.cc_clustering_Npowerspectra + 
-                           j*tomo.cc_clustering_Npowerspectra + 
+            const int q  = i*Cluster.n200_nbin*redshift.clusters_nbin + 
+                           j*redshift.clusters_nbin + 
                            k;
-            const int q2 = j*Cluster.n200_nbin*tomo.cc_clustering_Npowerspectra + 
-                           i*tomo.cc_clustering_Npowerspectra + 
+            const int q2 = j*Cluster.n200_nbin*redshift.clusters_nbin + 
+                           i*redshift.clusters_nbin + 
                            k;
             table[q][p] = log(C_cc_tomo_limber_nointerp(exp(lnlmin+p*dlnl),i,j,k,0));
             table[q2][p] = table[q][p];
@@ -850,10 +868,10 @@ double C_cc_tomo_limber(const double l, const int nl1, const int nl2, const int 
   if (lnl > lim[1]) {
     log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
   }
-  const int q = nl1*Cluster.n200_nbin*tomo.cc_clustering_Npowerspectra + 
-                nl2*tomo.cc_clustering_Npowerspectra + 
+  const int q = nl1*Cluster.n200_nbin*redshift.clusters_nbin + 
+                nl2*redshift.clusters_nbin + 
                 ni;
-  if (q > Cluster.n200_nbin*Cluster.n200_nbin*tomo.cc_clustering_Npowerspectra-1) {
+  if (q > Cluster.n200_nbin*Cluster.n200_nbin*redshift.clusters_nbin-1) {
     log_fatal("internal logic error in selecting bin number");
     exit(1);
   }
@@ -862,7 +880,8 @@ double C_cc_tomo_limber(const double l, const int nl1, const int nl2, const int 
 
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
-// cluster x galaxy clustering
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
@@ -892,6 +911,10 @@ double int_for_C_cg_tomo_limber(double a, void* params)
   res *= (1 == use_linear_ps) ? p_lin(k, a) : Pdelta(k, a);
   return (res < 0) 0. : res; // COSMOLIKE: this makes the code much faster
 }
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 double C_cg_tomo_limber_linpsopt_nointerp(
     const double l, 
@@ -947,6 +970,10 @@ double C_cg_tomo_limber_linpsopt_nointerp(
   return res;
 }
 
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
 double C_cg_tomo_limber_nointerp(
     const double l, 
     const int nl,
@@ -956,6 +983,10 @@ double C_cg_tomo_limber_nointerp(
   ) {
   return C_cg_tomo_limber_linpsopt_nointerp(l, nl, ni, nj, 0, init);
 }
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 double C_cg_tomo_limber(const double l, const int nl, const int ni, const int nj)
 {
@@ -982,7 +1013,7 @@ double C_cg_tomo_limber(const double l, const int nl, const int ni, const int nj
       fdiff(cache[7], redshift.random_clusters))
   {
     (void) C_cg_tomo_limber_nointerp(exp(lnlmin), 0, ZCG1(0), ZCG2(0), 1);
-    #pragma omp parallel for collapse(3)
+    #pragma omp parallel for collapse(3) schedule(static,1)
     for (int i=0; i<Cluster.n200_nbin; i++) {
       for (int j=0; j<tomo.cg_clustering_Npowerspectra; j++) {
         for (int p=0; p<Ntable.N_ell; ++p) {
@@ -1104,7 +1135,7 @@ double binned_N(const int nl, const int nz)
     }
     #pragma GCC diagnostic pop
     #pragma GCC diagnostic pop
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<N_l; i++)
     {
       for (int j=0; j<N_z; j++)
