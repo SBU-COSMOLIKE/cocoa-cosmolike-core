@@ -549,11 +549,11 @@ double int_for_C_cs_tomo_limber(double a, void* params)
     }
   }
   if (1 == adopt_dark_emulator) {
-    res *= pcm_given_lambda_obs_darkemu(k, a, nl, ni, nj)
+    res *= pcm_darkemu_given_lambda_obs(k, a, nl, ni, nj)
   }
   else {
     res *= Pdelta(k,a);
-    double one_halo = pcm_given_lambda_obs_1halo(k, a, nl, ni, nj);
+    double one_halo = pcm_1halo_given_lambda_obs(k, a, nl, ni, nj);
     one_halo *= WK*WCL*chidchi.dchida/(fK*fK);
     res += one_halo;
   }
@@ -721,7 +721,7 @@ double int_for_C_cc_tomo_limber(double a, void* params)
   double res = 1.0;
   if (1 == include_exclusion) {
     res  = WCNL1*WCNL2*chidchi.dchida/(fK*fK);
-    res *= pcc_with_excl_given_lambda(k, a, nl1, nl2, use_linear_ps);
+    res *= pcc_with_excl_given_lambda_obs(k, a, nl1, nl2, use_linear_ps);
   }
   else {
     const double bc1    = weighted_bias(nl1, z);

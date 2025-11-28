@@ -38,6 +38,9 @@ typedef struct
   double halo_uKS_cmax; // halo.c u_KS(double c, double k, double rv)
   double halo_uKS_xmin; // halo.c u_KS(double c, double k, double rv)
   double halo_uKS_xmax; // halo.c u_KS(double c, double k, double rv)
+
+  double linkmin_pcc_with_excl_given_lambda_obs; // 1E-2
+  double linkmax_pcc_with_excl_given_lambda_obs; // 1E8
 } lim;
 
 typedef struct 
@@ -101,8 +104,11 @@ typedef struct
   int binned_p_cm_size_a_table;
   int halo_uKS_nc;               // halo.c u_KS(double c, double k, double rv)
   int halo_uks_nx;               // halo.c u_KS(double c, double k, double rv)
-  int na_pcm_given_lambda_obs_1halo;
-  int nlnk_pcm_given_lambda_obs_1halo;
+  
+  int na_pcc_with_excl_given_lambda_obs;
+  int nlnk_pcc_with_excl_given_lambda_obs;
+  int na_pcm_1halo_given_lambda_obs;
+  int nlnk_pcm_1halo_given_lambda_obs;
 } Ntab;
 
 typedef struct
