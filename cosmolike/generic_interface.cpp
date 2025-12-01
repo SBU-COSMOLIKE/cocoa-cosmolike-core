@@ -917,13 +917,28 @@ void set_IA_PS(
     vector io_IA_PS
   )
 {
-  cosmology.IA_PS = (double**) malloc2d(3, 2000);
+  static double cache[MAX_SIZE_ARRAYS];
+
+  
+  
+  if (fdiff(cache[1], Ntable.random))
+  {
+    FPTIA.k_min = 1.e-5;
+    FPTIA.k_max = 1.e+6;//ask vivian how it is defined
+    FPTIA.N     = 2000//270 + 200 * Ntable.FPTboost; =len(python iA array)
+
+    if (FPTIA.tab != NULL) {
+      free(FPTIA.tab);
+    }
+    FPTIA.tab = (double**) malloc2d(12, FPTIA.N);//change 12 to flag param
+  }
   for (int i = 0; i < 3; ++i) {
     for (int j = 0; j < 2000; ++j) {
-        cosmology.IA_PS[i][j] = io_IA_PS[i*2000+j];
-        printf("%f\n", cosmology.IA_PS[i][j]);
+        FPTIA.tab[i][j] = io_IA_PS[i*2000+j];
+        printf("%f\n", FPTIA.tab[i][j]);
     }
   }
+
   //need more implementation
 }
 
