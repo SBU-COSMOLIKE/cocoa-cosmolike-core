@@ -8,8 +8,6 @@ double pf_cluster_histo_n(double z, const int ni);
 
 double pz_cluster(double zz, const int nj); 
 
-double dV_cluster(double z, void* params);
-
 double zdistr_cluster(const int nz, const double z);
 
 double g_lens_cluster(const double a, const int nz);

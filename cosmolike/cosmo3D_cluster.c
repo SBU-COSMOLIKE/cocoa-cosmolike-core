@@ -178,7 +178,7 @@ double int_ncl_given_lambda_obs_within_nl_given_ztrue(double lnM, void* params)
   const double rhom = cosmology.rho_crit * cosmology.Omega_m;
   const double dndlnM = gnu * (rhom/M) * dlognudlogm(M);
 
-  return dndlnM*prob_lambda_obs_within_nl_given_m_given_ztrue(nl, M, a);
+  return dndlnM*prob_lambda_obs_in_nl_given_m_given_ztrue(nl, M, a);
 }
 
 // -----------------------------------------------------------------------------
@@ -557,9 +557,9 @@ double pcc_with_excl_nointerp(
     const int nl2
   )
 {
-  const double cb1 = cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl1,a); 
+  const double cb1 = cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl1, a); 
   const double cb2 = (nl1 == nl2) ? cb1 : 
-                     cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl2,a);
+                     cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl2, a);
   const double R = 1.5*pow(0.25*(Cluster.N_min[N_lambda1]+
                                  Cluster.N_min[N_lambda2] +
                                  Cluster.N_max[N_lambda1] +
@@ -685,7 +685,8 @@ double int_pcm_1halo(double lnM, void* params) {
   const double rhom = cosmology.rho_crit * cosmology.Omega_m;
   const double dndlnM = gnu * (rhom/M) * dlognudlogm(M);
 
-  return (M/rhom)*u_c(c,k,M,a)*dndlnM*prob_lambda_obs_given_m(nl, M, a);
+  return (M/rhom)*u_c(c,k,M,a)*
+                     dndlnM*prob_lambda_obs_in_nl_given_m_given_ztrue(nl, M, a);
 }
 
 // -----------------------------------------------------------------------------
