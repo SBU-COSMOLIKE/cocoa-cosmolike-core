@@ -41,10 +41,9 @@ lim limits =
   .a_min = 1.0/(1.0 + 40.0),    // a_min (z = 40, needed for CMB lensing)
   .k_min_cH0 = 2.e-2,           // k_min_cH0
   .k_max_cH0 = 3.e+6,           // k_max_cH0
-  .M_min = 1.0e+6,              // M_min
-  .M_max = 1.0e+17,             // M_max
   .LMIN_tab = 20,               // LMIN_tab
   .LMAX_NOLIMBER = 150,         // LMAX_NOLIMBER
+/*
   .cluster_util_log_M_min = 12.0,
   .cluster_util_log_M_max = 15.9,
   .binned_P_lambda_obs_given_M_zmin_table = 0.20,
@@ -57,10 +56,15 @@ lim limits =
   .halo_exclusion_k_max_hankel = 1.0E8,
   .halo_exclusion_R_min = 0.0,
   .halo_exclusion_R_max = 15.0/2997.,
-  .halo_uKS_cmin = 0.1,     // halo.c u_KS(double c, double k, double rv)
-  .halo_uKS_cmax = 50.0,    // halo.c u_KS(double c, double k, double rv)
-  .halo_uKS_xmin = 1e-10,   // halo.c u_KS(double c, double k, double rv)
-  .halo_uKS_xmax = 5e3      // halo.c u_KS(double c, double k, double rv)
+*/
+  .sigma2_m_min = 1.0e+6,
+  .sigma2_m_max = 1.0e+17,
+  .halo_m_min = 1.0e+6,     // halo.c M_min
+  .halo_m_max = 1.0e+17,     // halo.c M_max
+  .halo_uks_cmin = 0.1,     // halo.c u_KS(double c, double k, double rv)
+  .halo_uks_cmax = 50.0,    // halo.c u_KS(double c, double k, double rv)
+  .halo_uks_xmin = 1e-10,   // halo.c u_KS(double c, double k, double rv)
+  .halo_uks_xmax = 5e3      // halo.c u_KS(double c, double k, double rv)
 };
 
 Ntab Ntable;

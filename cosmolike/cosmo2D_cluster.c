@@ -28,21 +28,151 @@ static int adopt_dark_emulator = 0; // 0 or 1
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Cluster number counts
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
-double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const int limber)
+double int_Ncl(double a, void* params)
+{
+  double *ar = (double*) params;
+  const int nl = (int) ar[0];
+  const int nz = (int) ar[1];
+  if (!(a>0) || !(a<1)) {
+    log_fatal("a>0 and a<1 not true"); exit(1);
+  }
+  const double z = 1./a - 1.;
+  const double dzda = 1./(a*a);
+  
+  // int_zmin^zmax dz_obs p(zobs | ztrue)
+  const double prob_zobs_in_zbin_given_ztrue = pz_cluster(z, nz);
+
+  struct chis chidchi = chi_all(a);
+  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
+  const double fK = f_K(chidchi.chi);
+  const double omega_mask = get_effective_redmapper_area(a);
+  const double dVdztrue = fK*fK*omega_mask/hoverh0;
+
+  return dVdztrue*prob_zobs_in_zbin_given_ztrue*dzda*
+                              ncl_given_lambda_obs_within_nl_given_ztrue(nl, a);
+}
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double Ncl_nointerp(
+    const int nl, 
+    const int ni, 
+    const int init
+  )
+{
+  static double cache[MAX_SIZE_ARRAYS];
+  static gsl_integration_glfixed_table* w = NULL;
+  if (nl < 0 || nl > Cluster.n200_nbin - 1) {
+    log_fatal("error in bin number (nl) = %d", nl); exit(1); 
+  }
+  if (ni < 0 || ni > redshift.clusters_nbin - 1) {
+    log_fatal("error in bin number (ni) = %d", nl); exit(1); 
+  }
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+    const size_t szint = 50 + 40 * abs(Ntable.high_def_integration);
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(szint);
+    cache[0] = Ntable.random;
+  }
+
+  const int amin = 1./(1 + tomo.cluster_zmax[ni]); // integration on zobs
+  const int amax = 1./(1 + tomo.cluster_zmin[ni]); // integration on zobs
+  double ar[1] = {(double) nl, (double) ni};
+  
+  double res = 0.0; 
+  if (1 == init) { 
+    (void) int_Ncl(aobsmin, (void*) ar);
+  }
+  else {
+    gsl_function F;
+    F.params = (void*) ar;
+    F.function = int_Ncl;
+    res = gsl_integration_glfixed(&F, amin, amax, w);
+  }
+  return res;
+}
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double Ncl(const int nl, const int ni)
+{
+  static double cache[MAX_SIZE_ARRAYS];
+  static double** table = NULL;
+  // ---------------------------------------------------------------------------
+  if (NULL == table || fdiff(cache[3], Ntable.random)) {
+    if (table != NULL) free(table);
+    table = (double**) malloc2d(Cluster.n200_nbin,redshift.clusters_nbin);  
+  }
+  if (fdiff(cache[0], cosmology.random) || 
+      fdiff(cache[1], nuisance.random_clusters) ||
+      fdiff(cache[2], redshift.random_clusters) ||
+      fdiff(cache[4], nuisance.random_photoz_clusters))
+  {
+    (void) Ncl_nointerp(0, 0, 1); // init static vars
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<Cluster.n200_nbin; i++) {
+      for (int j=0; j<redshift.clusters_nbin; j++) {
+        table[i][j] = Ncl_nointerp(i, j, 0);
+      }
+    }
+    // -------------------------------------------------------------------------
+    cache[0] = cosmology.random;
+    cache[1] = nuisance.random_clusters;
+    cache[2] = redshift.random_clusters;
+    cache[3] = Ntable.random;
+    cache[4] = nuisance.random_photoz_clusters;
+  }
+  return table[nl][ni]; 
+}
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// 2pt correlation function
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
+double w_cs_tomo(
+    const int nt, 
+    const int nl, 
+    const int ni, 
+    const int nj, 
+    const int limber
+  )
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
   static double** Cl = NULL;
   static double cache[MAX_SIZE_ARRAYS];
-
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
     exit(1);
   }
-
   const int NSIZE = Cluster.n200_nbin*tomo.cs_npowerspectra;
-
   if (NULL == Pl || NULL == w_vec || 
       NULL == Cl || fdiff(cache[6], Ntable.random))
   {
@@ -90,7 +220,6 @@ double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const i
     if (Cl != NULL) free(Cl);
     Cl = (double**) malloc2d(NSIZE, limits.LMAX);
   }
-
   if (fdiff(cache[0], cosmology.random) ||
       fdiff(cache[1], nuisance.random_photoz_shear) ||
       fdiff(cache[2], nuisance.random_photoz_clusters) ||
@@ -100,14 +229,13 @@ double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const i
       fdiff(cache[6], Ntable.random) ||
       fdiff(cache[7], nuisance.random_clusters))
   {
-    // -------------------------------------------------------------------------
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
       for (int l=0; l<lmin; l++) {
         Cl[i][l] = 0.0;
       }
     } 
-    (void) C_cs_tomo_limber(limits.LMIN_tab + 1, 0, ZCL(0), ZCS(0)); // init static vars
+    (void) C_cs_tomo_limber(limits.LMIN_tab+1,0,ZCL(0),ZCS(0)); // init static vars
     // -------------------------------------------------------------------------
     if (1 == limber) { 
       #pragma omp parallel for collapse(3) 
@@ -130,8 +258,7 @@ double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const i
       } 
     }
     else { 
-      log_fatal("NonLimber not implemented");
-      exit(1);     
+      log_fatal("NonLimber not implemented"); exit(1);     
     }
     // -------------------------------------------------------------------------
     #pragma omp parallel for collapse(3)
@@ -161,16 +288,15 @@ double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const i
   // ---------------------------------------------------------------------------
   if (nl < 0 || nl > Cluster.n200_nbin - 1 ||
       ni < 0 || ni > redshift.clusters_nbin - 1 ||
-      ns < 0 || ns > redshift.shear_nbin - 1 ||
+      nj < 0 || nj > redshift.shear_nbin - 1 ||
       nt < 0 || nt > Ntable.Ntheta - 1) {
-    log_fatal("error in bin number (nl,ni,ns,nt) = [%d,%d,%d,%d]",nl,ni,ns,nt);
+    log_fatal("error in bin number (nl,ni,nj,nt) = [%d,%d,%d,%d]",nl,ni,nj,nt);
     exit(1); 
   } 
   if (test_zoverlap_cggl(ni, nj)) {
-    const int q = nl*NCGL(ni,ns)*Ntable.Ntheta + nt;
+    const int q = nl*NCGL(ni,nj)*Ntable.Ntheta + nt;
     if (q > NSIZE*Ntable.Ntheta - 1) {
-      log_fatal("internal logic error in selecting bin number");
-      exit(1);
+      log_fatal("internal logic error in selecting bin number"); exit(1);
     }
     return w_vec[q];
   }
@@ -183,18 +309,22 @@ double w_cs_tomo(const int nt, const int nl, const int ni, const int ns, const i
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-double w_cc_tomo(const int nt, const int nl1, const int nl2, const int ni, const int limber)
+double w_cc_tomo(
+    const int nt, 
+    const int nl1, 
+    const int nl2, 
+    const int ni, 
+    const int limber
+  )
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
   static double** Cl = NULL; 
   static double cache[MAX_SIZE_ARRAYS];
-
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
     exit(1);
   }
-
   const int NSIZE = Cluster.n200_nbin*Cluster.n200_nbin*redshift.clusters_nbin;
 
   if (NULL == Pl || NULL == w_vec || 
@@ -297,8 +427,7 @@ double w_cc_tomo(const int nt, const int nl1, const int nl2, const int ni, const
       }
     }
     else { // TODO: implement nonlimber
-      log_fatal("NonLimber not implemented");
-      exit(1);
+      log_fatal("NonLimber not implemented"); exit(1);
     }
     // -------------------------------------------------------------------------
     #pragma omp parallel for collapse(4) schedule(static,1)
@@ -326,7 +455,6 @@ double w_cc_tomo(const int nt, const int nl1, const int nl2, const int ni, const
     cache[4] = nuisance.random_clusters;
   }
   // ---------------------------------------------------------------------------
-  // ---------------------------------------------------------------------------
   if (nl1 < 0 || nl1 > Cluster.n200_nbin - 1 ||
       nl2 < 0 || nl2 > Cluster.n200_nbin - 1 ||
       ni < 0  || ni > redshift.clusters_nbin - 1 ||
@@ -338,8 +466,7 @@ double w_cc_tomo(const int nt, const int nl1, const int nl2, const int ni, const
                  nl2*redshift.clusters_nbin + 
                  ni)*Ntable.Ntheta + nt;
   if (q  < 0 || q > NSIZE*Ntable.Ntheta - 1) {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
+    log_fatal("internal logic error in selecting bin number"); exit(1);
   }
   return w_vec[q];
 }
@@ -527,7 +654,7 @@ double int_for_C_cs_tomo_limber(double a, void* params)
   const double fK  = f_K(chidchi.chi);
   const double k   = ell/fK;  
   
-  const double bc     = weighted_bias(nl, z);
+  const double bc     = cluster_b1_given_lambda_obs_in_nl(nl, a);
   const double WCL    = W_cluster(nl, ni, a, hoverh0);
   const double WMAGCL = W_mag_cluster(ni, a, fK);
   const double WK     = W_kappa(a, fK, nj);
@@ -549,11 +676,11 @@ double int_for_C_cs_tomo_limber(double a, void* params)
     }
   }
   if (1 == adopt_dark_emulator) {
-    res *= pcm_darkemu_given_lambda_obs(k, a, nl, ni, nj)
+    res *= pcm_darkemu(k, a, nl, ni, nj)
   }
   else {
     res *= Pdelta(k,a);
-    double one_halo = pcm_1halo_given_lambda_obs(k, a, nl, ni, nj);
+    double one_halo = pcm_1halo(k, a, nl, ni, nj);
     one_halo *= WK*WCL*chidchi.dchida/(fK*fK);
     res += one_halo;
   }
@@ -721,11 +848,12 @@ double int_for_C_cc_tomo_limber(double a, void* params)
   double res = 1.0;
   if (1 == include_exclusion) {
     res  = WCNL1*WCNL2*chidchi.dchida/(fK*fK);
-    res *= pcc_with_excl_given_lambda_obs(k, a, nl1, nl2, use_linear_ps);
+    res *= pcc_with_excl(k, a, nl1, nl2, use_linear_ps);
   }
   else {
-    const double bc1    = weighted_bias(nl1, z);
-    const double bc2    = (nl1 == nl2) ? bc1 : weighted_bias(nl2, z);
+    const double bc1 = cluster_b1_given_lambda_obs_in_nl(nl1, a);
+    const double bc2 = (nl1 == nl2) ? bc1 : 
+                                      cluster_b1_given_lambda_obs_in_nl(nl2, a);
     const double WMAGCL = W_mag_cluster(ni, a, fK);
     res  = (bc1*WCNL1 - 2*WMAGCL)*(bc2*WCNL2 - 2*WMAGCL)*chidchi.dchida/(fK*fK);
     res *= (1 == use_linear_ps) ? p_lin(k,a) : Pdelta(k,a);

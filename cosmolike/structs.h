@@ -15,32 +15,36 @@ typedef struct
   double a_min_hm;
   double k_min_cH0;
   double k_max_cH0;
-  double M_min;
-  double M_max;
+  
   int LMIN_tab;
   int LMAX_NOLIMBER;
   // ---------------------------------------------------
+  // ---------------------------------------------------
   // CLUSTER ROUTINES (ALPHA STAGE)
   // ---------------------------------------------------
-  double cluster_util_log_M_min;
-  double cluster_util_log_M_max;
-  double binned_P_lambda_obs_given_M_zmin_table;
-  double binned_P_lambda_obs_given_M_zmax_table;
-  double SDSS_P_lambda_obs_given_M_true_lambda_min;
-  double SDSS_P_lambda_obs_given_M_true_lambda_max;
-  double halo_exclusion_k_min;
-  double halo_exclusion_k_max;
-  double halo_exclusion_k_min_hankel;
-  double halo_exclusion_k_max_hankel;
-  double halo_exclusion_R_min;
-  double halo_exclusion_R_max;
-  double halo_uKS_cmin; // halo.c u_KS(double c, double k, double rv)
-  double halo_uKS_cmax; // halo.c u_KS(double c, double k, double rv)
-  double halo_uKS_xmin; // halo.c u_KS(double c, double k, double rv)
-  double halo_uKS_xmax; // halo.c u_KS(double c, double k, double rv)
-
-  double linkmin_pcc_with_excl_given_lambda_obs; // 1E-2
-  double linkmax_pcc_with_excl_given_lambda_obs; // 1E8
+  // ---------------------------------------------------
+  double cluster_halo_m_min;
+  double cluster_halo_m_max;
+  double linkmin_cosmo3D_cluster; // 1E-2
+  double linkmax_cosmo3D_cluster; // 1E8
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // COSMO3D MODEL
+  // ---------------------------------------------------
+  // --------------------------------------------------- 
+  double sigma2_m_min;
+  double sigma2_m_max;
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // HALO MODEL
+  // ---------------------------------------------------
+  // --------------------------------------------------- 
+  double halo_m_min;
+  double halo_m_max;
+  double halo_uks_xmin;
+  double halo_uks_xmax;
+  double halo_uks_cmin;
+  double halo_uks_cmax;
 } lim;
 
 typedef struct 
@@ -92,23 +96,19 @@ typedef struct
   int FPTboost;
   // ---------------------------------------------------
   // ---------------------------------------------------
+  // HALO MODEL
+  // ---------------------------------------------------
+  // ---------------------------------------------------  
+  int halo_uks_nc;
+  int halo_uks_nx;
+  // ---------------------------------------------------
+  // ---------------------------------------------------
   // CLUSTER ROUTINES
   // ---------------------------------------------------
-  // ---------------------------------------------------
-  int N_a_halo_exclusion;        // N_a for binned_p_cc_incl_halo_exclusion (cluster_util.c)
-  int N_k_halo_exclusion;        // N_k for binned_p_cc_incl_halo_exclusion (cluster_util.c)
-  int N_k_hankel_halo_exclusion; // N for 3D Hankel Transform (pk_to_xi and xi_to_pk)
-  int N_R_halo_exclusion;
-  int binned_P_lambda_obs_given_M_size_z_table;
-  int binned_P_lambda_obs_given_M_size_M_table;
-  int binned_p_cm_size_a_table;
-  int halo_uKS_nc;               // halo.c u_KS(double c, double k, double rv)
-  int halo_uks_nx;               // halo.c u_KS(double c, double k, double rv)
-  
-  int na_pcc_with_excl_given_lambda_obs;
-  int nlnk_pcc_with_excl_given_lambda_obs;
-  int na_pcm_1halo_given_lambda_obs;
-  int nlnk_pcm_1halo_given_lambda_obs;
+  // ---------------------------------------------------  
+  int na_cosmo3D_cluster;
+  int nlnk_cosmo3D_cluster;
+  int nnlnm_cosmo3D_cluster; //50
 } Ntab;
 
 typedef struct
@@ -277,7 +277,13 @@ typedef struct
   // Variables for the 4x2pt+N (see: 2008.10757 & 2010.01138)
   // mor = mass observable relation
   double cluster_mor[MAX_SIZE_ARRAYS];
-  double cluster_selection[MAX_SIZE_ARRAYS];
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // CLUSTER SELECTION BIAS ----------------------------
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  double clusters_sb[MAX_SIZE_ARRAYS];    // cluster selection bias
 } nuisanceparams;
 
 typedef struct
@@ -325,10 +331,12 @@ typedef struct
                                    // [3] = HALO PROFILE
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // Cluster MODEL CHOICES
+  // ---------------------------------------------------
+  // CLUSTER SELECTION BIAS ----------------------------
   // ---------------------------------------------------
   // ---------------------------------------------------
-  int cluster_bias_model;
+  int cluster_lambda_lims[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS];
+  int cluster_bias_model[MAX_SIZE_ARRAYS]; // [0] = cluster selection b1;
   int cluster_hmf_model;
   int cluster_include_sz;
 } likepara;

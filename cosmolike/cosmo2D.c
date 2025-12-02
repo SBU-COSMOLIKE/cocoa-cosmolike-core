@@ -2226,14 +2226,10 @@ double C_gy_tomo_limber_nointerp(const double l, const int ni, const int init)
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (w == NULL || fdiff(cache[0], Ntable.random)) {
     const size_t szint = 80 + 50 * abs(Ntable.high_def_integration);
     if (w != NULL) {
       gsl_integration_glfixed_table_free(w);
