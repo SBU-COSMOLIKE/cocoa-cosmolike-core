@@ -43,7 +43,7 @@ double int_Ncl(double a, void* params)
 {
   double *ar = (double*) params;
   const int nl = (int) ar[0];
-  const int nz = (int) ar[1];
+  const int ni = (int) ar[1];
   if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true"); exit(1);
   }
@@ -51,7 +51,7 @@ double int_Ncl(double a, void* params)
   const double dzda = 1./(a*a);
   
   // int_zmin^zmax dz_obs p(zobs | ztrue)
-  const double prob_zobs_in_zbin_given_ztrue = pz_cluster(z, nz);
+  const double prob_zobs_in_zbin_given_ztrue = pz_cluster(z, ni);
 
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
@@ -123,6 +123,7 @@ double Ncl(const int nl, const int ni)
   if (fdiff(cache[0], cosmology.random) || 
       fdiff(cache[1], nuisance.random_clusters) ||
       fdiff(cache[2], redshift.random_clusters) ||
+      fdiff(cache[3], Ntable.random) ||
       fdiff(cache[4], nuisance.random_photoz_clusters))
   {
     (void) Ncl_nointerp(0, 0, 1); // init static vars
@@ -654,7 +655,7 @@ double int_for_C_cs_tomo_limber(double a, void* params)
   const double fK  = f_K(chidchi.chi);
   const double k   = ell/fK;  
   
-  const double bc     = cluster_b1_given_lambda_obs_in_nl(nl, a);
+  const double bc     = cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl, a);
   const double WCL    = W_cluster(nl, ni, a, hoverh0);
   const double WMAGCL = W_mag_cluster(ni, a, fK);
   const double WK     = W_kappa(a, fK, nj);
@@ -851,7 +852,7 @@ double int_for_C_cc_tomo_limber(double a, void* params)
     res *= pcc_with_excl(k, a, nl1, nl2, use_linear_ps);
   }
   else {
-    const double bc1 = cluster_b1_given_lambda_obs_in_nl(nl1, a);
+    const double bc1 = cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl1, a);
     const double bc2 = (nl1 == nl2) ? bc1 : 
                                       cluster_b1_given_lambda_obs_in_nl(nl2, a);
     const double WMAGCL = W_mag_cluster(ni, a, fK);

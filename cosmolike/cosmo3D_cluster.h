@@ -47,13 +47,15 @@ double ncl_given_lambda_obs_within_nl_given_ztrue(
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-double cluster_b1_given_lambda_obs_in_nl_nointerp(
+double int_cluster_b1_given_lambda_in_nl_obs_given_ztrue(double lnM, void* params);
+
+double cluster_b1_given_lambda_obs_in_nl_given_ztrue_nointerp(
     const int nl, 
-    const double z, 
+    const double a, 
     const int init
   ); // lambda weighted linear bias
 
-double cluster_b1_given_lambda_obs_in_nl(
+double cluster_b1_given_lambda_obs_in_nl_given_ztrue(
     const int nl, 
     const double z
   ); // lambda weighted linear bias

@@ -319,7 +319,7 @@ double csb1(const double M, const double a) // cluster selection bias
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-double int_cluster_b1_given_lambda_obs(double lnM, void* params)
+double int_cluster_b1_given_lambda_in_nl_obs_given_ztrue(double lnM, void* params)
 { // first integral in 
   double* ar = (double *) params;
   const int nl = (int) ar[0];
@@ -335,7 +335,7 @@ double int_cluster_b1_given_lambda_obs(double lnM, void* params)
   const double hb1 = hb1nu(nu,a);
   const double sb1 = csb1(M,a);
 
-  return hb1*sb1*dndlnM*prob_lambda_obs_within_nl_given_m_given_ztrue(nl, M, a);
+  return hb1*sb1*dndlnM*prob_lambda_obs_in_nl_given_m_given_ztrue(nl, M, a);
 }
 
 // -----------------------------------------------------------------------------
@@ -343,7 +343,7 @@ double int_cluster_b1_given_lambda_obs(double lnM, void* params)
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-double cluster_b1_given_lambda_obs_nointerp(
+double cluster_b1_given_lambda_obs_in_nl_given_ztrue_nointerp(
     const int nl, 
     const double a, 
     const int init
@@ -365,12 +365,12 @@ double cluster_b1_given_lambda_obs_nointerp(
   double ar[3] = {(double) nl, a, growfac(a)};
   double res = 0.0; 
   if (1 == init) { 
-    (void) int_cluster_b1_given_lambda_obs(lnMmin, (void*) ar);
+    (void) int_cluster_b1_given_lambda_in_nl_obs_given_ztrue(lnMmin, (void*) ar);
   }
   else {
     gsl_function F;
     F.params = (void*) ar;
-    F.function = int_cluster_b1_given_lambda_obs;
+    F.function = int_cluster_b1_given_lambda_in_nl_obs;
     const double num = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
     const double den = ncl_given_lambda_obs_in_nl_given_ztrue(nl, a);
     res = (den > 0) ? ((num/den > 0) ? num/den : 0.0) : 0.0;
@@ -383,7 +383,10 @@ double cluster_b1_given_lambda_obs_nointerp(
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-double cluster_b1_given_lambda_obs_in_nl(const int nl, const double a)
+double cluster_b1_given_lambda_obs_in_nl_given_ztrue(
+    const int nl, 
+    const double a
+  )
 { 
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
@@ -404,12 +407,13 @@ double cluster_b1_given_lambda_obs_in_nl(const int nl, const double a)
       fdiff(cache[2], redshift.random_clusters) ||
       fdiff(cache[3], Ntable.random))
   {
-    (void) cluster_b1_given_lambda_obs_in_nl_nointerp(0,lim[0],1); // init static vars
+    (void) cluster_b1_given_lambda_obs_in_nl_given_ztrue_nointerp(0,lim[0],1); // init static vars
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int j=0; j<Cluster.N200_Nbin; j++){
       for (int i=0; i<na; i++){
         const double ain = lim[0] + i*lim[2];
-        table[j][i] = cluster_b1_given_lambda_obs_in_nl_nointerp(j, ain, 0);
+        table[j][i] = 
+              cluster_b1_given_lambda_obs_in_nl_given_ztrue_nointerp(j, ain, 0);
       }
     }
     // -------------------------------------------------------------------------
@@ -441,8 +445,9 @@ double pcc_linpsopt_nointerp(
     const int linear
   )
 {
-  const double cb1 = cluster_b1_given_lambda_obs_in_nl(nl1,a); 
-  const double cb2 = (nl1 == nl2) ? cb1 : cluster_b1_given_lambda_obs_in_nl(nl2,a);
+  const double cb1 = cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl1, a); 
+  const double cb2 = (nl1 == nl2) ? cb1 : 
+                     cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl2, a);
   const double pk = (1 == linear) ? p_lin(k,a) : Pdelta(k,a);
   return cb1*cb2*pk;
 }
@@ -523,7 +528,7 @@ double pcc(
   }
   if (nl1 < 0 || nl1 > Cluster.n200_nbin - 1 ||
       nl2 < 0 || nl2 > Cluster.n200_nbin - 1) {
-    log_fatal("error in bin number (nl1,nnl2) = [%d,%d]", nl1, nl2); exit(1); 
+    log_fatal("error in bin number (nl1,nl2) = [%d,%d]", nl1, nl2); exit(1); 
   }
   const int q = nl1*Cluster.n200_nbin + nl2;
   if (q < 0 || q > NSIZE - 1) {
@@ -552,8 +557,9 @@ double pcc_with_excl_nointerp(
     const int nl2
   )
 {
-  const double cb1 = cluster_b1_given_lambda_obs_in_nl(nl1,a); 
-  const double cb2 = (nl1 == nl2) ? cb1 : cluster_b1_given_lambda_obs_in_nl(nl2,a);
+  const double cb1 = cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl1,a); 
+  const double cb2 = (nl1 == nl2) ? cb1 : 
+                     cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl2,a);
   const double R = 1.5*pow(0.25*(Cluster.N_min[N_lambda1]+
                                  Cluster.N_min[N_lambda2] +
                                  Cluster.N_max[N_lambda1] +
