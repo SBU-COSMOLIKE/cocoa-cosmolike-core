@@ -2194,15 +2194,11 @@ double int_for_C_gy_tomo_limber(double a, void* params)
 
   if (include_HOD_GX == 1)
   {
-    if (include_RSD_GY == 1)
-    {
-      log_fatal("RSD not implemented with (HOD = TRUE)");
-      exit(1);
+    if (include_RSD_GY == 1) {
+      log_fatal("RSD not implemented with (HOD = TRUE)"); exit(1);
     }
-    else
-    { 
-      log_fatal("(HOD = TRUE) not implemented");
-      exit(1);
+    else { 
+      log_fatal("(HOD = TRUE) not implemented"); exit(1);
     }
   }
   else
