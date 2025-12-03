@@ -21,6 +21,29 @@
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
+double get_effective_redmapper_area(const double a) {
+  if (redshift.clusters_survey_area_table == NULL) {
+    log_fatal("redshift redmapper survey not loaded"); exit(1);
+  }
+  if (!(a>0) || !(a<1)) {
+    log_fatal("a>0 and a<1 not true"); exit(1);
+  }
+  const double z = 1./a - 1.;
+  const int nz = redshift.clusters_survey_area_nzbins;
+  const double* const zv = redshift.clusters_survey_area_table[0];
+  const double* const av = redshift.clusters_survey_area_table[1];
+  double lim[3];
+  lim[0] = zv[0];                                // zmin
+  lim[1] = zv[nz-1];                             // zmax
+  lim[2] = (lim[1] - lim[0])/((double) nz - 1.); // dz  
+  return (z < lim[0] || z > lim[1]) ? 0.0 : 
+    interpol1d(av, nz, lim[0], lim[1], lim[2], z);
+}
+
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+
 double pf_cluster_histo_n(double z, const int ni)
 {
   if (redshift.clusters_zdist_table == NULL) {
@@ -29,7 +52,7 @@ double pf_cluster_histo_n(double z, const int ni)
   } 
   double res = 0.0;
   if ((z >= redshift.clusters_zdist_zmin_all) && 
-      (z < redshift.clusters_zdist_zmax_all)) 
+      (z <  redshift.clusters_zdist_zmax_all)) 
   {
     // -------------------------------------------------------------------------
     const int ntomo  = redshift.clusters_nbin;

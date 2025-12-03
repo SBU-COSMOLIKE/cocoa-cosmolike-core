@@ -46,9 +46,9 @@ double prob_lambda_obs_given_m_given_ztrue(double l, void* params)
   }
   const double lnl = log(l);
 
-  const double lnl0 = nuisance.cluster_mor[0]; 
-  const double Al = nuisance.cluster_mor[1];
-  const double Bl = nuisance.cluster_mor[3];
+  const double lnl0 = nuisance.clusters_mor[0]; 
+  const double Al = nuisance.clusters_mor[1];
+  const double Bl = nuisance.clusters_mor[3];
   // below: \sigma_ln(l)_intrinsic^2
   const double slnli2 = nuisance.cluster_MOR[2]*nuisance.cluster_MOR[2]; 
 
@@ -84,8 +84,8 @@ double prob_lambda_obs_in_nl_given_m_given_ztrue_nointerp(
     cache[0] = Ntable.random;
   }
 
-  const double nlmin = like.cluster_lambda_lims[0][nl];
-  const double nlmax = like.cluster_lambda_lims[1][nl];
+  const double nlmin = Ntable.clusters_lambda_obs_lims[0][nl];
+  const double nlmax = Ntable.clusters_lambda_obs_lims[1][nl];
   double params[2] = {m, a};
 
   double res = 0.0; 

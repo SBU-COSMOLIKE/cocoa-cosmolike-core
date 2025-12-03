@@ -108,7 +108,10 @@ typedef struct
   // ---------------------------------------------------  
   int na_cosmo3D_cluster;
   int nlnk_cosmo3D_cluster;
-  int nnlnm_cosmo3D_cluster; //50
+  int nnlnm_cosmo3D_cluster;
+  int clusters_lambda_obs_lims[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS];
+  int clusters_lambda_obs_max;
+  int clusters_lambda_obs_min;
 } Ntab;
 
 typedef struct
@@ -276,7 +279,7 @@ typedef struct
   // ---------------------------------------------------
   // Variables for the 4x2pt+N (see: 2008.10757 & 2010.01138)
   // mor = mass observable relation
-  double cluster_mor[MAX_SIZE_ARRAYS];
+  double clusters_mor[MAX_SIZE_ARRAYS];
   // ---------------------------------------------------
   // ---------------------------------------------------
   // ---------------------------------------------------
@@ -329,16 +332,15 @@ typedef struct
                                    // [1] = BIAS, 
                                    // [2] = CONCENTRATION
                                    // [3] = HALO PROFILE
+                                   // [4] = CLUSTER SELECTION BIAS MODEL
   // ---------------------------------------------------
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CLUSTER SELECTION BIAS ----------------------------
   // ---------------------------------------------------
   // ---------------------------------------------------
-  int cluster_lambda_lims[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS];
-  int cluster_bias_model[MAX_SIZE_ARRAYS]; // [0] = cluster selection b1;
-  int cluster_hmf_model;
-  int cluster_include_sz;
+  int clusters_include_sz;
+  int clusters_interp_survey_area;
 } likepara;
 
 typedef struct
@@ -409,7 +411,7 @@ typedef struct
   int n_cg_exclude;     // number of c-g cluster-galaxy pairs excluded
   int* cg_exclude;      // c-g cluster-galaxy pairs excluded in cg clustering
   int cs_npowerspectra; // num cluster-galaxy lensing tomo combinations
-  int cg_npowerspectra;  // num cluster-galaxy clustering tomo combinations
+  int cg_npowerspectra; // num cluster-galaxy clustering tomo combinations
 } tomopara;
 
 typedef struct
@@ -462,6 +464,11 @@ typedef struct
   double clusters_zdist_zmax_all;
   double clusters_zdist_zmin[MAX_SIZE_ARRAYS];
   double clusters_zdist_zmax[MAX_SIZE_ARRAYS];
+  
+  int clusters_survey_area_nzbins;
+  double clusters_survey_area_zmin;
+  double clusters_survey_area_zmax;    
+  double** clusters_survey_area_table;
 } redshiftparams;
 
 /*
