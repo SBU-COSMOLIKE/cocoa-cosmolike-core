@@ -4,12 +4,6 @@
 extern "C" {
 #endif
 
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-// clusters routines
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-
 double get_effective_redmapper_area(const double a);
 
 double pf_cluster_histo_n(double z, const int ni); 
@@ -18,13 +12,13 @@ double pz_cluster(double zz, const int nj);
 
 double zdistr_cluster(const int nz, const double z);
 
-double g_lens_cluster(const double a, const int nz);
-
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // cluster-galaxy lensing routines
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+
+double g_lens_cluster(const double a, const int nz);
 
 int test_zoverlap_cggl(const int nl, const int ns);
 

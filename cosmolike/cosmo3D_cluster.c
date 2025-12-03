@@ -549,7 +549,7 @@ double pcc(
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
-
+/*
 double pcc_with_excl_nointerp(
     const double k, 
     const double a, 
@@ -586,12 +586,12 @@ double pcc_with_excl_nointerp(
   }
   return pcc;
 }
-
+*/
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
-
+/*
 double pcc_with_excl(
     const double k, 
     const double a, 
@@ -625,7 +625,7 @@ double pcc_with_excl(
       fdiff(cache[2], redshift.random_clusters) ||
       fdiff(cache[3], Ntable.random))
   {
-    (void) pcc_with_excl(exp(lim[3]), lim[0], 0, 0); // init static vars
+    (void) pcc_with_excl_nointerp(exp(lim[3]), lim[0], 0, 0); // init static vars
     #pragma omp parallel for collapse(4) schedule(static,1)
     for (int p=0; p<Cluster.n200_nbin; p++) { 
       for (int l=0; l<Cluster.n200_nbin; l++) { 
@@ -660,6 +660,7 @@ double pcc_with_excl(
   return (a<lim[0] || a>lim[1]) ? 0.0 : 
          (lnk<lim[3] || lnk>lim[4]) ? 0.0 : (exp(res)-shift)/(k*k*k*sqrt(a));
 }
+*/
 
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------

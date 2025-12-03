@@ -21,7 +21,8 @@
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-double get_effective_redmapper_area(const double a) {
+double get_effective_redmapper_area(const double a) 
+{
   if (redshift.clusters_survey_area_table == NULL) {
     log_fatal("redshift redmapper survey not loaded"); exit(1);
   }
@@ -36,6 +37,7 @@ double get_effective_redmapper_area(const double a) {
   lim[0] = zv[0];                                // zmin
   lim[1] = zv[nz-1];                             // zmax
   lim[2] = (lim[1] - lim[0])/((double) nz - 1.); // dz  
+  
   return (z < lim[0] || z > lim[1]) ? 0.0 : 
     interpol1d(av, nz, lim[0], lim[1], lim[2], z);
 }
@@ -46,30 +48,28 @@ double get_effective_redmapper_area(const double a) {
 
 double pf_cluster_histo_n(double z, const int ni)
 {
-  if (redshift.clusters_zdist_table == NULL) {
-    log_fatal("redshift n(z) not loaded");
-    exit(1);
+  if (NULL == redshift.clusters_zdist_table) {
+    log_fatal("redshift n(z) not loaded"); exit(1);
   } 
   double res = 0.0;
-  if ((z >= redshift.clusters_zdist_zmin_all) && 
-      (z <  redshift.clusters_zdist_zmax_all)) 
-  {
-    // -------------------------------------------------------------------------
+  if (!(z < redshift.clusters_zdist_zmin_all || 
+        z > redshift.clusters_zdist_zmax_all)) 
+  { 
     const int ntomo  = redshift.clusters_nbin;
     const int nzbins = redshift.clusters_nzbins;
-    double** tab = redshift.clusters_zdist_table;
-    double* z_v  = redshift.clusters_zdist_table[ntomo];
-    // -------------------------------------------------------------------------
-    const double dz_histo = (z_v[nzbins - 1] - z_v[0]) / ((double) nzbins - 1.);
-    const double zhisto_min = z_v[0];
-    const double zhisto_max = z_v[nzbins - 1] + dz_histo;
-    // -------------------------------------------------------------------------
-    const int nj = (int) floor((z - zhisto_min) / dz_histo);
-    if (ni < 0 || ni > ntomo-1 || nj < 0 || nj > nzbins-1) {
-      log_fatal("invalid bin input (zbin = ni, bin = nj) = (%d, %d)", ni, nj);
+    const double* const* const table = redshift.clusters_zdist_table;
+    const double* const zv = redshift.clusters_zdist_table[ntomo];
+    double lim[3];
+    lim[2] = (zv[nzbins-1] - zv[0])/((double) nzbins - 1.); // dz_histo 
+    lim[0] = zv[0];                                         // zhisto_min
+    lim[1] = zv[nzbins-1]+lim[2];                           // zhisto_max 
+
+    const int nz = (int) floor((z - lim[0]) / lim[2]);
+    if (ni < 0 || ni > ntomo - 1 || nz < 0 || nz > nzbins - 1) {
+      log_fatal("invalid bin input (nz, ni) = [%d,%d]", nz, ni);
       exit(1);
     } 
-    res = table[ni][nj];
+    res = table[ni][nz];
   }
   return res;
 }
@@ -84,9 +84,9 @@ double pz_cluster(double zz, const int nj)
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
 
-  if (table == NULL || fdiff(cache[0], redshift.random_shear)) {
+  if (NULL == table || fdiff(cache[0], redshift.random_shear)) {
     // -------------------------------------------------------------------------
-    if (table == NULL) {
+    if (NULL == table) {
       for (int i=0; i<MAX_SIZE_ARRAYS+1; i++) {
         photoz_splines[i] = NULL;
       }
@@ -176,7 +176,8 @@ double pz_cluster(double zz, const int nj)
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-double int_norm_zdistr_cluster(const double z, void* params) { 
+double int_norm_zdistr_cluster(const double z, void* params) 
+{ 
   double* ar = (double*) params;
   const int ni = (int) ar[0];
   if (!(z>-1)) {

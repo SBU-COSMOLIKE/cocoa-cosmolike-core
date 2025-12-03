@@ -849,7 +849,8 @@ double int_for_C_cc_tomo_limber(double a, void* params)
   double res = 1.0;
   if (1 == include_exclusion) {
     res  = WCNL1*WCNL2*chidchi.dchida/(fK*fK);
-    res *= pcc_with_excl(k, a, nl1, nl2, use_linear_ps);
+    //res *= pcc_with_excl(k, a, nl1, nl2, use_linear_ps);
+    res *= 0.0; // TODO
   }
   else {
     const double bc1 = cluster_b1_given_lambda_obs_in_nl_given_ztrue(nl1, a);
