@@ -29,14 +29,6 @@ double xi_pm_tomo(
     const int limber
   );
 
-double dxi_dlnk_pm_tomo(
-    const double k,
-    const int pm, 
-    const int nt, 
-    const int ni, 
-    const int nj
-  ); // dCXY/dlnk (limber): important to determine scale cuts (2011.06469 eq 17)
-
 // gs in real space
 double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber);
 
@@ -60,14 +52,6 @@ double C_ss_tomo_limber(
     const int nj, 
     const int EE
   );
-
-double dC_ss_dlnk_tomo_limber(
-    const double k,
-    const double l, 
-    const int ni, 
-    const int nj, 
-    const int EE
-  ); // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
 
 double C_gs_tomo_limber(const double l, const int ni, const int nj);
 
@@ -98,14 +82,6 @@ double C_ss_tomo_limber_nointerp(
     const int EE, 
     const int init
   );
-
-double dC_ss_dlnk_tomo_limber_nointerp(
-    const double k, 
-    const double l, 
-    const int ni, 
-    const int nj, 
-    const int EE
-  ); // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
 
 double C_gs_tomo_limber_nointerp(const double l, const int ni, 
   const int nj, const int init);
@@ -172,6 +148,47 @@ void C_cl_tomo2(
     const int nell 
   );
 */
+
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// DERIVATIVE: dCXY/dlnk (limber): important to determine scale cuts (2011.06469 eq 17)
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+
+double dxi_dlnk_pm_tomo(
+    const double k,
+    const int pm, 
+    const int nt, 
+    const int ni, 
+    const int nj
+  ); // dCXY/dlnk (limber): important to determine scale cuts (2011.06469 eq 17)
+
+double dC_ss_dlnk_tomo_limber(
+    const double k,
+    const double l, 
+    const int ni, 
+    const int nj, 
+    const int EE
+  ); // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
+
+double dC_ss_dlnk_tomo_limber_nointerp(
+    const double k, 
+    const double l, 
+    const int ni, 
+    const int nj, 
+    const int EE
+  ); // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+
 #ifdef __cplusplus
 }
 #endif

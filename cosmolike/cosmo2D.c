@@ -277,7 +277,6 @@ double dxi_dlnk_pm_tomo(
       xmin[i] = r.xmin;
       xmax[i] = r.xmax;
     }
-
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=0; l<(Ntable.LMAX+1); l++) {
@@ -346,17 +345,15 @@ double dxi_dlnk_pm_tomo(
       const double lin = (double) limits.LMIN_tab + 1;
       (void) dC_ss_dlnk_tomo_limber(Ntable.dCX_dlnk_kmin, lin, Z1(0), Z2(0), 1);
     }
-    #pragma omp parallel for collapse(3) schedule(static,1)
-    for (int q=0; q<nlnk; q++)  {
-      for (int nz=0; nz<NSIZE; nz++)  {
-        for (int l=lmin; l<limits.LMIN_tab; l++) {
-          const double kin = exp(lim[0] + q * lim[2]);
-          const int Z1NZ = Z1(nz);
-          const int Z2NZ = Z2(nz);
-          Cl[0][nz][l][q] = 
-                dC_ss_dlnk_tomo_limber_nointerp(kin, (double) l, Z1NZ, Z2NZ, 1);
-          Cl[1][nz][l][q] = 
-                dC_ss_dlnk_tomo_limber_nointerp(kin, (double) l, Z1NZ, Z2NZ, 0);
+    #pragma omp parallel for collapse(4) schedule(static,1)
+    for (int i=0; i<2; i++) {
+      for (int q=0; q<nlnk; q++)  {
+        for (int nz=0; nz<NSIZE; nz++)  {
+          for (int l=lmin; l<limits.LMIN_tab; l++) {
+            const double kin = exp(lim[0] + q * lim[2]);
+            Cl[i][nz][l][q] = dC_ss_dlnk_tomo_limber_nointerp(kin, (double) l, 
+                                                              Z1(nz), Z2(nz), 1-i);
+          }
         }
       }
     }
@@ -397,17 +394,28 @@ double dxi_dlnk_pm_tomo(
     log_fatal("k = %e > k_max = %e. Extrapolation not allowed", k, exp(lim[1]));
     exit(1);
   }
+  double** cx = (double**) malloc2d(2, Ntable.LMAX);
+  for (int l=0; l<lmin; l++) {
+    cx[0][l] = 0.0;
+    cx[1][l] = 0.0;
+  }
+  #pragma omp parallel for collapse(2) schedule(static,1)
+  for (int p=0; p<2; p++) {
+    for (int l=lmin; l<Ntable.LMAX; l++) {
+      cx[p][l] = interpol1d(Cl[p][q][l], nlnk, lim[0], lim[1], lim[2], lnk);
+    }
+  }
   double xipm = 0.0;   
   for (int l=lmin; l<Ntable.LMAX; l++) {
-    const double c0 = interpol1d(Cl[0][q][l], nlnk, lim[0], lim[1], lim[2], lnk);
-    const double c1 = interpol1d(Cl[1][q][l], nlnk, lim[0], lim[1], lim[2], lnk);
-    if (1 == pm) xipm += Glpm[0][q][l] * (c0 + c1); 
+    const double c0 = cx[0][l];
+    const double c1 = cx[1][l];
+    if (pm > 0) xipm += Glpm[0][q][l] * (c0 + c1); 
     else xipm += Glpm[1][q][l] * (c0 - c1);
     
   }
+  free(cx);
   return xipm;
 }
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
