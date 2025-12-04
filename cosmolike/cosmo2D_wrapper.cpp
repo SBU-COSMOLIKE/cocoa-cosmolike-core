@@ -186,9 +186,7 @@ py::tuple C_ss_tomo_limber_cpp(const double l, const int ni, const int nj)
 py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
 {
   if (!(l.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_ss_tomo_limber_cpp", 
-                     l.n_elem);
+    spdlog::critical("{}: l array size = {}", "C_ss_tomo_limber_cpp", l.n_elem);
     exit(1);
   }
   arma::Cube<double> EE(l.n_elem,
@@ -199,13 +197,8 @@ py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
                         redshift.shear_nbin,
                         redshift.shear_nbin,
                         arma::fill::zeros);
-  { // init static variables
-    const int ni = Z1(0);
-    const int nj = Z2(0);
-    (void) C_ss_tomo_limber_nointerp(l(0), ni, nj, 1, 1);
-    (void) C_ss_tomo_limber_nointerp(l(0), ni, nj, 0, 1);
-  }
-
+  (void) C_ss_tomo_limber_nointerp(l(0), Z1(0), Z2(0), 1, 1); // init static vars
+  (void) C_ss_tomo_limber_nointerp(l(0), Z1(0), Z2(0), 0, 1); // init static vars
   #pragma omp parallel for collapse(2)
   for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
     for (int i=0; i<static_cast<int>(l.n_elem); i++) {
@@ -216,6 +209,50 @@ py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
     }
   }
   return py::make_tuple(carma::cube_to_arr(EE),carma::cube_to_arr(BB));
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::tuple dC_ss_dlnk_tomo_limber_cpp(
+    const double k, 
+    const double l, 
+    const int ni, 
+    const int nj
+  )
+{
+  return py::make_tuple(
+    dC_ss_dlnk_tomo_limber_nointerp(k, l, ni, nj, 1),
+    dC_ss_dlnk_tomo_limber_nointerp(k, l, ni, nj, 0) 
+  );
+}
+
+py::tuple dC_ss_dlnk_tomo_limber_cpp(const double k, const arma::Col<double> l)
+{
+  if (!(l.n_elem > 0)) {
+    spdlog::critical("{}: l array size = {}", "dC_ss_dlnk_tomo_limber_cpp", l.n_elem);
+    exit(1);
+  }
+  arma::Cube<double> EE(l.n_elem,
+                        redshift.shear_nbin,
+                        redshift.shear_nbin,
+                        arma::fill::zeros);
+  arma::Cube<double> BB(l.n_elem,
+                        redshift.shear_nbin,
+                        redshift.shear_nbin,
+                        arma::fill::zeros); 
+  (void) dC_ss_dlnk_tomo_limber(k, l(0), Z1(0), Z2(0), 1); // init static vars
+  (void) dC_ss_dlnk_tomo_limber(k, l(0), Z1(0), Z2(0), 0); // init static vars
+  #pragma omp parallel for collapse(2)
+  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
+    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
+      const int ni = Z1(nz);
+      const int nj = Z2(nz);
+      EE(i, ni, nj) = dC_ss_dlnk_tomo_limber(k, l(i), ni, nj, 1);
+      BB(i, ni, nj) = dC_ss_dlnk_tomo_limber(k, l(i), ni, nj, 0);
+    }
+  }
+  return py::make_tuple(carma::cube_to_arr(EE), carma::cube_to_arr(BB));
 }
 
 // ---------------------------------------------------------------------------

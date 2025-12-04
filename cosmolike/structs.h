@@ -90,6 +90,14 @@ typedef struct
   int high_def_integration;
   // ---------------------------------------------------
   // ---------------------------------------------------
+  // CONTROL NUM POINTS EVALUATED ON LIMBER DERIVATIVES
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  int dCX_dlnk_nlnk;
+  double dCX_dlnk_kmin;
+  double dCX_dlnk_kmax;
+  // ---------------------------------------------------
+  // ---------------------------------------------------
   // CONTROL NUM POINTS EVALUATED BY FASPT
   // ---------------------------------------------------
   // ---------------------------------------------------
@@ -457,7 +465,6 @@ typedef struct
   // ---------------------------------------------------
   // ---------------------------------------------------
   int clusters_nbin;       // number of lens cluster redshift bins
-  int clusters_photoz; 
   int clusters_nzbins;     
   double** clusters_zdist_table;
   double clusters_zdist_zmin_all;
@@ -466,8 +473,8 @@ typedef struct
   double clusters_zdist_zmax[MAX_SIZE_ARRAYS];
   
   int clusters_survey_area_nzbins;
-  double clusters_survey_area_zmin;
-  double clusters_survey_area_zmax;    
+  double clusters_survey_area_zmin_all;
+  double clusters_survey_area_zmax_all;    
   double** clusters_survey_area_table;
 } redshiftparams;
 

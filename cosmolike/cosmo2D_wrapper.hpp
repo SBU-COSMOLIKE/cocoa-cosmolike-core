@@ -64,6 +64,22 @@ py::tuple int_for_C_ss_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+py::tuple dC_ss_dlnk_tomo_limber_cpp(
+    const double k, 
+    const double l, 
+    const int ni, 
+    const int nj
+  );
+
+py::tuple dC_ss_dlnk_tomo_limber_cpp(
+    const double k, 
+    const arma::Col<double> l
+  );
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 arma::Mat<double> gs_bins();
 
 double C_gs_tomo_limber_cpp(
