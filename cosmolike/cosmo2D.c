@@ -260,7 +260,7 @@ double dxi_dlnk_pm_tomo(
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
   const int NSIZE = tomo.shear_Npowerspectra;
-  if (NULL == Glpm ||  NULL == Cl || fdiff(cache[4], Ntable.random))
+  if (NULL == Glpm ||  NULL == dCldlnk || fdiff(cache[4], Ntable.random))
   {
     if (Glpm != NULL) free(Glpm);
     Glpm = (double***) malloc3d(2, Ntable.Ntheta, Ntable.LMAX);
@@ -326,7 +326,6 @@ double dxi_dlnk_pm_tomo(
     if (dCldlnk != NULL) free(dCldlnk);
     dCldlnk = (double****) malloc4d(2, NSIZE, Ntable.LMAX, nlnk);
   }
-
   if (fdiff(cache[0], cosmology.random) ||
       fdiff(cache[1], nuisance.random_photoz_shear) ||
       fdiff(cache[2], nuisance.random_ia) ||
@@ -1363,22 +1362,19 @@ double dC_ss_dlnk_tomo_limber(
       fdiff(cache[3], redshift.random_shear) ||
       fdiff(cache[4], Ntable.random))
   {
-    { // init static variables
-      const double kin = exp(lim[3]);
-      const double l = exp(lim[0]);
-      (void) dC_ss_dlnk_tomo_limber_nointerp(kin, l, Z1(0), Z2(0), 1);
-      (void) dC_ss_dlnk_tomo_limber_nointerp(kin, l, Z1(0), Z2(0), 0);
-    }   
+    // init static variables
+    (void) dC_ss_dlnk_tomo_limber_nointerp(exp(lim[3]),exp(lim[0]),Z1(0),Z2(0),1);
+    (void) dC_ss_dlnk_tomo_limber_nointerp(exp(lim[3]),exp(lim[0]),Z1(0),Z2(0),0);   
     #pragma omp parallel for collapse(3) schedule(static,1)
-    for (int q=0; q<nlnk; q++) {  
+    for (int f=0; f<nlnk; f++) {  
       for (int p=0; p<tomo.shear_Npowerspectra; p++) {  
         for (int i=0; i<nell; i++) { 
-          const double kin = exp(lim[3] + q* lim[5]);
-          const double l   = exp(lim[0]+i*lim[2]);
+          const double kin = exp(lim[3] + f*lim[5]);
+          const double l   = exp(lim[0] + i*lim[2]);
           const double Z1NZ = Z1(p);
           const double Z2NZ = Z2(p);
-          table[0][p][q][i] = dC_ss_dlnk_tomo_limber_nointerp(kin,l,Z1NZ,Z2NZ,1);
-          table[1][p][q][i] = dC_ss_dlnk_tomo_limber_nointerp(kin,l,Z1NZ,Z2NZ,0);
+          table[0][p][f][i] = dC_ss_dlnk_tomo_limber_nointerp(kin,l,Z1NZ,Z2NZ,1);
+          table[1][p][f][i] = dC_ss_dlnk_tomo_limber_nointerp(kin,l,Z1NZ,Z2NZ,0);
         }
       }
     }
@@ -2902,11 +2898,12 @@ double C_yy_limber(double l)
   }
 
   const double lnl = log(l);
-  if (lnl < lim[0])
+  if (lnl < lim[0]) {
     log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
-  if (lnl > lim[1])
+  }
+  if (lnl > lim[1]) {
     log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
-    
+  }
   return interpol1d(table, Ntable.N_ell, lim[0], lim[0], lim[2], lnl);
 }
 
