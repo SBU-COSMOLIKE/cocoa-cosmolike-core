@@ -252,7 +252,7 @@ double dxi_dlnk_pm_tomo(
 {  
   static double*** Glpm = NULL; //Glpm[0] = Gl+, Glpm[1] = Gl-
   static double cache[MAX_SIZE_ARRAYS];
-  static double**** Cl = NULL;
+  static double**** dCldlnk = NULL;
   static double lim[3];
   static int nlnk;
   const int lmin = 1;
@@ -323,8 +323,8 @@ double dxi_dlnk_pm_tomo(
     lim[0] = log(Ntable.dCX_dlnk_kmin);
     lim[1] = log(Ntable.dCX_dlnk_kmax);
     lim[2] = (lim[1] - lim[0]) / ((double) nlnk - 1.);
-    if (Cl != NULL) free(Cl);
-    Cl = (double****) malloc4d(2, NSIZE, Ntable.LMAX, nlnk); // Cl_EE = Cl[0], Cl_BB = Cl[1]
+    if (dCldlnk != NULL) free(dCldlnk);
+    dCldlnk = (double****) malloc4d(2, NSIZE, Ntable.LMAX, nlnk);
   }
 
   if (fdiff(cache[0], cosmology.random) ||
@@ -336,23 +336,22 @@ double dxi_dlnk_pm_tomo(
     for (int q=0; q<nlnk; q++) {
       for (int i=0; i<NSIZE; i++) {
         for (int l=0; l<lmin; l++) {
-          Cl[0][i][l][q] = 0.0;
-          Cl[1][i][l][q] = 0.0;
+          dCldlnk[0][i][l][q] = 0.0;
+          dCldlnk[1][i][l][q] = 0.0;
         }
       }
     }
-    { // init static vars
-      const double lin = (double) limits.LMIN_tab + 1;
-      (void) dC_ss_dlnk_tomo_limber(Ntable.dCX_dlnk_kmin, lin, Z1(0), Z2(0), 1);
-    }
+    // init static vars
+    (void) dC_ss_dlnk_tomo_limber(Ntable.dCX_dlnk_kmin, 
+                                  (double) limits.LMIN_tab + 1, Z1(0), Z2(0), 1);
     #pragma omp parallel for collapse(4) schedule(static,1)
     for (int i=0; i<2; i++) {
       for (int q=0; q<nlnk; q++)  {
         for (int nz=0; nz<NSIZE; nz++)  {
           for (int l=lmin; l<limits.LMIN_tab; l++) {
             const double kin = exp(lim[0] + q * lim[2]);
-            Cl[i][nz][l][q] = dC_ss_dlnk_tomo_limber_nointerp(kin, (double) l, 
-                                                              Z1(nz), Z2(nz), 1-i);
+            dCldlnk[i][nz][l][q] = 
+            dC_ss_dlnk_tomo_limber_nointerp(kin, (double) l, Z1(nz), Z2(nz), 1-i);
           }
         }
       }
@@ -363,7 +362,8 @@ double dxi_dlnk_pm_tomo(
         for (int nz=0; nz<NSIZE; nz++) {
           for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
             const double kin = exp(lim[0] + q * lim[2]);
-            Cl[i][nz][l][q] = dC_ss_dlnk_tomo_limber(kin, (double) l,Z1(nz),Z2(nz),1-i);
+            dCldlnk[i][nz][l][q] = 
+                      dC_ss_dlnk_tomo_limber(kin, (double) l,Z1(nz),Z2(nz),1-i);
           }
         }
       }
@@ -379,11 +379,9 @@ double dxi_dlnk_pm_tomo(
     exit(1); 
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
-      nj < 0 || nj > redshift.shear_nbin - 1)
-  {
+      nj < 0 || nj > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj); exit(1);
   }
- 
   const int q = N_shear(ni, nj)*Ntable.Ntheta + nt;
   if (q < 0 || q > NSIZE*Ntable.Ntheta - 1) {
     log_fatal("internal logic error in selecting bin number"); exit(1);
@@ -402,7 +400,7 @@ double dxi_dlnk_pm_tomo(
   #pragma omp parallel for collapse(2) schedule(static,1)
   for (int p=0; p<2; p++) {
     for (int l=lmin; l<Ntable.LMAX; l++) {
-      cx[p][l] = interpol1d(Cl[p][q][l], nlnk, lim[0], lim[1], lim[2], lnk);
+      cx[p][l] = interpol1d(dCldlnk[p][q][l], nlnk, lim[0], lim[1], lim[2], lnk);
     }
   }
   double xipm = 0.0;   
