@@ -1008,31 +1008,24 @@ double C_ss_tomo_limber_nointerp(
       nj < -1 || nj > redshift.shear_nbin -1) {
     log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj); exit(1);
   }
-
   if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
     const size_t szint = (0 == hdi) ? 64 : 
                          (1 == hdi) ? 96 : 
                          (2 == hdi) ? 128 : 
                          (3 == hdi) ? 256 : 512; // predefined GSL tables
-    if (w != NULL) {
-      gsl_integration_glfixed_table_free(w);
-    }
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
   }
-
   double ar[5] = {(double) ni, 
                   (double) nj, 
                   l, 
                   (double) EE, 
                   (double) 0};
   double res = 0.0;
-  const double amin = fmax(amin_source(ni), amin_source(nj));
-  const double amax = fmin(amax_source(ni), amax_source(nj));;
-  if (!(amin>0) || !(amin<1) || !(amax>0) || !(amax<1)) {
-    log_fatal("0 < amin/amax < 1 not true"); exit(1);
-  }
+  const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
+  const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
   if (1 == init) {
     res = int_for_C_ss_tomo_limber(amin, (void*) ar);
   }
@@ -1056,15 +1049,12 @@ double C_ss_tomo_limber(
   static double*** table;
   static double lim[3];
   static int nell;
-  
   if (NULL == table || fdiff(cache[4], Ntable.random)) {
     nell   = Ntable.N_ell;
     lim[0] = log(fmax(limits.LMIN_tab - 1., 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
-    if (table != NULL) {
-      free(table);
-    }
+    if (table != NULL) free(table);
     table = (double***) malloc3d(2, tomo.shear_Npowerspectra, nell);
   }
   if (fdiff(cache[0], cosmology.random) ||
@@ -1084,7 +1074,7 @@ double C_ss_tomo_limber(
         const double Z2NZ = Z2(k);
         table[0][k][i] = C_ss_tomo_limber_nointerp(l,Z1NZ,Z2NZ,1,0);
         table[1][k][i] = C_ss_tomo_limber_nointerp(l,Z1NZ,Z2NZ,0,0);
-      }
+      } 
     }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;

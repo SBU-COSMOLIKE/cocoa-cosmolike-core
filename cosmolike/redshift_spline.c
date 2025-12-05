@@ -26,8 +26,7 @@
 
 double amin_source(int ni) 
 {
-  if (ni < 0 || ni > redshift.shear_nbin - 1)
-  {
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni);
     exit(1);
   }
@@ -456,9 +455,7 @@ double zdistr_photoz(double zz, const int nj)
       }
     }
     for (int i=0; i<ntomo+1; i++) {
-      if (photoz_splines[i] != NULL) {
-        gsl_interp_free(photoz_splines[i]);
-      }
+      if (photoz_splines[i] != NULL) gsl_interp_free(photoz_splines[i]);
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
     #pragma omp parallel for
@@ -479,8 +476,7 @@ double zdistr_photoz(double zz, const int nj)
   const int nzbins = redshift.shear_nzbins;
 
   if (nj < 0 || nj > ntomo - 1) {
-    log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo);
-    exit(1);
+    log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo); exit(1);
   }
 
   zz = zz - nuisance.photoz[0][0][nj];
@@ -497,8 +493,7 @@ double zdistr_photoz(double zz, const int nj)
                                    NULL, 
                                    &res);
     if (status) {
-      log_fatal(gsl_strerror(status));
-      exit(1);
+      log_fatal(gsl_strerror(status)); exit(1);
     }
   }
   return res;
@@ -509,10 +504,8 @@ double int_for_zmean_source(double z, void* params)
   double* ar = (double*) params;
   const int ni = (int) ar[0];
   
-  if (ni < 0 || ni > redshift.shear_nbin - 1)
-  {
-    log_fatal("invalid bin input ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
+    log_fatal("invalid bin input ni = %d", ni); exit(1);
   } 
   return z * zdistr_photoz(z, ni);
 }
@@ -530,9 +523,8 @@ double zmean_source(int ni)
     if (table != NULL) free(table);
     table = (double*) malloc1d(redshift.shear_nbin);
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 : 
-                         (1 == hdi) ? 256 : 
-                         (2 == hdi) ? 512 : 1024; // predefined GSL tables
+    const size_t szint = (0 == hdi) ? 256 : 
+                         (1 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -739,9 +731,8 @@ double zmean(const int ni)
     if (table != NULL) free(table);
     table = (double*) malloc1d(redshift.clustering_nbin+1);
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 : 
-                         (1 == hdi) ? 256 : 
-                         (2 == hdi) ? 512 : 1024; // predefined GSL tables
+    const size_t szint = (0 == hdi) ? 256 : 
+                         (1 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -860,10 +851,8 @@ double int_for_g2_tomo(double aprime, void* params)
   double *ar = (double*) params;
   
   const int ni = (int) ar[0];
-  if (ni < 0 || ni > redshift.shear_nbin - 1)
-  {
-    log_fatal("invalid bin input ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
+    log_fatal("invalid bin input ni = %d", ni); exit(1);
   } 
   
   const double chi1 = ar[1];
