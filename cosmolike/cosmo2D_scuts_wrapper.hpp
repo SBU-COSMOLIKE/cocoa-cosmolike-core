@@ -1,0 +1,40 @@
+#include <carma.h>
+#include <armadillo>
+#include <map>
+
+// Python Binding
+#include <pybind11/pybind11.h>
+#include <pybind11/pytypes.h>
+
+#ifndef __COSMOLIKE_COSMO2D_WRAPPER_HPP
+#define __COSMOLIKE_COSMO2D_WRAPPER_HPP
+
+namespace cosmolike_interface
+{
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// DERIVATIVE: dlnX/dlnk: important to determine scale cuts (2011.06469 eq 17)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::tuple dlnxi_dlnk_pm_tomo_cpp(const double k);
+
+py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
+    const double k, 
+    const double l, 
+    const int ni, 
+    const int nj
+  );
+
+py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
+    const double k, 
+    const arma::Col<double> l
+  );
+
+// -----------------------------------------------------------------------------
+
+}  // namespace cosmolike_interface
+#endif // HEADER GUARD
