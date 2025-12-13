@@ -209,7 +209,6 @@ void reset_nuisance_struct(void)
   nuisance.random_ia = 0.0;
   nuisance.random_photoz_shear = 0.0;
   nuisance.random_photoz_clustering = 0.0;
-
   for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
     nuisance.shear_calibration_m[i] = 0.0;
     nuisance.gc[i] = 0.0;
@@ -258,21 +257,21 @@ void reset_cmb_struct(void)
 
 void reset_Ntable_struct(void)
 {
-  Ntable.LMAX     = 50000;
-  Ntable.random   = 0.0;
-  Ntable.N_a      = 225;                   // N_a       
-  Ntable.N_k_lin  = 500;                   // N_k_lin
-  Ntable.N_k_nlin = 500;                   // N_k_nlin
-  Ntable.N_ell    = 300;                   // N_ell      
-  Ntable.Ntheta   = 225;                   // N_theta  
-  Ntable.N_M      = 1000;                  // N_M, M = mass (Halo Model)
-  Ntable.NL_Nchi  = 500;                   // Cosmo2D - NL = NonLimber (NL_Nchi)
+  Ntable.LMAX  = 50000;
+  Ntable.random = 0.0;
+  Ntable.N_a       = 225;            // N_a       
+  Ntable.N_k_lin   = 500;            // N_k_lin
+  Ntable.N_k_nlin  = 500;            // N_k_nlin
+  Ntable.N_ell     = 300;            // N_ell      
+  Ntable.Ntheta    = 225;            // N_theta   
+  Ntable.N_M = 1000;                 // N_M, M = mass (Halo Model)
+  Ntable.NL_Nchi = 500;              // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.photoz_interpolation_type = 0;
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
-  Ntable.dCX_dlnk_nlnk = 200;
-  Ntable.dCX_dlnk_kmin = 0.01;
-  Ntable.dCX_dlnk_kmax = 200;
+  Ntable.dCX_dlnk_nlnk = 150;
+  Ntable.dCX_dlnk_kmin = 1.e-4;
+  Ntable.dCX_dlnk_kmax = 1.e2;
 }
 
 /*

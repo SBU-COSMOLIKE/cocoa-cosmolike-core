@@ -6,8 +6,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
 
-#ifndef __COSMOLIKE_COSMO2D_WRAPPER_HPP
-#define __COSMOLIKE_COSMO2D_WRAPPER_HPP
+#ifndef __COSMOLIKE_COSMO2D_SCUTS_WRAPPER_HPP
+#define __COSMOLIKE_COSMO2D_SCUTS_WRAPPER_HPP
 
 namespace cosmolike_interface
 {
@@ -20,7 +20,9 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple dlnxi_dlnk_pm_tomo_cpp(const double k);
+py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const double k);
+
+py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const arma::Col<double> k);
 
 py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
     const double k, 
@@ -31,6 +33,11 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
 
 py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
     const double k, 
+    const arma::Col<double> l
+  );
+
+py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
+    const arma::Col<double> k, 
     const arma::Col<double> l
   );
 

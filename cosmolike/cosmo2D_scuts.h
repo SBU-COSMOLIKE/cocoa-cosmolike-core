@@ -20,13 +20,7 @@ extern "C" {
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-double dlnxi_dlnk_pm_tomo(
-    const double k,
-    const int pm, 
-    const int nt, 
-    const int ni, 
-    const int nj
-  );
+double** dlnxi_dlnk_pm_tomo(const double k);
 
 double dlnC_ss_dlnk_tomo_limber_nointerp(
     const double k, 

@@ -128,7 +128,6 @@ double a_chi(const double io_chi)
   const double dy = (chi                   - cosmology.chi[1][j])/
                     (cosmology.chi[1][j+1] - cosmology.chi[1][j]);
   double z  = cosmology.chi[0][j] + dy*(cosmology.chi[0][j+1]-cosmology.chi[0][j]);
-
   return 1.0/(1.0+z);
 }
 

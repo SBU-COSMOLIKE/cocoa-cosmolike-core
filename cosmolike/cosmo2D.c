@@ -308,10 +308,7 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
     }
 
     free(P);
-
-    if (Cl != NULL) {
-      free(Cl);
-    }
+    if (Cl != NULL) free(Cl);
     Cl = (double**) malloc2d(NSIZE, Ntable.LMAX);
   }
 
@@ -329,8 +326,9 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       for (int l=0; l<lmin; l++) {
         Cl[i][l] = 0.0;
       }
-    } 
-    (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0)); // init static vars
+    }
+    // init static vars 
+    (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0));
     if (1 == limber) {
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
@@ -855,17 +853,14 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
 double int_for_C_ss_tomo_limber(double a, void* params)
 {
   if (!(a>0) || !(a<1)) {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
+    log_fatal("a>0 and a<1 not true"); exit(1);
   }
   double* ar = (double*) params;
   const int n1 = (int) ar[0]; // first source bin 
   const int n2 = (int) ar[1]; // second source bin 
   if (n1 < 0 || n1 > redshift.shear_nbin - 1 || 
-      n2 < 0 || n2 > redshift.shear_nbin - 1)
-  {
-    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", n1, n2);
-    exit(1);
+      n2 < 0 || n2 > redshift.shear_nbin - 1) {
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", n1,n2); exit(1);
   }
   const double l = ar[2];
   const int EE = (int) ar[3];
@@ -882,12 +877,12 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   const double WK2 = W_kappa(a, fK, n2);
   const double WS1 = W_source(a, n1, hoverh0);
   const double WS2 = W_source(a, n2, hoverh0);
-  const double PK  = Pdelta(k,a);
+  const double PK  = Pdelta(k, a);
 
   const double ell4 = ell*ell*ell*ell; // correction (1812.05995 eqs 74-79)
   const double ell_prefactor = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4; 
 
-  double ans;
+  double ans = 1.0;
   switch(nuisance.IA_MODEL) 
   {
     case IA_MODEL_TATT:
@@ -913,8 +908,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
       lim[1] = log(FPTIA.k_max);
       lim[2] = (lim[1] - lim[0])/FPTIA.N;
 
-      if (EE == 1)
-      {     
+      if (1 == EE) {
         const double tt = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[0], FPTIA.N, lim[0], lim[1], lim[2], lnk);
         
@@ -945,8 +939,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
                          - 5.*(C11*bta1*C22+C12*bta2*C21)*mixEE
                          + 25.*C21*C22*tt);
       }
-      else  
-      {        
+      else  {        
         const double tt = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[1],FPTIA.N, lim[0], lim[1], lim[2], lnk);
         
@@ -964,7 +957,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
     }
     case IA_MODEL_NLA:
     {
-      if (EE == 1) { 
+      if (1 == EE) { 
         double IA_A1[2];
         IA_A1_Z1Z2(a, growfac_a, n1, n2, IA_A1);
         const double C11 = IA_A1[0];
@@ -979,18 +972,18 @@ double int_for_C_ss_tomo_limber(double a, void* params)
       }
       break;
     }
-    default:
-    {
-      log_fatal("nuisance.IA_MODEL = %d not supported", nuisance.IA_MODEL);
-      exit(1);
+    default: {
+      log_fatal("nuisance.IA_MODEL = %d not supported", nuisance.IA_MODEL); exit(1);
     }
   }
   if (0 == deriv) {
     return ans*(chidchi.dchida/(fK*fK))*ell_prefactor;
   } 
-  else {
-    // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
-    return (-k/ell)*(ans*chidchi.dchida*ell_prefactor);
+  else { // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
+    //return (-1.0/fK)*(ans*chidchi.dchida*ell_prefactor);
+    //return -ans*(chidchi.dchida/fK)*ell_prefactor;
+    //printf("testing: %e %e %e %e %e %d\n", ans, chidchi.dchida, fK, ell_prefactor, a, EE);
+    return ans*(chidchi.dchida/fK)*ell_prefactor;
   }
 }
 
