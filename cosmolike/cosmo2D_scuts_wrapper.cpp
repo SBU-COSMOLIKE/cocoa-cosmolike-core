@@ -50,6 +50,7 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // DERIVATIVE: dlnX/dlnk: important to determine scale cuts (2011.06469 eq 17)
+// REAL SPACE
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -126,65 +127,11 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const arma::Col<double> k)
   return py::make_tuple(to_np4d(dlnxp_dlnk), to_np4d(dlnxm_dlnk));
 }
 
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-py::tuple RF_xi_tomo_limber_cpp(
-    const double k, 
-    const int nt, 
-    const int ni, 
-    const int nj
-  )
-{
-  const double RFXIP = RF_xi_tomo_limber_nointerp(k, 1, nt, ni, nj, 0);
-  const double RFXIM = RF_xi_tomo_limber_nointerp(k, 0, nt, ni, nj, 0);
-  return py::make_tuple(RFXIP, RFXIM);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-py::tuple RF_xi_tomo_limber_cpp(const arma::Col<double> k)
-{ 
-  const int nk = static_cast<int>(k.n_elem);
-  if (!(nk > 0)) {
-    spdlog::critical("{}: k array size = {}", "dlnxi_dlnk_pm_tomo_cpp", nk);
-    exit(1);
-  } 
-  arma::field<arma::Cube<double>> RFXIP(nk); 
-  arma::field<arma::Cube<double>> RFXIM(nk);  
-  const int NSIZE = tomo.shear_Npowerspectra;
-  for (int m=0; m<nk; m++) {
-    arma::Cube<double> XP(Ntable.Ntheta,
-                          redshift.shear_nbin,
-                          redshift.shear_nbin,
-                          arma::fill::zeros);
-    arma::Cube<double> XM(Ntable.Ntheta,
-                          redshift.shear_nbin,
-                          redshift.shear_nbin,
-                          arma::fill::zeros);
-    for (int nz=0; nz<NSIZE; nz++) {
-      const int z1 = Z1(nz);
-      const int z2 = Z2(nz);
-      for (int i=0; i<Ntable.Ntheta; i++) {        
-        XP(i,z1,z2) = RF_xi_tomo_limber_nointerp(k(m), 1, i, z1, z2, 0);
-        XP(i,z2,z1) = XP(i,z1,z2);
-        XM(i,z1,z2) = RF_xi_tomo_limber_nointerp(k(m), 0, i, z1, z2, 0);
-        XM(i,z2,z1) = XM(i,z1,z2);
-      }
-    } 
-    RFXIP(m) = XP;
-    RFXIM(m) = XM;
-  }
-  return py::make_tuple(to_np4d(RFXIP), to_np4d(RFXIM));
-}
-
-// ---------------------------------------------------------------------------
+// DERIVATIVE: dlnX/dlnk: important to determine scale cuts (2011.06469 eq 17)
+// FOURIER SPACE
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -280,6 +227,70 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(const arma::Col<double> k,
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// RESPONSE FUNCTION (2011.06469 eq 17) - REAL SPACE
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::tuple RF_xi_tomo_limber_cpp(
+    const double k, 
+    const int nt, 
+    const int ni, 
+    const int nj
+  )
+{
+  const double RFXIP = RF_xi_tomo_limber_nointerp(k, 1, nt, ni, nj, 0);
+  const double RFXIM = RF_xi_tomo_limber_nointerp(k, 0, nt, ni, nj, 0);
+  return py::make_tuple(RFXIP, RFXIM);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::tuple RF_xi_tomo_limber_cpp(const arma::Col<double> k)
+{ 
+  const int nk = static_cast<int>(k.n_elem);
+  if (!(nk > 0)) {
+    spdlog::critical("{}: k array size = {}", "dlnxi_dlnk_pm_tomo_cpp", nk);
+    exit(1);
+  } 
+  arma::field<arma::Cube<double>> RFXIP(nk); 
+  arma::field<arma::Cube<double>> RFXIM(nk);  
+  const int NSIZE = tomo.shear_Npowerspectra;
+  for (int m=0; m<nk; m++) {
+    arma::Cube<double> XP(Ntable.Ntheta,
+                          redshift.shear_nbin,
+                          redshift.shear_nbin,
+                          arma::fill::zeros);
+    arma::Cube<double> XM(Ntable.Ntheta,
+                          redshift.shear_nbin,
+                          redshift.shear_nbin,
+                          arma::fill::zeros);
+    for (int nz=0; nz<NSIZE; nz++) {
+      const int z1 = Z1(nz);
+      const int z2 = Z2(nz);
+      for (int i=0; i<Ntable.Ntheta; i++) {        
+        XP(i,z1,z2) = RF_xi_tomo_limber_nointerp(k(m), 1, i, z1, z2, 0);
+        XP(i,z2,z1) = XP(i,z1,z2);
+        XM(i,z1,z2) = RF_xi_tomo_limber_nointerp(k(m), 0, i, z1, z2, 0);
+        XM(i,z2,z1) = XM(i,z1,z2);
+      }
+    } 
+    RFXIP(m) = XP;
+    RFXIM(m) = XM;
+  }
+  return py::make_tuple(to_np4d(RFXIP), to_np4d(RFXIM));
+}
+
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// RESPONSE FUNCTION (2011.06469 eq 17) - FOURIER
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
