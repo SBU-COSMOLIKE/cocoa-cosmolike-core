@@ -179,7 +179,7 @@ py::tuple RF_xi_tomo_limber_cpp(const arma::Col<double> k)
       }
     } 
     RFXIP(m) = XP;
-    RFXIP(m) = XM;
+    RFXIM(m) = XM;
   }
   return py::make_tuple(to_np4d(RFXIP), to_np4d(RFXIM));
 }
