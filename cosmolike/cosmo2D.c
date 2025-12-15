@@ -219,20 +219,18 @@ double xi_pm_tomo(
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
   }
+
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
-    log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
-    exit(1); 
+    log_fatal("error in selecting bin number nt = %d", nt); exit(1); 
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
-      nj < 0 || nj > redshift.shear_nbin - 1)
-  {
-    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj); exit(1);
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
   }
   const int ntomo = N_shear(ni, nj);
   const int q = ntomo*Ntable.Ntheta + nt;
   if (q < 0 || q > NSIZE*Ntable.Ntheta - 1) {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
+    log_fatal("internal logic error in selecting bin number"); exit(1);
   }
   return (pm > 0) ? xipm[0][q] : xipm[1][q];
 }
@@ -540,12 +538,10 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
       nj < -1 || 
       nj > redshift.clustering_nbin - 1)
   {
-    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
-    exit(1);
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
   }
   if (ni != nj) {
-    log_fatal("ni != nj tomography not supported");
-    exit(1);
+    log_fatal("ni != nj tomography not supported"); exit(1);
   }
   const int q = ni * Ntable.Ntheta + nt;
   if (q  < 0 || q > NSIZE*Ntable.Ntheta - 1) {
@@ -1056,17 +1052,20 @@ double C_ss_tomo_limber(
       fdiff(cache[3], redshift.random_shear) ||
       fdiff(cache[4], Ntable.random))
   {
-    // init static vars
-    (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1(0), Z2(0), 1, 1);
-    (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1(0), Z2(0), 0, 1);   
+    for (int k=0; k<tomo.shear_Npowerspectra; k++) { // init static vars
+      const double Z1NZ = Z1(k);
+      const double Z2NZ = Z2(k);
+      (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 1, 1); // EE
+      (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 0, 1); // BB  
+    }
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<tomo.shear_Npowerspectra; k++) {  
       for (int i=0; i<nell; i++) { 
-        const double l = exp(lim[0]+i*lim[2]);
+        const double lx = exp(lim[0] + i*lim[2]);
         const double Z1NZ = Z1(k);
         const double Z2NZ = Z2(k);
-        table[0][k][i] = C_ss_tomo_limber_nointerp(l,Z1NZ,Z2NZ,1,0);
-        table[1][k][i] = C_ss_tomo_limber_nointerp(l,Z1NZ,Z2NZ,0,0);
+        table[0][k][i] = C_ss_tomo_limber_nointerp(lx, Z1NZ, Z2NZ, 1, 0);
+        table[1][k][i] = C_ss_tomo_limber_nointerp(lx, Z1NZ, Z2NZ, 0, 0);
       } 
     }
     cache[0] = cosmology.random;
@@ -1077,15 +1076,14 @@ double C_ss_tomo_limber(
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
       nj < 0 || nj > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
-    exit(1);
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", ni,nj); exit(1);
   }
   const double lnl = log(l);
   if (lnl < lim[0]) {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   }
   if (lnl > lim[1]) {
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   }
   const int q = N_shear(ni, nj);
   if (q < 0 || q > tomo.shear_Npowerspectra - 1) {
@@ -1375,7 +1373,8 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<tomo.ggl_Npowerspectra; k++) {
       for (int i=0; i<nell; i++) {
-        table[k][i] = C_gs_tomo_limber_nointerp(exp(lim[0]+i*lim[2]),ZL(k),ZS(k),0);
+        const double lx = exp(lim[0] + i*lim[2]);
+        table[k][i] = C_gs_tomo_limber_nointerp(lx, ZL(k), ZS(k), 0);
       }
     }
     cache[0] = cosmology.random;
@@ -1387,6 +1386,7 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     cache[6] = Ntable.random;
     cache[7] = nuisance.random_galaxy_bias;
   }
+
   if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
       nj < 0 || nj > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
@@ -1396,10 +1396,10 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
   if (test_zoverlap(ni,nj)) {
     const double lnl = log(l);
     if (lnl < lim[0]) {
-      log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+      log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
     }
     if (lnl > lim[1]) {
-      log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+      log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
     }
     const int q = N_ggl(ni, nj);
     if (q < 0 || q > tomo.ggl_Npowerspectra - 1) {
@@ -1615,19 +1615,15 @@ double C_gg_tomo_limber(const double l, const int ni, const int nj)
   static double** table = NULL;
   static int nell;
   static int NSIZE;
-  static double lnlmin;
-  static double lnlmax;
-  static double dlnl;
-  
+  static double lim[3];
+
   if (NULL == table || fdiff(cache[3], Ntable.random)) {
     nell   = Ntable.N_ell;
     NSIZE  = redshift.clustering_nbin;
-    lnlmin = log(fmax(limits.LMIN_tab, 1.0));
-    lnlmax = log(Ntable.LMAX + 1);
-    dlnl   = (lnlmax - lnlmin) / ((double) nell - 1.0);
-    if (table != NULL) {
-      free(table);
-    }
+    lim[0] = log(fmax(limits.LMIN_tab, 1.0));
+    lim[1] = log(Ntable.LMAX + 1);
+    lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.0);
+    if (table != NULL) free(table);
     table = (double**) malloc2d(NSIZE, nell);
   }
 
@@ -1638,44 +1634,43 @@ double C_gg_tomo_limber(const double l, const int ni, const int nj)
       fdiff(cache[4], nuisance.random_galaxy_bias))
   {
     for (int k=0; k<NSIZE; k++)  { // init static variables
-      (void) C_gg_tomo_limber_nointerp(exp(lnlmin), k, k, 1);
+      (void) C_gg_tomo_limber_nointerp(exp(lim[0]), k, k, 1);
     }
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<NSIZE; k++) {
-      for (int p=0; p<nell; p++) {
-        table[k][p] = C_gg_tomo_limber_nointerp(exp(lnlmin+p*dlnl), k, k, 0);
+      for (int i=0; i<nell; i++) {
+        const double lx = exp(lim[0] + i*lim[2]);
+        table[k][i] = C_gg_tomo_limber_nointerp(lx, k, k, 0);
       }
     }
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_clustering;
     cache[2] = redshift.random_clustering;
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
   }
-  
+
   if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
       nj < 0 || nj > redshift.clustering_nbin - 1)
   {
-    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj); exit(1);
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
   }
   if (ni != nj) {
     log_fatal("cross-tomography not supported"); exit(1);
   }
-  
   const double lnl = log(l);
-  if (lnl < lnlmin) {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lnlmin));
+  if (lnl < lim[0]) {
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   }
-  if (lnl > lnlmax) {
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lnlmax));
+  if (lnl > lim[1]) {
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   }
   const int q = ni; // cross redshift bin not supported; not using N_CL(ni, nj)
   if (q < 0 || q > NSIZE - 1) {
     log_fatal("internal logic error in selecting bin number");
     exit(1);
   }  
-  return interpol1d(table[q], nell, lnlmin, lnlmax, dlnl, lnl);
+  return interpol1d(table[q], nell, lim[0], lim[1], lim[2], lnl);
 }
 
 // ---------------------------------------------------------------------------
@@ -1827,15 +1822,15 @@ double C_gk_tomo_limber(const double l, const int ni)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
+  static int nell;
   static double lim[3];
 
   if (NULL == table || fdiff(cache[3], Ntable.random)) {
+    nell = Ntable.N_ell;
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell - 1.0);
-    if (table != NULL) {
-      free(table);
-    }
+    if (table != NULL) free(table);
     table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_ell);
   }
 
@@ -1845,13 +1840,14 @@ double C_gk_tomo_limber(const double l, const int ni)
       fdiff(cache[3], Ntable.random) ||
       fdiff(cache[4], nuisance.random_galaxy_bias))
   {
-    { // init static variables inside the C_XY_limber_nointerp function      
-      (void) C_gk_tomo_limber_nointerp(exp(lim[0]), 0, 1);
+    for (int k=0; k<redshift.clustering_nbin; k++) { // init static variables
+      (void) C_gk_tomo_limber_nointerp(exp(lim[0]), k, 1);
     }
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<redshift.clustering_nbin; k++) {
-      for (int i=0; i<Ntable.N_ell; i++)  {
-        table[k][i] = C_gk_tomo_limber_nointerp(exp(lim[0] + i*lim[2]), k, 0);
+      for (int i=0; i<nell; i++)  {
+        const double lx = exp(lim[0] + i*lim[2]);
+        table[k][i] = C_gk_tomo_limber_nointerp(lx, k, 0);
       }
     }
     cache[0] = cosmology.random;
@@ -1867,17 +1863,17 @@ double C_gk_tomo_limber(const double l, const int ni)
   }
   const double lnl = log(l);
   if (lnl < lim[0]) {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   }
   if (lnl > lim[1]) {
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   }
   const int q =  ni; 
   if (q < 0 || q > redshift.clustering_nbin - 1) {
     log_fatal("internal logic error in selecting bin number");
     exit(1);
   }
-  return interpol1d(table[q], Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
+  return interpol1d(table[q], nell, lim[0], lim[1], lim[2], lnl);
 }
 
 // ---------------------------------------------------------------------------
@@ -1965,16 +1961,17 @@ double C_ks_tomo_limber(double l, int ni)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
+  static int nell;
   static double lim[3];
 
   if (NULL == table || fdiff(cache[4], Ntable.random)) {
-    if (table != NULL) {
-      free(table);
-    }
-    table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_ell);
+    nell = Ntable.N_ell;
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell - 1.0);
+
+    if (table != NULL) free(table);
+    table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_ell);
   }
 
   if (fdiff(cache[0], cosmology.random) ||
@@ -1983,13 +1980,14 @@ double C_ks_tomo_limber(double l, int ni)
       fdiff(cache[3], redshift.random_shear) ||
       fdiff(cache[4], Ntable.random))
   {
-    { // init static variables inside the C_XY_limber_nointerp function
-      (void) C_ks_tomo_limber_nointerp(exp(lim[0]), 0, 1);
+    for (int k=0; k<redshift.shear_nbin; k++) {  // init static vars
+      (void) C_ks_tomo_limber_nointerp(exp(lim[0]), k, 1);
     } 
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int k=0; k<redshift.shear_nbin; k++) {
       for (int i=0; i<Ntable.N_ell; i++) {
-        table[k][i] = C_ks_tomo_limber_nointerp(exp(lim[0] + i*lim[2]), k, 0);
+        const double lx = exp(lim[0] + i*lim[2]);
+        table[k][i] = C_ks_tomo_limber_nointerp(lx, k, 0);
       }
     }
     cache[0] = cosmology.random;
@@ -2000,18 +1998,15 @@ double C_ks_tomo_limber(double l, int ni)
   } 
   
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.shear_nbin);
-    exit(1);
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-
   const double lnl = log(l);
   if (lnl < lim[0]) {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   }
   if (lnl > lim[1]) {
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   }
-  
   const int q =  ni; 
   if (q < 0 || q > redshift.shear_nbin - 1) {
     log_fatal("internal logic error in selecting bin number");
@@ -2090,28 +2085,26 @@ double C_kk_limber(const double l)
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell - 1.0);
-    if (table != NULL) {
-      free(table);
-    }
+    if (table != NULL) free(table);
     table = (double*) malloc1d(Ntable.N_ell);
   }
   if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
-    { // init static variables inside the C_XY_limber_nointerp function
-      (void) C_kk_limber_nointerp(exp(lim[0]), 1);
-    }    
+    (void) C_kk_limber_nointerp(exp(lim[0]), 1); // init static vars    
     #pragma omp parallel for schedule(static,1)
     for (int i=0; i<Ntable.N_ell; i++) {
-      table[i] = C_kk_limber_nointerp(exp(lim[0] + i*lim[2]), 0);
+      const double lx = exp(lim[0] + i*lim[2]);
+      table[i] = C_kk_limber_nointerp(lx, 0);
     }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
+
   const double lnl = log(l);
   if (lnl < lim[0]) {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   }
   if (lnl > lim[1]) {
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   }
   return interpol1d(table, Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
 }
@@ -2260,9 +2253,9 @@ double C_gy_tomo_limber(double l, int ni)
   
   const double lnl = log(l);
   if (lnl < lim[0])
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   if (lnl > lim[1])
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
 
   return interpol1d(table[q], Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
 }
@@ -2398,9 +2391,9 @@ double C_ys_tomo_limber(double l, int ni)
   
   const double lnl = log(l);
   if (lnl < lim[0])
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   if (lnl > lim[1])
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
 
   return interpol1d(table[q], Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
 }
@@ -2494,9 +2487,9 @@ double C_ky_limber(double l)
   
   const double lnl = log(l);
   if (lnl < lim[0])
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   if (lnl > lim[1])
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   
   return interpol1d(table, Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
 }
@@ -2587,10 +2580,10 @@ double C_yy_limber(double l)
 
   const double lnl = log(l);
   if (lnl < lim[0]) {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
   }
   if (lnl > lim[1]) {
-    log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   }
   return interpol1d(table, Ntable.N_ell, lim[0], lim[0], lim[2], lnl);
 }

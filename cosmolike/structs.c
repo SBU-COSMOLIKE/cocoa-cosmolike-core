@@ -269,8 +269,8 @@ void reset_Ntable_struct(void)
   Ntable.photoz_interpolation_type = 0;
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
-  Ntable.dCX_dlnk_nlnk = 150;
-  Ntable.dCX_dlnk_kmin = 1.e-4;
+  Ntable.dCX_dlnk_nlnk = 190;
+  Ntable.dCX_dlnk_kmin = 1.e-5;
   Ntable.dCX_dlnk_kmax = 1.e2;
 }
 

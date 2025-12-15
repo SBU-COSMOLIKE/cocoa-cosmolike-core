@@ -68,25 +68,6 @@ double dC_ss_dlnk_tomo_limber_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double dlnC_ss_dlnk_tomo_limber_nointerp(
-    const double k, 
-    const double l,
-    const int ni, 
-    const int nj, 
-    const int EE, 
-    const int init
-  )
-{
-  const double dC_ss_dlnk = dC_ss_dlnk_tomo_limber_nointerp(k, l, ni, nj, EE);
-  const double C_ss = (fabs(dC_ss_dlnk) > 1.e-50) ? 
-                           C_ss_tomo_limber_nointerp(l, ni, nj, EE, init) : 1.0;
-  return (fabs(C_ss) > 1.e-50) ? dC_ss_dlnk/C_ss : 0.0;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
 double dC_ss_dlnk_tomo_limber(
     const double k,
     const double l, 
@@ -103,7 +84,7 @@ double dC_ss_dlnk_tomo_limber(
   
   if (NULL == table || fdiff(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
-    lim[0] = log(fmax(limits.LMIN_tab - 1., 1.0));
+    lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1.);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
@@ -128,12 +109,12 @@ double dC_ss_dlnk_tomo_limber(
     for (int f=0; f<nlnk; f++) {  
       for (int p=0; p<tomo.shear_Npowerspectra; p++) {  
         for (int i=0; i<nell; i++) { 
-          const double kin = exp(lim[3] + f*lim[5]);
-          const double l = exp(lim[0] + i*lim[2]);
+          const double kx = exp(lim[3] + f*lim[5]);
+          const double lx = exp(lim[0] + i*lim[2]);
           const double Z1NZ = Z1(p);
           const double Z2NZ = Z2(p);
-          table[0][p][f][i] = dC_ss_dlnk_tomo_limber_nointerp(kin, l, Z1NZ, Z2NZ, 1);
-          table[1][p][f][i] = dC_ss_dlnk_tomo_limber_nointerp(kin,l,Z1NZ,Z2NZ,0);
+          table[0][p][f][i] = dC_ss_dlnk_tomo_limber_nointerp(kx,lx,Z1NZ,Z2NZ,1);
+          table[1][p][f][i] = dC_ss_dlnk_tomo_limber_nointerp(kx,lx,Z1NZ,Z2NZ,0);
         }
       }
     }
@@ -180,7 +161,7 @@ double dlnC_ss_dlnk_tomo_limber(
   
   if (NULL == table || fdiff(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
-    lim[0] = log(fmax(limits.LMIN_tab - 1., 1.0));
+    lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1.);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
@@ -199,18 +180,28 @@ double dlnC_ss_dlnk_tomo_limber(
       fdiff(cache[4], Ntable.random))
   {
     // init static vars
-    (void) dlnC_ss_dlnk_tomo_limber_nointerp(exp(lim[3]), 
-                                             exp(lim[0]), Z1(0), Z2(0), 1, 1);
+    (void) dC_ss_dlnk_tomo_limber(exp(lim[3]), exp(lim[0]),  Z1(0), Z2(0), 1);
+    (void) C_ss_tomo_limber(exp(lim[0]), Z1(0), Z2(0), 1);
     #pragma omp parallel for collapse(3) schedule(static,1)
     for (int f=0; f<nlnk; f++) {  
       for (int p=0; p<tomo.shear_Npowerspectra; p++) {  
-        for (int i=0; i<nell; i++) { 
-          const double kin = exp(lim[3] + f*lim[5]);
-          const double l   = exp(lim[0] + i*lim[2]);
+        for (int i=0; i<nell; i++) {  
+          const double lx = exp(lim[0] + i*lim[2]);
+          const double kx = exp(lim[3] + f*lim[5]);
           const double Z1NZ = Z1(p);
           const double Z2NZ = Z2(p);
-          table[0][p][f][i] = dlnC_ss_dlnk_tomo_limber_nointerp(kin, l, Z1NZ, Z2NZ, 1, 0);
-          table[1][p][f][i] = dlnC_ss_dlnk_tomo_limber_nointerp(kin, l, Z1NZ, Z2NZ, 0, 0);
+          { // EE
+            const double dC = dC_ss_dlnk_tomo_limber(kx, lx, Z1NZ, Z2NZ, 1);
+            const double C = (fabs(dC) > 1e-30) ?
+                             C_ss_tomo_limber(lx, Z1NZ, Z2NZ, 1) : 1.0;
+            table[0][p][f][i] = (fabs(C) > 1e-30) ? dC/C : 0.0;
+          }
+          { // BB
+            const double dC = dC_ss_dlnk_tomo_limber(kx,lx,Z1NZ,Z2NZ,0);
+            const double C = (fabs(dC) > 1e-30) ? 
+                             C_ss_tomo_limber(lx, Z1NZ, Z2NZ, 0) : 1.0;
+            table[1][p][f][i] = (fabs(C) > 1e-30) ? dC/C : 0.0;
+          }
         }
       }
     }
@@ -222,8 +213,7 @@ double dlnC_ss_dlnk_tomo_limber(
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
       nj < 0 || nj > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
-    exit(1);
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
   }
   const int q = N_shear(ni, nj);
   if (q < 0 || q > tomo.shear_Npowerspectra - 1) {
@@ -231,9 +221,11 @@ double dlnC_ss_dlnk_tomo_limber(
   }
   const double lnl = log(l);
   const double lnk = log(k);
-  return (lnk < lim[3] || lnk > lim[4] || lnl < lim[0] || lnl > lim[1]) ? 0.0 : 
-    interpol2d((1==EE) ? table[0][q] : table[1][q],
-          nlnk, lim[3], lim[4], lim[5], lnk, nell, lim[0], lim[1], lim[2], lnl);
+  return (lnk < lim[3] || lnk > lim[4]) ? 0.0 :
+         (lnl < lim[0] || lnl > lim[1]) ? 0.0 :
+         interpol2d((1==EE) ? table[0][q] : table[1][q],
+                    nlnk, lim[3], lim[4], lim[5], lnk,
+                    nell, lim[0], lim[1], lim[2], lnl);
 }
 
 // ---------------------------------------------------------------------------
@@ -266,15 +258,18 @@ double int_RF_C_ss(double t, void* params)
   }
   const int EE = (int) ar[3];
   const double lnkmax = ar[4];
-  const double kin = exp(lnkmax - (1-t)/t);
+  const double k = exp(lnkmax - (1. - t)/t);
   double f1;
   if (l > limits.LMIN_tab) {
-    f1 = fabs(dlnC_ss_dlnk_tomo_limber(kin, l, ni, nj, EE));
+    f1 = dlnC_ss_dlnk_tomo_limber(k, l, ni, nj, EE);
   }
   else {
-    f1 = fabs(dlnC_ss_dlnk_tomo_limber_nointerp(kin, l, ni, nj, EE, 0));
+    const double dC = dC_ss_dlnk_tomo_limber_nointerp(k, l, ni, nj, EE);
+    const double C = (fabs(dC) > 1e-30) ? 
+                     C_ss_tomo_limber_nointerp(l, ni, nj, EE, 0) : 1;
+    f1 = (fabs(C) > 1e-30) ? dC/C : 0.0; 
   }
-  return f1/(t*t);
+  return fabs(f1)/(t*t);
 }
 
 // ---------------------------------------------------------------------------
@@ -288,40 +283,48 @@ double int_norm_RF_C_ss(double t, void* params)
   const int nj = (int) ar[2];
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
       nj < 0 || nj > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", ni, nj); exit(1);
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
   }
   const int EE = (int) ar[3];
   const double lnkmax = ar[4];
+
   double f1 = 0.0;
   double f2 = 0.0;
-  double kin = 0.0;
   if (l > limits.LMIN_tab) {
-    kin = exp((1.-t)/t);
-    f1 = fabs(dlnC_ss_dlnk_tomo_limber(kin, l, ni, nj, EE));
-    kin = exp(-(1.-t)/t);
-    f2 = fabs(dlnC_ss_dlnk_tomo_limber(kin, l, ni, nj, EE));
+    f1 = dlnC_ss_dlnk_tomo_limber(exp((1.-t)/t), l, ni, nj, EE);
+    f2 = dlnC_ss_dlnk_tomo_limber(exp(-(1.-t)/t), l, ni, nj, EE);
   }
   else {
-    kin = exp((1.-t)/t);
-    f1 = fabs(dlnC_ss_dlnk_tomo_limber_nointerp(kin, l, ni, nj, EE, 0));
-    kin = exp(-(1.-t)/t);
-    f2 = fabs(dlnC_ss_dlnk_tomo_limber_nointerp(kin, l, ni, nj, EE, 0));
+    {
+      const double k = exp((1.-t)/t);
+      const double dC = dC_ss_dlnk_tomo_limber_nointerp(k, l, ni, nj, EE);
+      const double C = (fabs(dC) > 1e-30) ? 
+                       C_ss_tomo_limber_nointerp(l, ni, nj, EE, 0) : 1;
+      f1 = (fabs(C) > 1e-30) ? dC/C : 0.0; 
+    }
+    {
+      const double k = exp(-(1.-t)/t);
+      const double dC = dC_ss_dlnk_tomo_limber_nointerp(k, l, ni, nj, EE);
+      const double C = (fabs(dC) > 1e-30) ? 
+                       C_ss_tomo_limber_nointerp(l, ni, nj, EE, 0) : 1;
+      f2 = (fabs(C) > 1e-30) ? dC/C : 0.0; 
+    }
   }
-  return (f1 + f2)/(t*t);
+  return (fabs(f1) + fabs(f2))/(t*t);
 }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double RF_C_ss_nointerp(
+double RF_C_ss_tomo_limber_nointerp(
     const double kmax,
     const double l, 
     const int ni, 
     const int nj, 
     const int EE, 
     const int init
-  ) // compute R_X = \int_{-infty}^{kmax} dlnk |dlnX_dlnk|
+  ) // compute RF_X = \int_{-infty}^{kmax} dlnk |dlnX_dlnk|
 {
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL; 
@@ -343,9 +346,9 @@ double RF_C_ss_nointerp(
     gsl_function F;
     F.params = (void*) ar;
     F.function = int_RF_C_ss;
-    const double num = gsl_integration_glfixed(&F, 1e-6, 1.0, w);
+    const double num = gsl_integration_glfixed(&F, 1e-5, 1.0, w);
     F.function = int_norm_RF_C_ss;
-    const double den = gsl_integration_glfixed(&F, 1e-6, 1.0, w);
+    const double den = gsl_integration_glfixed(&F, 1e-5, 1.0, w);
     res = num/den;
   }
   return res;
@@ -354,88 +357,11 @@ double RF_C_ss_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
-double RF_C_ss(
-    const double kmax, 
-    const double l, 
-    const int ni, 
-    const int nj,
-    const int EE
-  ) 
-{
-  static double cache[MAX_SIZE_ARRAYS];
-  static double**** table;
-  static double lim[6];
-  static int nell;
-  static int nlnk;
-  
-  if (NULL == table || fdiff(cache[4], Ntable.random)) {
-    nell = Ntable.N_ell;
-    lim[0] = log(fmax(limits.LMIN_tab - 1., 1.0));
-    lim[1] = log(Ntable.LMAX + 1.);
-    lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
-
-    nlnk = Ntable.dCX_dlnk_nlnk;
-    lim[3] = log(1e-4);
-    lim[4] = log(100.0);
-    lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
-
-    if (table != NULL) free(table);
-    table = (double****) malloc4d(2, tomo.shear_Npowerspectra, nlnk, nell);
-  }
-  if (fdiff(cache[0], cosmology.random) ||
-      fdiff(cache[1], nuisance.random_photoz_shear) ||
-      fdiff(cache[2], nuisance.random_ia) ||
-      fdiff(cache[3], redshift.random_shear) ||
-      fdiff(cache[4], Ntable.random))
-  {
-    // init static vars
-    (void) RF_C_ss_nointerp(exp(lim[3]), exp(lim[0]), Z1(0), Z2(0), 1, 1); 
-    #pragma omp parallel for collapse(3) schedule(static,1)
-    for (int f=0; f<nlnk; f++) {  
-      for (int p=0; p<tomo.shear_Npowerspectra; p++) {  
-        for (int i=0; i<nell; i++) { 
-          const double kin = exp(lim[3] + f*lim[5]);
-          const double l = exp(lim[0] + i*lim[2]);
-          const double Z1NZ = Z1(p);
-          const double Z2NZ = Z2(p);
-          table[0][p][f][i] = RF_C_ss_nointerp(kin, l, Z1NZ, Z2NZ, 1, 0);
-          table[1][p][f][i] = 0.0; // for not I am ignoring TATT
-                           //RF_C_ss_nointerp(kin,(double) l, Z1NZ, Z2NZ, 0, 0);
-        }
-      }
-    } 
-    cache[0] = cosmology.random;
-    cache[1] = nuisance.random_photoz_shear;
-    cache[2] = nuisance.random_ia;
-    cache[3] = redshift.random_shear;
-    cache[4] = Ntable.random;
-  }
-  if (ni < 0 || ni > redshift.shear_nbin - 1 || 
-      nj < 0 || nj > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj); exit(1);
-  }
-  const int q = N_shear(ni, nj);
-  if (q < 0 || q > tomo.shear_Npowerspectra - 1) {
-    log_fatal("internal logic error in selecting bin number"); exit(1);
-  }
-  const double lnl = log(l);
-  const double lnk = log(kmax);
-  return (lnk < lim[3] || lnk > lim[4]) ? 0.0 : 
-         (lnl < lim[0] || lnl > lim[1]) ? 0.0 : 
-         interpol2d((1==EE) ? table[0][q] : table[1][q],
-                    nlnk, lim[3], lim[4], lim[5], lnk, 
-                    nell, lim[0], lim[1], lim[2], lnl);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double** dlnxi_dlnk_pm_tomo(const double k)
+double** dlnxi_dlnk_pm_tomo_nointerp(const double k)
 {  
   static double*** Glpm = NULL; //Glpm[0] = Gl+, Glpm[1] = Gl-
   static double cache[MAX_SIZE_ARRAYS];
@@ -443,14 +369,12 @@ double** dlnxi_dlnk_pm_tomo(const double k)
   static double lim[3];
   static int nlnk;
   const int lmin = 1;
-  //Ntable.LMAX = 10000;
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
   const int NSIZE = tomo.shear_Npowerspectra;
   if (NULL == Glpm ||  NULL == dCldlnk || fdiff(cache[4], Ntable.random))
   {
-    printf("what\n\n\n");
     if (Glpm != NULL) free(Glpm);
     Glpm = (double***) malloc3d(2, Ntable.Ntheta, Ntable.LMAX);
     
@@ -530,9 +454,8 @@ double** dlnxi_dlnk_pm_tomo(const double k)
       }
     }
     // init static vars
-    (void) dC_ss_dlnk_tomo_limber(Ntable.dCX_dlnk_kmin, 
-                                 (double) limits.LMIN_tab + 1, 
-                                 Z1(0), Z2(0), 1);
+    (void) dC_ss_dlnk_tomo_limber(Ntable.dCX_dlnk_kmin, (double) limits.LMIN_tab, 
+                                  Z1(0), Z2(0), 1);
     #pragma omp parallel for collapse(4) schedule(static,1)
     for (int p=0; p<2; p++) {
       for (int q=0; q<nlnk; q++)  {
@@ -586,7 +509,8 @@ double** dlnxi_dlnk_pm_tomo(const double k)
     for (int p=0; p<2; p++) {
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=lmin; l<Ntable.LMAX; l++) {
-          cx[p][nz][l] = interpol1d(dCldlnk[p][nz][l], nlnk, lim[0], lim[1], lim[2], lnk);
+          cx[p][nz][l] = interpol1d(dCldlnk[p][nz][l], nlnk, 
+                                    lim[0], lim[1], lim[2], lnk);
         } 
       } 
     }
@@ -621,6 +545,163 @@ double** dlnxi_dlnk_pm_tomo(const double k)
     free(cx);
   }
   return ans;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double dlnxi_dlnk_pm_tomo(
+    const double k,
+    const int pm, 
+    const int nt, 
+    const int ni, 
+    const int nj
+  )
+{
+  static double cache[MAX_SIZE_ARRAYS];
+  static double*** table = NULL; 
+  static double lim[6];
+  static int nlnk;
+  const int NSIZE = tomo.shear_Npowerspectra;
+  if (NULL == table || fdiff(cache[4], Ntable.random)) {
+    nlnk = Ntable.dCX_dlnk_nlnk;
+    lim[0] = log(Ntable.dCX_dlnk_kmin);
+    lim[1] = log(Ntable.dCX_dlnk_kmax);
+    lim[2] = (lim[1] - lim[0]) / ((double) nlnk - 1.);
+    if (table != NULL) free(table);
+    table = (double***) malloc3d(2, NSIZE*Ntable.Ntheta, nlnk);
+  }
+  if (fdiff(cache[0], cosmology.random) ||
+      fdiff(cache[1], nuisance.random_photoz_shear) ||
+      fdiff(cache[2], nuisance.random_ia) ||
+      fdiff(cache[3], redshift.random_shear) ||
+      fdiff(cache[4], Ntable.random))
+  {
+    for (int f=0; f<nlnk; f++) {  
+      double** tmp = dlnxi_dlnk_pm_tomo_nointerp(exp(lim[0] + f*lim[2]));
+      for (int p=0; p<2; p++) {
+        for (int nz=0; nz<NSIZE; nz++) {
+          for (int i=0; i<Ntable.Ntheta; i++) {
+            const int q = nz * Ntable.Ntheta + i;
+            table[p][q][f] =  tmp[p][q];
+          }
+        }
+      }
+      free(tmp);
+    }
+    cache[0] = cosmology.random;
+    cache[1] = nuisance.random_photoz_shear;
+    cache[2] = nuisance.random_ia;
+    cache[3] = redshift.random_shear;
+    cache[4] = Ntable.random; 
+  }
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
+    log_fatal("error in selecting bin number nt = %d", nt); exit(1); 
+  }
+  if (ni < 0 || ni > redshift.shear_nbin - 1 || 
+      nj < 0 || nj > redshift.shear_nbin - 1)
+  {
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
+  }
+  const int ntomo = N_shear(ni, nj);
+  const int q = ntomo*Ntable.Ntheta + nt;
+  if (q < 0 || q > NSIZE*Ntable.Ntheta - 1) {
+    log_fatal("internal logic error in selecting bin number"); exit(1);
+  }
+  const double lnk = log(k);
+  return (lnk < lim[0] || lnk > lim[1]) ? 0.0 :
+         interpol1d((pm>0)?table[0][q]:table[1][q],nlnk,lim[0],lim[1],lim[2],lnk);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double int_RF_xi(double t, void* params) 
+{ // \int_{-infty}^{b} dlnk f(lnk) = \int_0^1 f(b-(1-t)/t)/t^2 
+  double* ar = (double*) params;
+  const int nt = (int) ar[0];
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
+    log_fatal("error in selecting bin number nt = %d", nt); exit(1); 
+  }
+  const int ni = (int) ar[1];
+  const int nj = (int) ar[2];
+  if (ni < 0 || ni > redshift.shear_nbin - 1 || 
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
+  }
+  const int pm = (int) ar[3];
+  const double lnkmax = ar[4];
+  const double k = exp(lnkmax - (1. - t)/t);
+  const double f1 = dlnxi_dlnk_pm_tomo(k, pm, nt, ni, nj);
+  return fabs(f1)/(t*t);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double int_norm_RF_xi(double t, void* params) 
+{ // \int_{-infty}^{infty} dlnk f(lnk) = \int_0^1 (f((1-t)/t)+f(-(1-t)/t))/t^2 
+  double* ar = (double*) params;
+  const int nt = (int) ar[0];
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
+    log_fatal("error in selecting bin number nt = %d", nt); exit(1); 
+  }
+  const int ni = (int) ar[1];
+  const int nj = (int) ar[2];
+  if (ni < 0 || ni > redshift.shear_nbin - 1 || 
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
+  }
+  const int pm = (int) ar[3];
+  const double lnkmax = ar[4];
+  const double k1 = exp((1.-t)/t);
+  const double f1 = dlnxi_dlnk_pm_tomo(k1, pm, nt, ni, nj);
+  const double k2 = exp(-(1.-t)/t);
+  const double f2 = dlnxi_dlnk_pm_tomo(k2, pm, nt, ni, nj);
+  return (fabs(f1) + fabs(f2))/(t*t);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double RF_xi_tomo_limber_nointerp(
+    const double kmax,
+    const int pm, 
+    const int nt, 
+    const int ni, 
+    const int nj, 
+    const int init
+  ) // compute RF_X = \int_{-infty}^{kmax} dlnk |dlnX_dlnk|
+{
+  static double cache[MAX_SIZE_ARRAYS];
+  static gsl_integration_glfixed_table* w = NULL; 
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 256 : 
+                         (1 == hdi) ? 512 : 1024; // predefined GSL tables
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(szint);
+    cache[0] = Ntable.random;
+  }
+  double ar[5] = {(double) nt, (double) ni, 
+                  (double) nj, (double) pm, log(kmax)};
+  double res = 0.0;
+  if (1 == init) {
+    (void) int_RF_xi(1e-1, (void*) ar);
+    (void) int_norm_RF_xi(1e-1, (void*) ar);
+  }
+  else {
+    gsl_function F;
+    F.params = (void*) ar;
+    F.function = int_RF_xi;
+    const double num = gsl_integration_glfixed(&F, 1e-5, 1.0, w);
+    F.function = int_norm_RF_xi;
+    const double den = gsl_integration_glfixed(&F, 1e-5, 1.0, w);
+    res = num/den;
+  }
+  return res;
 }
 
 // ---------------------------------------------------------------------------
