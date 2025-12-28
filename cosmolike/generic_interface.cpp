@@ -914,7 +914,10 @@ void set_cosmological_parameters(
 }
 
 void set_IA_PS(
-    vector io_IA_PS
+    vector io_IA_PS,
+    const double io_IA_k_min,
+    const double io_IA_k_max,
+    const int io_N
   )
 {
   static double cache[MAX_SIZE_ARRAYS];
@@ -923,18 +926,18 @@ void set_IA_PS(
   
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTIA.k_min = 1.e-5;
-    FPTIA.k_max = 1.e+6;//ask vivian how it is defined
-    FPTIA.N     = 2000//270 + 200 * Ntable.FPTboost; =len(python iA array)
+    FPTIA.k_min = io_IA_k_min;
+    FPTIA.k_max = io_IA_k_max;//ask vivian how it is defined
+    FPTIA.N     = io_N//270 + 200 * Ntable.FPTboost; =len(python iA array)
 
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
     }
-    FPTIA.tab = (double**) malloc2d(12, FPTIA.N);//change 12 to flag param
+    FPTIA.tab = (double**) malloc2d(23, FPTIA.N);//change 12 to flag param
   }
-  for (int i = 0; i < 3; ++i) {
-    for (int j = 0; j < 2000; ++j) {
-        FPTIA.tab[i][j] = io_IA_PS[i*2000+j];
+  for (int i = 0; i < 23; ++i) {
+    for (int j = 0; j < FPTIA.N; ++j) {
+        FPTIA.tab[i][j] = io_IA_PS[i*FPTIA.N+j];
         printf("%f\n", FPTIA.tab[i][j]);
     }
   }
