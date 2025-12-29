@@ -617,8 +617,7 @@ double dlnxi_dlnk_pm_tomo(
     log_fatal("error in selecting bin number nt = %d", nt); exit(1); 
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
-      nj < 0 || nj > redshift.shear_nbin - 1)
-  {
+      nj < 0 || nj > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
   }
   const int ntomo = N_shear(ni, nj);
