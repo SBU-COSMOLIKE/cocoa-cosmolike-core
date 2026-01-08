@@ -626,8 +626,8 @@ void init_probes(std::string possible_probes)
         { "3x2pt",  arma::Col<int>::fixed<6>{{1,1,1,0,0,0}} },
         { "5x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,0}} },
         { "6x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,1}} },
-        { "3x2pt_ks_gk_kk", arma::Col<int>::fixed<6>{{0,0,0,1,1,1}} },
-        { "3x2pt_ss_sk_sk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} },
+        { "3x2pt_gk_sk_kk", arma::Col<int>::fixed<6>{{0,0,0,1,1,1}} },
+        { "3x2pt_ss_sk_kk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} },
         { "xi_ggl", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
         { "xi_gg", arma::Col<int>::fixed<6>{{1,0,1,0,0,0}} },
         { "2x2pt_ss_sg", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
@@ -651,8 +651,8 @@ void init_probes(std::string possible_probes)
        {"2x2pt_ss_gk", "ss + gk (2x2pt)"},
        {"2x2pt_ss_kk", "ss + kk (2x2pt)"},
        {"5x2pt",  "5x2pt"},
-       {"3x2pt_ks_gk_kk", "3x2pt (gk + sk + kk)"},
-       {"3x2pt_ss_sk_sk", "3x2pt (ss + sk + kk)"},
+       {"3x2pt_gk_sk_kk", "3x2pt (gk + sk + kk)"},
+       {"3x2pt_ss_sk_kk", "3x2pt (ss + sk + kk)"},
        {"6x2pt",  "6x2pt"},
     };
 
@@ -1916,7 +1916,7 @@ void IP::set_inv_cov(std::string cov_filename)
   }
 
   this->cov_filename_ = cov_filename;
-  matrix table = read_table(cov_filename); 
+  matrix table = read_table(cov_filename);
   
   this->cov_masked_.set_size(this->ndata_, this->ndata_);
   this->cov_masked_.zeros();
@@ -2135,6 +2135,82 @@ vector IP::sqzd_theory_data_vector(vector input) const
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+void IP::set_PMmarg(std::string U_PMmarg_filename)
+{
+  static constexpr std::string_view fname = "IP::set_PMmarg"sv;
+  debug("{}: {}", fname, errbegins);
+  if (!(this->is_mask_set_)) [[unlikely]] {
+    critical(errornset, fname, "mask"); exit(1);
+  }
+  if (!(this->is_inv_cov_set_)) [[unlikely]] {
+    critical(errornset, fname, "inv_cov"); exit(1);
+  }
+
+  matrix table = read_table(U_PMmarg_filename);
+  if (table.n_cols!=3) [[unlikely]] {
+    critical(
+      "{}: U_PMmarg_filename should has three columns, but has {}!",
+      fname, table.n_cols);
+    exit(1);
+  }
+  // U has shape of Ndata x Nlens
+  matrix U;
+  U.set_size(this->ndata_, redshift.clustering_nbin);
+  U.zeros();
+  for (int i=0; i<static_cast<int>(table.n_rows); i++) {
+    const int j = static_cast<int>(table(i,0));
+    const int k = static_cast<int>(table(i,1));
+    U(j,k) = static_cast<double>(table(i,2)) * this->get_mask(j);
+  };
+  // Calculate precision matrix correction
+  // invC * U * (I+UT*invC*U)^-1 * UT * invC
+  matrix iden = arma::eye<arma::Mat<double>>(redshift.clustering_nbin, redshift.clustering_nbin);
+  matrix central_block = iden + U.t() * this->inv_cov_masked_ * U;
+  // test positive-definite
+  vector eigvals = arma::eig_sym(central_block);
+  for(int i=0; i<redshift.clustering_nbin; i++) {
+    if(eigvals(i)<=0.0) [[unlikely]] {
+      critical("{}: central block not positive definite!", fname); exit(-1);
+    }
+  }
+  matrix invcov_PMmarg = this->inv_cov_masked_ * U * arma::inv_sympd(central_block) * U.t() * this->inv_cov_masked_; 
+  // add the PM correction to inverse covariance
+  #pragma omp parallel for collapse(2)
+  for (int i=0; i<this->ndata_; i++) {
+    for (int j=0; j<this->ndata_; j++) {
+      double corr = this->get_mask(i)*this->get_mask(j)*(invcov_PMmarg(i,j)+invcov_PMmarg(j,i))/2.0;
+      this->inv_cov_masked_(i,j) -= corr;
+    }
+  }
+  // examine again the positive-definite-ness
+  vector eigvals_corr = arma::eig_sym(this->inv_cov_masked_);
+  for(int i=0; i<redshift.clustering_nbin; i++) {
+    if(eigvals(i)<0) [[unlikely]] {
+      critical("{}: PM-marged invcov not positive definite!", fname); exit(-1);
+    }
+  }
+  // Update the reduced covariance and precision matrix
+  #pragma omp parallel for collapse(2)
+  for(int i=0; i<this->ndata_; i++) {
+    for(int j=0; j<this->ndata_; j++) {
+      if((this->mask_(i)>0.99) && (this->mask_(j)>0.99)) {
+        if(this->get_index_sqzd(i) < 0) [[unlikely]] {
+          critical("{}: {} mask operation", fname, errleii); exit(1);
+        }
+        if(this->get_index_sqzd(j) < 0) [[unlikely]] {
+          critical("{}: {} mask operation", fname, errleii); exit(1);
+        }
+        const int idxa = this->get_index_sqzd(i);
+        const int idxb = this->get_index_sqzd(j);
+        this->cov_masked_sqzd_(idxa,idxb) = this->cov_masked_(i,j);
+        this->inv_cov_masked_sqzd_(idxa,idxb) = this->inv_cov_masked_(i,j);
+      }
+    }
+  }
+  this->is_inv_cov_set_ = true;
+  debug("{}: {}", fname, errends);
+}
 
 /*
 void ima::RealData::set_PMmarg(std::string U_PMmarg_file)

@@ -112,7 +112,7 @@ private:
 
     void set_inv_cov(std::string covariance_filename);
 
-    //void set_PMmarg(std::string U_PMmarg_file);
+    void set_PMmarg(std::string U_PMmarg_file);
 
     int get_mask(const int ci) const {
       static constexpr std::string_view fn = "IP::get_mask"sv;
@@ -718,7 +718,8 @@ void init_data_Mx2pt_N(
     std::string cov, 
     std::string mask, 
     std::string data, 
-    arma::Col<int>::fixed<M> ord
+    arma::Col<int>::fixed<M> ord,
+    std::string U_PMmarg = "" // Optional argument, point-mass marg. template
   )
 {
   static constexpr std::string_view errbegins = "Begins Execution"sv;
@@ -734,6 +735,10 @@ void init_data_Mx2pt_N(
   survey.set_mask<N,M>(mask, ord);  // set_mask must be called first
   survey.set_data(data);
   survey.set_inv_cov(cov);
+  // Optional Point-Mass Marginalization template
+  if (U_PMmarg != "") {
+    survey.set_PMmarg(U_PMmarg);
+  }
   debug("{}: {}", fname, errends);
   return;
 }
