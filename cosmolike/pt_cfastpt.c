@@ -18,8 +18,8 @@ void get_FPT_bias(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTIA.k_min     = 1.e-5;
-    FPTIA.k_max     = 1.e+6;
+    FPTbias.k_min     = 1.e-5;
+    FPTbias.k_max     = 1.e+6;
     FPTbias.N       = 350 + 200 * Ntable.FPTboost;
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
@@ -51,8 +51,19 @@ void get_FPT_bias(void)
       FPTbias.tab[1][i] = Pout[1][i]; // Pd2d2
       FPTbias.tab[2][i] = Pout[2][i]; // Pd1s2
       FPTbias.tab[3][i] = Pout[3][i]; // Pd2s2
-      FPTbias.tab[4][i] = Pout[3][i]; // Pd2s2
+      FPTbias.tab[4][i] = Pout[4][i]; // Ps2s2 (JX: d2s2 before)
     }
+    // for debug
+    FILE *fp;
+    fp = fopen("FPT_bias_cfastpt.txt", "w");
+    for (int i=0; i<FPTbias.N; i++) {
+      for (int j=0; j<7; j++) {
+        assert(!isnan(FPTbias.tab[j][i]));
+        fprintf(fp, "%e ", FPTbias.tab[j][i]);
+      }
+      fprintf(fp, "\n");
+    }
+    fclose(fp);
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
@@ -99,7 +110,17 @@ void get_FPT_IA(void)
     for (int i=0; i<FPTIA.N; i++) {
       FPTIA.tab[7][i] *= 4.;
     }
-    
+    // for debug
+    FILE *fp;
+    fp = fopen("FPT_IA_cfastpt.txt", "w");
+    for (int i=0; i<FPTIA.N; i++) {
+      for (int j=0; j<12; j++) {
+        assert(!isnan(FPTIA.tab[j][i]));
+        fprintf(fp, "%e ", FPTIA.tab[j][i]);
+      }
+      fprintf(fp, "\n");
+    }
+    fclose(fp);
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
