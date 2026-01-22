@@ -902,8 +902,8 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   struct chis chidchi = chi_all(a);
   const double growfac_a = growfac(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi);
-  const double k = ell/fK;
+  const double fK = f_K(chidchi.chi); // (Mpc/h)/(c/H0=100) (dimensionless)
+  const double k = ell/fK; // (c/H0)/(Mpc/h)
   
   const double WK1 = W_kappa(a, fK, n1);
   const double WK2 = W_kappa(a, fK, n2);
@@ -919,11 +919,15 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   {
     case IA_MODEL_TATT:
     { 
-      get_FPT_IA();
+      // JX: call C-FAST-PT to compute IA terms
+      if (nuisance.IA_code ==0){
+        get_FPT_IA();
+      }
 
       const double lnk = log(k);
       const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
       
+      // JX: get IA coefficients at different redshift
       double IA_AX[2];
       IA_A1_Z1Z2(a, growfac_a, n1, n2, IA_AX);
       const double C11 = IA_AX[0];
@@ -941,7 +945,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
       lim[2] = (lim[1] - lim[0])/FPTIA.N;
 
       if (EE == 1)
-      {     
+      { // JX: debugging ta_dE2 and mix_Btype 2
         const double tt = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[0], FPTIA.N, lim[0], lim[1], lim[2], lnk);
         
@@ -950,6 +954,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
         
         const double ta_dE2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[3], FPTIA.N, lim[0], lim[1], lim[2], lnk);
+        //const double ta_dE2 = 0.0;
         
         const double ta = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[4], FPTIA.N, lim[0], lim[1], lim[2], lnk);
@@ -959,6 +964,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
         
         const double mixB = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[7], FPTIA.N, lim[0], lim[1], lim[2], lnk);
+        //const double mixB = 0.0;
         
         const double mixEE = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[8], FPTIA.N, lim[0], lim[1], lim[2], lnk);
@@ -1190,7 +1196,9 @@ double int_for_C_gs_tomo_limber(double a, void* params)
         exit(1);
       }
 
-      get_FPT_IA();
+      if (nuisance.IA_code ==0){
+        get_FPT_IA();
+      }
       const double lnk = log(k);
       double lim[3];
       lim[0] = log(FPTIA.k_min);
@@ -1222,7 +1230,9 @@ double int_for_C_gs_tomo_limber(double a, void* params)
       double oneloop = 0.0;
       if (1 == nonlinear_bias)
       { 
-        get_FPT_bias();
+        if (nuisance.IA_code ==0){
+          get_FPT_bias();
+        }
         lim[0] = log(FPTbias.k_min);
         lim[1] = log(FPTbias.k_max);
         lim[2] = (lim[1] - lim[0])/FPTbias.N;
@@ -1275,7 +1285,9 @@ double int_for_C_gs_tomo_limber(double a, void* params)
       double oneloop = 0.0;
       if (1 == nonlinear_bias)
       {
-        get_FPT_bias();
+        if (nuisance.IA_code ==0){
+          get_FPT_bias();
+        }
         const double lnk = log(k);
         double lim[3];
         lim[0] = log(FPTbias.k_min);
@@ -1516,7 +1528,9 @@ double int_for_C_gg_tomo_limber(double a, void* params)
   double oneloop = 0.0;
   if (1 == nonlinear_bias && 0 == use_linear_ps)
   {
-    get_FPT_bias();
+    if (nuisance.IA_code ==0){
+      get_FPT_bias();
+    }
     const double lnk = log(k);
     double lim[3];
     lim[0] = log(FPTbias.k_min);
@@ -1723,7 +1737,7 @@ double int_for_C_gk_tomo_limber(double a, void* params)
     exit(1);
   }
   const double l = ar[1];
-  const int nonlinear = ar[2];
+  const int nonlinear_bias = ar[2];
 
   const double ell = l + 0.5;
   struct chis chidchi = chi_all(a);
@@ -1773,8 +1787,10 @@ double int_for_C_gk_tomo_limber(double a, void* params)
     res *= PK;
   }
   double oneloop = 0.0;
-  if (1 == nonlinear) {
-    get_FPT_bias();
+  if (1 == nonlinear_bias) {
+    if (nuisance.IA_code ==0){
+      get_FPT_bias();
+    }
     const double growfac_a = growfac(a);
     const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
 
