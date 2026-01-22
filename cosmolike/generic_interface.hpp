@@ -560,7 +560,8 @@ void init_cmb_auto_bandpower (
 
 void init_IA(
     const int IA_MODEL, 
-    const int IA_REDSHIFT_EVOL
+    const int IA_REDSHIFT_EVOL,
+    const int IA_code
   );
 
 void init_probes(
@@ -613,8 +614,19 @@ void set_linear_power_spectrum(
     arma::Col<double> io_z, 
     arma::Col<double> io_lnP
   );
+
 void set_IA_PS(
-    arma::Col<double> io_IA_PS
+    arma::Col<double> io_IA_PS,
+    const double io_IA_k_min,
+    const double io_IA_k_max,
+    const int io_N
+  );
+
+void set_bias_PS(
+    arma::Col<double> io_bias_PS,
+    const double io_bias_k_min,
+    const double io_bias_k_max,
+    const int io_N
   );
 
 void set_non_linear_power_spectrum(
