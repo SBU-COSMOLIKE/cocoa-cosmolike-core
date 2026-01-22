@@ -166,9 +166,6 @@ typedef struct
   // chi = G[1,j<chi_nz]
   int G_nz;
   double** G;
-
-  double** IA_PS;
-
 } cosmopara;
 
 typedef struct
@@ -213,6 +210,7 @@ typedef struct
   // ia[2][MAX_SIZE_ARRAYS] = b_ta_z[MAX_SIZE_ARRAYS]
   int IA;
   int IA_MODEL;
+  int IA_code; // 0 = CFASTPT; 1 = PyFASTPT; 
   double ia[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS];
   double oneplusz0_ia;
   double c1rhocrit_ia;

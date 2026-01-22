@@ -133,8 +133,6 @@ void reset_cosmology_struct(void)
   cosmology.chi = NULL;
   cosmology.G_nz = 0;
   cosmology.G = NULL;
-  cosmology.IA_PS = NULL;
-
 }
 
 void reset_tomo_struct(void)
@@ -232,6 +230,7 @@ void reset_nuisance_struct(void)
   nuisance.c1rhocrit_ia = 0.01389;
   nuisance.IA = 0;
   nuisance.IA_MODEL = 0;
+  nuisance.IA_code = 0; // 0 = CFASTPT; 1 = PyFASTPT
 }
 
 void reset_cmb_struct(void)
