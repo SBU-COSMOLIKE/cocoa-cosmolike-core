@@ -578,11 +578,12 @@ void init_cosmo_runmode(const bool is_linear)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
+void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
 {
   static constexpr std::string_view fname = "init_IA"sv;
   debug("{}: {}", fname, errbegins);
-  debug(debugsel,fname,"IA MODEL",IA_MODEL,"IA REDSHIFT EVOLUTION",IA_REDSHIFT_EVOL);
+  debug(debugsel,fname,"IA MODEL",IA_MODEL,"IA REDSHIFT EVOLUTION",IA_REDSHIFT_EVOL,
+        "IA code",IA_code);
   if (IA_MODEL == 0 || IA_MODEL == 1) {
     nuisance.IA_MODEL = IA_MODEL;
   }
@@ -599,6 +600,13 @@ void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
   }
   else [[unlikely]] {
     critical(errorns2, fname, "nuisance.IA", IA_REDSHIFT_EVOL);
+    exit(1);
+  }
+  if (IA_code == 0 || IA_code == 1) {
+    nuisance.IA_code = IA_code;
+  }
+  else [[unlikely]] {
+    critical(errorns2, fname, "nuisance.IA_code", IA_code);
     exit(1);
   }
   debug("{}: {}", fname, errends);
@@ -920,29 +928,95 @@ void set_IA_PS(
     const int io_N
   )
 {
+  /* equivalent to get_FPT_IA(), but the PT is passed through python interface */
+  static constexpr std::string_view fname = "set_IA_PS"sv;
   static double cache[MAX_SIZE_ARRAYS];
 
-  
-  
   if (fdiff(cache[1], Ntable.random))
-  {
-    FPTIA.k_min = io_IA_k_min;
-    FPTIA.k_max = io_IA_k_max;//ask vivian how it is defined
-    FPTIA.N     = io_N//270 + 200 * Ntable.FPTboost; =len(python iA array)
+  { // Interpolation table setup has changed, re-allocate a new one
+    FPTIA.k_min = io_IA_k_min;  // in units of (c/H0)^-1
+    FPTIA.k_max = io_IA_k_max;  // in units of (c/H0)^-1, ask Vivian how it is defined
+    FPTIA.N     = io_N;         // 270 + 200 * Ntable.FPTboost;
 
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
     }
-    FPTIA.tab = (double**) malloc2d(23, FPTIA.N);//change 12 to flag param
+    FPTIA.tab = (double**) malloc2d(12, FPTIA.N); // JX: need extra terms to 23?
   }
-  for (int i = 0; i < 23; ++i) {
-    for (int j = 0; j < FPTIA.N; ++j) {
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
+  { // Cosmology or Interpolation table setup has changed, re-compute the table
+    double lim[3];
+    lim[0] = log(FPTIA.k_min);
+    lim[1] = log(FPTIA.k_max);
+    lim[2] = (lim[1] - lim[0])/FPTIA.N;
+    
+    #pragma omp parallel for
+    for (int i=0; i<12; i++){
+      for (int j=0; j<FPTIA.N; j++) 
+      {
+        if (std::isnan(io_IA_PS[i*FPTIA.N+j])) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
         FPTIA.tab[i][j] = io_IA_PS[i*FPTIA.N+j];
-        printf("%f\n", FPTIA.tab[i][j]);
+        //printf("%f\n", FPTIA.tab[i][j]);
+      }
     }
+    
+    // JX: need to double check these multiplications by 4, of mix Btype2
+    #pragma omp parallel for
+    for (int i=0; i<FPTIA.N; i++) {
+      FPTIA.tab[7][i] *= 4.;
+    }
+    
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
   }
+}
 
-  //need more implementation
+void set_bias_PS(
+    vector io_bias_PS,
+    const double io_bias_k_min,
+    const double io_bias_k_max,
+    const int io_N
+  )
+{
+  /* equivalent to get_FPT_bias(), but the PT is passed through python interface */
+  static constexpr std::string_view fname = "set_bias_PS"sv;
+  static double cache[MAX_SIZE_ARRAYS];
+
+  if (fdiff(cache[1], Ntable.random))
+  { // Interpolation table setup has changed, re-allocate a new one
+    FPTbias.k_min = io_bias_k_min;  // in units of (c/H0)^-1
+    FPTbias.k_max = io_bias_k_max;  // in units of (c/H0)^-1, ask Vivian how it is defined
+    FPTbias.N     = io_N;         // 350 + 200 * Ntable.FPTboost;
+
+    if (FPTbias.tab != NULL) {
+      free(FPTbias.tab);
+    }
+    FPTbias.tab = (double**) malloc2d(7, FPTbias.N); // JX: need P13?
+  }
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
+  { // Cosmology or Interpolation table setup has changed, re-compute the table
+    double lim[3];
+    lim[0] = log(FPTbias.k_min);
+    lim[1] = log(FPTbias.k_max);
+    lim[2] = (lim[1] - lim[0])/FPTbias.N;
+
+    #pragma omp parallel for
+    for (int i=0; i<7; i++){
+      for (int j=0; j<FPTbias.N; j++) 
+      {
+        if (std::isnan(io_bias_PS[i*FPTbias.N+j])) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
+        FPTbias.tab[i][j] = io_bias_PS[i*FPTbias.N+j];
+        //printf("%f\n", FPTbias.tab[i][j]);
+      }
+    }
+    
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
+  }
 }
 
 // ---------------------------------------------------------------------------
