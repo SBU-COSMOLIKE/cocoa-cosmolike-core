@@ -935,8 +935,9 @@ void set_IA_PS(
   if (fdiff(cache[1], Ntable.random))
   { // Interpolation table setup has changed, re-allocate a new one
     FPTIA.k_min = io_IA_k_min;  // in units of (c/H0)^-1
-    FPTIA.k_max = io_IA_k_max;  // in units of (c/H0)^-1, ask Vivian how it is defined
+    FPTIA.k_max = io_IA_k_max;  // in units of (c/H0)^-1
     FPTIA.N     = io_N;         // 270 + 200 * Ntable.FPTboost;
+    FPTIA.sigma4= 0.0; // Not relavant for IA, but set to zero.  
 
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
@@ -977,6 +978,7 @@ void set_bias_PS(
     vector io_bias_PS,
     const double io_bias_k_min,
     const double io_bias_k_max,
+    const double io_bias_sigma4,
     const int io_N
   )
 {
@@ -989,11 +991,12 @@ void set_bias_PS(
     FPTbias.k_min = io_bias_k_min;  // in units of (c/H0)^-1
     FPTbias.k_max = io_bias_k_max;  // in units of (c/H0)^-1, ask Vivian how it is defined
     FPTbias.N     = io_N;         // 350 + 200 * Ntable.FPTboost;
+    FPTbias.sigma4= io_bias_sigma4;
 
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
     }
-    FPTbias.tab = (double**) malloc2d(7, FPTbias.N); // JX: need P13?
+    FPTbias.tab = (double**) malloc2d(8, FPTbias.N);
   }
   if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
   { // Cosmology or Interpolation table setup has changed, re-compute the table
@@ -1003,7 +1006,7 @@ void set_bias_PS(
     lim[2] = (lim[1] - lim[0])/FPTbias.N;
 
     #pragma omp parallel for
-    for (int i=0; i<7; i++){
+    for (int i=0; i<8; i++){
       for (int j=0; j<FPTbias.N; j++) 
       {
         if (std::isnan(io_bias_PS[i*FPTbias.N+j])) [[unlikely]] {
