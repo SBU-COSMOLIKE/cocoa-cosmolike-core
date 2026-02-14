@@ -626,6 +626,7 @@ void set_bias_PS(
     arma::Col<double> io_bias_PS,
     const double io_bias_k_min,
     const double io_bias_k_max,
+    const double io_bias_sigma4,
     const int io_N
   );
 
@@ -987,8 +988,13 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
             } 
           }
           else {
+            // { // init static variables
+            //   (void) C_ss_tomo_limber_nointerp(like.ell[0],Z1(0),Z2(0),1,1);
+            //   (void) C_ss_tomo_limber_nointerp(like.ell[0],Z1(0),Z2(0),0,1);
+            // } 
             if (survey.get_mask(index) && (like.ell[i]<like.lmax_shear)) {
-              dv(index) = C_ss_tomo_limber(like.ell[i], z1, z2, 1);
+              //dv(index) = C_ss_tomo_limber(like.ell[i], z1, z2, 1);
+              dv(index) = C_ss_tomo_limber_nointerp(like.ell[i], z1, z2, 1, 0);
             }
           }
         }
@@ -1007,7 +1013,8 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
             if constexpr (0 == N)
               dv(index) = w_gammat_tomo(i,zl,zs,1);
             else
-              dv(index) = C_gs_tomo_limber(like.ell[i], zl, zs);
+              //dv(index) = C_gs_tomo_limber(like.ell[i], zl, zs);
+              dv(index) = C_gs_tomo_limber_nointerp(like.ell[i], zl, zs, 0);
           }
         }
       }
@@ -1024,7 +1031,8 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
               dv(index) = w_gg_tomo(i, nz, nz, like.adopt_limber_gg);
             }
             else {
-              dv(index) = C_gg_tomo_limber(like.ell[i], nz, nz);
+              //dv(index) = C_gg_tomo_limber(like.ell[i], nz, nz);
+              dv(index) = C_gg_tomo_limber_nointerp(like.ell[i], nz, nz, 0);
             }
           }
         }
