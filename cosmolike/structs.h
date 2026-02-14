@@ -173,6 +173,7 @@ typedef struct
   int N;
   double k_min;
   double k_max;
+  double sigma4;
   double** tab; 
 } FPT;
 
