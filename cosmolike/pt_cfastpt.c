@@ -18,13 +18,14 @@ void get_FPT_bias(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTbias.k_min     = 1.e-5;
+    FPTbias.k_min     = 6.0e-2; // 1.e-5;
     FPTbias.k_max     = 1.e+6;
     FPTbias.N       = 350 + 200 * Ntable.FPTboost;
+    FPTbias.sigma4 = 0.0;
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
     }
-    FPTbias.tab = (double**) malloc2d(7, FPTbias.N);
+    FPTbias.tab = (double**) malloc2d(8, FPTbias.N);
   }
   if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
   {
@@ -33,16 +34,16 @@ void get_FPT_bias(void)
     #pragma omp parallel for
     for (int i=0; i<FPTbias.N; i++) 
     {
-      FPTbias.tab[5][i] = exp(log(FPTbias.k_min) + i*dlogk);
-      FPTbias.tab[6][i] = p_lin(FPTbias.tab[5][i], 1.0);
+      FPTbias.tab[6][i] = exp(log(FPTbias.k_min) + i*dlogk);
+      FPTbias.tab[7][i] = p_lin(FPTbias.tab[6][i], 1.0);
     }
 
     double Pout[5][FPTbias.N];
-    Pd1d2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[0]);
-    Pd2d2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[1]);
-    Pd1s2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[2]);
-    Pd2s2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[3]);
-    Ps2s2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[4]);
+    Pd1d2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[0]);
+    Pd2d2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[1]);
+    Pd1s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[2]);
+    Pd2s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[3]);
+    Ps2s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[4]);
 
     #pragma omp parallel for
     for (int i=0; i<FPTbias.N; i++) 
@@ -51,13 +52,19 @@ void get_FPT_bias(void)
       FPTbias.tab[1][i] = Pout[1][i]; // Pd2d2
       FPTbias.tab[2][i] = Pout[2][i]; // Pd1s2
       FPTbias.tab[3][i] = Pout[3][i]; // Pd2s2
-      FPTbias.tab[4][i] = Pout[4][i]; // Ps2s2 (JX: d2s2 before)
+      FPTbias.tab[4][i] = Pout[4][i]; // Ps2s2
+      // Pd1p3, interpolated from precomputed table at a mystery cosmology with sigma8=0.8
+      double lnk = log(FPTbias.tab[6][i]);
+      FPTbias.tab[5][i] = (lnk<tab_d1d3_lnkmin || lnk>tab_d1d3_lnkmax) ? 0.0 :
+      interpol1d(tab_d1d3, tab_d1d3_Nk, tab_d1d3_lnkmin, tab_d1d3_lnkmax, tab_d1d3_dlnk, lnk);
     }
+    // JX: dirty fix for sigma4 term: P_{d2d2}(k->0) / 2
+    FPTbias.sigma4 = FPTbias.tab[1][0]/2.;
     // for debug
     FILE *fp;
     fp = fopen("FPT_bias_cfastpt.txt", "w");
     for (int i=0; i<FPTbias.N; i++) {
-      for (int j=0; j<7; j++) {
+      for (int j=0; j<8; j++) {
         assert(!isnan(FPTbias.tab[j][i]));
         fprintf(fp, "%e ", FPTbias.tab[j][i]);
       }
@@ -75,9 +82,10 @@ void get_FPT_IA(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTIA.k_min = 1.e-5;
+    FPTIA.k_min = 6.0e-2; // 1.e-5;
     FPTIA.k_max = 1.e+6;
-    FPTIA.N     = 270 + 200 * Ntable.FPTboost;
+    FPTIA.sigma4 = 0.0; // Not relevant for IA, but set to zero.
+    FPTIA.N     = 350 + 200 * Ntable.FPTboost; // 270 + 200 * Ntable.FPTboost;
 
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
