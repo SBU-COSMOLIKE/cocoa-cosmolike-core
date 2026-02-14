@@ -12,6 +12,8 @@
 
 #include "../log.c/src/log.h"
 
+#define TAPER_FFTLOG_REAL 0
+
 
 void fastpt_scalar(int *alpha_ar, int *beta_ar, int *ell_ar, int *isP13type_ar,
 double *coeff_A_ar, int Nterms, double *Pout, double *k, double *Pin, int Nk)
@@ -25,7 +27,7 @@ double *coeff_A_ar, int Nterms, double *Pout, double *k, double *Pin, int Nk)
 
   fastpt_config config;
   config.nu = -2.;
-  config.c_window_width = 0.25;
+  config.c_window_width = 0.65; //0.25;
   config.N_pad = 1500;
   config.N_extrap_low = 500;
   config.N_extrap_high = 500;
@@ -117,6 +119,7 @@ int *isP13type __attribute__((unused)), int Nterms, fastpt_config *config, doubl
       const double xi = exp(log(x0) + (i-N_pad - N_extrap_low)*dlnx);
       fb[i] = sign*exp(log(fx[0]*sign) + (i- N_pad - N_extrap_low)*dlnf_low) / pow(xi, config->nu);
     }
+    //log_info("J_abl_ar: Using log-extrapolation on the low side down to k=%e\n", x[N_pad]);
   }
   
   #pragma omp parallel for
@@ -158,6 +161,7 @@ int *isP13type __attribute__((unused)), int Nterms, fastpt_config *config, doubl
       fb[i] = sign * exp(log(fx[N_original-1]*sign) + 
         (i- N_pad - N_extrap_low- N_original)*dlnf_high) / pow(xi, config->nu);
     }
+    //log_info("J_abl_ar: Using log-extrapolation on the high side up to k=%e\n", x[N-N_pad-1]);
   }
 
   fftw_complex *out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * (halfN+1) );
@@ -351,8 +355,10 @@ double *coeff_AB_ar, int Nterms, double *Pout, double *k, double *Pin, int Nk)
     Fy[i] = malloc(sizeof(double) * Nk);
   }
   fastpt_config config;
-  config.c_window_width = 0.25; config.N_pad = 1500;
-  config.N_extrap_low = 500; config.N_extrap_high = 500;
+  config.c_window_width = 0.65; // 0.25;
+  config.N_pad = 1500;
+  config.N_extrap_low = 500;
+  config.N_extrap_high = 500;
 
   J_abJ1J2Jk_ar(k, Pin, Nk, alpha_ar, beta_ar, J1_ar, J2_ar, Jk_ar, Nterms, &config, Fy);
 
@@ -437,6 +443,7 @@ int *J1, int *J2, int *Jk, int Nterms, fastpt_config *config, double **Fy) {
       x_full[i] = exp(log(x0) + (i-N_pad - N_extrap_low)*dlnx);
       f_unbias[i] = sign * exp(log(fx[0]*sign) + (i- N_pad - N_extrap_low)*dlnf_low);
     }
+    //log_info("J_abJ1J2Jk_ar: Using log-extrapolation on the low side down to k=%e\n", x_full[N_pad]);
   }
 
   for(long i=N_pad+N_extrap_low; i<N_pad+N_extrap_low+N_original; i++) 
@@ -476,6 +483,7 @@ int *J1, int *J2, int *Jk, int Nterms, fastpt_config *config, double **Fy) {
       f_unbias[i] = sign * exp(log(fx[N_original-1]*sign) + 
         (i- N_pad - N_extrap_low- N_original)*dlnf_high);
     }
+    //log_info("J_abJ1J2Jk_ar: Using log-extrapolation on the high side up to k=%e\n", x_full[N-N_pad-1]);
   }
 
   double **fb1 = (double**) malloc(sizeof(double*)*Nterms);
@@ -868,6 +876,7 @@ void IA_ta(double *k, double *Pin, long Nk, double *P_dE1, double *P_dE2, double
     double exps[2*Nk-1], f[2*Nk-1];
     double dL = log(k[1]/k[0]);
     long Ncut = floor(3./dL);
+    //log_info("IA_ta: Using Ncut=%ld for deltaE2 term of Nk=%ld\n", Ncut, Nk);
     double r;
     for(i=0; i<2*Nk-1; i++)
     {
@@ -894,8 +903,34 @@ void IA_ta(double *k, double *Pin, long Nk, double *P_dE1, double *P_dE2, double
       f[i] = r* ( 256*r*r - 256*pow(r,4) + (768*pow(r,6))/7. - (256*pow(r,8))/21. - (256*pow(r,10))/231. - (256*pow(r,12))/1001. - (256*pow(r,14))/3003.  );
     }
     f[Nk-1] = 96.;
+
+    // JX: Apply tapering to f kernel at both ends
     double g[3*Nk-2];
+    #if TAPER_FFTLOG_REAL==1
+    long Ncut_f = (long)fmax(((2*Nk-1) * 0.05), 10.0);  // Taper 5% at each end
+    for(i=0; i<Ncut_f; i++) {
+        double W = (double)(i)/Ncut_f - sin(2.*M_PI*i/Ncut_f)/(2.*M_PI);
+        f[i] *= W;
+    }
+    for(i=0; i<Ncut_f; i++) {
+        double W = (double)(Ncut_f-i)/Ncut_f - sin(2.*M_PI*(Ncut_f-i)/Ncut_f)/(2.*M_PI);
+        f[2*Nk-2-i] *= W;
+    }
+    // JX: Create tapered copy of Pin
+    double Pin_tapered[Nk];
+    for(i=0; i<Nk; i++) {
+        Pin_tapered[i] = Pin[i];
+    }
+    long Ncut_Pin = (long)fmax((long)(Nk * 0.05), 10.0);  // Taper last 5%
+    for(i=0; i<Ncut_Pin; i++) {
+        double W = (double)(Ncut_Pin-i)/Ncut_Pin - sin(2.*M_PI*(Ncut_Pin-i)/Ncut_Pin)/(2.*M_PI);
+        Pin_tapered[Nk-1-i] *= W;
+    }
+    fftconvolve_real(Pin_tapered, f, Nk, 2*Nk-1, g);
+    #else
     fftconvolve_real(Pin, f, Nk, 2*Nk-1, g);
+    #endif
+
     for(i=0; i<Nk; i++)
     {
       P_dE2[i] = 2.* pow(k[i],3)/(896.*M_PI*M_PI) * Pin[i] * g[Nk-1+i] * dL;
@@ -995,8 +1030,34 @@ void IA_mix(double *k, double *Pin, long Nk, double *P_A, double *P_B, double *P
     f[i] = r* ( (-16*pow(r,4))/147. + (32*pow(r,6))/441. - (16*pow(r,8))/1617. - (64*pow(r,10))/63063. - 16*pow(r,12)/63063. - (32*pow(r,14))/357357. - (16*pow(r,16))/415701. )/2.;
   }
   f[Nk-1] = -1./42.;
+
+  // JX: Apply tapering to f kernel at both ends
   double g[3*Nk-2];
+  #if TAPER_FFTLOG_REAL==1
+  long Ncut_f = (long)fmax(((2*Nk-1) * 0.05), 10.0);  // Taper 5% at each end
+  for(i=0; i<Ncut_f; i++) {
+      double W = (double)(i)/Ncut_f - sin(2.*M_PI*i/Ncut_f)/(2.*M_PI);
+      f[i] *= W;
+  }
+  for(i=0; i<Ncut_f; i++) {
+      double W = (double)(Ncut_f-i)/Ncut_f - sin(2.*M_PI*(Ncut_f-i)/Ncut_f)/(2.*M_PI);
+      f[2*Nk-2-i] *= W;
+  }
+  // JX: Create tapered copy of Pin
+  double Pin_tapered[Nk];
+  for(i=0; i<Nk; i++) {
+      Pin_tapered[i] = Pin[i];
+  }
+  long Ncut_Pin = (long)fmax((long)(Nk * 0.05), 10.0);  // Taper last 5%
+  for(i=0; i<Ncut_Pin; i++) {
+      double W = (double)(Ncut_Pin-i)/Ncut_Pin - sin(2.*M_PI*(Ncut_Pin-i)/Ncut_Pin)/(2.*M_PI);
+      Pin_tapered[Nk-1-i] *= W;
+  }
+  fftconvolve_real(Pin_tapered, f, Nk, 2*Nk-1, g);
+  #else
   fftconvolve_real(Pin, f, Nk, 2*Nk-1, g);
+  #endif
+  
   for(i=0; i<Nk; i++){
     P_B[i] = pow(k[i],3)/(2.*M_PI*M_PI) * Pin[i] * g[Nk-1+i] * dL;
   }
