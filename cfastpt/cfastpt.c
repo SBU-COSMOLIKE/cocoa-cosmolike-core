@@ -876,7 +876,6 @@ void IA_ta(double *k, double *Pin, long Nk, double *P_dE1, double *P_dE2, double
     double exps[2*Nk-1], f[2*Nk-1];
     double dL = log(k[1]/k[0]);
     long Ncut = floor(3./dL);
-    //log_info("IA_ta: Using Ncut=%ld for deltaE2 term of Nk=%ld\n", Ncut, Nk);
     double r;
     for(i=0; i<2*Nk-1; i++)
     {
@@ -904,32 +903,9 @@ void IA_ta(double *k, double *Pin, long Nk, double *P_dE1, double *P_dE2, double
     }
     f[Nk-1] = 96.;
 
-    // JX: Apply tapering to f kernel at both ends
     double g[3*Nk-2];
-    #if TAPER_FFTLOG_REAL==1
-    long Ncut_f = (long)fmax(((2*Nk-1) * 0.05), 10.0);  // Taper 5% at each end
-    for(i=0; i<Ncut_f; i++) {
-        double W = (double)(i)/Ncut_f - sin(2.*M_PI*i/Ncut_f)/(2.*M_PI);
-        f[i] *= W;
-    }
-    for(i=0; i<Ncut_f; i++) {
-        double W = (double)(Ncut_f-i)/Ncut_f - sin(2.*M_PI*(Ncut_f-i)/Ncut_f)/(2.*M_PI);
-        f[2*Nk-2-i] *= W;
-    }
-    // JX: Create tapered copy of Pin
-    double Pin_tapered[Nk];
-    for(i=0; i<Nk; i++) {
-        Pin_tapered[i] = Pin[i];
-    }
-    long Ncut_Pin = (long)fmax((long)(Nk * 0.05), 10.0);  // Taper last 5%
-    for(i=0; i<Ncut_Pin; i++) {
-        double W = (double)(Ncut_Pin-i)/Ncut_Pin - sin(2.*M_PI*(Ncut_Pin-i)/Ncut_Pin)/(2.*M_PI);
-        Pin_tapered[Nk-1-i] *= W;
-    }
-    fftconvolve_real(Pin_tapered, f, Nk, 2*Nk-1, g);
-    #else
+
     fftconvolve_real(Pin, f, Nk, 2*Nk-1, g);
-    #endif
 
     for(i=0; i<Nk; i++)
     {
@@ -1031,32 +1007,9 @@ void IA_mix(double *k, double *Pin, long Nk, double *P_A, double *P_B, double *P
   }
   f[Nk-1] = -1./42.;
 
-  // JX: Apply tapering to f kernel at both ends
   double g[3*Nk-2];
-  #if TAPER_FFTLOG_REAL==1
-  long Ncut_f = (long)fmax(((2*Nk-1) * 0.05), 10.0);  // Taper 5% at each end
-  for(i=0; i<Ncut_f; i++) {
-      double W = (double)(i)/Ncut_f - sin(2.*M_PI*i/Ncut_f)/(2.*M_PI);
-      f[i] *= W;
-  }
-  for(i=0; i<Ncut_f; i++) {
-      double W = (double)(Ncut_f-i)/Ncut_f - sin(2.*M_PI*(Ncut_f-i)/Ncut_f)/(2.*M_PI);
-      f[2*Nk-2-i] *= W;
-  }
-  // JX: Create tapered copy of Pin
-  double Pin_tapered[Nk];
-  for(i=0; i<Nk; i++) {
-      Pin_tapered[i] = Pin[i];
-  }
-  long Ncut_Pin = (long)fmax((long)(Nk * 0.05), 10.0);  // Taper last 5%
-  for(i=0; i<Ncut_Pin; i++) {
-      double W = (double)(Ncut_Pin-i)/Ncut_Pin - sin(2.*M_PI*(Ncut_Pin-i)/Ncut_Pin)/(2.*M_PI);
-      Pin_tapered[Nk-1-i] *= W;
-  }
-  fftconvolve_real(Pin_tapered, f, Nk, 2*Nk-1, g);
-  #else
+  
   fftconvolve_real(Pin, f, Nk, 2*Nk-1, g);
-  #endif
   
   for(i=0; i<Nk; i++){
     P_B[i] = pow(k[i],3)/(2.*M_PI*M_PI) * Pin[i] * g[Nk-1+i] * dL;

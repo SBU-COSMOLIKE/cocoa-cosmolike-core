@@ -927,7 +927,6 @@ double int_for_C_ss_tomo_limber(double a, void* params)
       const double lnk = log(k);
       const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
       
-      // JX: get IA coefficients at different redshift
       double IA_AX[2];
       IA_A1_Z1Z2(a, growfac_a, n1, n2, IA_AX);
       const double C11 = IA_AX[0];
@@ -945,26 +944,24 @@ double int_for_C_ss_tomo_limber(double a, void* params)
       lim[2] = (lim[1] - lim[0])/FPTIA.N;
 
       if (EE == 1)
-      { // JX: debugging ta_dE2 and mix_Btype 2
+      {
         const double tt = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[0], FPTIA.N, lim[0], lim[1], lim[2], lnk);
         
         const double ta_dE1 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[2], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
+
         const double ta_dE2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[3], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        //const double ta_dE2 = 0.0;
         
         const double ta = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[4], FPTIA.N, lim[0], lim[1], lim[2], lnk);
         
         const double mixA = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[6], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
+
         const double mixB = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[7], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        //const double mixB = 0.0;
         
         const double mixEE = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[8], FPTIA.N, lim[0], lim[1], lim[2], lnk);
@@ -1245,13 +1242,13 @@ double int_for_C_gs_tomo_limber(double a, void* params)
         
         const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
           interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-        //const double d1p3 = 0.0;
 
         const double b2 = gb2(z, nl);
         const double bs2 = gbs2(z, nl);
         const double b3 = gb3(z, nl);
+        const double bk = gbK(z, nl);
 
-        oneloop = 0.5*g4*(b2 * d1d2 + bs2 * d1s2 + b3 * d1p3);
+        oneloop = 0.5*g4*(b2 * d1d2 + bs2 * d1s2 + b3 * d1p3) + (bk * k * k * PK);
       }
 
       const double C1ZS  = IA_A1_Z1(a, growfac_a, ns);
@@ -1303,13 +1300,13 @@ double int_for_C_gs_tomo_limber(double a, void* params)
         
         const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
           interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-        //const double d1p3 = 0.0;
 
         const double b2 = gb2(z, nl);
         const double bs2 = gbs2(z, nl);
         const double b3 = gb3(z, nl);
+        const double bk = gbK(z, nl);
 
-        oneloop = 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1p3);
+        oneloop = 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1p3) + (bk * k * k * PK);
       }
       
       const double C1ZS = IA_A1_Z1(a, growfac_a, ns);
@@ -1541,8 +1538,8 @@ double int_for_C_gg_tomo_limber(double a, void* params)
 
     const double s4 = FPTbias.sigma4; // PT_sigma4(k);
     //const double s4 = 0.0;
-    //printf("int_for_C_gg_tomo_limber: s4 = %e!!!\n", s4);
 
+    // JX: low-k limit is subtracted below
     const double d1d2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
       interpol1d(FPTbias.tab[0], FPTbias.N, lim[0], lim[1], lim[2], lnk);
     
@@ -1560,24 +1557,21 @@ double int_for_C_gg_tomo_limber(double a, void* params)
 
     const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
       interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-    //const double d1d3 = 0.0;
 
+    const double PK = (use_linear_ps ? p_lin(k,a) : Pdelta(k,a));
 
     const double growfac_a = growfac(a);
     const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
     const double b2 = gb2(z, ni);
     const double bs2 = gbs2(z, ni);
     const double b3 = gb3(z, ni);
+    const double bk = gbK(z, ni);
     
     oneloop = 1.0;
     oneloop *= WGALi*WGALi;
-    // JX: fold s4 into even-even terms
-    // oneloop *= g4*(b1i*b2*d1d2 + 0.25*b2*b2 * (d2d2 - 2.*s4) +
-    //   b1i*bs2*d1s2 + 0.5*b2*bs2 * (d2s2 - 4. / 3.*s4) +
-    //   0.25*bs2*bs2* (s2s2 - 8. / 9. * s4) + b1i*b3*d1d3);
     oneloop *= g4*(b1i*b2*d1d2 + 0.25*b2*b2 * d2d2 +
       b1i*bs2*d1s2 + 0.5*b2*bs2 * d2s2 +
-      0.25*bs2*bs2* s2s2 + b1i*b3*d1p3);
+      0.25*bs2*bs2* s2s2 + b1i*b3*d1p3) + (2*b1i*bk * k*k * PK);
   }
   return (res +  oneloop)*chidchi.dchida/(fK*fK);
 }
@@ -1631,7 +1625,7 @@ double C_gg_tomo_limber_linpsopt_nointerp(
 
   double res = 0.0;
   if (init == 1) {
-    int_for_C_gg_tomo_limber(amin, (void*) ar);
+    res = int_for_C_gg_tomo_limber(amin, (void*) ar);
   }
   else {
     gsl_function F;
@@ -1819,13 +1813,16 @@ double int_for_C_gk_tomo_limber(double a, void* params)
     const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
       interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
 
+    const double PK = Pdelta(k,a);
+
     const double b2 = gb2(z, nl);
     const double bs2 = gbs2(z, nl);
     const double b3 = gb3(z, nl);
+    const double bk = gbK(z, nl);
     
     oneloop = WK;
     oneloop *= WGAL;
-    oneloop *= g4*(0.5*b2*d1d2 + 0.5*bs2*d1s2 + 0.5*b3*d1p3);
+    oneloop *= g4*(0.5*b2*d1d2 + 0.5*bs2*d1s2 + 0.5*b3*d1p3) + (bk * k * k * PK);
   }
   return ((res + oneloop)*chidchi.dchida/(fK*fK))*ell_prefactor;
 }
@@ -2562,8 +2559,8 @@ double C_ky_limber(double l)
     log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lim[0]));
   if (lnl > lim[1])
     log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
-  
-  return interpol1d(table, Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
+
+  return exp(interpol1d(table, Ntable.N_ell, lim[0], lim[1], lim[2], lnl));
 }
 
 // ---------------------------------------------------------------------------
@@ -2658,7 +2655,7 @@ double C_yy_limber(double l)
   if (lnl > lim[1])
     log_warn("l = %e > l_max = %e. Extrapolation adopted", l, exp(lim[1]));
     
-  return interpol1d(table, Ntable.N_ell, lim[0], lim[0], lim[2], lnl);
+  return interpol1d(table, Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
 }
 
 // ----------------------------------------------------------------------------

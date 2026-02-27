@@ -18,10 +18,12 @@ void get_FPT_bias(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTbias.k_min     = 6.0e-2; // 1.e-5;
-    FPTbias.k_max     = 1.e+6;
-    FPTbias.N       = 350 + 200 * Ntable.FPTboost;
-    FPTbias.sigma4 = 0.0;
+    // JX: kmin/kmax/N tuned for Roman precision.
+    FPTbias.k_min     = 1.0e-1;
+    FPTbias.k_max     = 1.0e+6;
+    FPTbias.k_cutoff  = 1.0e+4;
+    FPTbias.N         = 1000 + 200 * Ntable.FPTboost;
+    FPTbias.sigma4    = 0.0;
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
     }
@@ -53,24 +55,13 @@ void get_FPT_bias(void)
       FPTbias.tab[2][i] = Pout[2][i]; // Pd1s2
       FPTbias.tab[3][i] = Pout[3][i]; // Pd2s2
       FPTbias.tab[4][i] = Pout[4][i]; // Ps2s2
-      // Pd1p3, interpolated from precomputed table at a mystery cosmology with sigma8=0.8
+      /* Pd1p3, interpolated from precomputed table at a mystery cosmology with sigma8=0.8 */
       double lnk = log(FPTbias.tab[6][i]);
       FPTbias.tab[5][i] = (lnk<tab_d1d3_lnkmin || lnk>tab_d1d3_lnkmax) ? 0.0 :
       interpol1d(tab_d1d3, tab_d1d3_Nk, tab_d1d3_lnkmin, tab_d1d3_lnkmax, tab_d1d3_dlnk, lnk);
     }
     // JX: dirty fix for sigma4 term: P_{d2d2}(k->0) / 2
     FPTbias.sigma4 = FPTbias.tab[1][0]/2.;
-    // for debug
-    FILE *fp;
-    fp = fopen("FPT_bias_cfastpt.txt", "w");
-    for (int i=0; i<FPTbias.N; i++) {
-      for (int j=0; j<8; j++) {
-        assert(!isnan(FPTbias.tab[j][i]));
-        fprintf(fp, "%e ", FPTbias.tab[j][i]);
-      }
-      fprintf(fp, "\n");
-    }
-    fclose(fp);
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
@@ -82,10 +73,12 @@ void get_FPT_IA(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTIA.k_min = 6.0e-2; // 1.e-5;
-    FPTIA.k_max = 1.e+6;
-    FPTIA.sigma4 = 0.0; // Not relevant for IA, but set to zero.
-    FPTIA.N     = 350 + 200 * Ntable.FPTboost; // 270 + 200 * Ntable.FPTboost;
+    // JX: kmin/kmax/N tuned for Roman precision.
+    FPTIA.k_min    = 1.0e-1;
+    FPTIA.k_max    = 1.0e+6;
+    FPTIA.k_cutoff = 1.0e+4;
+    FPTIA.sigma4   = 0.0; // Not relevant for IA, but set to zero.
+    FPTIA.N        = 1000 + 200 * Ntable.FPTboost;
 
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
@@ -118,17 +111,6 @@ void get_FPT_IA(void)
     for (int i=0; i<FPTIA.N; i++) {
       FPTIA.tab[7][i] *= 4.;
     }
-    // for debug
-    FILE *fp;
-    fp = fopen("FPT_IA_cfastpt.txt", "w");
-    for (int i=0; i<FPTIA.N; i++) {
-      for (int j=0; j<12; j++) {
-        assert(!isnan(FPTIA.tab[j][i]));
-        fprintf(fp, "%e ", FPTIA.tab[j][i]);
-      }
-      fprintf(fp, "\n");
-    }
-    fclose(fp);
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }

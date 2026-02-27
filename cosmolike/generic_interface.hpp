@@ -249,7 +249,7 @@ public:
       return this->is_kk_bandpower_;
     }
 
-    void update_chache(const double random) {
+    void update_cache(const double random) {
       this->params_->random = random;
       return;
     }
@@ -341,7 +341,7 @@ public:
     bool is_kk_offset_set_ = false; 
     bool is_alpha_Hartlap_cov_kkkk_set_ = false; 
     IPCMB() = default;
-    IPCMB(IP const&) = delete; 
+    IPCMB(IPCMB const&) = delete; 
 };
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -549,15 +549,6 @@ void init_cmb_cross_correlation (
     std::string healpixwin_filename
   );
 
-void init_cmb_auto_bandpower (
-    const int nbp, 
-    const int lmin, 
-    const int lmax,
-    std::string binning_matrix, 
-    std::string theory_offset,
-    const double alpha
-  );
-
 void init_IA(
     const int IA_MODEL, 
     const int IA_REDSHIFT_EVOL,
@@ -619,6 +610,7 @@ void set_IA_PS(
     arma::Col<double> io_IA_PS,
     const double io_IA_k_min,
     const double io_IA_k_max,
+    const double io_IA_cutoff,
     const int io_N
   );
 
@@ -626,6 +618,7 @@ void set_bias_PS(
     arma::Col<double> io_bias_PS,
     const double io_bias_k_min,
     const double io_bias_k_max,
+    const double io_bias_cutoff,
     const double io_bias_sigma4,
     const int io_N
   );
@@ -639,7 +632,9 @@ void set_non_linear_power_spectrum(
 void set_nuisance_bias(
     arma::Col<double> B1, 
     arma::Col<double> B2, 
-    arma::Col<double> B_MAG
+    arma::Col<double> B_MAG,
+    arma::Col<double> B3nl,
+    arma::Col<double> BK
   );
 
 void set_nuisance_clustering_photoz(
@@ -1318,7 +1313,7 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
 
   this->index_sqzd_.set_size(this->ndata_);
   {
-    double j=0;
+    int j=0;
     for(int i=0; i<this->ndata_; i++) {
       if(this->get_mask(i) > 0) {
         this->index_sqzd_(i) = j;

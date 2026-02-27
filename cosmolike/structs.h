@@ -173,6 +173,7 @@ typedef struct
   int N;
   double k_min;
   double k_max;
+  double k_cutoff;
   double sigma4;
   double** tab; 
 } FPT;
@@ -239,6 +240,7 @@ typedef struct
   //            b[2][i]: leading order tidal bs2 galaxy bias in clustering bin i
   //            b[3][i]: nonlinear b3 galaxy bias in clustering bin i 
   //            b[4][i]: amplitude of magnification bias in clustering bin i 
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   double gb[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS]; // galaxy bias
   // HOD[i] contains HOD parameters of galaxies in clustering bin i
   // 5 parameter model of Zehavi et al. 2011 + modification of concentration
