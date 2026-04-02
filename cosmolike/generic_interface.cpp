@@ -629,7 +629,7 @@ void init_probes(std::string possible_probes)
         { "5x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,0}} },
         { "6x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,1}} },
         { "3x2pt_ks_gk_kk", arma::Col<int>::fixed<6>{{0,0,0,1,1,1}} },
-        { "3x2pt_ss_sk_kk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} },
+        { "3x2pt_ss_sk_sk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} },
         { "xi_ggl", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
         { "xi_gg", arma::Col<int>::fixed<6>{{1,0,1,0,0,0}} },
         { "2x2pt_ss_sg", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
