@@ -270,7 +270,6 @@ void initial_setup()
 
   std::string mode = "Halofit";
   memcpy(pdeltaparams.runmode, mode.c_str(), mode.size() + 1);
-
   debug("{}: {}", fname, errends);
   return;
 }
@@ -513,7 +512,7 @@ void init_cmb_cross_correlation (
   cmb.set_wxk_beam_size(fwhm*2.90888208665721580e-4);
   cmb.set_wxk_lminmax(lmin, lmax);
   cmb.set_wxk_healpix_window(healpixwin_filename);
-  cmb.update_chache(RandomNumber::get_instance().get());
+  cmb.update_cache(RandomNumber::get_instance().get());
   debug("{}: {}", fname, errends);
   return;
 }
@@ -548,7 +547,7 @@ void init_cmb_auto_bandpower (
   cmb.set_kk_binning_mat(binning_matrix);
   cmb.set_kk_theory_offset(theory_offset);
   cmb.set_alpha_Hartlap_cov_kkkk(alpha);
-  cmb.update_chache(RandomNumber::get_instance().get());
+  cmb.update_cache(RandomNumber::get_instance().get());
   debug("{}: Ends", fname);
   return;
 }
@@ -628,7 +627,7 @@ void init_probes(std::string possible_probes)
         { "5x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,0}} },
         { "6x2pt",  arma::Col<int>::fixed<6>{{1,1,1,1,1,1}} },
         { "3x2pt_ks_gk_kk", arma::Col<int>::fixed<6>{{0,0,0,1,1,1}} },
-        { "3x2pt_ss_sk_sk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} },
+        { "3x2pt_ss_sk_kk", arma::Col<int>::fixed<6>{{1,0,0,0,1,1}} },
         { "xi_ggl", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
         { "xi_gg", arma::Col<int>::fixed<6>{{1,0,1,0,0,0}} },
         { "2x2pt_ss_sg", arma::Col<int>::fixed<6>{{1,1,0,0,0,0}} },
@@ -763,7 +762,7 @@ void init_ntomo_powerspectra()
   for (int i=0; i<redshift.clustering_nbin; i++) {
     for (int j=0; j<redshift.shear_nbin; j++) {
       n += test_zoverlap(i, j);
-      if(test_zoverlap(i, j) == 0) {
+      if(test_zoverlap(i,j) == 0) {
         spdlog::info("{}: GGL pair L{:d}-S{:d} is excluded", fname, i, j);
       }
     }
@@ -1094,7 +1093,7 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     #pragma omp parallel for collapse(2)
     for (int i=0; i<cosmology.lnPL_nk; i++) {
       for (int j=0; j<cosmology.lnPL_nz; j++) {
-        if (std::isnan(io_lnP(i*cosmology.lnP_nz+j))) [[unlikely]] {
+        if (std::isnan(io_lnP(i*cosmology.lnPL_nz+j))) [[unlikely]] {
           critical("{}: {}", fname, errnanit); exit(1);
         }
         cosmology.lnPL[i][j] = io_lnP(i*cosmology.lnPL_nz+j);
@@ -1114,7 +1113,7 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 
 void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 {
-  static constexpr std::string_view fname = "set_linear_power_spectrum"sv;
+  static constexpr std::string_view fname = "set_non_linear_power_spectrum"sv;
   debug("{}: {}", fname, errbegins);
   if (io_z.n_elem*io_log10k.n_elem != io_lnP.n_elem) [[unlikely]] {
     critical(errorsz1d, fname, erriiwz, io_z.n_elem*io_z.n_elem, io_lnP.n_elem); 
@@ -1509,7 +1508,7 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
       }
       if (fdiff(nuisance.ia[0][i],A1(i)) ||
           fdiff(nuisance.ia[1][i],A2(i)) ||
-          fdiff(nuisance.ia[2][i],A2(i)))
+          fdiff(nuisance.ia[2][i],BTA(i)))
       {
         nuisance.ia[0][i] = A1(i);
         nuisance.ia[1][i] = A2(i);
@@ -1825,8 +1824,8 @@ vector compute_binning_real_space()
         fname, i, "theta_min [rad]", thetamin, "theta [rad]", 
         theta(i), "theta_max [rad]", thetamax);
   }
-  return theta;
   debug("{}: {}", fname, errends);
+  return theta;
 }
 
 // ---------------------------------------------------------------------------
