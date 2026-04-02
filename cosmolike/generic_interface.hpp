@@ -249,7 +249,7 @@ public:
       return this->is_kk_bandpower_;
     }
 
-    void update_chache(const double random) {
+    void update_cache(const double random) {
       this->params_->random = random;
       return;
     }
@@ -341,7 +341,7 @@ public:
     bool is_kk_offset_set_ = false; 
     bool is_alpha_Hartlap_cov_kkkk_set_ = false; 
     IPCMB() = default;
-    IPCMB(IP const&) = delete; 
+    IPCMB(IPCMB const&) = delete; 
 };
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -547,15 +547,6 @@ void init_cmb_cross_correlation (
     const int lmax, 
     const double fwhm, // fwhm = beam size in arcmin
     std::string healpixwin_filename
-  );
-
-void init_cmb_auto_bandpower (
-    const int nbp, 
-    const int lmin, 
-    const int lmax,
-    std::string binning_matrix, 
-    std::string theory_offset,
-    const double alpha
   );
 
 void init_IA(
@@ -973,7 +964,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           }
           else {
             if (survey.get_mask(index) && (like.ell[i]<like.lmax_shear)) {
-              dv(index) = C_ss_tomo_limber(like.ell[i], z1, z2, 1);
+              dv(index) = C_ss_tomo_limber_nointerp(like.ell[i], z1, z2, 1, 0);
             }
           }
         }
@@ -992,7 +983,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
             if constexpr (0 == N)
               dv(index) = w_gammat_tomo(i,zl,zs,1);
             else
-              dv(index) = C_gs_tomo_limber(like.ell[i], zl, zs);
+              dv(index) = C_gs_tomo_limber_nointerp(like.ell[i], zl, zs, 0);
           }
         }
       }
@@ -1009,7 +1000,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
               dv(index) = w_gg_tomo(i, nz, nz, like.adopt_limber_gg);
             }
             else {
-              dv(index) = C_gg_tomo_limber(like.ell[i], nz, nz);
+              dv(index) = C_gg_tomo_limber_nointerp(like.ell[i], nz, nz, 0);
             }
           }
         }
@@ -1295,7 +1286,7 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
 
   this->index_sqzd_.set_size(this->ndata_);
   {
-    double j=0;
+    int j=0;
     for(int i=0; i<this->ndata_; i++) {
       if(this->get_mask(i) > 0) {
         this->index_sqzd_(i) = j;

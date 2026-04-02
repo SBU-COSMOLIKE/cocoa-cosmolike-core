@@ -30,6 +30,7 @@
 namespace py = pybind11;
 
 // cosmolike
+#include "cosmolike/basics.h"
 #include "cosmolike/bias.h"
 #include "cosmolike/IA.h"
 #include "cosmolike/cosmo2D.h"
@@ -306,7 +307,6 @@ arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
       const int L = 1;
       const double tolerance = 0.01;      // required fractional accuracy in C(l)
       const double dev = 10. * tolerance; // will be diff  exact vs Limber init to
-
       arma::Col<double> Cl(limits.LMAX_NOLIMBER+1);
       C_cl_tomo(L, nz, nz, Cl.memptr(), dev, tolerance);
   
