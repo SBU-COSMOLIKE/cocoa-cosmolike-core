@@ -551,6 +551,12 @@ void init_cmb_cross_correlation (
 
 void init_IA(
     const int IA_MODEL, 
+    const int IA_REDSHIFT_EVOL,
+    const int IA_code
+  );
+
+void init_IA(
+    const int IA_MODEL, 
     const int IA_REDSHIFT_EVOL
   );
 

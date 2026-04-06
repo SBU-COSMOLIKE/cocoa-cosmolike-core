@@ -51,7 +51,7 @@ void get_FPT_bias(void)
       FPTbias.tab[1][i] = Pout[1][i]; // Pd2d2
       FPTbias.tab[2][i] = Pout[2][i]; // Pd1s2
       FPTbias.tab[3][i] = Pout[3][i]; // Pd2s2
-      FPTbias.tab[4][i] = Pout[3][i]; // Pd2s2
+      FPTbias.tab[4][i] = Pout[4][i]; // Ps2s2
     }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
@@ -64,9 +64,11 @@ void get_FPT_IA(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTIA.k_min = 1.e-5;
-    FPTIA.k_max = 1.e+6;
-    FPTIA.N     = 270 + 200 * Ntable.FPTboost;
+    FPTIA.k_min    = 1.e-5;
+    FPTIA.k_max    = 1.e+6;
+    FPTIA.k_cutoff = 1.0e+4;
+    FPTIA.sigma4   = 0.0; // Not relevant for IA, but set to zero.
+    FPTIA.N        = 270 + 200 * Ntable.FPTboost;
 
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);

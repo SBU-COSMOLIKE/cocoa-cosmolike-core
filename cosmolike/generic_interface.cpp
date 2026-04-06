@@ -580,18 +580,22 @@ void init_cosmo_runmode(const bool is_linear)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
+void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
 {
   static constexpr std::string_view fname = "init_IA"sv;
   debug("{}: {}", fname, errbegins);
-  debug(debugsel,fname,"IA MODEL",IA_MODEL,"IA REDSHIFT EVOLUTION",IA_REDSHIFT_EVOL);
-  if (IA_MODEL == 0 || IA_MODEL == 1) {
+  debug(debugsel, fname, "IA MODEL", IA_MODEL);
+  debug(debugsel, fname, "IA REDSHIFT EVOLUTION", IA_REDSHIFT_EVOL);
+  debug(debugsel, fname, "IA code", IA_code);
+  
+  if (0 == IA_MODEL || 1 == IA_MODEL) {
     nuisance.IA_MODEL = IA_MODEL;
   }
   else [[unlikely]] {
     critical(errorns2, fname, "nuisance.IA_MODEL", IA_MODEL);
     exit(1);
   }
+  
   if (IA_REDSHIFT_EVOL == NO_IA                   || 
       IA_REDSHIFT_EVOL == IA_NLA_LF               ||
       IA_REDSHIFT_EVOL == IA_REDSHIFT_BINNING     || 
@@ -603,8 +607,22 @@ void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
     critical(errorns2, fname, "nuisance.IA", IA_REDSHIFT_EVOL);
     exit(1);
   }
+
+  if (0 == IA_code || 1 == IA_code) {
+    nuisance.IA_code = IA_code;
+  }
+  else [[unlikely]] {
+    critical(errorns2, fname, "nuisance.IA_code", IA_code);
+    exit(1);
+  }
   debug("{}: {}", fname, errends);
   return;
+}
+
+// backward compatibility
+void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
+{
+	init_IA(IA_MODEL, IA_REDSHIFT_EVOL, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,6 +1363,8 @@ void set_nuisance_linear_bias(vector B1)
   //            b[1][i] = linear galaxy bias in clustering bin i (b2)
   //            b[2][i] = leading order tidal bias in clustering bin i (b3)
   //            b[3][i] = leading order tidal bias in clustering bin i
+  //            b[4][i] = amplitude of magnification bias in clustering bin i
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B1(i))) [[unlikely]] {
@@ -1388,6 +1408,7 @@ void set_nuisance_nonlinear_bias(vector B1, vector B2)
   //            b[2][i]: leading order tidal bs2 galaxy bias in clustering bin i
   //            b[3][i]: nonlinear b3 galaxy bias  in clustering bin i 
   //            b[4][i]: amplitude of magnification bias in clustering bin i 
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B1(i)) || std::isnan(B2(i))) [[unlikely]] {
@@ -1429,6 +1450,7 @@ void set_nuisance_magnification_bias(vector B_MAG)
   //            b[2][i]: leading order tidal bs2 galaxy bias in clustering bin i
   //            b[3][i]: nonlinear b3 galaxy bias  in clustering bin i 
   //            b[4][i]: amplitude of magnification bias in clustering bin i
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B_MAG(i))) [[unlikely]] {
