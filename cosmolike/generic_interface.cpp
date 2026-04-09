@@ -933,6 +933,102 @@ void set_cosmological_parameters(
   return;
 }
 
+void set_IA_PS(
+    vector io_IA_PS,
+    const double io_IA_k_min,
+    const double io_IA_k_max,
+    const double io_IA_cutoff,
+    const int io_N
+  )
+{
+  // equivalent to get_FPT_IA(), but the PT is passed through python interface 
+  static constexpr std::string_view fname = "set_IA_PS"sv;
+  static double cache[MAX_SIZE_ARRAYS];
+
+  if (fdiff(cache[1], Ntable.random))
+  { // Interpolation table setup has changed, re-allocate a new one
+    FPTIA.k_min = io_IA_k_min;  // in units of (c/H0)^-1
+    FPTIA.k_max = io_IA_k_max;  // in units of (c/H0)^-1
+    FPTIA.N     = io_N;
+    FPTIA.sigma4= 0.0; // Not relevant for IA, but set to zero.
+    FPTIA.k_cutoff = io_IA_cutoff;
+
+    if (FPTIA.tab != NULL) {
+      free(FPTIA.tab);
+    }
+    FPTIA.tab = (double**) malloc2d(12, FPTIA.N);
+  }
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
+  { // Cosmology or Interpolation table setup has changed, re-compute the table
+    double lim[3];
+    lim[0] = log(FPTIA.k_min);
+    lim[1] = log(FPTIA.k_max);
+    lim[2] = (lim[1] - lim[0])/FPTIA.N;
+    
+    #pragma omp parallel for
+    for (int i=0; i<12; i++){
+      for (int j=0; j<FPTIA.N; j++) 
+      {
+        if (std::isnan(io_IA_PS[i*FPTIA.N+j])) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
+        FPTIA.tab[i][j] = io_IA_PS[i*FPTIA.N+j];
+      }
+    }
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
+  }
+}
+
+void set_bias_PS(
+    vector io_bias_PS,
+    const double io_bias_k_min,
+    const double io_bias_k_max,
+    const double io_bias_cutoff,
+    const double io_bias_sigma4,
+    const int io_N
+  )
+{
+  // equivalent to get_FPT_bias(), but the PT is passed through python interface
+  static constexpr std::string_view fname = "set_bias_PS"sv;
+  static double cache[MAX_SIZE_ARRAYS];
+
+  if (fdiff(cache[1], Ntable.random))
+  { // Interpolation table setup has changed, re-allocate a new one
+    FPTbias.k_min = io_bias_k_min;  // in units of (c/H0)^-1
+    FPTbias.k_max = io_bias_k_max;  // in units of (c/H0)^-1
+    FPTbias.N     = io_N;
+    FPTbias.k_cutoff = io_bias_cutoff;
+    FPTbias.sigma4= io_bias_sigma4;
+
+    if (FPTbias.tab != NULL) {
+      free(FPTbias.tab);
+    }
+    FPTbias.tab = (double**) malloc2d(8, FPTbias.N);
+  }
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
+  { // Cosmology or Interpolation table setup has changed, re-compute the table
+    double lim[3];
+    lim[0] = log(FPTbias.k_min);
+    lim[1] = log(FPTbias.k_max);
+    lim[2] = (lim[1] - lim[0])/FPTbias.N;
+
+    #pragma omp parallel for
+    for (int i=0; i<8; i++){
+      for (int j=0; j<FPTbias.N; j++) 
+      {
+        if (std::isnan(io_bias_PS[i*FPTbias.N+j])) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
+        FPTbias.tab[i][j] = io_bias_PS[i*FPTbias.N+j];
+      }
+    }
+    
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -1474,6 +1570,74 @@ void set_nuisance_magnification_bias(vector B_MAG)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+void set_nuisance_nonlocal_bias(vector B3nl, vector BK)
+{
+  static constexpr std::string_view fname = "set_nuisance_nonlocal_bias"sv;
+  debug("{}: {}", fname, errbegins);
+  if (0 == redshift.clustering_nbin) [[unlikely]] {
+    critical(errorns2, fname, "clustering_Nbin", 0); exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(B3nl.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, B3nl.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(BK.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, BK.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  // GALAXY BIAS ------------------------------------------
+  // 1st index: b[0][i]: linear galaxy bias in clustering bin i
+  //            b[1][i]: nonlinear b2 galaxy bias in clustering bin i
+  //            b[2][i]: leading order tidal bs2 galaxy bias in clustering bin i
+  //            b[3][i]: nonlinear b3 galaxy bias  in clustering bin i 
+  //            b[4][i]: amplitude of magnification bias in clustering bin i
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
+  int cache_update = 0;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (std::isnan(B3nl(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    if(fdiff(nuisance.gb[3][i], B3nl(i))) {
+      cache_update = 1;
+      nuisance.gb[3][i] = B3nl(i);
+    }
+    if (std::isnan(BK(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    if(fdiff(nuisance.gb[5][i], BK(i))) {
+      cache_update = 1;
+      nuisance.gb[5][i] = BK(i);
+    }
+  }
+  if(1 == cache_update || 1 == force_cache_update_test) {
+    nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+void set_nuisance_bias_faspt(vector B1, vector B2, vector B_MAG, vector B3nl, vector BK)
+{
+  set_nuisance_linear_bias(B1);
+  set_nuisance_nonlinear_bias(B1, B2);
+  set_nuisance_magnification_bias(B_MAG);
+  set_nuisance_nonlocal_bias(B3nl, BK);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// backwards compatibility
 void set_nuisance_bias(vector B1, vector B2, vector B_MAG)
 {
   set_nuisance_linear_bias(B1);
