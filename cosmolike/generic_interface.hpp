@@ -549,7 +549,7 @@ void init_cmb_cross_correlation (
     std::string healpixwin_filename
   );
 
-void init_IA(
+void init_IA_faspt(
     const int IA_MODEL, 
     const int IA_REDSHIFT_EVOL,
     const int IA_code

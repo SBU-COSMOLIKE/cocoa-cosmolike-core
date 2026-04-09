@@ -580,7 +580,7 @@ void init_cosmo_runmode(const bool is_linear)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
+void init_IA_faspt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
 {
   static constexpr std::string_view fname = "init_IA"sv;
   debug("{}: {}", fname, errbegins);
@@ -622,7 +622,7 @@ void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
 // backward compatibility
 void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
 {
-	init_IA(IA_MODEL, IA_REDSHIFT_EVOL, 0);
+	init_IA_faspt(IA_MODEL, IA_REDSHIFT_EVOL, 0);
 }
 
 // ---------------------------------------------------------------------------
