@@ -18,7 +18,7 @@ void get_FPT_bias(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTbias.k_min     = 1.0e-2;
+    FPTbias.k_min     = 0.05;
     FPTbias.k_max     = 1.0e+6;
     FPTbias.k_cutoff  = 1.0e+4;
     FPTbias.N         = 1100 + 200 * Ntable.FPTboost;
@@ -72,7 +72,7 @@ void get_FPT_IA(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTIA.k_min    = 1.0e-2;
+    FPTIA.k_min    = 0.05;
     FPTIA.k_max    = 1.0e+6;
     FPTIA.k_cutoff = 1.0e+4;
     FPTIA.sigma4   = 0.0; // Not relevant for IA, but set to zero.

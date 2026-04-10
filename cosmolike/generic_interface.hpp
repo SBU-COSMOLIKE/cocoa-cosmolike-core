@@ -549,7 +549,7 @@ void init_cmb_cross_correlation (
     std::string healpixwin_filename
   );
 
-void init_IA_faspt(
+void init_IA_fastpt(
     const int IA_MODEL, 
     const int IA_REDSHIFT_EVOL,
     const int IA_code
@@ -612,20 +612,20 @@ void set_linear_power_spectrum(
   );
 
 void set_IA_PS(
-    arma::Col<double> io_IA_PS,
-    const double io_IA_k_min,
-    const double io_IA_k_max,
-    const double io_IA_cutoff,
-    const int io_N
+    arma::Col<double> PS,
+    const double kmin,
+    const double kmax,
+    const double cutoff,
+    const int N
   );
 
 void set_bias_PS(
-    arma::Col<double> io_bias_PS,
-    const double io_bias_k_min,
-    const double io_bias_k_max,
-    const double io_bias_cutoff,
-    const double io_bias_sigma4,
-    const int io_N
+    arma::Col<double> PS,
+    const double kmin,
+    const double kmax,
+    const double cutoff,
+    const double sigma4,
+    const int N
   );
 
 void set_non_linear_power_spectrum(

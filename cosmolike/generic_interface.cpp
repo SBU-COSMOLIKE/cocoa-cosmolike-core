@@ -580,7 +580,7 @@ void init_cosmo_runmode(const bool is_linear)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-void init_IA_faspt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
+void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
 {
   static constexpr std::string_view fname = "init_IA"sv;
   debug("{}: {}", fname, errbegins);
@@ -622,7 +622,7 @@ void init_IA_faspt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_
 // backward compatibility
 void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
 {
-	init_IA_faspt(IA_MODEL, IA_REDSHIFT_EVOL, 0);
+	init_IA_fastpt(IA_MODEL, IA_REDSHIFT_EVOL, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -934,45 +934,48 @@ void set_cosmological_parameters(
 }
 
 void set_IA_PS(
-    vector io_IA_PS,
-    const double io_IA_k_min,
-    const double io_IA_k_max,
-    const double io_IA_cutoff,
-    const int io_N
+    vector PS,
+    const double kmin,
+    const double kmax,
+    const double cutoff,
+    const int N
   )
 {
-  // equivalent to get_FPT_IA(), but the PT is passed through python interface 
   static constexpr std::string_view fname = "set_IA_PS"sv;
   static double cache[MAX_SIZE_ARRAYS];
+  const double coverH0 = cosmology.coverH0;
 
-  if (fdiff(cache[1], Ntable.random))
-  { // Interpolation table setup has changed, re-allocate a new one
-    FPTIA.k_min = io_IA_k_min;  // in units of (c/H0)^-1
-    FPTIA.k_max = io_IA_k_max;  // in units of (c/H0)^-1
-    FPTIA.N     = io_N;
-    FPTIA.sigma4= 0.0; // Not relevant for IA, but set to zero.
-    FPTIA.k_cutoff = io_IA_cutoff;
-
+  if (fdiff(cache[1], Ntable.random)) {
+    FPTIA.k_min  = kmin * coverH0;     // input in units of h/Mpc
+    FPTIA.k_max  = kmax * coverH0;     // input in units of h/Mpc
+    FPTIA.N      = N;
+    FPTIA.sigma4 = 0.0;                       // Not relevant for IA
+    FPTIA.k_cutoff = cutoff * coverH0;  // input in units of h/Mpc
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
     }
     FPTIA.tab = (double**) malloc2d(12, FPTIA.N);
   }
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
-  { // Cosmology or Interpolation table setup has changed, re-compute the table
+  
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) { 
     double lim[3];
     lim[0] = log(FPTIA.k_min);
     lim[1] = log(FPTIA.k_max);
     lim[2] = (lim[1] - lim[0])/FPTIA.N;
     
-    #pragma omp parallel for
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<12; i++){
       for (int j=0; j<FPTIA.N; j++) 
       {
-        if (std::isnan(io_IA_PS[i*FPTIA.N+j])) [[unlikely]] {
+        if (std::isnan(PS[i*FPTIA.N+j])) [[unlikely]] {
           critical("{}: {}", fname, errnanit); exit(1);
         }
-        FPTIA.tab[i][j] = io_IA_PS[i*FPTIA.N+j];
+        if (i != 10) {
+          FPTIA.tab[i][j] = PS[i*FPTIA.N+j] / (coverH0*coverH0*coverH0);
+        }
+        else {
+          FPTIA.tab[i][j] = PS[i*FPTIA.N+j] * coverH0; // k
+        }
       }
     }
     cache[0] = cosmology.random;
@@ -981,49 +984,54 @@ void set_IA_PS(
 }
 
 void set_bias_PS(
-    vector io_bias_PS,
-    const double io_bias_k_min,
-    const double io_bias_k_max,
-    const double io_bias_cutoff,
-    const double io_bias_sigma4,
-    const int io_N
+    vector PS,
+    const double kmin,
+    const double kmax,
+    const double cutoff,
+    const double sigma4,
+    const int N
   )
 {
-  // equivalent to get_FPT_bias(), but the PT is passed through python interface
   static constexpr std::string_view fname = "set_bias_PS"sv;
   static double cache[MAX_SIZE_ARRAYS];
-
-  if (fdiff(cache[1], Ntable.random))
-  { // Interpolation table setup has changed, re-allocate a new one
-    FPTbias.k_min = io_bias_k_min;  // in units of (c/H0)^-1
-    FPTbias.k_max = io_bias_k_max;  // in units of (c/H0)^-1
-    FPTbias.N     = io_N;
-    FPTbias.k_cutoff = io_bias_cutoff;
-    FPTbias.sigma4= io_bias_sigma4;
+  const double coverH0 = cosmology.coverH0;
+  
+  if (fdiff(cache[1], Ntable.random)) { 
+    FPTbias.k_min    = kmin * coverH0;    // input in units of h/Mpc
+    FPTbias.k_max    = kmax * coverH0;    // input in units of h/Mpc
+    FPTbias.N        = N;
+    FPTbias.k_cutoff = cutoff *coverH0; // input in units of h/Mpc
+    FPTbias.sigma4   = sigma4 / (coverH0*coverH0*coverH0);
 
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
     }
     FPTbias.tab = (double**) malloc2d(8, FPTbias.N);
   }
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
-  { // Cosmology or Interpolation table setup has changed, re-compute the table
+
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
     double lim[3];
     lim[0] = log(FPTbias.k_min);
     lim[1] = log(FPTbias.k_max);
     lim[2] = (lim[1] - lim[0])/FPTbias.N;
 
-    #pragma omp parallel for
-    for (int i=0; i<8; i++){
-      for (int j=0; j<FPTbias.N; j++) 
-      {
-        if (std::isnan(io_bias_PS[i*FPTbias.N+j])) [[unlikely]] {
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<8; i++) {
+      for (int j=0; j<FPTbias.N; j++) {
+        if (std::isnan(PS[i*FPTbias.N + j])) [[unlikely]] {
           critical("{}: {}", fname, errnanit); exit(1);
         }
-        FPTbias.tab[i][j] = io_bias_PS[i*FPTbias.N+j];
+        if (i != 6) {
+          FPTbias.tab[i][j] = PS[i*FPTbias.N+j] / (coverH0*coverH0*coverH0);
+        }
+        else { 
+          FPTbias.tab[i][j] = PS[i*FPTbias.N+j] * coverH0; // k
+        }
       }
     }
     
+
+
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
@@ -1622,7 +1630,7 @@ void set_nuisance_nonlocal_bias(vector B3nl, vector BK)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-void set_nuisance_bias_faspt(vector B1, vector B2, vector B_MAG, vector B3nl, vector BK)
+void set_nuisance_bias_fastpt(vector B1, vector B2, vector B_MAG, vector B3nl, vector BK)
 {
   set_nuisance_linear_bias(B1);
   set_nuisance_nonlinear_bias(B1, B2);
