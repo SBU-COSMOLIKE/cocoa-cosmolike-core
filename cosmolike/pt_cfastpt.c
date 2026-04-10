@@ -54,13 +54,13 @@ void get_FPT_bias(void)
       FPTbias.tab[2][i] = Pout[2][i]; // Pd1s2
       FPTbias.tab[3][i] = Pout[3][i]; // Pd2s2
       FPTbias.tab[4][i] = Pout[4][i]; // Ps2s2
-      /* Pd1p3, interpolated from precomputed table at a mystery cosmology with sigma8=0.8 */
+      // (JX) Pd1p3: interpolated from precomputed table at a 
+      //             mystery cosmology with sigma8 = 0.8
       double lnk = log(FPTbias.tab[6][i]);
-      FPTbias.tab[5][i] = (lnk<tab_d1d3_lnkmin || lnk>tab_d1d3_lnkmax) ? 0.0 :
+      FPTbias.tab[5][i] = (lnk < tab_d1d3_lnkmin || lnk > tab_d1d3_lnkmax) ? 0.0 :
       interpol1d(tab_d1d3, tab_d1d3_Nk, tab_d1d3_lnkmin, tab_d1d3_lnkmax, tab_d1d3_dlnk, lnk);
     }
-    // JX: dirty fix for sigma4 term: P_{d2d2}(k->0) / 2
-    FPTbias.sigma4 = FPTbias.tab[1][0]/2.;
+    FPTbias.sigma4 = FPTbias.tab[1][0]/2.; // JX: dirty fix for sigma4 term: P_{d2d2}(k->0) / 2
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
