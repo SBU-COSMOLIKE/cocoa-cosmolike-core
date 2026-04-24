@@ -4,6 +4,12 @@
 extern "C" {
 #endif
 
+#ifdef __cplusplus
+  #define RESTRICT __restrict__
+#else
+  #define RESTRICT restrict
+#endif
+
 // ----------------------------------------------------------------------------
 // Naming convention:
 // ----------------------------------------------------------------------------
@@ -70,6 +76,20 @@ double C_ys_tomo_limber(const double l, const int ni);
 double C_ky_limber(const double l);
 
 double C_yy_limber(const double l);
+
+// ----------------------------------------------------------------------------
+// range-version
+// ----------------------------------------------------------------------------
+
+void C_ss_tomo_limber_fill(
+    const int ni, 
+    const int nj,
+    const int lmin, 
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out_EE,
+    double* RESTRICT out_BB
+  );
 
 // ----------------------------------------------------------------------------
 // Non-Interpolated Version (Will compute the Integral at every call)

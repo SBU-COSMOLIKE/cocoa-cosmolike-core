@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <gsl/gsl_sum.h>
 #include <gsl/gsl_integration.h>
@@ -55,6 +56,12 @@ static int has_b2_galaxies(void)
   return res;
 }
 
+static inline double wtime(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec + 1e-9 * t.tv_nsec;
+}
+
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -73,8 +80,9 @@ double xi_pm_tomo(
 {  
   static double*** Glpm = NULL; //Glpm[0] = Gl+, Glpm[1] = Gl-
   static double** xipm = NULL;  //xipm[0] = xi+, xipm[1] = xi-
-  static double cache[MAX_SIZE_ARRAYS];
   static double*** Cl = NULL;
+  static double* lnell = NULL;
+  static double cache[MAX_SIZE_ARRAYS];
 
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
@@ -87,6 +95,14 @@ double xi_pm_tomo(
       NULL == Cl || 
       fdiff(cache[4], Ntable.random))
   {
+    if (lnell != NULL) {
+      free(lnell);
+    }
+    lnell = (double*) malloc1d(Ntable.LMAX + 1);
+    for (int l =1; l <= Ntable.LMAX; l++) {
+      lnell[l] = log((double) l);
+    }
+
     if (Glpm != NULL) {
       free(Glpm);
     }
@@ -184,6 +200,7 @@ double xi_pm_tomo(
           Cl[1][nz][l] = C_ss_tomo_limber_nointerp((double) l, Z1NZ, Z2NZ, 0, 0);
         }
       }
+      /*
       #pragma omp parallel for collapse(3) schedule(static,1)
       for (int i=0; i<2; i++) {
         for (int nz=0; nz<NSIZE; nz++) {
@@ -191,7 +208,18 @@ double xi_pm_tomo(
             Cl[i][nz][l] = C_ss_tomo_limber((double) l, Z1(nz), Z2(nz), 1-i);
           }
         }
+      }*/
+      #pragma omp parallel for schedule(static)
+      for (int nz = 0; nz < NSIZE; nz++) {
+        C_ss_tomo_limber_fill(Z1(nz), 
+                              Z2(nz), 
+                              limits.LMIN_tab, 
+                              Ntable.LMAX, 
+                              lnell,
+                              Cl[0][nz], 
+                              Cl[1][nz]);
       }
+
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
@@ -208,6 +236,53 @@ double xi_pm_tomo(
           xipm[1][q] = sum1;
         }
       }
+      /*
+      // ----------------------------------------------------------------------
+      // Without blocking: each (nz,theta) streams the full length of Cl and  
+      // Glpm arrays through the cache. With many pairs, total memory traffic
+      // far exceeds L2/L3. CPU stalls waiting for RAM on every iteration.
+      //
+      // With blocking: process ALL (nz, theta) pairs for a small chunk
+      // of l before moving to the next chunk. Within each block:
+      // The more tomo bins (nz), the more reuse per block, and the
+      // larger the speedup over the unblocked version (perfect for Roman).
+      // -----------------------------------------------------------------------
+      for (int nz = 0; nz < NSIZE; nz++) {
+        for (int i = 0; i < Ntable.Ntheta; i++) {
+          xipm[0][nz * Ntable.Ntheta + i] = 0.0;
+          xipm[1][nz * Ntable.Ntheta + i] = 0.0;
+        }
+      }
+      const int BLOCK = 1024;
+      #pragma omp parallel
+      {
+        for (int lb = lmin; lb < Ntable.LMAX; lb += BLOCK) 
+        {
+          const int lend = (lb + BLOCK < Ntable.LMAX) 
+                            ? lb + BLOCK : Ntable.LMAX;
+
+          #pragma omp for collapse(2) schedule(static) nowait
+          for (int nz = 0; nz < NSIZE; nz++) {
+            for (int i = 0; i < Ntable.Ntheta; i++) {
+              const double* restrict c0  = Cl[0][nz];
+              const double* restrict c1  = Cl[1][nz];
+              const double* restrict gl0 = Glpm[0][i];
+              const double* restrict gl1 = Glpm[1][i];
+              double s0 = 0.0, s1 = 0.0;
+              for (int l = lb; l < lend; l++) {
+                const double plus  = c0[l] + c1[l];
+                const double minus = c0[l] - c1[l];
+                s0 += gl0[l] * plus;
+                s1 += gl1[l] * minus;
+              }
+              const int q = nz * Ntable.Ntheta + i;
+              xipm[0][q] += s0;
+              xipm[1][q] += s1;
+            }
+          }
+        }
+      }
+      */
     }
     else {
       log_fatal("NonLimber not implemented");
@@ -1027,6 +1102,9 @@ double C_ss_tomo_limber_nointerp(
   return res;   
 }
 
+// so C_ss_tomo_limber_fill can see C_ss_tomo_limber data
+static struct { double*** tab; double lim[3]; int nell; } ss_ = {0};
+
 double C_ss_tomo_limber(
     const double l, 
     const int ni, 
@@ -1045,6 +1123,12 @@ double C_ss_tomo_limber(
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
     if (table != NULL) free(table);
     table = (double***) malloc3d(2, tomo.shear_Npowerspectra, nell);
+  
+    ss_.tab = table; 
+    ss_.lim[0] = lim[0]; 
+    ss_.lim[1] = lim[1]; 
+    ss_.lim[2] = lim[2]; 
+    ss_.nell = nell;       
   }
   if (fdiff(cache[0], cosmology.random) ||
       fdiff(cache[1], nuisance.random_photoz_shear) ||
@@ -1091,6 +1175,38 @@ double C_ss_tomo_limber(
     exit(1);
   }
   return interpol1d((1==EE)?table[0][q]:table[1][q],nell,lim[0],lim[1],lim[2],lnl);
+}
+
+/*
+* xpm computes C_ss_tomo_limber so many times that the overhead to calls
+* calls to log(l), N_shear, and interpol1d becomes expensive (15% speedup)
+*/
+
+void C_ss_tomo_limber_fill(
+    const int ni, 
+    const int nj,
+    const int lmin, 
+    const int lmax,
+    const double* restrict ln_ell,
+    double* restrict out_EE,
+    double* restrict out_BB
+  )
+{
+  const int q = N_shear(ni, nj);
+  const double* restrict tab_EE = ss_.tab[0][q];
+  const double* restrict tab_BB = ss_.tab[1][q];
+  const double inv_dx = 1.0 / ss_.lim[2];
+  const double a = ss_.lim[0];
+  const int n = ss_.nell;
+
+  for (int l = lmin; l < lmax; l++) {
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) r;
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out_EE[l] = tab_EE[ic] + t * (tab_EE[ic + 1] - tab_EE[ic]);
+    out_BB[l] = tab_BB[ic] + t * (tab_BB[ic + 1] - tab_BB[ic]);
+  }
 }
 
 // ---------------------------------------------------------------------------
