@@ -1458,6 +1458,10 @@ static double int_for_C_gs_tomo_limber_core(
     const double l,
     const int nl, 
     const int ns,
+    const double WK, 
+    const double WS,
+    const double WGAL, 
+    const double WMAG,
     const int nonlinear_bias
   ) 
 {
@@ -1465,11 +1469,6 @@ static double int_for_C_gs_tomo_limber_core(
   const double z = 1.0/a - 1.0;
   const double b1 = gb1(z, nl);
   const double bmag = gbmag(z, nl);
-  const double WGAL = W_gal(a, nl, hoverh0);
-  const double WMAG = W_mag(a, fK, nl);
-
-  const double WK = W_kappa(a, fK, ns);
-  const double WS   = W_source(a, ns, hoverh0);
 
   double ans;
 
@@ -1650,10 +1649,16 @@ double int_for_C_gs_tomo_limber(double a, void* params)
   const double tmp = (l - 1.)*l*(l + 1.)*(l + 2.);   // correction (1812.05995 eqs 74-79)
   const double ell_prefactor2 = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
 
+  const double WK = W_kappa(a, fK, ns);
+  const double WS   = W_source(a, ns, hoverh0);
+  const double WGAL = W_gal(a, nl, hoverh0);
+  const double WMAG = W_mag(a, fK, nl);
+
   return int_for_C_gs_tomo_limber_core(a, fK, PK, growfac_a, hoverh0,
                                        chidchi.dchida, ell_prefactor, 
                                        ell_prefactor2, l,
-                                       nl, ns, nonlinear_bias);
+                                       nl, ns, WK, WS, WGAL, WMAG, 
+                                       nonlinear_bias);
 }
 
 // ---------------------------------------------------------------------------
@@ -1784,8 +1789,8 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     //               we can compute cosmo quantities and nlens times. 
     // ------------------------------------------------------------------
     const int nbin = redshift.clustering_nbin;
-    cosmo_nodes cn_all[nbin];
-    for (int ZLNZ = 0; ZLNZ < nbin; ZLNZ++) {
+    cosmo_nodes cn_all[redshift.clustering_nbin];
+    for (int ZLNZ = 0; ZLNZ < redshift.clustering_nbin; ZLNZ++) {
       const double amin = amin_lens(ZLNZ);
       const double amax = amax_lens(ZLNZ);
       cn_all[ZLNZ] = create_cosmo_nodes(amin, amax, w);
@@ -1802,14 +1807,40 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       ell_prefactor2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;  
     }
 
-    double*** PK = (double***) malloc3d(nbin, nell, cn_all[0].npts);
+    // precompute P(k,z)
+    double*** PK = (double***) malloc3d(redshift.clustering_nbin, nell, cn_all[0].npts);
     #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int q = 0; q < nbin; q++) {
+    for (int q = 0; q < redshift.clustering_nbin; q++) {
       for (int i = 0; i < nell; i++) {
         for (int p = 0; p < cn_all[0].npts; p++) {
           const double ell = lx[i] + 0.5;
           const double k = ell / cn_all[q].data[CN_FK][p];
           PK[q][i][p] = Pdelta(k, cn_all[q].data[CN_A][p]);
+        }
+      }
+    }
+
+    // precompute lens weights 
+    double*** WXL = (double***) malloc3d(2, redshift.clustering_nbin, cn_all[0].npts);
+    #pragma omp parallel for schedule(static,1)
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      for (int p = 0; p < cn_all[0].npts; p++) {
+        const cosmo_nodes* cn = &cn_all[zl];
+        WXL[0][zl][p] = W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
+        WXL[1][zl][p] = W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
+      }
+    }
+
+    // precompute source weights
+    double**** WXS = (double****) malloc4d(2, redshift.clustering_nbin, 
+                                          redshift.shear_nbin, cn_all[0].npts);
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      for (int zs = 0; zs < redshift.shear_nbin; zs++) {
+        for (int p = 0; p < cn_all[0].npts; p++) {
+          const cosmo_nodes* cn = &cn_all[zl];
+          WXS[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
+          WXS[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
         }
       }
     }
@@ -1830,10 +1861,16 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
           const double dchida = cn->data[CN_DCHIDA][p];
           const double wt = cn->data[CN_WT][p];
 
+          const double WK   = WXS[0][ZLNZ][ZSNZ][p];
+          const double WS   = WXS[1][ZLNZ][ZSNZ][p];
+          const double WGAL = WXL[0][ZLNZ][p];
+          const double WMAG = WXL[1][ZLNZ][p];
+
           sum += int_for_C_gs_tomo_limber_core(a, fK, PK[ZLNZ][i][p], growfac_a, 
                                                hoverh0, dchida, ell_prefactor[i], 
                                                ell_prefactor2[i], lx[i], ZLNZ,
-                                               ZSNZ, nonlinear_bias) * wt;
+                                               ZSNZ, WK, WS, WGAL, WMAG, 
+                                               nonlinear_bias) * wt;
         }
         table[k][i] = sum;
       }
