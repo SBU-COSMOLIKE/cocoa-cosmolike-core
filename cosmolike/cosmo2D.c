@@ -240,6 +240,7 @@ double xi_pm_tomo(
                               Cl[0][nz], 
                               Cl[1][nz]);
       }
+
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
