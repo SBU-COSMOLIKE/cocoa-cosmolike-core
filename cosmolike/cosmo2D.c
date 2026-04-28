@@ -27,6 +27,8 @@
 #include "structs.h"
 #include "log.c/src/log.h"
 
+#include <fftw3.h>
+
 static int include_HOD_GX = 0; // 0 or 1
 static int include_RSD_GS = 0; // 0 or 1 
 static int include_RSD_GG = 1; // 0 or 1 
@@ -613,7 +615,7 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
       }
     }
     else {
-      for (int nz=0; nz<NSIZE; nz++) { // NONLIMBER PART
+      /*for (int nz=0; nz<NSIZE; nz++) { // NONLIMBER PART
         const int L = 1;
         const double tolerance = 0.01;     // required fractional accuracy in C(l)
         const double dev = 10. * tolerance; // will be diff  exact vs Limber init to
@@ -622,8 +624,8 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         const int Z2 = nz; // cross redshift bin not supported so not using ZCL2(k)
         
         C_cl_tomo(L, Z1, Z2, Cl[nz], dev, tolerance);
-      }
-      //C_cl_tomo_cocoa(Cl);
+      }*/
+      C_cl_tomo_cocoa(Cl);
     
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) { // LIMBER PART
@@ -3398,7 +3400,6 @@ void C_cl_tomo_cocoa(double* const* const Cl)
       LMAX[i] = (int) fmin((45.55*1.5+8.85) + 6, limits.LMAX_NOLIMBER);
     }
   }
-  #pragma omp parallel for
   for (int i=0; i<nbins; i++) {
     for (int k=0; k<LMAX[i]; k++) {
       ell[i][k] = k;
@@ -3410,29 +3411,54 @@ void C_cl_tomo_cocoa(double* const* const Cl)
       is_bmag_zero = 0;
     }    
   }
-  if (0 == is_bmag_zero) {
-    cfftlog_ells_cocoa((double* const) x, 
-                       (double* const* const* const) fx, 
-                       nchi, 
-                       cfg, 
-                       (int* const* const) ell, 
-                       (int* const) LMAX, 
-                       (double* const* const* const) y, 
-                       (double* const* const* const* const) Fy, 
-                       nbins, 
-                       3);
+
+  const int SIZE2 = (is_bmag_zero == 0) ? 3 : 2;
+  int Nmax = 0;
+  int N[SIZE2][3];
+  for(int j=0; j<SIZE2; j++) {
+    N[j][0] = cfg[j].N_pad;
+    N[j][1] = nchi;
+    N[j][2] = 2*N[j][0] + N[j][1];
+    if(N[j][2] % 2) {
+      log_fatal("Please use even number of x"); 
+      exit(1);
+    }
+    if (N[j][2] > Nmax) 
+      Nmax = N[j][2]; 
   }
-  else {
-    cfftlog_ells_cocoa((double* const) x, 
-                       (double* const* const* const) fx, 
-                       nchi, 
-                       cfg, 
-                       (int* const* const) ell, 
-                       (int* const) LMAX, 
-                       (double* const* const* const) y, 
-                       (double* const* const* const* const) Fy, 
-                       nbins, 
-                       2);  
+
+  fftw_complex** toutfwd = (fftw_complex**) malloc2d_fftwc(nbins*SIZE2, Nmax/2+1);
+  
+  double** eta_m = (double**) malloc2d(SIZE2, Nmax/2+1);
+
+  cfftlog_ells_cocoa0((double* const) x, 
+                      (double* const* const* const) fx, 
+                      nchi, 
+                      cfg, 
+                      (fftw_complex* const* const) toutfwd,
+                      (double* const* const) eta_m, 
+                      N, 
+                      Nmax, 
+                      nbins, 
+                      SIZE2);
+  cfftlog_ells_cocoa((double* const) x, 
+                   (double* const* const* const) fx, 
+                   nchi, 
+                   cfg, 
+                   (int* const* const) ell, 
+                   (int* const) LMAX, 
+                   (double* const* const* const) y, 
+                   (double* const* const* const* const) Fy, 
+                   (fftw_complex* const* const) toutfwd,
+                   (double* const* const) eta_m,
+                   N,
+                   Nmax,
+                   nbins, 
+                   SIZE2);
+  free((void*) toutfwd);
+  free((void*) eta_m);
+
+  if (0 != is_bmag_zero) {
     for (int i=0; i<nbins; i++) { 
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int k=0; k<LMAX[i]; k++) {

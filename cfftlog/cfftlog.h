@@ -1,3 +1,4 @@
+#include <fftw3.h>
 #ifndef __CFFTLOG_CFFTLOG_H
 #define __CFFTLOG_CFFTLOG_H
 #ifdef __cplusplus
@@ -32,6 +33,20 @@ double** y, double** Fy);
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
+void cfftlog_ells_cocoa0(
+  double* const x,
+  double* const* const* const fx,
+  int const Nx,
+  config* const cfg,
+  fftw_complex* const* const toutfwd,
+  double* const* const eta_m,
+  int const N[][3],
+  int const Nmax,
+  int const SIZE1,
+  int const SIZE2
+);
+
+/*
 void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin 
     double* const x,      // assume all fx have the same x-array
     double* const* const* const fx,
@@ -44,6 +59,24 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
     int const SIZE1,
     int const SIZE2
   ); 
+*/
+
+void cfftlog_ells_cocoa(
+    double* const x,
+    double* const* const* const fx,
+    int const Nx,
+    config* const cfg,
+    int* const* const ell,
+    int* const LMAX,
+    double* const* const* const y,
+    double* const* const* const* const Fy,
+    fftw_complex* const* const toutfwd,
+    double* const* const eta_m,
+    int const N[][3],
+    int const Nmax,
+    int const SIZE1,
+    int const SIZE2
+  );
 
 #ifdef __cplusplus
 }
