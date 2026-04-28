@@ -14,8 +14,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "../cfftlog/cfftlog.h"
-
 #include "bias.h"
 #include "basics.h"
 #include "cfastpt/cfastpt.h"
@@ -28,8 +26,6 @@
 #include "redshift_spline.h"
 #include "structs.h"
 #include "log.c/src/log.h"
-
-
 
 static int include_HOD_GX = 0; // 0 or 1
 static int include_RSD_GS = 0; // 0 or 1 
@@ -3137,6 +3133,16 @@ double C_yy_limber(double l)
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+typedef struct config 
+{
+  double nu;
+  double c_window_width;
+  int derivative;
+  long N_pad;
+  long N_extrap_low;
+  long N_extrap_high;
+} config;
+
 void cfftlog_ells_p1(
   double* const x,
   double* const* const* const fx,
@@ -3319,11 +3325,10 @@ void cfftlog_ells_p2(
     }
   } 
 
-  double t0 = omp_get_wtime();
   // ---------------------------------------------------------------------------
   // ---------------------------------------------------------------------------
   // ---------------------------------------------------------------------------
-  /* Claude: gamma function recurrence Γ(a+1) = a·Γ(a)
+  /* Gamma function recurrence Γ(a+1) = a·Γ(a)
     For case 0:
       gl[k] = exp(z·ln2) · Γ(½(k+z)) / Γ(½(3+k-z))
       When k → k+2, both arguments shift by 1:
@@ -3331,9 +3336,6 @@ void cfftlog_ells_p2(
       Γ(½(5+k-z)) = Γ(½(3+k-z) + 1) = ½(3+k-z) · Γ(½(3+k-z))
     So:
       gl[k+2] / gl[k] = ½(k+z) / ½(3+k-z) = (k+z) / (k+3-z)
-    The references are:
-      Γ(z+1) = z·Γ(z): Abramowitz & Stegun §6.1.15, or DLMF §5.5.1 (https://dlmf.nist.gov/5.5)
-      gl as a ratio of gamma functions in FFTLog: Hamilton 2000 (MNRAS 312, 257), equation 18
   */
   for(int j=0; j<SIZE2; j++) {
     const double nu = cfg[j].nu;
@@ -3505,8 +3507,6 @@ void cfftlog_ells_p2(
   // ---------------------------------------------------------------------------
   // ---------------------------------------------------------------------------
   // ---------------------------------------------------------------------------
-  double t1 = omp_get_wtime();
-
   for(int i=0; i<SIZE1; i++) {
     if (converged[i]) continue;
     #pragma omp parallel for collapse(2) schedule(static,1)
@@ -3531,8 +3531,6 @@ void cfftlog_ells_p2(
       }
     }
   }
-  double t2 = omp_get_wtime();
-  printf("gl: %.3f ms  ifft: %.3f ms\n", (t1-t0)*1000, (t2-t1)*1000);
   return;
 }
 
@@ -3703,7 +3701,7 @@ void C_cl_tomo(
                      converged,
                      nbins, 
                      SIZE2);
-    if (0 != is_bmag_zero) {
+    if (0 != is_bmag_zero) { // this is the case where gbmag = 0 (avoid garbage)
       for (int i=0; i<nbins; i++) { 
         const int kk = (ke < LMAX[i]) ? ke : LMAX[i];
         for (int k=ks; k<kk; k++) {
@@ -3737,9 +3735,7 @@ void C_cl_tomo(
                        C_gg_tomo_limber_linpsopt_nointerp((double) k, i, i, 0, 0)
                       -C_gg_tomo_limber_linpsopt_nointerp((double) k, i, i, 1, 0);
       }
-
-      // check convergeence
-      const int L = kk - 1;
+      const int L = kk - 1; // check convergeence
       const double dev = Cl[i][L] / C_gg_tomo_limber_nointerp(L, i, i, 0) - 1.0;
       if (fabs(dev) < tol) {
         converged[i] = 1;

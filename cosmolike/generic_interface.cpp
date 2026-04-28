@@ -315,6 +315,9 @@ void init_accuracy_boost(
   if (0 == cache[2]) cache[2] = Ntable.dCX_dlnk_nlnk;
   Ntable.dCX_dlnk_nlnk = static_cast<int>(ceil(cache[2]*accuracy_boost));
 
+  if (0 == cache[3]) cache[3] = Ntable.NL_Nchi;
+  Ntable.NL_Nchi = static_cast<int>(ceil(cache[3]*accuracy_boost));
+
   if (accuracy_boost>1) {
     Ntable.FPTboost = static_cast<int>(accuracy_boost-1.0);
   }
