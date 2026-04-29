@@ -471,10 +471,10 @@ void get_FPT_IA(void)
     }
 
     // -----------------------------------------------------------------------
-    // Single J_abJ1J2Jk_ar call with all ~184 terms.
+    // Single J_abJ1J2Jk call with all ~184 terms.
     //
-    // J_abJ1J2Jk_ar expects double **Fy where Fy[i] points to an array of
-    // Nk doubles for term i's output. We allocate one contiguous block
+    // J_abJ1J2Jk expects double **Fy where Fy[i] points to an array of
+    // FPTIA.N doubles for term i's output. We allocate one contiguous block
     // (Fy_flat) and set up an array of pointers (Fy_ptrs) into it:
     //
     //   Fy_flat:  [--- term 0 ---][--- term 1 ---]...[--- term Ntotal-1 ---]
@@ -496,20 +496,21 @@ void get_FPT_IA(void)
       .N_extrap_high = 500
     };
 
-    J_abJ1J2Jk_ar(k, 
-                  Pin, 
-                  FPTIA.N, 
-                  alpha_all, 
-                  beta_all, 
-                  J1_all, 
-                  J2_all, 
-                  Jk_all,
-                  Ntotal, 
-                  (fastpt_config*)&fpt_config, 
-                  Fy_ptrs);
+    J_abJ1J2Jk(k,         // input k grid, length N
+               Pin,       // input power spectrum P(k)
+               FPTIA.N,   // number of input k points (before padding)
+               alpha_all, // biasing exponent 1 per term: nu1 = -2 - alpha[i]
+               beta_all,  // biasing exponent 2 per term: nu2 = -2 - beta[i]
+               J1_all,    // angular momentum coupling 1 per term (indexes g_m cache)
+               J2_all,    // angular momentum coupling 2 per term (indexes g_m cache)
+               Jk_all,    // angular momentum coupling 3 per term (indexes g_m cache)
+               Ntotal,    // number of terms to compute
+               &fpt_config, // padding/windowing config (N_pad, c_window_width, etc.)
+               Fy_ptrs);  // output: Fy[i][j] = result for term i at k-point j
+
 
     // -----------------------------------------------------------------------
-    // Accumulate J_abJ1J2Jk_ar results into the 8 FPTIA output arrays.
+    // Accumulate J_abJ1J2Jk results into the 8 FPTIA output arrays.
     //
     // Each group's result is a weighted sum over its terms:
     //   output[j] = sum_i  coeff_all[i] * Fy[i][j]
@@ -557,7 +558,20 @@ void get_FPT_IA(void)
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
-    // IA_ta deltaE2 term: direct convolution (not via J_abJ1J2Jk_ar).
+    // Next section is gonna need the following definitions
+    const double dL = log(k[1] / k[0]);  // log-spacing of k grid
+    const long Ncut = floor(3. / dL);     // transition index from exact to asymptotic
+    double exps[2*FPTIA.N-1];
+    for (int i = 0; i < 2*FPTIA.N-1; i++) {
+      // Precompute r = k'/k ratios for all convolution offsets
+      exps[i] = exp(-dL * (i - FPTIA.N + 1));
+    }
+
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // IA_ta deltaE2 term: direct convolution (not via J_abJ1J2Jk).
     //
     // Computes P_deltaE2(k) = 2 * k^3 / (896 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
     //
@@ -571,24 +585,16 @@ void get_FPT_IA(void)
     //
     // The cutoff Ncut = floor(3/dL) determines where to switch between the
     // exact formula and the asymptotic expansions. The exact formula has a
-    // log singularity at r=1, so the midpoint f[Nk-1] is set analytically.
+    // log singularity at r=1, so the midpoint f[FPTIA.N-1] is set analytically.
     //
-    // r = exp(-dL*(i - Nk + 1)) maps array index i to the ratio k'/k.
+    // r = exp(-dL*(i - FPTIA.N + 1)) maps array index i to the ratio k'/k.
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     {
-      double dL = log(k[1] / k[0]);  // log-spacing of k grid
-      long Ncut = floor(3. / dL);     // transition index from exact to asymptotic
-      double exps[2*FPTIA.N-1], f[2*FPTIA.N-1];
-      
+      double f[2*FPTIA.N-1];
       int i;
-
-      // Precompute r = k'/k ratios for all convolution offsets
-      for (i = 0; i < 2*FPTIA.N-1; i++) {
-        exps[i] = exp(-dL * (i - FPTIA.N + 1));
-      }
 
       // Region 1: r << 1 (asymptotic expansion for small r)
       for (i = 0; i < FPTIA.N-1-Ncut; i++) {
@@ -660,7 +666,7 @@ void get_FPT_IA(void)
     //
     // The overall /2 factor in each region is part of the kernel normalization.
     //
-    // r = exp(-dL*(i - Nk + 1)) maps array index i to the ratio k'/k.
+    // r = exp(-dL*(i - FPTIA.N + 1)) maps array index i to the ratio k'/k.
     // Ncut = floor(3/dL) sets the transition between exact and asymptotic forms.
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
@@ -668,15 +674,8 @@ void get_FPT_IA(void)
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     {
-      double dL = log(k[1] / k[0]);   // log-spacing of k grid
-      long Ncut = floor(3. / dL);     // transition index from exact to asymptotic
-      double exps[2*FPTIA.N-1], f[2*FPTIA.N-1];
+      double f[2*FPTIA.N-1];
       int i;
-
-      // Precompute r = k'/k ratios for all convolution offsets
-      for (i = 0; i < 2*FPTIA.N-1; i++) {
-        exps[i] = exp(-dL * (i - FPTIA.N + 1));
-      }
 
       // Region 1: r << 1 (asymptotic expansion for small r)
       for (i = 0; i < FPTIA.N-1-Ncut; i++) {

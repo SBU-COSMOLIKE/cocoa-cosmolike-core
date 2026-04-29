@@ -3092,6 +3092,41 @@ double C_yy_limber(double l)
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// next_fft_size: Round up n to the next "FFT-friendly" number whose only
+// prime factors are 2, 3, 5, or 7.
+//
+// The FFT algorithm works by recursively splitting a size-N transform into
+// smaller sub-transforms based on N's prime factorization. 
+// FFTW has highly optimized, SIMD-vectorized "codelets" for small prime factors 
+// (2, 3, 5, 7), making these splits very fast.
+//
+// When N has a large prime factor p, FFTW cannot split it efficiently and
+// must fall back to generic algorithms, which are slower and cannot be vectorized. 
+
+// For example:
+//   N = 10240 = 2^11 × 5  → 11 radix-2 stages + 1 radix-5 stage, all fast
+//   N = 10201 = 101 × 101 → two levels of prime-101 sub-transforms, slow
+//
+// Padding to a slightly larger FFT-friendly size does not affect the convolution
+// result: the extra elements are zeros, and we read the same output indices 
+// regardless of the padded size.
+// ---------------------------------------------------------------------------
+static long next_fft_size(long n) {
+  while (1) {
+    long m = n;
+    while (m % 2 == 0) m /= 2;
+    while (m % 3 == 0) m /= 3;
+    while (m % 5 == 0) m /= 5;
+    while (m % 7 == 0) m /= 7;
+    if (m == 1) return n;
+    n++;
+  }
+  return n;
+}
+
+
 typedef struct config 
 {
   double nu;
@@ -3601,6 +3636,7 @@ void C_cl_tomo(
     }    
   }
 
+  /*
   const int SIZE2 = (is_bmag_zero == 0) ? 3 : 2;
   int Nmax = 0;
   int N[SIZE2][3];
@@ -3614,6 +3650,28 @@ void C_cl_tomo(
     }
     if (N[j][2] > Nmax) 
       Nmax = N[j][2]; 
+  }
+  */
+
+  const int SIZE2 = (is_bmag_zero == 0) ? 3 : 2;
+  int Nmax = 0;
+  int N[SIZE2][3];
+  for(int j=0; j<SIZE2; j++) {
+    N[j][0] = cfg[j].N_pad;
+    N[j][1] = nchi;
+    // -------------------------------------------------------------------------
+    // Round up to the next FFT-friendly even size whose only prime factors
+    // are 2, 3, 5, or 7.  The extra elements are zero-padded in cfftlog_ells_p1
+    // and do not affect the convolution result.
+    // -------------------------------------------------------------------------
+    long raw = 2*N[j][0] + N[j][1];
+    if (raw % 2) raw++;
+    N[j][2] = (int) next_fft_size(raw);
+    if (N[j][2] % 2) {
+      N[j][2] = (int) next_fft_size(N[j][2] + 1);
+    }
+    if (N[j][2] > Nmax)
+      Nmax = N[j][2];
   }
 
   fftw_complex** toutfwd = (fftw_complex**) malloc2d_fftwc(nbins*SIZE2, Nmax/2+1);

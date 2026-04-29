@@ -6,6 +6,7 @@
 #include "utils_complex_cfastpt.h"
 #include "utils_cfastpt.h"
 
+#include <gsl/gsl_math.h>
 #include "../log.c/src/log.h"
 
 void c_window(double complex *out, double c_window_width, long halfN) {
@@ -154,6 +155,32 @@ static const double LANCZOS_P[] = {
   1.50563273514931155834e-7
 };
 
+// ---------------------------------------------------------------------------
+// lngamma_lanczos: Compute ln(Gamma(z)) for complex z using the Lanczos
+// approximation with g=7 and 9 coefficients.
+//
+// The Lanczos approximation gives:
+//   Gamma(z) ≈ sqrt(2*pi) * (z + g - 0.5)^(z - 0.5) * exp(-(z + g - 0.5)) * x(z)
+// where x(z) = P[0] + sum_{n=1}^{8} P[n]/(z-1+n).
+//
+// Taking the logarithm:
+//   ln(Gamma(z)) = 0.5*ln(2*pi) + (z-0.5)*ln(z+g-0.5) - (z+g-0.5) + ln(x(z))
+//
+// For Re(z) < 0.5, the Euler reflection formula is used:
+//   Gamma(z) * Gamma(1-z) = pi / sin(pi*z)
+//   => ln(Gamma(z)) = ln(pi) - ln(sin(pi*z)) - ln(Gamma(1-z))
+// This recurses once with (1-z), which has Re(1-z) > 0.5.
+//
+// NOTE: This function is only used standalone for rare cases
+// The hot path uses lngamma_ratio instead, which computes ln(Gamma(a)) - ln(Gamma(b))
+// in a single fused pass for better performance and numerical stability.
+//
+// Parameters:
+//   z:  complex argument
+// Returns:
+//   ln(Gamma(z)) as a double complex
+// ---------------------------------------------------------------------------
+
 static inline double complex lngamma_lanczos(double complex z) {
   if (creal(z) < 0.5)
     return clog(M_PI) - clog(csin(M_PI*z)) - lngamma_lanczos(1. - z);
@@ -165,8 +192,30 @@ static inline double complex lngamma_lanczos(double complex z) {
   return 0.5 * log(2*M_PI) + (z+0.5)*clog(t) - t + clog(x);
 }
 
-// compute lngamma(a) - lngamma(b) directly, sharing loop work
-// assumes Re(a) >= 0.5 and Re(b) >= 0.5 (no reflection needed)
+// ---------------------------------------------------------------------------
+// lngamma_ratio: Compute ln(Gamma(a)) - ln(Gamma(b)) in a single pass.
+//
+// Instead of two independent lngamma_lanczos calls (each doing 9 complex
+// divisions, a clog, etc.), this fused version shares the Lanczos series
+// loop: both xa and xb are accumulated in the same iteration, halving
+// the number of complex divisions.
+//
+// The Lanczos approximation (g=7) gives:
+//   ln(Gamma(z+1)) = 0.5*ln(2*pi) + (z+0.5)*ln(z+g+0.5) - (z+g+0.5) + ln(x(z))
+// where x(z) = P[0] + sum_{n=1}^{8} P[n]/(z+n).
+//
+// For the ratio ln(Gamma(a)) - ln(Gamma(b)), the 0.5*ln(2*pi) terms cancel,
+// leaving only the difference of the remaining terms.
+//
+// ASSUMPTION: Re(a) >= 0.5 and Re(b) >= 0.5, so the Lanczos reflection
+// formula (for Re(z) < 0.5) is not needed. This holds for all FAST-PT
+// calls where a and b come from (mu+1+q)/2 with mu >= 0.5.
+//
+// Parameters:
+//   a, b:  complex arguments with Re(a) >= 0.5 and Re(b) >= 0.5
+// Returns:
+//   ln(Gamma(a)) - ln(Gamma(b))  as a double complex
+// ---------------------------------------------------------------------------
 static inline double complex lngamma_ratio(double complex a, double complex b) {
   a -= 1;
   b -= 1;
@@ -181,6 +230,27 @@ static inline double complex lngamma_ratio(double complex a, double complex b) {
   return (a+0.5)*clog(ta) - (b+0.5)*clog(tb) - ta + tb + clog(xa) - clog(xb);
 }
 
+// ---------------------------------------------------------------------------
+// g_m_vals: Compute the g_m kernel values for the FAST-PT algorithm.
+//
+// Evaluates the ratio of Gamma functions:
+//   g_m(mu, q, q_imag) = Gamma((mu+1+q+I*q_imag)/2) / Gamma((mu+1-q-I*q_imag)/2)
+// for each frequency mode i, where q_imag = q_imag[i].
+//
+// This kernel appears in the Mellin-space representation of the FAST-PT
+// convolution integrals. The mu parameter controls the spherical Bessel function 
+// order (mu = J + 0.5 for the J_abJ1J2Jk_ar terms), and q_real is the biasing exponent.
+//
+// Uses lngamma_ratio for numerical stability: the log of the Gamma ratio
+// is computed in a single Lanczos pass (no overflow), then exponentiated.
+//
+// Parameters:
+//   mu:      order parameter (typically J + 0.5)
+//   q_real:  real part of the biasing exponent
+//   q_imag:  array of imaginary parts (Fourier frequencies), length N
+//   gm:      output array of complex g_m values, length N
+//   N:       number of frequency modes
+// ---------------------------------------------------------------------------
 void g_m_vals(double mu, double q_real, double *q_imag, double complex *gm, long N) {
   const double a_real = (mu + 1. + q_real) / 2.;
   const double b_real = (mu + 1. - q_real) / 2.;
@@ -191,24 +261,83 @@ void g_m_vals(double mu, double q_real, double *q_imag, double complex *gm, long
   }
 }
 
+// ---------------------------------------------------------------------------
+// gamma_ratios: Compute ratios of Gamma functions for the FFT-PT kernels.
+//
+// Evaluates g_l(nu, eta) = Gamma((l+nu+I*eta)/2) / Gamma((3+l-nu-I*eta)/2)
+// for each frequency mode i, where eta = eta[i].
+//
+// These ratios appear in the spherical Bessel function decomposition of the
+// FAST-PT integrals. The l parameter is the order of the spherical Bessel 
+// function, and nu is the biasing exponent.
+//
+// The computation uses lngamma_ratio to evaluate the log of the ratio
+// in a single pass (shared Lanczos series loop, no overflow risk), then
+// exponentiates once. This is both faster and more numerically stable
+// than computing two separate lngamma calls.
+//
+// Parameters:
+//   l:    spherical Bessel function order (integer, but passed as double)
+//   nu:   biasing exponent
+//   eta:  array of Fourier frequencies, length N
+//   gl:   output array of complex Gamma ratios, length N
+//   N:    number of frequency modes
+// ---------------------------------------------------------------------------
 void gamma_ratios(double l, double nu, double *eta, double complex *gl, long N) {
-  const double a_real = (l + nu) / 2.;
-  const double b_real = (3. + l - nu) / 2.;
+  const double a_real = (l + nu) * 0.5;
+  const double b_real = (3. + l - nu) * 0.5;
+
   #pragma omp parallel for
   for (long i = 0; i < N; i++) {
-    double ei = eta[i] / 2.;
+    double ei = eta[i] * 0.5;
     gl[i] = cexp(lngamma_ratio(a_real + I*ei, b_real - I*ei));
   }
 }
 
+// ---------------------------------------------------------------------------
+// f_z: Compute the f(z) kernel for the FFT-PT algorithm.
+//
+// Computes f(z) = sqrt(pi)/2 * 2^z * g_m(0.5, z_real - 0.5, z_imag)
+// where z = z_real + I*z_imag[i] for each frequency mode i.
+//
+// This function evaluates the Fourier-space kernel needed by the FAST-PT
+// convolution integrals. It combines two pieces:
+//   1. g_m_vals(mu=0.5, q=z_real-0.5): ratio of Gamma functions
+//      Gamma((mu+1+q+I*q_imag)/2) / Gamma((mu+1-q-I*q_imag)/2)
+//      evaluated at each imaginary frequency z_imag[i].
+//   2. The factor sqrt(pi)/2 * 2^z, where the power 2^z = exp(z * ln2)
+//      is computed for complex z via cexp.
+//
+// The relationship between f_z and the original gamma_ratios formulation:
+//   f_z encodes g_l = exp(z*ln2 + lngamma((l+z)/2) - lngamma((3+l-z)/2))
+//   specialized to l=0, rewritten in terms of g_m_vals for efficiency.
+//
+// Parameters:
+//   z_real:  real part of z (the biasing exponent nu)
+//   z_imag:  array of imaginary parts (Fourier frequencies), length N
+//   fz:      output array of complex f(z) values, length N
+//   N:       number of frequency modes
+// ---------------------------------------------------------------------------
 void f_z(double z_real, double *z_imag, double complex *fz, long N) {
+
+  // Step 1: Compute the Gamma-function ratio part.
+  // g_m_vals with mu=0.5 and q_real=z_real-0.5 gives:
+  //   fz[i] = Gamma((1.5 + z_real - 0.5 + I*z_imag[i]) / 2)
+  //         / Gamma((1.5 - z_real + 0.5 - I*z_imag[i]) / 2)
+  //         = Gamma((1 + z_real + I*z_imag[i]) / 2)
+  //         / Gamma((2 - z_real - I*z_imag[i]) / 2)
   g_m_vals(0.5, z_real - 0.5, z_imag, fz, N);
+
+  // Step 2: Multiply by the prefactor sqrt(pi)/2 * 2^z.
+  // The 2^z = exp(z * ln2) factor arises from the change of variables
+  // in the Hankel-like transform underlying FFT-PT.
+  // M_LN2 = ln(2) from gsl/gsl_math.h, avoids recomputing log(2).
   const double sqrt_pi_2 = sqrt(M_PI) / 2.;
-  const double ln2 = log(2.);
+
   #pragma omp parallel for
   for (long i = 0; i < N; i++) {
     double complex z = z_real + I*z_imag[i];
-    fz[i] *= sqrt_pi_2 * cexp(z * ln2);
+    fz[i] *= sqrt_pi_2 * cexp(z * M_LN2);
   }
 }
 
