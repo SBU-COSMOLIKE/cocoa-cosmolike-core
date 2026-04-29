@@ -3769,7 +3769,6 @@ void C_cl_tomo(
   }
 
   for (int i=0; i<nbins; i++) {
-    printf("LMAX[%d] = %d\n", i, LMAX[i]);
     for (int k=LMAX[i]; k<limits.LMAX_NOLIMBER+1; k++) {
       Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) :
                                          C_gg_tomo_limber_nointerp(k, i, i, 0);

@@ -15,56 +15,168 @@
 
 #include "log.c/src/log.h"
 
-void get_FPT_bias(void) 
+// ---------------------------------------------------------------------------
+// get_FPT_bias: compute all 5 nonlinear galaxy bias spectra
+// ---------------------------------------------------------------------------
+//
+// Computes the one-loop bias power spectra needed for nonlinear galaxy
+// bias modeling: Pd1d2, Pd2d2, Pd1s2, Pd2s2, Ps2s2. These are the
+// correlators between the density field (d), its square (d2), the tidal
+// field squared (s2), and the third-order bias operator (p3).
+//
+// The combined version dispatches all 13 terms in a single J_abl_ar call,
+// then accumulates the results with the appropriate coefficients:
+//   Pd1d2(k) = sum_{terms 0,1,2} coeff[i] * Fy[i](k)
+//   Pd2d2(k) = coeff[3] * Fy[3](k)
+//   Pd1s2(k) = sum_{terms 4..8} coeff[i] * Fy[i](k)
+//   ...etc
+//
+// FPTbias.tab layout (8 rows x FPTbias.N columns):
+//   [0] Pd1d2   - density * density-squared correlator
+//   [1] Pd2d2   - density-squared auto-correlator
+//   [2] Pd1s2   - density * tidal-squared correlator
+//   [3] Pd2s2   - density-squared * tidal-squared correlator
+//   [4] Ps2s2   - tidal-squared auto-correlator
+//   [5] Pd1p3   - density * third-order (from precomputed table, not FAST-PT)
+//   [6] k       - wavenumber grid (log-spaced from k_min to k_max)
+//   [7] P_lin   - linear power spectrum at z=0 (a=1)
+//
+// Caching: recomputed only when cosmology or Ntable settings change
+// (tracked via cosmology.random and Ntable.random hash values).
+// ---------------------------------------------------------------------------
+void get_FPT_bias(void)
 {
+  // 13 terms -> 5 output spectra
+  // ---------------------------------------------------------------
+  // idx | alpha | beta | ell | output     | coeff
+  // ----|-------|------|-----|------------|------------------
+  //  0  |   0   |   0  |  0  | Pd1d2 [0]  | 2*(17/21)
+  //  1  |   0   |   0  |  2  | Pd1d2 [0]  | 2*(4/21)
+  //  2  |   1   |  -1  |  1  | Pd1d2 [0]  | 2
+  //  3  |   0   |   0  |  0  | Pd2d2 [1]  | 2
+  //  4  |   0   |   0  |  0  | Pd1s2 [2]  | 2*(8/315)
+  //  5  |   0   |   0  |  2  | Pd1s2 [2]  | 2*(254/441)
+  //  6  |   0   |   0  |  4  | Pd1s2 [2]  | 2*(16/245)
+  //  7  |   1   |  -1  |  1  | Pd1s2 [2]  | 2*(4/15)
+  //  8  |   1   |  -1  |  3  | Pd1s2 [2]  | 2*(2/5)
+  //  9  |   0   |   0  |  2  | Pd2s2 [3]  | 2*(2/3)
+  // 10  |   0   |   0  |  0  | Ps2s2 [4]  | 2*(4/45)
+  // 11  |   0   |   0  |  2  | Ps2s2 [4]  | 2*(8/63)
+  // 12  |   0   |   0  |  4  | Ps2s2 [4]  | 2*(8/35)
+  // ---------------------------------------------------------------
+  const int NTERMS = 13;
+  const int NOUT   = 5;
+  const int OUT_D2D2 = 1; // used for sigma4 below
+ 
+  const int alpha_tab[13] = {0,0,1, 0, 0,0,0,1,1, 0, 0,0,0};
+  const int beta_tab[13] = {0,0,-1, 0, 0,0,0,-1,-1, 0, 0,0,0};
+  const int ell_tab[13] = {0,2,1, 0, 0,2,4,1,3, 2, 0,2,4};
+  const int out_idx[13] = {0,0,0, 1, 2,2,2,2,2, 3, 4,4,4};
+ 
+  const double coeff[13] = {
+    2.*(17./21.), 2.*(4./21.), 2.,
+    2.,
+    2.*(8./315.), 2.*(254./441.), 2.*(16./245.), 2.*(4./15.), 2.*(2./5.),
+    2.*(2./3.),
+    2.*(4./45.), 2.*(8./63.), 2.*(8./35.)
+  };
   static uint64_t cache[MAX_SIZE_ARRAYS];
-
+ 
   if (fdiff2(cache[1], Ntable.random))
   {
-    FPTbias.k_min     = 0.05;
-    FPTbias.k_max     = 1.0e+6;
-    FPTbias.k_cutoff  = 1.0e+4;
-    FPTbias.N         = 1100 + 200 * Ntable.FPTboost;
-    FPTbias.sigma4    = 0.0;
-    if (FPTbias.tab != NULL) {
+    FPTbias.k_min    = 0.05;
+    FPTbias.k_max    = 1.0e+6;
+    FPTbias.k_cutoff = 1.0e+4;
+    FPTbias.N        = 1100 + 200 * Ntable.FPTboost;
+    FPTbias.sigma4   = 0.0;
+    if (FPTbias.tab != NULL)
+    {
       free(FPTbias.tab);
     }
     FPTbias.tab = (double**) malloc2d(8, FPTbias.N);
   }
-  if (fdiff2(cache[0], cosmology.random) || 
+ 
+  if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random))
   {
-    const double dlogk = (log(FPTbias.k_max) - log(FPTbias.k_min))/FPTbias.N;
-
+    const long Nk = FPTbias.N;
+    const double dlogk =
+      (log(FPTbias.k_max) - log(FPTbias.k_min)) / Nk;
+ 
+    // --- build k grid and linear P(k) ---
     #pragma omp parallel for
-    for (int i=0; i<FPTbias.N; i++) 
-    {
-      FPTbias.tab[6][i] = exp(log(FPTbias.k_min) + i*dlogk);
+    for (int i = 0; i < Nk; i++) {
+      FPTbias.tab[6][i] = exp(log(FPTbias.k_min) + i * dlogk);
       FPTbias.tab[7][i] = p_lin(FPTbias.tab[6][i], 1.0);
     }
-
-    double Pout[5][FPTbias.N];
-    Pd1d2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[0]);
-    Pd2d2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[1]);
-    Pd1s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[2]);
-    Pd2s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[3]);
-    Ps2s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[4]);
-
-    #pragma omp parallel for
-    for (int i=0; i<FPTbias.N; i++) 
-    {
-      FPTbias.tab[0][i] = Pout[0][i]; // Pd1d2
-      FPTbias.tab[1][i] = Pout[1][i]; // Pd2d2
-      FPTbias.tab[2][i] = Pout[2][i]; // Pd1s2
-      FPTbias.tab[3][i] = Pout[3][i]; // Pd2s2
-      FPTbias.tab[4][i] = Pout[4][i]; // Ps2s2
-      // (JX) Pd1p3: interpolated from precomputed table at a 
-      //             mystery cosmology with sigma8 = 0.8
-      double lnk = log(FPTbias.tab[6][i]);
-      FPTbias.tab[5][i] = (lnk < tab_d1d3_lnkmin || lnk > tab_d1d3_lnkmax) ? 0.0 :
-      interpol1d(tab_d1d3, tab_d1d3_Nk, tab_d1d3_lnkmin, tab_d1d3_lnkmax, tab_d1d3_dlnk, lnk);
+ 
+    // single J_abl call with all 13 bias terms ---
+    double **Fy = malloc(sizeof(double*) * NTERMS);
+    for (int i = 0; i < NTERMS; i++) {
+      Fy[i] = malloc(sizeof(double) * Nk);
     }
-    FPTbias.sigma4 = FPTbias.tab[1][0]/2.; // JX: dirty fix for sigma4 term: P_{d2d2}(k->0) / 2
+ 
+    int alpha_ar[13];
+    int beta_ar[13];
+    int ell_ar[13];
+    int isP13type_ar[13];
+    for (int i = 0; i < NTERMS; i++)
+    {
+      alpha_ar[i]     = alpha_tab[i];
+      beta_ar[i]      = beta_tab[i];
+      ell_ar[i]       = ell_tab[i];
+      isP13type_ar[i] = 0;
+    }
+ 
+    fastpt_config config;
+    config.nu             = -2.;
+    config.c_window_width = 0.65;
+    config.N_pad          = 1500;
+    config.N_extrap_low   = 500;
+    config.N_extrap_high  = 500;
+ 
+    J_abl(FPTbias.tab[6], FPTbias.tab[7], Nk,
+             alpha_ar, beta_ar, ell_ar, isP13type_ar,
+             NTERMS, &config, Fy);
+ 
+    // --- accumulate 13 Fy terms into 5 bias spectra ---
+    for (int out = 0; out < NOUT; out++)
+    {
+      for (long j = 0; j < Nk; j++)
+      {
+        FPTbias.tab[out][j] = 0.;
+      }
+    }
+    for (int i = 0; i < NTERMS; i++)
+    {
+      const int out = out_idx[i];
+      const double c = coeff[i];
+      #pragma omp parallel for
+      for (long j = 0; j < Nk; j++)
+      {
+        FPTbias.tab[out][j] += c * Fy[i][j];
+      }
+    }
+ 
+    for (int i = 0; i < NTERMS; i++)
+    {
+      free(Fy[i]);
+    }
+    free(Fy);
+ 
+    // --- Pd1p3: interpolated from precomputed table (unchanged) ---
+    #pragma omp parallel for
+    for (int i = 0; i < Nk; i++)
+    {
+      const double lnk = log(FPTbias.tab[6][i]);
+      FPTbias.tab[5][i] =
+        (lnk < tab_d1d3_lnkmin || lnk > tab_d1d3_lnkmax) ? 0.0 :
+        interpol1d(tab_d1d3, tab_d1d3_Nk, tab_d1d3_lnkmin,
+                   tab_d1d3_lnkmax, tab_d1d3_dlnk, lnk);
+    }
+ 
+    FPTbias.sigma4 = FPTbias.tab[OUT_D2D2][0] / 2.;
+ 
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }

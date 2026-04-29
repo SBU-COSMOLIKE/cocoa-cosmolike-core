@@ -13,31 +13,18 @@ typedef struct fastpt_config
   long N_extrap_high;
 } fastpt_config;
 
-typedef struct fastpt_todo 
-{
-  int isScalar;
-  double* alpha;
-  double* beta;
-  double* ell;
-  int* isP13type;
-  double* coeff_ar;
-  int Nterms;
-} fastpt_todo;
-
-typedef struct fastpt_todolist 
-{
-  fastpt_todo *fastpt_todo;
-  int N_todo;
-} fastpt_todolist;
-
-void fastpt_scalar(int* alpha_ar, int* beta_ar, int* ell_ar, int* isP13type_ar, 
-double* coeff_A_ar, int Nterms, double* Pout, double* k, double* Pin, int Nk);
-
-void J_abl_ar(double* x, double* fx, long N, int* alpha, int* beta, int* ell, 
-int* isP13type, int Nterms, fastpt_config* config, double** Fy);
-
-void J_abl(double* x, double* fx, int alpha, int beta, long N, 
-fastpt_config* config, int ell, double* Fy);
+void J_abl(
+    const double *restrict x,      // input k grid, length N (log-spaced wavenumbers)
+    const double *restrict fx,     // input power spectrum P(k), length N
+    long N,                        // number of input k points (before padding)
+    const int *restrict alpha,     // biasing exponent per term: nu1 = 1.5 + nu + alpha[i]
+    const int *restrict beta,      // biasing exponent per term: nu2 = 1.5 + nu + beta[i]
+    const int *restrict ell,       // angular momentum per term (half-integer ell+0.5 in g_m)
+    const int *restrict isP13type, // unused, kept for API compatibility
+    int Nterms,                    // number of terms to compute
+    const fastpt_config *restrict config, // padding/windowing config
+    double **restrict Fy           // output: Fy[i][j] = result for term i at k-point j
+  );
 
 void J_abJ1J2Jk(
     const double *restrict x,      // input k grid, length N (log-spaced wavenumbers)
@@ -52,16 +39,6 @@ void J_abJ1J2Jk(
     const fastpt_config *restrict config, // padding/windowing config (N_pad, c_window_width, etc.)
     double **restrict Fy           // output: Fy[i][j] = result for term i at k-point j
   );
-
-void Pd1d2(double* k, double* Pin, long Nk, double* Pout);
-
-void Pd2d2(double* k, double* Pin, long Nk, double* Pout);
-
-void Pd1s2(double* k, double* Pin, long Nk, double* Pout);
-
-void Pd2s2(double* k, double* Pin, long Nk, double* Pout);
-
-void Ps2s2(double* k, double* Pin, long Nk, double* Pout);
 
 #ifdef __cplusplus
 }
