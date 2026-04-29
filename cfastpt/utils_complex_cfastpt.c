@@ -216,67 +216,106 @@ void f_z(double z_real, double *z_imag, double complex *fz, long N) {
 // fftconvolve_real: Real-valued FFT convolution of in1 (length N1) and
 // in2 (length N2), result in out (length N1+N2-1).
 //
-// OPTIMIZATIONS:
-// 1. Static caching of memory blocks and FFTW plans (N1 and N2 are always
-//    Nk and 2*Nk-1, so sizes don't change across calls).
-// 2. Three template plans instead of creating/destroying 3 plans per call.
-// 3. Pre-zero-pad tails once at allocation time.
-// 4. Eliminated separate output array c — write directly into out via
-//    fftw_execute_dft_c2r with out as the output buffer.
+// Computes the linear (non-circular) convolution:
+//   out[k] = sum_j  in1[j] * in2[k-j]
+// using the convolution theorem: FFT(in1) * FFT(in2) -> IFFT -> out.
+//
+// Used by IA_ta (deltaE2 term) and IA_mix (B term) for the direct
+// convolution integrals that don't go through J_abJ1J2Jk_ar.
+//
+// OPTIMIZATIONS (vs original fftconvolve_real):
+// 1. Static caching of memory blocks and FFTW plans. The sizes N1 and N2
+//    are always Nk and 2*Nk-1 (set by the IA kernel), so they never change
+//    across calls. Plans and buffers are created once and reused.
+// 2. Two template r2c plans + one c2r plan instead of creating/destroying
+//    3 plans per call. The r2c plans use fftw_execute (same buffers), the
+//    c2r plan uses fftw_execute_dft_c2r to write directly into 'out'.
+// 3. Pre-zero-pad tails once at allocation time. Per-call memcpy only
+//    writes the data portion; the zero-padded tail is untouched.
+// 4. Eliminated the separate output array 'c' — the backward FFT writes
+//    directly into the caller's 'out' buffer via fftw_execute_dft_c2r.
 // ---------------------------------------------------------------------------
 void fftconvolve_real(double *in1, double *in2, long N1, long N2, double *out) {
-  static long s_N1 = 0, s_N2 = 0;
-  static long s_Ntotal = 0, s_Ncomplex = 0;
-  static double s_inv_Ntotal = 0;
-  static double *s_a = NULL, *s_b = NULL;
-  static fftw_complex *s_a1 = NULL, *s_b1 = NULL;
-  static fftw_plan s_pa = NULL, s_pb = NULL, s_pc = NULL;
+  //---------------------------------------------------------------------------
+  // STATIC CACHE: buffers and plans persist across calls.
+  // Rebuilt only if N1 or N2 change (which in practice never happens).
+  // ---------------------------------------------------------------------------
+  static long s_N1 = 0, s_N2 = 0;       // cached input sizes
+  static long s_Ntotal = 0;              // N1 + N2 - 1 (output/FFT size)
+  static long s_Ncomplex = 0;            // number of complex bins in r2c output
+  static double s_inv_Ntotal = 0;        // 1.0 / Ntotal (IFFT normalization)
+  static double *s_a = NULL, *s_b = NULL;           // real input buffers
+  static fftw_complex *s_a1 = NULL, *s_b1 = NULL;  // complex FFT output buffers
+  static fftw_plan s_pa = NULL;          // r2c plan: s_a -> s_a1
+  static fftw_plan s_pb = NULL;          // r2c plan: s_b -> s_b1
+  static fftw_plan s_pc = NULL;          // c2r plan: s_a1 -> out (template)
 
   // Rebuild if sizes changed
   if (s_N1 != N1 || s_N2 != N2) {
+    
+    // Free old buffers and plans if they exist
     if (s_a) {
       fftw_destroy_plan(s_pa);
       fftw_destroy_plan(s_pb);
       fftw_destroy_plan(s_pc);
-      fftw_free(s_a); fftw_free(s_b);
-      fftw_free(s_a1); fftw_free(s_b1);
+      fftw_free(s_a);
+      fftw_free(s_b);
+      fftw_free(s_a1);
+      fftw_free(s_b1);
     }
 
+    // Cache sizes and normalization constant
     s_N1 = N1;
     s_N2 = N2;
     s_Ntotal = N1 + N2 - 1;
-    s_Ncomplex = (s_Ntotal % 2 == 1) ? (s_Ntotal+1)/2 : s_Ntotal/2+1;
+    // Number of complex bins in r2c output: floor(Ntotal/2) + 1
+    s_Ncomplex = (s_Ntotal % 2 == 1) ? (s_Ntotal + 1) / 2 : s_Ntotal / 2 + 1;
     s_inv_Ntotal = 1.0 / (double)s_Ntotal;
 
-    s_a  = fftw_malloc(sizeof(double) * s_Ntotal);
-    s_b  = fftw_malloc(sizeof(double) * s_Ntotal);
+    // Allocate zero-padded real buffers (length Ntotal each).
+    // in1 has N1 data points + (Ntotal-N1) zeros at the tail.
+    // in2 has N2 data points + (Ntotal-N2) zeros at the tail.
+    s_a = fftw_malloc(sizeof(double) * s_Ntotal);
+    s_b = fftw_malloc(sizeof(double) * s_Ntotal);
+
+    // Allocate complex buffers for r2c FFT output
     s_a1 = fftw_malloc(sizeof(fftw_complex) * s_Ncomplex);
     s_b1 = fftw_malloc(sizeof(fftw_complex) * s_Ncomplex);
 
-    // Template plans — applied to different data via fftw_execute_dft_r2c/c2r
+    // Create FFTW plans:
+    //   s_pa, s_pb: forward r2c, always applied to s_a/s_b -> s_a1/s_b1
+    //   s_pc: backward c2r template, created with s_a1 -> s_a but applied
+    //         via fftw_execute_dft_c2r to write into the caller's 'out'
     s_pa = fftw_plan_dft_r2c_1d(s_Ntotal, s_a, s_a1, FFTW_ESTIMATE);
     s_pb = fftw_plan_dft_r2c_1d(s_Ntotal, s_b, s_b1, FFTW_ESTIMATE);
     s_pc = fftw_plan_dft_c2r_1d(s_Ntotal, s_a1, s_a, FFTW_ESTIMATE);
 
-    // Pre-zero-pad tails (only written once; per-call copies don't touch them)
+    // Pre-zero-pad the tails once. Per-call memcpy only overwrites the
+    // data portion (indices 0..N1-1 and 0..N2-1), leaving zeros intact.
     memset(s_a + N1, 0, sizeof(double) * (s_Ntotal - N1));
     memset(s_b + N2, 0, sizeof(double) * (s_Ntotal - N2));
   }
 
-  // Copy inputs (tails stay zero from initialization)
+  // Copy input data into the cached buffers (zero-padded tails untouched)
   memcpy(s_a, in1, sizeof(double) * N1);
   memcpy(s_b, in2, sizeof(double) * N2);
 
-  // Forward FFTs
+  // Forward r2c FFTs: real input -> complex frequency domain
   fftw_execute(s_pa);
   fftw_execute(s_pb);
 
-  // Pointwise multiply in Fourier space
-  for (long i = 0; i < s_Ncomplex; i++)
+  // Pointwise multiply in frequency domain (convolution theorem)
+  for (long i = 0; i < s_Ncomplex; i++) {
     s_a1[i] *= s_b1[i];
+  }
 
-  // Backward FFT + normalize into out
+  // Backward c2r FFT: complex frequency domain -> real output.
+  // Uses fftw_execute_dft_c2r to write directly into caller's 'out'
+  // buffer instead of an intermediate array.
   fftw_execute_dft_c2r(s_pc, s_a1, out);
-  for (long i = 0; i < s_Ntotal; i++)
+  
+  // FFTW's backward transform is unnormalized — divide by Ntotal
+  for (long i = 0; i < s_Ntotal; i++) {
     out[i] *= s_inv_Ntotal;
+  }
 }

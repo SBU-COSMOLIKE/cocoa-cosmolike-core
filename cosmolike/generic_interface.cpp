@@ -399,7 +399,9 @@ void init_bias(vector bias_z_evol_model)
                                           // [1] = b2, 
                                           // [2] = bs2, 
                                           // [3] = b3, 
-                                          // [4] = bmag 
+                                          // [4] = b3 
+                                          // [5] = bmag 
+                                          // [6] = bk 
   */
   for(int i=0; i<nsz; i++) {
     if (std::isnan(bias_z_evol_model(i))) [[unlikely]] {

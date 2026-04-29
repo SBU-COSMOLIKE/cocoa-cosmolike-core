@@ -1490,6 +1490,7 @@ static double int_for_C_gs_tomo_limber_core(
 
         oneloop = 0.5*g4*(b2 * d1d2 + bs2 * d1s2 + b3 * d1p3) + (bk * k * k * PK);
       }
+      
 
       const double C1ZS  = IA_A1_Z1(a, growfac_a, ns);
       const double btazs = IA_BTA_Z1(a, growfac_a, ns);
@@ -1520,6 +1521,7 @@ static double int_for_C_gs_tomo_limber_core(
       }
 
       double oneloop = 0.0;
+      /*
       if (1 == nonlinear_bias) {
         if (0 == nuisance.IA_code){
           get_FPT_bias();
@@ -1550,6 +1552,9 @@ static double int_for_C_gs_tomo_limber_core(
 
         oneloop = 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1p3) + (bk * k * k * PK);
       }
+      */
+
+      printf("ok hello!\n\n\n\n\n");
       
       const double C1ZS = IA_A1_Z1(a, growfac_a, ns);
 
@@ -3635,7 +3640,7 @@ void C_cl_tomo(
   int all_done = 0;
   int ks = 0;
 
-  while (!all_done && ks < limits.LMAX_NOLIMBER) 
+  while (!all_done && ks < limits.LMAX_NOLIMBER)
   {
     if (ks >= limits.LMAX_NOLIMBER - BLOCK) break;
     
@@ -3706,6 +3711,7 @@ void C_cl_tomo(
   }
 
   for (int i=0; i<nbins; i++) {
+    printf("LMAX[%d] = %d\n", i, LMAX[i]);
     for (int k=LMAX[i]; k<limits.LMAX_NOLIMBER+1; k++) {
       Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) :
                                          C_gg_tomo_limber_nointerp(k, i, i, 0);
