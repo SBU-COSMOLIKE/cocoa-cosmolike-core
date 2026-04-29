@@ -120,8 +120,7 @@ void get_FPT_bias(void)
     int beta_ar[13];
     int ell_ar[13];
     int isP13type_ar[13];
-    for (int i = 0; i < NTERMS; i++)
-    {
+    for (int i = 0; i < NTERMS; i++) {
       alpha_ar[i]     = alpha_tab[i];
       beta_ar[i]      = beta_tab[i];
       ell_ar[i]       = ell_tab[i];
@@ -140,31 +139,26 @@ void get_FPT_bias(void)
              NTERMS, &config, Fy);
  
     // --- accumulate 13 Fy terms into 5 bias spectra ---
-    for (int out = 0; out < NOUT; out++)
-    {
-      for (long j = 0; j < Nk; j++)
-      {
+    for (int out = 0; out < NOUT; out++) {
+      for (long j = 0; j < Nk; j++) {
         FPTbias.tab[out][j] = 0.;
       }
     }
-    for (int i = 0; i < NTERMS; i++)
-    {
+    for (int i = 0; i < NTERMS; i++) {
       const int out = out_idx[i];
       const double c = coeff[i];
       #pragma omp parallel for
-      for (long j = 0; j < Nk; j++)
-      {
+      for (long j = 0; j < Nk; j++) {
         FPTbias.tab[out][j] += c * Fy[i][j];
       }
     }
  
-    for (int i = 0; i < NTERMS; i++)
-    {
+    for (int i = 0; i < NTERMS; i++) {
       free(Fy[i]);
     }
     free(Fy);
  
-    // --- Pd1p3: interpolated from precomputed table (unchanged) ---
+    // Pd1p3: interpolated from precomputed table
     #pragma omp parallel for
     for (int i = 0; i < Nk; i++)
     {

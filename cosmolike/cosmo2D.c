@@ -1024,20 +1024,31 @@ static double int_for_C_ss_tomo_limber_core(
       if (1 == EE) {
         double tt, ta_dE1, ta_dE2, ta, mixA, mixB, mixEE;
         if (lnk < lim[0] || lnk > lim[1]) {
-          tt = 0.0; ta_dE1 = 0.0; ta_dE2 = 0.0; ta = 0.0; mixA = 0.0;
-          mixB = 0.0; mixEE = 0.0;
-        } else {
+          tt = 0.0; ta_dE1 = 0.0; ta_dE2 = 0.0; ta = 0.0;
+          mixA = 0.0; mixB = 0.0; mixEE = 0.0;
+        }
+        else {
           const double r = (lnk - lim[0]) / lim[2];
-          const int i = (int) floor(r);
-          const double w = r - i;
-          const int i1 = (i + 1 >= FPTIA.N) ? FPTIA.N - 1 : i + 1;
-          tt     = g4 * (w * (FPTIA.tab[0][i1] - FPTIA.tab[0][i]) + FPTIA.tab[0][i]);
-          ta_dE1 = g4 * (w * (FPTIA.tab[2][i1] - FPTIA.tab[2][i]) + FPTIA.tab[2][i]);
-          ta_dE2 = g4 * (w * (FPTIA.tab[3][i1] - FPTIA.tab[3][i]) + FPTIA.tab[3][i]);
-          ta     = g4 * (w * (FPTIA.tab[4][i1] - FPTIA.tab[4][i]) + FPTIA.tab[4][i]);
-          mixA   = g4 * (w * (FPTIA.tab[6][i1] - FPTIA.tab[6][i]) + FPTIA.tab[6][i]);
-          mixB   = g4 * (w * (FPTIA.tab[7][i1] - FPTIA.tab[7][i]) + FPTIA.tab[7][i]);
-          mixEE  = g4 * (w * (FPTIA.tab[8][i1] - FPTIA.tab[8][i]) + FPTIA.tab[8][i]);
+          const int i = (int)floor(r);
+          if (i + 1 >= FPTIA.N) {
+            tt     = g4 * FPTIA.tab[0][FPTIA.N - 1];
+            ta_dE1 = g4 * FPTIA.tab[2][FPTIA.N - 1];
+            ta_dE2 = g4 * FPTIA.tab[3][FPTIA.N - 1];
+            ta     = g4 * FPTIA.tab[4][FPTIA.N - 1];
+            mixA   = g4 * FPTIA.tab[6][FPTIA.N - 1];
+            mixB   = g4 * FPTIA.tab[7][FPTIA.N - 1];
+            mixEE  = g4 * FPTIA.tab[8][FPTIA.N - 1];
+          }
+          else {
+            const double w = r - i;
+            tt = g4 *(w*(FPTIA.tab[0][i+1] - FPTIA.tab[0][i]) + FPTIA.tab[0][i]);
+            ta_dE1 = g4*(w*(FPTIA.tab[2][i+1] - FPTIA.tab[2][i]) + FPTIA.tab[2][i]);
+            ta_dE2 = g4*(w*(FPTIA.tab[3][i+1] - FPTIA.tab[3][i]) + FPTIA.tab[3][i]);
+            ta = g4*(w*(FPTIA.tab[4][i+1] - FPTIA.tab[4][i]) + FPTIA.tab[4][i]);
+            mixA = g4*(w*(FPTIA.tab[6][i+1] - FPTIA.tab[6][i]) + FPTIA.tab[6][i]);
+            mixB = g4*(w*(FPTIA.tab[7][i+1] - FPTIA.tab[7][i]) + FPTIA.tab[7][i]);
+            mixEE  = g4*(w*(FPTIA.tab[8][i+1] - FPTIA.tab[8][i]) + FPTIA.tab[8][i]);
+          }
         }
 
         ans = WK1*WK2*PK 
@@ -1442,17 +1453,28 @@ static double int_for_C_gs_tomo_limber_core(
       
       const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
 
-      const double mixA = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-        g4*interpol1d(FPTIA.tab[6], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-      
-      const double mixB = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-        g4*interpol1d(FPTIA.tab[7], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-      
-      const double ta_dE1 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-        g4*interpol1d(FPTIA.tab[2], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-      
-      const double ta_dE2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-        g4*interpol1d(FPTIA.tab[3], FPTIA.N, lim[0], lim[1], lim[2], lnk);
+      double mixA, mixB, ta_dE1, ta_dE2;
+      if (lnk < lim[0] || lnk > lim[1]) {
+        mixA = 0.0; mixB = 0.0; ta_dE1 = 0.0; ta_dE2 = 0.0;
+      }
+      else {
+        const double r = (lnk - lim[0]) / lim[2];
+        const int i = (int) floor(r);
+        if (i + 1 >= FPTIA.N)
+        {
+          mixA   = g4 * FPTIA.tab[6][FPTIA.N - 1];
+          mixB   = g4 * FPTIA.tab[7][FPTIA.N - 1];
+          ta_dE1 = g4 * FPTIA.tab[2][FPTIA.N - 1];
+          ta_dE2 = g4 * FPTIA.tab[3][FPTIA.N - 1];
+        }
+        else {
+          const double t = r - i;
+          mixA   = g4 * (t * (FPTIA.tab[6][i+1] - FPTIA.tab[6][i]) + FPTIA.tab[6][i]);
+          mixB   = g4 * (t * (FPTIA.tab[7][i+1] - FPTIA.tab[7][i]) + FPTIA.tab[7][i]);
+          ta_dE1 = g4 * (t * (FPTIA.tab[2][i+1] - FPTIA.tab[2][i]) + FPTIA.tab[2][i]);
+          ta_dE2 = g4 * (t * (FPTIA.tab[3][i+1] - FPTIA.tab[3][i]) + FPTIA.tab[3][i]);
+        }
+      }
 
       double WRSD = 0.0;
       if (1 == include_RSD_GS) {
@@ -1521,7 +1543,7 @@ static double int_for_C_gs_tomo_limber_core(
       }
 
       double oneloop = 0.0;
-      /*
+      
       if (1 == nonlinear_bias) {
         if (0 == nuisance.IA_code){
           get_FPT_bias();
@@ -1552,10 +1574,7 @@ static double int_for_C_gs_tomo_limber_core(
 
         oneloop = 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1p3) + (bk * k * k * PK);
       }
-      */
-
-      printf("ok hello!\n\n\n\n\n");
-      
+          
       const double C1ZS = IA_A1_Z1(a, growfac_a, ns);
 
       ans = (WK - WS*C1ZS)*((WGAL*b1 + WMAG*ell_prefactor*bmag + WRSD)*PK 
