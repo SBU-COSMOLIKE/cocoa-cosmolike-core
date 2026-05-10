@@ -40,7 +40,7 @@ int N_ggl(int zl, int zs); // find tomo bin number tomography combination
 
 int Z1(int Nbin); // find z1 bin of tomo combination (cosmic shear)
 
-int Z2(int Nbin); // find z2 bin of tomo combination (cosmic shear)
+int Z2(int Nbin); // find z1 bin of tomo combination (cosmic shear)
 
 // find tomo bin number tomography combination (cosmic shear)
 int N_shear(int z1, int z2); 
