@@ -44,6 +44,73 @@
 // Caching: recomputed only when cosmology or Ntable settings change
 // (tracked via cosmology.random and Ntable.random hash values).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Pd1p3: direct computation via FFT convolution
+// ---------------------------------------------------------------------------
+static void Pd1p3(double* k, double* Pin, long Nk, double* Pout)
+{
+  const double dL   = log(k[1] / k[0]);
+  const long Ncut   = (long)floor(7.0 / dL);
+
+  double* exps = malloc(sizeof(double) * (size_t)(2*Nk - 1));
+  if (NULL == exps) { log_fatal("malloc failed"); exit(1); }
+  double* f    = malloc(sizeof(double) * (size_t)(2*Nk - 1));
+  if (NULL == f)    { log_fatal("malloc failed"); exit(1); }
+
+  for (int i = 0; i < 2*Nk-1; i++) {
+    exps[i] = exp(-dL * (i - Nk + 1));
+  }
+
+  int i;
+  // Region 1: r >> 1 asymptotic (small i)
+  for (i = 0; i < Nk-1-Ncut; i++) {
+    double r = exps[i];
+    f[i] = (1./126.)*r*(256./5.
+          + 768./(35.*pow(r,2))
+          + 256./(105.*pow(r,4))
+          + 256./(1155.*pow(r,6))
+          + 256./(5005.*pow(r,8)));
+  }
+  // Region 2: exact formula, left of midpoint
+  for ( ; i < Nk-1; i++) {
+    double r = exps[i];
+    f[i] = r*((-6.*r + 22.*pow(r,3) + 22.*pow(r,5) - 6.*pow(r,7))
+          - 3.*pow(r*r-1., 4)*log(fabs(r-1.)/(r+1.)))
+          / 126. / pow(r, 3);
+  }
+  // Midpoint: r = 1 exactly
+  f[Nk-1] = 16./63.;
+  // Region 3: exact formula, right of midpoint
+  for (i = Nk; i < Nk-1+Ncut; i++) {
+    double r = exps[i];
+    f[i] = r*((-6.*r + 22.*pow(r,3) + 22.*pow(r,5) - 6.*pow(r,7))
+          - 3.*pow(r*r-1., 4)*log(fabs(r-1.)/(r+1.)))
+          / 126. / pow(r, 3);
+  }
+  // Region 4: r << 1 asymptotic (large i)
+  for ( ; i < 2*Nk-1; i++) {
+    double r = exps[i];
+    f[i] = (1./126.)*r*(256./5.*r*r
+          - 768./35.*pow(r,4)
+          + 256./105.*pow(r,6)
+          + 256./1155.*pow(r,8));
+  }
+
+  double* g = malloc(sizeof(double) * (size_t)(3*Nk - 2));
+  if (NULL == g) { log_fatal("malloc failed"); exit(1); }
+
+  fftconvolve_real(Pin, f, Nk, 2*Nk-1, g);
+
+  for (i = 0; i < Nk; i++) {
+    Pout[i] = pow(k[i], 3) / (4.*M_PI*M_PI) * Pin[i] * g[Nk-1+i] * dL;
+  }
+
+  free(g);
+  free(f);
+  free(exps);
+}
+
 void get_FPT_bias(void)
 {
   // 13 terms -> 5 output spectra
@@ -158,16 +225,9 @@ void get_FPT_bias(void)
     }
     free(Fy);
  
-    // Pd1p3: interpolated from precomputed table
-    #pragma omp parallel for
-    for (int i = 0; i < Nk; i++)
-    {
-      const double lnk = log(FPTbias.tab[6][i]);
-      FPTbias.tab[5][i] =
-        (lnk < tab_d1d3_lnkmin || lnk > tab_d1d3_lnkmax) ? 0.0 :
-        interpol1d(tab_d1d3, tab_d1d3_Nk, tab_d1d3_lnkmin,
-                   tab_d1d3_lnkmax, tab_d1d3_dlnk, lnk);
-    }
+    // Pd1p3: computed directly via FFT convolution
+    
+    Pd1p3(FPTbias.tab[6], FPTbias.tab[7], Nk, FPTbias.tab[5]);
  
     FPTbias.sigma4 = FPTbias.tab[OUT_D2D2][0] / 2.;
  

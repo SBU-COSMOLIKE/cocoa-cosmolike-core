@@ -9,7 +9,8 @@ namespace py = pybind11;
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/lexical_cast.hpp>
-
+// At the top of generic_interface.cpp, already present
+#include "cosmolike/halo.h"
 // std::isnan: no compile w/ -O3 or -fast-math stackoverflow.com/a/47703550/2472169
 
 static constexpr std::string_view errbegins = "Begins Execution"sv;
@@ -266,7 +267,7 @@ void initial_setup()
   reset_like_struct();
   reset_cmb_struct();
 
-  like.adopt_limber_gg = 0;
+  like.adopt_limber_gg = 1; //YZ comment: originally 0
 
   std::string mode = "Halofit";
   memcpy(pdeltaparams.runmode, mode.c_str(), mode.size() + 1);
@@ -421,6 +422,72 @@ void init_bias(vector bias_z_evol_model)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+void set_nuisance_halo_model(
+    vector A_IA_sat,        // satellite 1-halo amplitude, per lens bin
+    vector A_IA_cen,        // central 2-halo (NLA) amplitude, per lens bin
+    vector eta_IA_cen,      // central NLA redshift evolution, per lens bin
+    vector M_trans_cen,
+    vector w_trans_cen,
+    vector M_trans_sat,
+    vector w_trans_sat
+  )
+{
+  static constexpr std::string_view fname = "set_nuisance_halo_model"sv;
+  debug("{}: {}", fname, errbegins);
+
+  const int nbin = redshift.clustering_nbin;
+  if (0 == nbin) [[unlikely]] {
+    critical(errorns2, fname, "clustering_nbin", 0); exit(1);
+  }
+  if (nbin != static_cast<int>(A_IA_sat.n_elem)  ||
+      nbin != static_cast<int>(M_trans_cen.n_elem) ||
+      nbin != static_cast<int>(w_trans_cen.n_elem) ||
+      nbin != static_cast<int>(M_trans_sat.n_elem) ||
+      nbin != static_cast<int>(w_trans_sat.n_elem)) [[unlikely]] {
+    critical("{}: input vector size != clustering_nbin ({})", fname, nbin);
+    exit(1);
+  }
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  if (nbin > 8) [[unlikely]] {
+    critical("{}: HOD tabulated for <=8 bins, got {}", fname, nbin); exit(1);
+  }
+
+  static const double hod_params[8][6] = {
+    {13.17, 0.39, 14.53, 11.09, 1.27, 1.00},
+    {13.18, 0.30, 14.47, 10.93, 1.36, 1.00},
+    {12.96, 0.38, 14.10, 12.47, 1.28, 1.00},
+    {12.80, 0.35, 13.94, 12.15, 1.52, 1.00},
+    {12.80, 0.35, 13.94, 12.15, 1.52, 1.00},
+    {12.80, 0.35, 13.94, 12.15, 1.52, 1.00},
+    {12.80, 0.35, 13.94, 12.15, 1.52, 1.00},
+    {12.80, 0.35, 13.94, 12.15, 1.52, 1.00},
+  };
+
+  for (int i=0; i<nbin; i++) {
+    if (std::isnan(A_IA_sat(i)) ||
+        std::isnan(M_trans_cen(i)) || std::isnan(w_trans_cen(i)) ||
+        std::isnan(M_trans_sat(i)) || std::isnan(w_trans_sat(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    // ... isnan checks on all seven ...
+    for (int j=0; j<6; j++) nuisance.hod[i][j] = hod_params[i][j];
+    nuisance.hod[i][6] = M_trans_cen(i);
+    nuisance.hod[i][7] = w_trans_cen(i);
+    nuisance.hod[i][8] = M_trans_sat(i);
+    nuisance.hod[i][9] = w_trans_sat(i);
+
+    nuisance.ia[5][i] = A_IA_sat(i);   // satellite 1-halo amplitude
+    nuisance.ia[6][i] = A_IA_cen(i);   // central 2-halo NLA amplitude
+    nuisance.ia[7][i] = eta_IA_cen(i); // central NLA evolution
+  }
+  nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+  nuisance.random_ia = RandomNumber::get_instance().get();
+  debug("{}: {}", fname, errends);
+}
+
 
 void init_binning_fourier(
     const int nells, 
@@ -1023,7 +1090,7 @@ void set_bias_PS(
       fdiff(FPTIA.k_min, kmin) || 
       fdiff(FPTIA.k_max, kmax) || 
       fdiff(FPTIA.k_cutoff, cutoff * coverH0) ||
-      fdiff(FPTbias.sigma4, sigma4 / (coverH0cube))) {
+      fdiff(FPTbias.sigma4, sigma4 / (coverH0cube))) { 
     cache_update = 1;
   }
   else {
@@ -1050,7 +1117,7 @@ void set_bias_PS(
     FPTbias.k_min    = kmin * coverH0;    // input in units of h/Mpc
     FPTbias.k_max    = kmax * coverH0;    // input in units of h/Mpc
     FPTbias.k_cutoff = cutoff *coverH0; // input in units of h/Mpc
-    FPTbias.sigma4   = sigma4 / (coverH0cube);
+    FPTbias.sigma4   = sigma4 / (coverH0cube); 
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
     }
@@ -1778,6 +1845,121 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// DEPRECATED
+void set_nuisance_ia_halo(
+    vector A_IA,
+    vector eta_IA,
+    vector M_trans_cen,
+    vector w_trans_cen,
+    vector M_trans_sat,
+    vector w_trans_sat
+  )
+{
+  static constexpr std::string_view fname = "set_nuisance_ia_halo"sv;
+  debug("{}: {}", fname, errbegins);
+
+  // Validate source bin inputs (A_IA, eta_IA are per source bin)
+  if (0 == redshift.shear_nbin) [[unlikely]] {
+    critical(errorns2, fname, "shear_nbin", 0); exit(1);
+  }
+  if (redshift.shear_nbin != static_cast<int>(A_IA.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, A_IA.n_elem, redshift.shear_nbin); exit(1);
+  }
+  if (redshift.shear_nbin != static_cast<int>(eta_IA.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, eta_IA.n_elem, redshift.shear_nbin); exit(1);
+  }
+
+  // Validate lens bin inputs (red fractions are per lens bin)
+  if (0 == redshift.clustering_nbin) [[unlikely]] {
+    critical(errorns2, fname, "clustering_nbin", 0); exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(M_trans_cen.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, M_trans_cen.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(w_trans_cen.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, w_trans_cen.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(M_trans_sat.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, M_trans_sat.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(w_trans_sat.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, w_trans_sat.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+
+  int cache_update = 0;
+
+  // A_IA and eta_IA map to nuisance.ia — reuse existing IA storage
+  // Store in ia[3][i] and ia[4][i] to avoid collision with NLA parameters
+  for (int i=0; i<redshift.shear_nbin; i++) {
+    if (std::isnan(A_IA(i)) || std::isnan(eta_IA(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    if (fdiff(nuisance.ia[3][i], A_IA(i)) ||
+        fdiff(nuisance.ia[4][i], eta_IA(i))) {
+      nuisance.ia[3][i] = A_IA(i);
+      nuisance.ia[4][i] = eta_IA(i);
+      cache_update = 1;
+    }
+  }
+
+  // Red fraction sigmoid parameters map to hod[ni][6..9]
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (std::isnan(M_trans_cen(i)) || std::isnan(w_trans_cen(i)) ||
+        std::isnan(M_trans_sat(i)) || std::isnan(w_trans_sat(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    if (fdiff(nuisance.hod[i][6], M_trans_cen(i)) ||
+        fdiff(nuisance.hod[i][7], w_trans_cen(i))  ||
+        fdiff(nuisance.hod[i][8], M_trans_sat(i))  ||
+        fdiff(nuisance.hod[i][9], w_trans_sat(i))) {
+      nuisance.hod[i][6] = M_trans_cen(i);
+      nuisance.hod[i][7] = w_trans_cen(i);
+      nuisance.hod[i][8] = M_trans_sat(i);
+      nuisance.hod[i][9] = w_trans_sat(i);
+      cache_update = 1;
+    }
+  }
+
+  if (1 == cache_update) {
+    // Invalidate both the galaxy bias cache (HOD changed) and the IA cache
+    nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+    nuisance.random_ia = RandomNumber::get_instance().get();
+  }
+
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
+
+double compute_n_red_cen(const int ni, const double a)
+{
+  static constexpr std::string_view fname = "compute_n_red_cen"sv;
+  debug("{}: {}", fname, errbegins);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  // func=4 in hm_funcs_nointerp returns raw red central number density
+  const double result = hm_funcs_nointerp(ni, a, 4, 0);
+  debug("{}: {}", fname, errends);
+  return result;
+}
+
+double compute_n_red_sat(const int ni, const double a)
+{
+  static constexpr std::string_view fname = "compute_n_red_sat"sv;
+  debug("{}: {}", fname, errbegins);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  // func=5 in hm_funcs_nointerp returns raw red satellite number density
+  const double result = hm_funcs_nointerp(ni, a, 5, 0);
+  debug("{}: {}", fname, errends);
+  return result;
+}
 
 void set_lens_sample_size(const int Ntomo)
 {
@@ -2726,6 +2908,79 @@ void BaryonScenario::set_scenarios(std::string data_sims, std::string scenarios)
   debug("{}: Registering baryon scenarios for PCA done!", fname);
   debug("{}: {}", fname, errends);
 }
+
+double compute_p_II_1h(const int ni, const double k, const double a)
+{
+  static constexpr std::string_view fname = "compute_p_II_1h"sv;
+  debug("{}: {}", fname, errbegins);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  const double result = p_II_1h_nointerp(k, a, ni);
+  debug("{}: {}", fname, errends);
+  return result;
+}
+double compute_p_II_2h_cen(const int ni, const double k, const double a)
+{
+  static constexpr std::string_view fname = "compute_p_II_2h_cen"sv;
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  return p_II_2h_cen_nointerp(k, a, ni);
+}
+
+double compute_p_dI_2h_cen(const int ni, const double k, const double a)
+{
+  static constexpr std::string_view fname = "compute_p_dI_2h_cen"sv;
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  return p_dI_2h_cen_nointerp(k, a, ni);
+}
+double compute_p_dI_1h(const int ni, const double k, const double a)
+{
+  static constexpr std::string_view fname = "compute_p_dI_1h"sv;
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  return p_dI_1h_nointerp(k, a, ni);
+}
+// Optional: expose the effective bias for sanity-checking
+double compute_b_red_cen(const int ni, const double a)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("compute_b_red_cen: ni={} out of range", ni); exit(1);
+  }
+  return b_red_cen(ni, a);
+}
+
+double compute_test_u_ia_sat(const double k, const double m, const double a)
+{
+  static constexpr std::string_view fname = "compute_test_u_ia_sat"sv;
+  debug("{}: {}", fname, errbegins);
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  if (NULL == cosmology.G) [[unlikely]] {
+    critical("{}: growth factor not set", fname); exit(1);
+  }
+  const double result = test_u_ia_sat(k, m, a);
+  debug("{}: {}", fname, errends);
+  return result;
+}
+
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

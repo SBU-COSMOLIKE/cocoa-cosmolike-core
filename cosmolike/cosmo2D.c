@@ -2002,7 +2002,7 @@ double int_for_C_gg_tomo_limber(double a, void* params)
     lim[1] = log(FPTbias.k_max);
     lim[2] = (lim[1] - lim[0])/FPTbias.N;
 
-    const double s4 = FPTbias.sigma4; // PT_sigma4(k);
+    const double s4 = FPTbias.sigma4; // PT_sigma4(k); commented by YZ
 
     const double d1d2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
       interpol1d(FPTbias.tab[0], FPTbias.N, lim[0], lim[1], lim[2], lnk);

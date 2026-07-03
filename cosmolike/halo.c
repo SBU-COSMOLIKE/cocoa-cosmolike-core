@@ -33,7 +33,7 @@
 double hb1nu(const double nu, const double a)
 { // Halo bias based on peak-background split
 
-  int ans;
+  double ans;
   switch(like.halo_model[1])
   {
     case HALO_BIAS_TINKER_2010:
@@ -336,7 +336,7 @@ double u_c(
     const double a
   ) 
 {
-  int ans;
+  double ans;
   switch(like.halo_model[3])
   {
     case HALO_PROFILE_NFW:
@@ -414,7 +414,12 @@ double HOD_ns(
   if (ni < 0 || ni > redshift.clustering_nbin - 1) { 
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  const double x = (m - pow(10.,nuisance.hod[ni][3]))/pow(10., nuisance.hod[ni][2]);
+  const double x = (m - pow(10., nuisance.hod[ni][3]))/pow(10., nuisance.hod[ni][2]);
+  // Below M_0 the satellite term is undefined (negative base in pow).
+  // Physically there are no satellites below the cutoff mass, so ns = 0.
+  if (x <= 0.0) {
+    return 1.e-15;
+  }
   const double ns = HOD_nc(m, a, ni)*pow(x, nuisance.hod[ni][4]);
   return (ns > 0) ? ns : 1.e-15;
 }
@@ -425,6 +430,22 @@ double HOD_fc(const int ni)
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   return (nuisance.hod[ni][5]) ? nuisance.hod[ni][5] : 1.0;
+}
+
+
+double f_red_cen(const double m, const int ni)
+{
+    // Sigmoid in log10(M), calibrated to MICE or observations
+    // nuisance.hod[ni][6] = log10(M_transition), [7] = width
+    const double x = (log10(m) - nuisance.hod[ni][6]) / nuisance.hod[ni][7];
+    return 0.5 * (1.0 + tanh(x));
+}
+
+double f_red_sat(const double m, const int ni)
+{
+    // Satellites are generally less red than centrals
+    const double x = (log10(m) - nuisance.hod[ni][8]) / nuisance.hod[ni][9];
+    return 0.5 * (1.0 + tanh(x));
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +679,184 @@ double n_s_cmv(double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// Integrand for the satellite IA profile
+// x = r/r_s (dimensionless radius)
+// params[0] = k * r_s (the dimensionless wavenumber)
+// ---------------------------------------------------------------------------
+// Satellite IA Fourier profile gamma_hat(k|M), following Fortuna et al. 2021
+// (arXiv:2003.02700), Sect. 4.1 + Appendix C, and Schneider & Bridle 2010.
+//
+// The satellite intrinsic shape has angular structure sin(theta) e^{2 i phi}
+// (Eq. 9), so its Fourier transform is NOT the monopole (j_0). The angular
+// integral is dominated by the l=2 multipole (paper truncates at l_max=6,
+// evaluated at theta_k = pi/2). We keep the leading l=2 term here.
+//
+// Radial integrand:  gamma_bar(r) * u_NFW(r|M) * j_2(k r) * r^2 dr
+//   - gamma_bar(r) = (r/r_vir)^b   radial alignment strength (G19 fit, b~-2)
+//   - u_NFW(r|M)   ~ 1 / [ (r/rs)(1+r/rs)^2 ]   NFW number-density profile
+//   - j_2(kr)      l=2 spherical Bessel function
+// In terms of x = r/rs (so r = rs x, r_vir = rs c):
+//   gamma_bar = (x/c)^b
+//   u_NFW    ∝ 1/[x (1+x)^2]
+//   r^2 dr   = rs^3 x^2 dx
+//   integrand ∝ (x/c)^b * 1/[x(1+x)^2] * j_2(krs x) * x^2 dx
+//            = c^{-b} * x^{b+1}/(1+x)^2 * j_2(krs x) dx
+// ---------------------------------------------------------------------------
+
+// l=2 spherical Bessel function j_2(u) = (3/u^3 - 1/u) sin u - (3/u^2) cos u
+static inline double sph_bessel_j2(double u)
+{
+    if (u < 1.0e-4) {
+        // small-u series: j_2(u) = u^2/15 - u^4/210 + ...
+        const double u2 = u*u;
+        return u2/15.0 * (1.0 - u2/14.0);
+    }
+    const double u2 = u*u;
+    const double u3 = u2*u;
+    return (3.0/u3 - 1.0/u)*sin(u) - (3.0/u2)*cos(u);
+}
+
+// x = r/rs (dimensionless radius)
+// params[0] = k*rs   (dimensionless wavenumber)
+// params[1] = c      (concentration, needed for the gamma_bar normalization)
+// params[2] = b      (radial power-law slope of gamma_bar; ~ -2 from G19)
+// x = r/rs;  params[0]=krs, params[1]=c, params[2]=b, params[3]=x_floor
+// x_floor = r_floor/rs, where r_floor ~ 0.06 Mpc/h (Fortuna 2021 / G19)
+double int_u_ia_sat(double x, void* params)
+{
+    const double* ar = (double*) params;
+    const double krs     = ar[0];
+    const double c       = ar[1];
+    const double b       = ar[2];
+    const double x_floor = ar[3];
+
+    const double j2 = sph_bessel_j2(krs * x);
+
+    // gamma_bar(r) = (r/r_vir)^b for r > r_floor, held CONSTANT below r_floor
+    // (Fortuna 2021: radial power law floored at small radius to avoid the
+    //  unphysical central divergence for b<0).
+    const double x_eff = (x > x_floor) ? x : x_floor;
+    const double gamma_bar = pow(x_eff / c, b);
+
+    // NFW number-density profile * r^2 measure:  x/(1+x)^2
+    const double nfw_r2 = x / ((1.0 + x)*(1.0 + x));
+
+    return gamma_bar * nfw_r2 * j2;
+}
+// Satellite IA Fourier profile.
+// c = concentration, k = wavenumber, m = halo mass, a = scale factor.
+double u_ia_sat(const double c, const double k, const double m, const double a)
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static gsl_integration_glfixed_table* w = NULL;
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
+    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(szint);
+    cache[0] = Ntable.random;
+  }
+
+  const double rho_delta = Delta * cosmology.rho_crit * cosmology.Omega_m;
+  const double r_delta   = pow(3.0/(4.0*M_PI) * (m/rho_delta), 1.0/3.0);
+  const double rs        = r_delta / c;
+  const double krs       = k * rs;
+
+  const double b_slope = -2.0;
+  const double r_floor_code = 0.06 / cosmology.coverH0;
+  const double x_floor = r_floor_code / rs;
+
+  const double norm = log(1.0 + c) - c/(1.0 + c);   // NFW mass norm
+
+  double ar[4] = {krs, c, b_slope, x_floor};
+  gsl_function F;
+  F.function = int_u_ia_sat;
+  F.params   = (void*) ar;
+  const double result = gsl_integration_glfixed(&F, 0.0, c, w);
+
+  const double f2_angular = 1.0;
+  return f2_angular * result / norm;
+}
+
+//debug
+
+// Standalone test accessor for the satellite IA Fourier profile gamma_hat(k|M).
+// Computes concentration internally so it can be called with just (k, m, a).
+// Use to validate the single-halo profile shape against Fortuna 2021 Fig. C1.
+double test_u_ia_sat(const double k, const double m, const double a)
+{
+  const double growfac_a = growfac(a);
+  const double c = conc(m, growfac_a);
+  return u_ia_sat(c, k, m, a);
+}
+
+double int_for_IA(double lnM, void* params)
+{
+    // ... unpack params: a, k, ni, growfac_a, ia_func
+    // ... compute nu, dNdlnM, c exactly as in int_for_I02_XY
+    double* ar      = (double*) params;
+    const double a          = ar[0];
+    const double k          = ar[1];
+    const int    ni         = (int) ar[2];
+    const int    ia_func    = (int) ar[3];
+    const double growfac_a  = ar[4];
+    const double m          = exp(lnM);
+
+    const double nu     = delta_c / (sqrt(sigma2(m)) * growfac_a);
+    const double gnu    = fnu(nu, a) * nu;
+    const double rhom   = cosmology.rho_crit * cosmology.Omega_m;
+    const double dNdlnM = gnu * (rhom / m) * dlognudlogm(m);
+    const double c      = conc(m, growfac_a);
+    
+    const double nc      = HOD_nc(m, a, ni);
+    const double ns      = HOD_ns(m, a, ni);
+    const double fc      = HOD_fc(ni);
+    const double fred_c  = f_red_cen(m, ni);
+    const double fred_s  = f_red_sat(m, ni);
+    
+    // Red central number density contribution
+    const double nc_red  = fc * nc * fred_c;
+    // Red satellite number density contribution  
+    const double ns_red  = ns * fred_s;
+    
+    // u_IA: the radial alignment profile for satellites
+    // This is the NFW profile derivative (Schneider & Bridle 2010, Eq. 13)
+    //const double u_ia = u_ia_sat(c, k, m, a); // new function to implement
+    
+    switch(ia_func) {
+        case 0: // n_red_cen
+            return dNdlnM * nc_red;
+        case 1: // n_red_sat
+            return dNdlnM * ns_red;
+
+        case 2: // 1-halo II: sat-sat
+            {
+              const double u_ia = u_ia_sat(c, k, m, a);
+            
+              // only dump ~40 lines near k_phys=10 (code units: k_phys*coverH0)
+              //static int dbg = 0;
+              //if (fabs(k - 10.0*cosmology.coverH0) < 0.05*cosmology.coverH0 && dbg < 40) {
+              //  fprintf(stderr, "M=%.3e dNdlnM=%.3e ns_red=%.3e u_ia=%.3e integrand=%.3e\n",
+              //          m, dNdlnM, ns_red, u_ia, dNdlnM*ns_red*ns_red*u_ia*u_ia);
+              //  fflush(stderr);
+              //  dbg++;
+              //}
+
+              return dNdlnM * ns_red * ns_red * u_ia * u_ia;
+            }
+          
+        case 3: // 1-halo dI: matter-sat
+        {
+          const double u_ia = u_ia_sat(c, k, m, a);
+          return dNdlnM * (m/rhom) * u_c(c,k,m,a) * ns_red * u_ia;
+        }
+        
+        default:
+        {
+          log_fatal("ia_func = %d not supported", ia_func);
+          exit(1);
+        }
+    }
+}
 
 double int_hm_funcs(double lnM, void* params)
 { // 0 = ngal, 1 = m_mean, 2 = fsat, 3 = bgal 
@@ -678,8 +877,12 @@ double int_hm_funcs(double lnM, void* params)
   const double dNdlnM = gnu * (rhom/m) * dlognudlogm(m);
   
   const double nc = HOD_fc(ni)*HOD_nc(m, a, ni);
-  const double ns = HOD_ns(ni, a, ni);
-  
+  const double ns = HOD_ns(m, a, ni);
+  const double frc = f_red_cen(m, ni);
+  const double frs = f_red_sat(m, ni);
+
+
+
   double res;
   switch(func)
   {
@@ -703,6 +906,27 @@ double int_hm_funcs(double lnM, void* params)
       res = hb1nu(nu, a)*(dNdlnM*(nc + ns));
       break;
     }
+    case 4:
+    {
+      res = dNdlnM * nc * frc;
+      break;
+    }
+    case 5:
+    {
+      res = dNdlnM * ns * frs;
+      break;
+    }
+    case 6:
+    {
+      res = dNdlnM * nc * (1 - frc);
+      break;
+    }
+    case 7:
+    {
+      res = dNdlnM * ns * (1 - frs);
+      break;
+    }
+
     default:
     {
       log_fatal("option not supported");
@@ -811,11 +1035,9 @@ double hm_funcs_nointerp(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
-
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-
   if (w == NULL || fdiff2(cache[0], Ntable.random))
   {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
@@ -823,11 +1045,9 @@ double hm_funcs_nointerp(
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
   }
-
   double ar[4] = {a, (double) ni, (double) func, growfac(a)}; 
   const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
   const double lnMmax = log(limits.halo_m_max);
-
   double res = 0.0;
   if (init == 1)
     res = int_hm_funcs((lnMmin + lnMmax)/2.0, (void*) ar);
@@ -838,7 +1058,17 @@ double hm_funcs_nointerp(
     F.function = int_hm_funcs;
     res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
   }
-  return (func == 1 || func == 2) ? res/ngal(ni, a) : res;
+  // func=1 (<M>/n_gal) and func=2 (f_sat = n_sat/n_gal) are normalized by n_gal.
+  // func=0 (n_gal), func=3 (bias-weighted density), and func=4-7 (red/blue 
+  // sub-population densities) are raw integrals and must NOT be divided by n_gal.
+  switch(func)
+  {
+    case 1: // mean halo mass per galaxy
+    case 2: // satellite fraction
+      return res / ngal(ni, a);
+    default: // all other cases: raw number densities
+      return res;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1125,6 +1355,180 @@ double int_for_G02(double lnM, void* param)
   const double fc = HOD_fc(ni);
 
   return dNdlnM*(u*u*ns*ns + 2.0*u*ns*nc*fc);
+}
+
+// ---------------------------------------------------------------------------
+// IA POWER SPECTRUM ASSEMBLY (1-halo II, satellite-satellite)
+// ---------------------------------------------------------------------------
+
+// Mass integral of int_for_IA for a given ia_func case.
+// Returns the raw integral (no n_bar normalization, no amplitude).
+double I_for_IA_nointerp(
+    const double k,
+    const double a,
+    const int ni,
+    const int ia_func,
+    const int init
+  )
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static gsl_integration_glfixed_table* w = NULL;
+
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
+    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(szint);
+    cache[0] = Ntable.random;
+  }
+
+  double ar[5] = {a, k, (double) ni, (double) ia_func, growfac(a)};
+  const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
+  const double lnMmax = log(limits.halo_m_max);
+
+  double res;
+  if (1 == init) {
+    res = int_for_IA((lnMmin + lnMmax)/2.0, (void*) ar);
+  }
+  else {
+    gsl_function F;
+    F.params = (void*) ar;
+    F.function = int_for_IA;
+    res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
+  }
+  return res;
+}
+
+// n_bar for red satellites: ∫ dlnM (dN/dlnM) n_sat_red(M)
+// This is exactly int_for_IA case 1 integrated over mass.
+double n_red_sat_bar(const int ni, const double a)
+{
+  return I_for_IA_nointerp(0.0, a, ni, 1, 0); // k unused for case 1
+}
+
+// 1-halo II satellite power spectrum, normalized and amplitude-weighted.
+// P_II^1h(k,a,ni) = A^2 * [ ∫dlnM dN/dlnM n_sat_red^2 u_ia^2 ] / n_bar^2
+double p_II_1h_nointerp(const double k, const double a, const int ni)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  const double nbar = n_red_sat_bar(ni, a);
+  if (!(nbar > 0)) {
+    return 0.0;
+  }
+  // Constant alignment amplitude stored by set_nuisance_ia_halo in ia[3][ni].
+  // NOTE: ia[3] is indexed per *source* bin in set_nuisance_ia_halo, but here
+  // ni is a *lens* bin. See the amplitude caveat in the notes below.
+  const double A = nuisance.ia[5][ni];;//nuisance.ia[3][ni];
+
+  const double I_II = I_for_IA_nointerp(k, a, ni, 2, 0);
+
+  return (A*A) * I_II / (nbar*nbar);
+}
+// ---------------------------------------------------------------------------
+// 2-HALO CENTRAL IA (NLA limit)
+// ---------------------------------------------------------------------------
+
+// Integrand for red-central bias-weighted density.
+// func: 0 = bias-weighted numerator  ∫ dN/dlnM b1(M) n_cen_red(M)
+//       1 = density normalization     ∫ dN/dlnM n_cen_red(M)
+double int_for_bred_cen(double lnM, void* params)
+{
+  double* ar = (double*) params;
+  const double a         = ar[0];
+  const int    ni        = (int) ar[1];
+  const int    func      = (int) ar[2];
+  const double growfac_a = ar[3];
+  const double m         = exp(lnM);
+
+  const double nu     = delta_c/(sqrt(sigma2(m))*growfac_a);
+  const double gnu    = fnu(nu, a)*nu;
+  const double rhom   = cosmology.rho_crit*cosmology.Omega_m;
+  const double dNdlnM = gnu*(rhom/m)*dlognudlogm(m);
+
+  const double nc      = HOD_nc(m, a, ni);
+  const double fc      = HOD_fc(ni);
+  const double fred_c  = f_red_cen(m, ni);
+  const double nc_red  = fc * nc * fred_c;
+
+  if (func == 0) {
+    return dNdlnM * hb1nu(nu, a) * nc_red;   // bias-weighted
+  } else {
+    return dNdlnM * nc_red;                    // density (normalization)
+  }
+}
+
+double I_bred_cen_nointerp(const double a, const int ni, const int func,
+                           const int init)
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static gsl_integration_glfixed_table* w = NULL;
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
+    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(szint);
+    cache[0] = Ntable.random;
+  }
+  double ar[4] = {a, (double) ni, (double) func, growfac(a)};
+  const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
+  const double lnMmax = log(limits.halo_m_max);
+  double res;
+  if (1 == init) {
+    res = int_for_bred_cen((lnMmin+lnMmax)/2.0, (void*) ar);
+  } else {
+    gsl_function F;
+    F.params = (void*) ar;
+    F.function = int_for_bred_cen;
+    res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
+  }
+  return res;
+}
+
+// Effective linear bias of the red central population in lens bin ni.
+double b_red_cen(const int ni, const double a)
+{
+  const double num = I_bred_cen_nointerp(a, ni, 0, 0);
+  const double den = I_bred_cen_nointerp(a, ni, 1, 0);
+  return (den > 0) ? num/den : 0.0;
+}
+
+// NLA amplitude for centrals (standard cosmolike form):
+//   A_NLA(a) = -A_IA * C1 * rho_crit * Omega_m / D(a) * ((1+z)/(1+z0))^eta
+// A_IA and eta read from the lens-bin slots ia[6], ia[7]
+// (set by set_nuisance_halo_model).
+double A_nla_cen(const int ni, const double a)
+{
+  const double z    = 1.0/a - 1.0;
+  const double D     = growfac(a);
+  const double A_IA  = nuisance.ia[6][ni];
+  const double eta   = nuisance.ia[7][ni];
+  const double z0    = (nuisance.oneplusz0_ia > 0) ? nuisance.oneplusz0_ia - 1.0 : 0.62;
+
+  const double amp = -A_IA * nuisance.c1rhocrit_ia * cosmology.Omega_m / D;
+  const double zev = pow((1.0 + z)/(1.0 + z0), eta);
+  return amp * zev;
+}
+
+// 2-halo central II (intrinsic-intrinsic) power spectrum, NLA limit.
+double p_II_2h_cen_nointerp(const double k, const double a, const int ni)
+{
+  const double A = A_nla_cen(ni, a);
+  const double b = b_red_cen(ni, a);
+  return (A*b)*(A*b) * p_lin(k, a);
+}
+
+// 2-halo central dI (density-intrinsic / matter-IA) power spectrum, NLA limit.
+double p_dI_2h_cen_nointerp(const double k, const double a, const int ni)
+{
+  const double A = A_nla_cen(ni, a);
+  const double b = b_red_cen(ni, a);
+  return (A*b) * p_lin(k, a);
 }
 
 // ---------------------------------------------------------------------------
@@ -1608,6 +2012,23 @@ double p_gg(
                Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1], lim[nbin][2], log(k)));
 }
 
+// 1-halo dI (matter-satellite) power spectrum.
+// P_dI^1h(k,a,ni) = A * [ ∫dlnM dN/dlnM (M/rhom) u_c n_sat_red u_ia ] / n_bar
+double p_dI_1h_nointerp(const double k, const double a, const int ni)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  const double nbar = n_red_sat_bar(ni, a);   // ∫ dN/dlnM n_sat_red  (case 1)
+  if (!(nbar > 0)) {
+    return 0.0;
+  }
+  const double A = nuisance.ia[5][ni];          // satellite amplitude, lens-bin slot
+  const double I_dI = I_for_IA_nointerp(k, a, ni, 3, 0);  // case 3 = matter-sat
+
+  return A * I_dI / nbar;
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -1616,7 +2037,7 @@ double p_gg(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
+/*
 void set_HOD(const int ni)
 { 
   const double z = zmean(ni);
@@ -1637,6 +2058,10 @@ void set_HOD(const int ni)
       nuisance.hod[0][3] = 11.09;
       nuisance.hod[0][4] = 1.27;
       nuisance.hod[0][5] = 1.00;
+      nuisance.hod[0][6] = 13.0;   // log10(M_transition) for red centrals
+      nuisance.hod[0][7] = 0.5;    // width of sigmoid for red centrals
+      nuisance.hod[0][8] = 12.5;   // log10(M_transition) for red satellites
+      nuisance.hod[0][9] = 0.5;    // width of sigmoid for red satellites
       nuisance.gb[0][ni] = bgal(ni, a);      
       break;
     }
@@ -1648,6 +2073,10 @@ void set_HOD(const int ni)
       nuisance.hod[1][3] = 10.93;
       nuisance.hod[1][4] = 1.36;
       nuisance.hod[1][5] = 1.00;
+      nuisance.hod[1][6] = 13.0;   // log10(M_transition) for red centrals
+      nuisance.hod[1][7] = 0.5;    // width of sigmoid for red centrals
+      nuisance.hod[1][8] = 12.5;   // log10(M_transition) for red satellites
+      nuisance.hod[1][9] = 0.5;    // width of sigmoid for red satellites
       nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
       break;
     }
@@ -1659,6 +2088,10 @@ void set_HOD(const int ni)
       nuisance.hod[2][3] = 12.47;
       nuisance.hod[2][4] = 1.28;
       nuisance.hod[2][5] = 1.00;
+      nuisance.hod[2][6] = 13.0;   // log10(M_transition) for red centrals
+      nuisance.hod[2][7] = 0.5;    // width of sigmoid for red centrals
+      nuisance.hod[2][8] = 12.5;   // log10(M_transition) for red satellites
+      nuisance.hod[2][9] = 0.5;    // width of sigmoid for red satellites
       nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
       break;
     }
@@ -1670,6 +2103,10 @@ void set_HOD(const int ni)
       nuisance.hod[3][3] = 12.15;
       nuisance.hod[3][4] = 1.52;
       nuisance.hod[3][5] = 1.00;
+      nuisance.hod[3][6] = 13.0;   // log10(M_transition) for red centrals
+      nuisance.hod[3][7] = 0.5;    // width of sigmoid for red centrals
+      nuisance.hod[3][8] = 12.5;   // log10(M_transition) for red satellites
+      nuisance.hod[3][9] = 0.5;    // width of sigmoid for red satellites
       nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
       break;
     }
@@ -1681,6 +2118,10 @@ void set_HOD(const int ni)
       nuisance.hod[4][3] = 12.15;
       nuisance.hod[4][4] = 1.52;
       nuisance.hod[4][5] = 1.00;
+      nuisance.hod[4][6] = 13.0;   // log10(M_transition) for red centrals
+      nuisance.hod[4][7] = 0.5;    // width of sigmoid for red centrals
+      nuisance.hod[4][8] = 12.5;   // log10(M_transition) for red satellites
+      nuisance.hod[4][9] = 0.5;    // width of sigmoid for red satellites
       nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
       break;
     }
@@ -1700,3 +2141,4 @@ void set_HOD(const int ni)
   
   log_debug("HOD: bin %d; <z> %.2f; <b_g> %.2f", ni, z, nuisance.gb[0][ni]);
 }
+*/

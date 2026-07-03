@@ -677,6 +677,34 @@ void set_nuisance_shear_photoz(
     arma::Col<double> SP
   );
 
+// In generic_interface.hpp, alongside other set_nuisance_* declarations
+
+void set_nuisance_ia_halo(
+    arma::Col<double> A_IA,      // IA amplitude per source bin
+    arma::Col<double> eta_IA,    // luminosity/redshift slope per source bin
+    arma::Col<double> M_trans_cen,  // log10(M_transition) for red centrals, per lens bin
+    arma::Col<double> w_trans_cen,  // sigmoid width for red centrals, per lens bin
+    arma::Col<double> M_trans_sat,  // log10(M_transition) for red satellites, per lens bin
+    arma::Col<double> w_trans_sat   // sigmoid width for red satellites, per lens bin
+  );
+// In generic_interface.hpp, alongside other set_nuisance_* declarations
+void set_nuisance_halo_model(
+    arma::Col<double> A_IA_sat,
+    arma::Col<double> A_IA_cen,
+    arma::Col<double> eta_IA_cen,
+    arma::Col<double> M_trans_cen,
+    arma::Col<double> w_trans_cen,
+    arma::Col<double> M_trans_sat,
+    arma::Col<double> w_trans_sat
+  );
+
+// Compute the 1-halo IA power spectrum integrals (no interpolation table)
+double compute_n_red_cen(const int ni, const double a);
+double compute_n_red_sat(const int ni, const double a);
+double compute_p_ia_1h_II(const double k, const double a, const int ni);
+double compute_p_ia_1h_deltaI(const double k, const double a, const int ni);
+double compute_p_dI_1h(const int ni, const double k, const double a);
+
 void set_lens_sample_size(const int Ntomo);
 
 void set_lens_sample(arma::Mat<double> input_table);
@@ -1333,6 +1361,12 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
   }
   this->is_mask_set_ = true;
 }
+
+double compute_p_II_1h(const int ni, const double k, const double a);
+double compute_p_II_2h_cen(const int ni, const double k, const double a);
+double compute_p_dI_2h_cen(const int ni, const double k, const double a);
+double compute_b_red_cen(const int ni, const double a);
+double compute_test_u_ia_sat(const double k, const double m, const double a);
 
 }  // namespace cosmolike_interface
 #endif // HEADER GUARD

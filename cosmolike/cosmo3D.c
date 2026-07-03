@@ -550,7 +550,13 @@ double sigma2_nointerp(
     cache[0] = Ntable.random;
   }
   
-  double ar[1] = {pow(0.75*M/(M_PI*cosmology.rho_crit*cosmology.Omega_m),1./3.)};
+  // ar must carry BOTH the filter radius R (ar[0]) and the scale factor a (ar[1]).
+  // int_for_sigma2 reads ar[1]; a length-1 array caused an out-of-bounds read
+  // that fed garbage as the scale factor to p_lin, producing NaN.
+  double ar[2] = {
+    pow(0.75*M/(M_PI*cosmology.rho_crit*cosmology.Omega_m), 1./3.),
+    a
+  };
   const double xmin = 0;
   const double xmax = 14.1;
 
@@ -566,6 +572,7 @@ double sigma2_nointerp(
   }
   return res;
 }
+
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
