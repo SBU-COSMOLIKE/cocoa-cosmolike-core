@@ -847,7 +847,7 @@ double int_for_IA(double lnM, void* params)
         case 3: // 1-halo dI: matter-sat
         {
           const double u_ia = u_ia_sat(c, k, m, a);
-          return dNdlnM * (m/rhom) * u_c(c,k,m,a) * ns_red * u_ia;
+          return dNdlnM * (m/rhom) * u_c(c,k,m,a) * ns_red * fabs(u_ia);
         }
         
         default:
