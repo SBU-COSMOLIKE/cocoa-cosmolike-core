@@ -29,7 +29,7 @@
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-static const double F2_ANGULAR = 3 * M_PI  / 2.0;   // ~= 4.712
+
 double hb1nu(const double nu, const double a)
 { // Halo bias based on peak-background split
 
@@ -736,8 +736,7 @@ double int_u_ia_sat(double x, void* params)
     // (Fortuna 2021: radial power law floored at small radius to avoid the
     //  unphysical central divergence for b<0).
     const double x_eff = (x > x_floor) ? x : x_floor;
-    double gamma_bar = pow(x_eff / c, b);
-    if (gamma_bar > 0.3) gamma_bar = 0.3;   // Eq. 20: perfect-alignment ceiling
+    const double gamma_bar = pow(x_eff / c, b);
 
     // NFW number-density profile * r^2 measure:  x/(1+x)^2
     const double nfw_r2 = x / ((1.0 + x)*(1.0 + x));
@@ -774,7 +773,7 @@ double u_ia_sat(const double c, const double k, const double m, const double a)
   F.params   = (void*) ar;
   const double result = gsl_integration_glfixed(&F, 0.0, c, w);
 
-  const double f2_angular = F2_ANGULAR;
+  const double f2_angular = 1.0;
   return f2_angular * result / norm;
 }
 
@@ -1521,7 +1520,7 @@ double p_II_2h_cen_nointerp(const double k, const double a, const int ni)
 {
   const double A = A_nla_cen(ni, a);
   const double b = b_red_cen(ni, a);
-  return (A*b)*(A*b) * Pdelta(k, a);
+  return (A*b)*(A*b) * p_lin(k, a);
 }
 
 // 2-halo central dI (density-intrinsic / matter-IA) power spectrum, NLA limit.
@@ -1529,7 +1528,7 @@ double p_dI_2h_cen_nointerp(const double k, const double a, const int ni)
 {
   const double A = A_nla_cen(ni, a);
   const double b = b_red_cen(ni, a);
-  return (A*b) * Pdelta(k, a);
+  return (A*b) * p_lin(k, a);
 }
 
 // ---------------------------------------------------------------------------
