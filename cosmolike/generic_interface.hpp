@@ -1367,6 +1367,12 @@ double compute_p_II_2h_cen(const int ni, const double k, const double a);
 double compute_p_dI_2h_cen(const int ni, const double k, const double a);
 double compute_b_red_cen(const int ni, const double a);
 double compute_test_u_ia_sat(const double k, const double m, const double a);
-
+double compute_p_gg(const int ni, const double k, const double a);
+double compute_p_gm(const int ni, const double k, const double a);
+double compute_p_mm(const double k, const double a);
+double compute_bgal(const int ni, const double a);
+double compute_ngal(const int ni, const double a);
+double compute_p_gg_1h(const int ni, const double k, const double a);
+double compute_p_gg_2h(const int ni, const double k, const double a);
 }  // namespace cosmolike_interface
 #endif // HEADER GUARD

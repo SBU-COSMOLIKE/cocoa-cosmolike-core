@@ -2980,7 +2980,85 @@ double compute_test_u_ia_sat(const double k, const double m, const double a)
   debug("{}: {}", fname, errends);
   return result;
 }
+double compute_p_gg(const int ni, const double k, const double a)
+{
+  static constexpr std::string_view fname = "compute_p_gg"sv;
+  debug("{}: {}", fname, errbegins);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  const double result = p_gg(k, a, ni, ni);
+  debug("{}: {}", fname, errends);
+  return result;
+}
 
+double compute_p_gm(const int ni, const double k, const double a)
+{
+  static constexpr std::string_view fname = "compute_p_gm"sv;
+  debug("{}: {}", fname, errbegins);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  const double result = p_gm(k, a, ni);
+  debug("{}: {}", fname, errends);
+  return result;
+}
+
+double compute_p_mm(const double k, const double a)
+{
+  static constexpr std::string_view fname = "compute_p_mm"sv;
+  debug("{}: {}", fname, errbegins);
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: linear power spectrum not set", fname); exit(1);
+  }
+  const double result = p_mm(k, a);
+  debug("{}: {}", fname, errends);
+  return result;
+}
+
+double compute_bgal(const int ni, const double a)
+{
+  static constexpr std::string_view fname = "compute_bgal"sv;
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  return bgal(ni, a);
+}
+
+double compute_ngal(const int ni, const double a)
+{
+  static constexpr std::string_view fname = "compute_ngal"sv;
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  return ngal(ni, a);
+}
+double compute_p_gg_1h(const int ni, const double k, const double a)
+{ // 1-halo term only: G02/(ng*ng)
+  static constexpr std::string_view fname = "compute_p_gg_1h"sv;
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  const double ng = ngal(ni, a);
+  if (!(ng > 0)) return 0.0;
+  return G02_nointerp(k, a, ni, 0) / (ng*ng);
+}
+
+double compute_p_gg_2h(const int ni, const double k, const double a)
+{ // 2-halo term only: Pdelta*bg*bg
+  static constexpr std::string_view fname = "compute_p_gg_2h"sv;
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
+    critical("{}: ni={} out of range", fname, ni); exit(1);
+  }
+  const double bg = bgal(ni, a);
+  return Pdelta(k, a) * bg * bg;
+}
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

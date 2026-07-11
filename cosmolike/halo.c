@@ -372,7 +372,9 @@ double u_g(
     const int ni
   ) 
 {
-  return u_nfw_c(c*nuisance.gc[ni], k, m, a);
+  double gc = nuisance.gc[ni];
+  if (!(gc > 0)) gc = 1.0;      // default: galaxies trace DM
+  return u_nfw_c(c*gc, k, m, a);
 
 }
 
@@ -435,11 +437,12 @@ double HOD_fc(const int ni)
 
 double f_red_cen(const double m, const int ni)
 {
-    // Sigmoid in log10(M), calibrated to MICE or observations
-    // nuisance.hod[ni][6] = log10(M_transition), [7] = width
-    const double x = (log10(m) - nuisance.hod[ni][6]) / nuisance.hod[ni][7];
+    const double w = nuisance.hod[ni][7];
+    if (!(w > 0)) return 0.0;   // unset/zero width -> no red split (avoid div-by-0)
+    const double x = (log10(m) - nuisance.hod[ni][6]) / w;
     return 0.5 * (1.0 + tanh(x));
 }
+
 
 double f_red_sat(const double m, const int ni)
 {
@@ -662,14 +665,14 @@ double u_y_ejc(double m)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
+/*
 double n_s_cmv(double a) 
 { 
   double dV_dz = pow(f_K(chi(a)), 2.0) / hoverh0(a); // comoving dV/dz per radian^2
-  return zdistr_photoz(1.0/a - 1., -1) * survey.n_gal * 
+  return nz_source_photoz(1.0/a - 1., -1) * survey.n_gal * 
     survey.n_gal_conversion_factor / dV_dz; // dN/dz/radian^2/(dV/dz/radian^2)
 }
-
+*/
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -881,6 +884,7 @@ double int_hm_funcs(double lnM, void* params)
   const double ns = HOD_ns(m, a, ni);
   const double frc = f_red_cen(m, ni);
   const double frs = f_red_sat(m, ni);
+  
 
 
 
@@ -1010,7 +1014,7 @@ double ngal(const int ni, const double a)
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<redshift.clustering_nbin; i++) {
       for (int j=0; j<Ntable.N_a; j++) {
-        table[j][i] = ngal_nointerp(i, lim[0] + j*lim[2], 0);
+        table[i][j] = ngal_nointerp(i, lim[0] + j*lim[2], 0);
       }
     }
     cache[0] = cosmology.random;
@@ -1066,6 +1070,7 @@ double hm_funcs_nointerp(
   {
     case 1: // mean halo mass per galaxy
     case 2: // satellite fraction
+    case 3: // effective galaxy bias = <b1 * n_g> / n_gal
       return res / ngal(ni, a);
     default: // all other cases: raw number densities
       return res;
@@ -1144,7 +1149,7 @@ double bgal(const int ni, const double a)
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<redshift.clustering_nbin; i++) {
       for (int j=0; j<Ntable.N_a; j++) {
-        table[j][i] = bgal_nointerp(i, lim[0] + j*lim[2], 0);
+        table[i][j] = bgal_nointerp(i, lim[0] + j*lim[2], 0);
       }
     }
     cache[0] = cosmology.random;
@@ -1354,6 +1359,7 @@ double int_for_G02(double lnM, void* param)
   const double ns = HOD_ns(m, a, ni);
   const double nc = HOD_nc(m, a, ni);
   const double fc = HOD_fc(ni);
+  
 
   return dNdlnM*(u*u*ns*ns + 2.0*u*ns*nc*fc);
 }
@@ -1855,7 +1861,10 @@ double p_gm_nointerp(
     const int init
   )
 {
-  return Pdelta(k, a)*bgal(ni, a) + GM02_nointerp(k, a, ni, init)/ngal(ni, a);
+  const double bg = bgal(ni, a);
+  const double ng = ngal(ni, a);
+  if (!(ng > 0)) return 1.0e-30;   // avoid div-by-zero
+  return Pdelta(k, a)*bg + GM02_nointerp(k, a, ni, init)/ng;
 }
 
 // ---------------------------------------------------------------------------
@@ -1901,7 +1910,10 @@ double p_gm(
       fdiff2(cache[3], redshift.random_clustering))
   { 
     (void) p_gm_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1); // init static vars
-    #pragma omp parallel for collapse(3) schedule(static,1)
+    (void) bgal(0, lim[0][0]);
+    (void) ngal(0, lim[0][0]);
+    (void) Pdelta(exp(lim[nbin][0]), lim[0][0]);
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int l=0; l<redshift.clustering_nbin; l++) {
       for (int i=0; i<na; i++) {
         for (int j=0; j<Ntable.N_k_nlin; j++) {
@@ -1928,21 +1940,18 @@ double p_gm(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double p_gg_nointerp(
-    const double k, 
-    const double a, 
-    const int ni, 
-    const int nj,
-    const int init
-  )
+double p_gg_nointerp(const double k, const double a, const int ni, const int nj, const int init)
 {
-  if (ni != nj) {
-    log_fatal("cross-tomography (ni,nj) = (%d,%d) bins not supported", ni, nj);
-    exit(1);
-  }
-  const double bg = bgal(ni, a);
-  const double ng = ngal(ni, a);
-  return Pdelta(k, a)*bg*bg + G02_nointerp(k, a, ni, init)/(ng*ng);
+  if (ni != nj) { log_fatal("..."); exit(1); }
+  const double bg  = bgal(ni, a);
+  const double ng  = ngal(ni, a);
+  if (!(ng > 0)) return 1.0e-30;
+  const double two_halo = Pdelta(k, a) * bg * bg;
+  const double one_halo = G02_nointerp(k, a, ni, init) / (ng*ng);
+
+  
+
+  return two_halo + one_halo;
 }
 
 // ---------------------------------------------------------------------------
@@ -1985,8 +1994,13 @@ double p_gg(
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
       fdiff2(cache[3], redshift.random_clustering))
   { 
-    (void) p_gg_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0, 1); // init static vars
-    #pragma omp parallel for collapse(3) schedule(static,1)
+    (void) p_gg_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0, 1); // init GSL static vars
+    // Force interpolation tables to build SERIALLY before the parallel region,
+    // otherwise nested omp parallel-for inside bgal/ngal/Pdelta races -> segfault.
+    (void) bgal(0, lim[0][0]);
+    (void) ngal(0, lim[0][0]);
+    (void) Pdelta(exp(lim[nbin][0]), lim[0][0]);
+    #pragma omp parallel for collapse(2) schedule(static,1)
     for (int l=0; l<nbin; l++) {
       for (int i=0; i<na; i++) {
         for (int j=0; j<Ntable.N_k_nlin; j++) {

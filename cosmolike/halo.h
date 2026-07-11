@@ -41,6 +41,10 @@ double p_gg(const double k, const double a, const int ni, const int nj);
 double p_my(const double k, const double a);
 
 double p_yy(const double k, const double a);
+double ngal(const int ni, const double a);
+double bgal(const int ni, const double a);
+double G02_nointerp(double k, double a, int ni, const int init);
+double GM02_nointerp(double k, double a, int ni, const int init);
 
 #ifdef __cplusplus
 }
