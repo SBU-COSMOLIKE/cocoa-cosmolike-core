@@ -680,11 +680,21 @@ void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA
     exit(1);
   }
 
-  if (0 == IA_code || 1 == IA_code) {
+  if (0 == IA_code || 1 == IA_code || 2 == IA_code) {
     nuisance.IA_code = IA_code;
   }
   else [[unlikely]] {
     critical(errorns2, fname, "nuisance.IA_code", IA_code);
+    exit(1);
+  }
+
+  // IA_code == 2 (halo model): halo.c returns the FULL IA power spectrum
+  // rather than the TATT perturbative kernels, so it is only meaningful with
+  // the NLA-shaped injection points. Catch the bad combination here, at
+  // config time, instead of deep inside the C(l) integrands.
+  if (2 == IA_code && 1 == IA_MODEL) [[unlikely]] {
+    critical("{}: IA_code = 2 (halo model) is incompatible with "
+             "IA_MODEL = 1 (TATT). Use IA_MODEL = 0 (NLA).", fname);
     exit(1);
   }
   debug("{}: {}", fname, errends);

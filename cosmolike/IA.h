@@ -7,6 +7,17 @@ extern "C" {
 #define IA_MODEL_NLA 0
 #define IA_MODEL_TATT 1
 
+// ---------------------------------------------------------------------------
+// nuisance.IA_code -- selects WHICH ENGINE supplies the IA (and nonlinear
+// galaxy bias) power spectra that get injected into the C(l) integrands.
+//   IA_CODE_CFASTPT    : C implementation of FAST-PT (get_FPT_IA/get_FPT_bias)
+//   IA_CODE_PYFASTPT   : Python FAST-PT, tables pushed in from the interface
+//   IA_CODE_HALO_MODEL : halo.c -- returns the FULL P(k), not PT kernels
+// ---------------------------------------------------------------------------
+#define IA_CODE_CFASTPT     0
+#define IA_CODE_PYFASTPT    1
+#define IA_CODE_HALO_MODEL  2
+
 #define NO_IA 0
 #define IA_NLA_LF 1
 #define IA_REDSHIFT_BINNING 2

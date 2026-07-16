@@ -11,6 +11,7 @@
 #include "halo.h"
 #include "basics.h"
 #include "cosmo3D.h"
+#include "IA.h"
 #include "redshift_spline.h"
 #include "structs.h"
 
@@ -719,12 +720,7 @@ static inline double sph_bessel_j2(double u)
     return (3.0/u3 - 1.0/u)*sin(u) - (3.0/u2)*cos(u);
 }
 
-// x = r/rs (dimensionless radius)
-// params[0] = k*rs   (dimensionless wavenumber)
-// params[1] = c      (concentration, needed for the gamma_bar normalization)
-// params[2] = b      (radial power-law slope of gamma_bar; ~ -2 from G19)
-// x = r/rs;  params[0]=krs, params[1]=c, params[2]=b, params[3]=x_floor
-// x_floor = r_floor/rs, where r_floor ~ 0.06 Mpc/h (Fortuna 2021 / G19)
+
 double int_u_ia_sat(double x, void* params)
 {
     const double* ar = (double*) params;
@@ -749,11 +745,37 @@ double int_u_ia_sat(double x, void* params)
 }
 // Satellite IA Fourier profile.
 // c = concentration, k = wavenumber, m = halo mass, a = scale factor.
-double u_ia_sat(const double c, const double k, const double m, const double a)
+// x = r/rs (dimensionless radius)
+// params[0] = k*rs   (dimensionless wavenumber)
+// params[1] = c      (concentration, needed for the gamma_bar normalization)
+// params[2] = b      (radial power-law slope of gamma_bar; ~ -2 from G19)
+// x = r/rs;  params[0]=krs, params[1]=c, params[2]=b, params[3]=x_floor
+// x_floor = r_floor/rs, where r_floor ~ 0.06 Mpc/h (Fortuna 2021 / G19)
+// ---------------------------------------------------------------------------
+// Direct (uncached) evaluation of the satellite IA Fourier profile.
+// This is the original implementation, kept as the ground truth that the
+// tabulated u_ia_sat() below must reproduce.
+//
+// PERFORMANCE NOTE (why the table exists):
+//   This routine runs a GLFIXED quadrature with DEFAULT_INT_PREC (=1000)
+//   nodes. It is called from int_for_IA(), which is ITSELF the integrand of a
+//   1000-node mass quadrature -> 1e6 evaluations of int_u_ia_sat (each with a
+//   sin, cos and pow) for a SINGLE (k,a,ni). Multiplied over the
+//   nbin x (N_a/5) x N_k_nlin table grid this is ~1e10 transcendental calls
+//   per table build. That is the "takes forever" the user reported.
+//   u_ia_sat_nointerp is therefore wrapped by a 2D interpolation table,
+//   exactly the way u_KS() is handled elsewhere in this file.
+// ---------------------------------------------------------------------------
+double u_ia_sat_nointerp(const double c, const double k, const double m,
+                         const double a __attribute__((unused)),
+                         const int init)
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
+    // The integrand is a smooth j2-weighted NFW profile on x in [0,c]; the
+    // full DEFAULT_INT_PREC is overkill, but keep it here so this routine
+    // remains a strict reference for validating the table.
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -775,10 +797,167 @@ double u_ia_sat(const double c, const double k, const double m, const double a)
   gsl_function F;
   F.function = int_u_ia_sat;
   F.params   = (void*) ar;
+
+  if (1 == init) {
+    return int_u_ia_sat(c/2.0, (void*) ar);   // touch static vars only
+  }
+
   const double result = gsl_integration_glfixed(&F, 0.0, c, w);
 
   const double f2_angular = F2_ANGULAR;
   return f2_angular * result / norm;
+}
+
+// ---------------------------------------------------------------------------
+// Tabulated satellite IA Fourier profile.
+//
+// CHOICE OF TABLE VARIABLES (this is the subtle part -- read before editing):
+//   The integrand int_u_ia_sat depends on (krs, c, b_slope, x_floor), and the
+//   integration range is [0, c]. Of these:
+//     * b_slope is a hard-coded constant (-2.0)
+//     * c       = conc(m, growfac(a))
+//     * x_floor = r_floor_code / rs,  rs = r_delta(m)/c
+//   so x_floor is NOT a function of c and krs alone -- it carries an extra,
+//   independent dependence on the halo mass m through r_delta(m).
+//
+//   => A naive 2D table in (c, krs) would be WRONG: two different masses can
+//      share a (c, krs) pair while having different x_floor.
+//
+//   We tabulate in (a, ln m, ln k). Fixing (a, m) fixes c(m,a) and x_floor(m)
+//   exactly, so there is no hidden dependence left.
+//
+//   NOTE: a MUST be a table axis, not a cache key. The mass quadrature is
+//   evaluated at many different a within a single table build upstream, so
+//   keying a 2D (ln m, ln k) table on "current a" would rebuild on nearly
+//   every call and be SLOWER than no cache at all.
+//
+// The 'c' argument is now redundant (it is recomputed internally from (m,a))
+// but is retained so the call sites in int_for_IA do not have to change.
+// ---------------------------------------------------------------------------
+// Table state for u_ia_sat. File-scope (not function-static) so that the
+// serial initializer and the read-only accessor can share it.
+static double*** uias_table = NULL;
+static double uias_lim[3][3];   // [0] = a axis, [1] = ln m axis, [2] = ln k axis
+static int uias_na = 0, uias_nm = 0, uias_nk = 0;
+static uint64_t uias_cache[MAX_SIZE_ARRAYS];
+
+// Serial initializer for the u_ia_sat table.
+//
+// THREAD SAFETY -- WHY THIS IS SEPARATE FROM u_ia_sat():
+//   u_ia_sat() is called from int_for_IA(), i.e. from inside the mass
+//   quadrature, which itself runs inside the "#pragma omp parallel for" of
+//   P_II_halo / P_dI_halo. If the table were built lazily on first use:
+//     * many threads would simultaneously see table == NULL and each call
+//       malloc3d -> leaked buffers and threads writing through a pointer
+//       another thread just replaced  => SEGFAULT;
+//     * the build itself contains an omp parallel for, so it would be a
+//       NESTED parallel region inside an already-parallel loop.
+//   Both are exactly the failure mode p_gg/p_gm guard against with their
+//   "force interpolation tables to build SERIALLY before the parallel region"
+//   comment. So the build lives here and must be called before any omp region.
+void u_ia_sat_init(void)
+{
+  const int na = (int) Ntable.N_a/5.0;
+  // GRID SIZES -- do NOT use Ntable.halo_uks_nc / halo_uks_nx here.
+  // Those two fields are DECLARED in structs.h but never initialized:
+  // reset_Ntable_struct() does not set them and no interface setter exists
+  // (u_KS is only reached via the gas/Compton-y path, so nobody noticed).
+  // Sizing this table from them means malloc3d() gets uninitialized garbage
+  // -> an absurd allocation -> the OOM killer takes the process ("Killed").
+  // Ntable.N_M is the halo-model mass-grid size and IS initialized (=1000),
+  // so derive from it and from N_k_nlin, both of which have real defaults.
+  const int nm = (Ntable.N_M > 0) ? (int)(Ntable.N_M/10) : 100;   // ~100 mass nodes
+  const int nk = (Ntable.N_k_nlin > 0) ? (int)(Ntable.N_k_nlin/5) : 100; // ~100 k nodes
+
+  if (nm < 4 || nk < 4 || na < 4) {
+    log_fatal("u_ia_sat_init: degenerate grid (na=%d, nm=%d, nk=%d). "
+              "Check Ntable.N_a / N_M / N_k_nlin are initialized.", na, nm, nk);
+    exit(1);
+  }
+
+  const int need_alloc = (NULL == uias_table) || (na != uias_na) ||
+                         (nm != uias_nm) || (nk != uias_nk);
+
+  if (need_alloc) {
+    if (uias_table != NULL) free(uias_table);
+    uias_table = (double***) malloc3d(na, nm, nk);
+    uias_na = na; uias_nm = nm; uias_nk = nk;
+    uias_lim[0][0] = limits.a_min;
+    uias_lim[0][1] = 1.0;
+    uias_lim[0][2] = (uias_lim[0][1] - uias_lim[0][0])/((double) na - 1.0);
+    uias_lim[1][0] = log(limits.halo_m_min);
+    uias_lim[1][1] = log(limits.halo_m_max);
+    uias_lim[1][2] = (uias_lim[1][1] - uias_lim[1][0])/((double) nm - 1.0);
+    uias_lim[2][0] = log(limits.k_min_cH0);
+    uias_lim[2][1] = log(limits.k_max_cH0);
+    uias_lim[2][2] = (uias_lim[2][1] - uias_lim[2][0])/((double) nk - 1.0);
+  }
+
+  if (!need_alloc &&
+      !fdiff2(uias_cache[0], cosmology.random) &&
+      !fdiff2(uias_cache[1], Ntable.random)) {
+    return;   // table already current
+  }
+
+  // Build static/GSL state serially before this function's own parallel region.
+  (void) u_ia_sat_nointerp(1.0, 1.0, exp(uias_lim[1][0]), uias_lim[0][0], 1);
+  (void) sigma2(exp(uias_lim[1][0]));
+  (void) growfac(uias_lim[0][0]);
+
+  #pragma omp parallel for collapse(3) schedule(static,1)
+  for (int p=0; p<na; p++) {
+    for (int i=0; i<nm; i++) {
+      for (int j=0; j<nk; j++) {
+        const double ap = uias_lim[0][0] + p*uias_lim[0][2];
+        const double mi = exp(uias_lim[1][0] + i*uias_lim[1][2]);
+        const double kj = exp(uias_lim[2][0] + j*uias_lim[2][2]);
+        const double ci = conc(mi, growfac(ap));
+        uias_table[p][i][j] = u_ia_sat_nointerp(ci, kj, mi, ap, 0);
+      }
+    }
+  }
+  uias_cache[0] = cosmology.random;
+  uias_cache[1] = Ntable.random;
+}
+
+// Read-only accessor. Safe to call from inside an omp parallel region PROVIDED
+// u_ia_sat_init() has already run. If the table is absent we fall back to the
+// direct quadrature rather than building it here -- building lazily inside a
+// parallel region is the bug this split exists to prevent.
+double u_ia_sat(const double c, const double k, const double m, const double a)
+{
+  if (NULL == uias_table) {
+    return u_ia_sat_nointerp(c, k, m, a, 0);
+  }
+
+  const int na = uias_na, nm = uias_nm, nk = uias_nk;
+  const double lnm = log(m);
+  const double lnk = log(k);
+
+  // Outside the tabulated range fall back to direct evaluation rather than
+  // extrapolating: u_ia_sat oscillates (j2) and extrapolation is unsafe.
+  if (a   < uias_lim[0][0] || a   > uias_lim[0][1] ||
+      lnm < uias_lim[1][0] || lnm > uias_lim[1][1] ||
+      lnk < uias_lim[2][0] || lnk > uias_lim[2][1]) {
+    return u_ia_sat_nointerp(c, k, m, a, 0);
+  }
+
+  // interpol2d works on the (ln m, ln k) plane; interpolate linearly in a
+  // between the two bracketing planes.
+  const double ra = (a - uias_lim[0][0])/uias_lim[0][2];
+  int ia0 = (int) floor(ra);
+  if (ia0 < 0) ia0 = 0;
+  if (ia0 > na - 2) ia0 = na - 2;
+  const double wa = ra - ia0;
+
+  const double u0 = interpol2d(uias_table[ia0],
+      nm, uias_lim[1][0], uias_lim[1][1], uias_lim[1][2], lnm,
+      nk, uias_lim[2][0], uias_lim[2][1], uias_lim[2][2], lnk);
+  const double u1 = interpol2d(uias_table[ia0+1],
+      nm, uias_lim[1][0], uias_lim[1][1], uias_lim[1][2], lnm,
+      nk, uias_lim[2][0], uias_lim[2][1], uias_lim[2][2], lnk);
+
+  return u0 + wa*(u1 - u0);
 }
 
 //debug
@@ -836,15 +1015,6 @@ double int_for_IA(double lnM, void* params)
             {
               const double u_ia = u_ia_sat(c, k, m, a);
             
-              // only dump ~40 lines near k_phys=10 (code units: k_phys*coverH0)
-              //static int dbg = 0;
-              //if (fabs(k - 10.0*cosmology.coverH0) < 0.05*cosmology.coverH0 && dbg < 40) {
-              //  fprintf(stderr, "M=%.3e dNdlnM=%.3e ns_red=%.3e u_ia=%.3e integrand=%.3e\n",
-              //          m, dNdlnM, ns_red, u_ia, dNdlnM*ns_red*ns_red*u_ia*u_ia);
-              //  fflush(stderr);
-              //  dbg++;
-              //}
-
               return dNdlnM * ns_red * ns_red * u_ia * u_ia;
             }
           
@@ -1410,9 +1580,105 @@ double I_for_IA_nointerp(
 
 // n_bar for red satellites: ∫ dlnM (dN/dlnM) n_sat_red(M)
 // This is exactly int_for_IA case 1 integrated over mass.
+//
+// PERFORMANCE: this quantity is k-INDEPENDENT, but p_II_1h/p_dI_1h need it at
+// every k node of the P_II/P_dI table build (~N_k_nlin times per (a,ni)).
+// Recomputing a 1000-node mass quadrature each time is pure waste, so it is
+// precomputed into a table indexed by (ni, a-node).
+//
+// THREAD SAFETY (this is why the code looks the way it does):
+//   This routine is called from P_II_halo_nointerp / P_dI_halo_nointerp, which
+//   run INSIDE "#pragma omp parallel for" in P_II_halo / P_dI_halo. A lazily
+//   populated cache would be a data race: several threads would simultaneously
+//   see an empty slot, all run the quadrature, and race on the write -- and a
+//   lazy malloc would be worse still (one thread can free the buffer another
+//   is writing through). That is a segfault, not a wrong number.
+//
+//   So: the table is allocated AND fully populated by n_red_sat_bar_init(),
+//   which the P_II_halo / P_dI_halo builders call SERIALLY before entering
+//   their parallel regions -- the same discipline p_gg/p_gm already use when
+//   they pre-touch bgal/ngal/Pdelta. Inside the parallel region this function
+//   is then strictly READ-ONLY, which is safe.
+// ---------------------------------------------------------------------------
+
+static double* nrsb_val  = NULL;   // [nbin*na]
+static int     nrsb_na   = 0;
+static int     nrsb_nbin = 0;
+static uint64_t nrsb_cache[MAX_SIZE_ARRAYS];
+
+// Serial initializer: allocate + fill. MUST be called outside any omp region.
+void n_red_sat_bar_init(void)
+{
+  const int na   = (int) Ntable.N_a/5.0;
+  const int nbin = redshift.clustering_nbin;
+
+  const int need_alloc = (NULL == nrsb_val) || (na != nrsb_na) ||
+                         (nbin != nrsb_nbin);
+  const int need_fill = need_alloc ||
+      fdiff2(nrsb_cache[0], cosmology.random) ||
+      fdiff2(nrsb_cache[1], Ntable.random)    ||
+      fdiff2(nrsb_cache[2], nuisance.random_ia) ||
+      fdiff2(nrsb_cache[3], redshift.random_clustering);
+
+  if (!need_fill) return;
+
+  if (need_alloc) {
+    if (nrsb_val != NULL) free(nrsb_val);
+    nrsb_val  = (double*) malloc1d(nbin*na);
+    nrsb_na   = na;
+    nrsb_nbin = nbin;
+  }
+
+  (void) I_for_IA_nointerp(0.0, amin_lens(0), 0, 1, 1); // init static vars
+
+  for (int l=0; l<nbin; l++) {
+    const double amin = amin_lens(l);
+    const double amax = amax_lens(l);
+    const double da = (amax - amin)/((double) na - 1.0);
+    for (int i=0; i<na; i++) {
+      const double a = amin + i*da;
+      nrsb_val[l*na + i] = I_for_IA_nointerp(0.0, a, l, 1, 0);
+    }
+  }
+
+  nrsb_cache[0] = cosmology.random;
+  nrsb_cache[1] = Ntable.random;
+  nrsb_cache[2] = nuisance.random_ia;
+  nrsb_cache[3] = redshift.random_clustering;
+}
+
 double n_red_sat_bar(const int ni, const double a)
 {
-  return I_for_IA_nointerp(0.0, a, ni, 1, 0); // k unused for case 1
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  // If the table is not ready we are being called from outside the intended
+  // build path (e.g. a direct _nointerp call from a test). Fall back to the
+  // direct quadrature rather than lazily filling a shared buffer, which would
+  // race if this happened inside an omp region.
+  if (NULL == nrsb_val || nrsb_na <= 0) {
+    return I_for_IA_nointerp(0.0, a, ni, 1, 0);
+  }
+
+  const int na = nrsb_na;
+  const double amin = amin_lens(ni);
+  const double amax = amax_lens(ni);
+  const double da = (amax - amin)/((double) na - 1.0);
+  if (!(da > 0)) {
+    return I_for_IA_nointerp(0.0, a, ni, 1, 0);
+  }
+  // Linear interpolation in a between the bracketing nodes.
+  double r = (a - amin)/da;
+  if (r < 0.0 || r > (double)(na - 1)) {           // outside tabulated range
+    return I_for_IA_nointerp(0.0, a, ni, 1, 0);
+  }
+  int i0 = (int) floor(r);
+  if (i0 > na - 2) i0 = na - 2;
+  if (i0 < 0) i0 = 0;
+  const double w = r - i0;
+  const double v0 = nrsb_val[ni*na + i0];
+  const double v1 = nrsb_val[ni*na + i0 + 1];
+  return v0 + w*(v1 - v0);
 }
 
 // 1-halo II satellite power spectrum, normalized and amplitude-weighted.
@@ -1498,11 +1764,94 @@ double I_bred_cen_nointerp(const double a, const int ni, const int func,
 }
 
 // Effective linear bias of the red central population in lens bin ni.
-double b_red_cen(const int ni, const double a)
+//
+// PERFORMANCE + THREAD SAFETY: identical situation to n_red_sat_bar above --
+// k-independent, called from inside an omp parallel region, each call would
+// otherwise run TWO 1000-node mass quadratures. Precomputed serially by
+// b_red_cen_init(); read-only thereafter. See the long comment on
+// n_red_sat_bar for why a lazily-filled cache here is a segfault, not just a
+// performance detail.
+// ---------------------------------------------------------------------------
+
+static double* brc_val  = NULL;   // [nbin*na]
+static int     brc_na   = 0;
+static int     brc_nbin = 0;
+static uint64_t brc_cache[MAX_SIZE_ARRAYS];
+
+static double b_red_cen_direct(const int ni, const double a)
 {
   const double num = I_bred_cen_nointerp(a, ni, 0, 0);
   const double den = I_bred_cen_nointerp(a, ni, 1, 0);
   return (den > 0) ? num/den : 0.0;
+}
+
+// Serial initializer: allocate + fill. MUST be called outside any omp region.
+void b_red_cen_init(void)
+{
+  const int na   = (int) Ntable.N_a/5.0;
+  const int nbin = redshift.clustering_nbin;
+
+  const int need_alloc = (NULL == brc_val) || (na != brc_na) || (nbin != brc_nbin);
+  const int need_fill = need_alloc ||
+      fdiff2(brc_cache[0], cosmology.random) ||
+      fdiff2(brc_cache[1], Ntable.random)    ||
+      fdiff2(brc_cache[2], nuisance.random_ia) ||
+      fdiff2(brc_cache[3], redshift.random_clustering);
+
+  if (!need_fill) return;
+
+  if (need_alloc) {
+    if (brc_val != NULL) free(brc_val);
+    brc_val  = (double*) malloc1d(nbin*na);
+    brc_na   = na;
+    brc_nbin = nbin;
+  }
+
+  (void) I_bred_cen_nointerp(amin_lens(0), 0, 0, 1); // init static vars
+  (void) I_bred_cen_nointerp(amin_lens(0), 0, 1, 1);
+
+  for (int l=0; l<nbin; l++) {
+    const double amin = amin_lens(l);
+    const double amax = amax_lens(l);
+    const double da = (amax - amin)/((double) na - 1.0);
+    for (int i=0; i<na; i++) {
+      brc_val[l*na + i] = b_red_cen_direct(l, amin + i*da);
+    }
+  }
+
+  brc_cache[0] = cosmology.random;
+  brc_cache[1] = Ntable.random;
+  brc_cache[2] = nuisance.random_ia;
+  brc_cache[3] = redshift.random_clustering;
+}
+
+double b_red_cen(const int ni, const double a)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  if (NULL == brc_val || brc_na <= 0) {
+    return b_red_cen_direct(ni, a);
+  }
+
+  const int na = brc_na;
+  const double amin = amin_lens(ni);
+  const double amax = amax_lens(ni);
+  const double da = (amax - amin)/((double) na - 1.0);
+  if (!(da > 0)) {
+    return b_red_cen_direct(ni, a);
+  }
+  double r = (a - amin)/da;
+  if (r < 0.0 || r > (double)(na - 1)) {
+    return b_red_cen_direct(ni, a);
+  }
+  int i0 = (int) floor(r);
+  if (i0 > na - 2) i0 = na - 2;
+  if (i0 < 0) i0 = 0;
+  const double w = r - i0;
+  const double v0 = brc_val[ni*na + i0];
+  const double v1 = brc_val[ni*na + i0 + 1];
+  return v0 + w*(v1 - v0);
 }
 
 // NLA amplitude for centrals (standard cosmolike form):
@@ -2157,3 +2506,295 @@ void set_HOD(const int ni)
   log_debug("HOD: bin %d; <z> %.2f; <b_g> %.2f", ni, z, nuisance.gb[0][ni]);
 }
 */
+// ===========================================================================
+// ===========================================================================
+// HALO-MODEL IA POWER SPECTRA -- PIPELINE-FACING INTERFACE
+// ===========================================================================
+// ===========================================================================
+//
+// These routines are what cosmo2D.c calls when
+//     nuisance.IA_code == IA_CODE_HALO_MODEL.
+//
+// ---------------------------------------------------------------------------
+// UNITS (read this before touching anything)
+// ---------------------------------------------------------------------------
+// cosmolike works internally in "code units" set by cosmology.coverH0:
+//     coverH0 = c/H0 = 2997.92458 Mpc/h
+//     k_code  = k_phys [h/Mpc]  * coverH0        (dimensionless)
+//     P_code  = P_phys [(Mpc/h)^3] / coverH0^3   (dimensionless)
+//     rho_crit is ALREADY the comoving critical density in code units
+//     (cosmology.rho_crit = 7.4775e21, i.e. M_sun/h per (c/H0)^3).
+//
+// Consequences for this file:
+//   * The mass integrals use dNdlnM = gnu*(rhom/m)*dlognudlogm(m) with
+//     rhom = rho_crit*Omega_m in code units -> dNdlnM is a number density in
+//     (c/H0)^-3. Dividing by nbar^2 (also (c/H0)^-3) and multiplying by the
+//     dimensionless u profiles therefore yields (c/H0)^3 == P_code. Correct.
+//   * u_ia_sat() already converts the 0.06 Mpc/h alignment floor via
+//     "0.06/cosmology.coverH0" -> code units. Correct.
+//   * p_II_2h_cen / p_dI_2h_cen are built on Pdelta(k,a), which is already
+//     P_code, times dimensionless (A*b) factors. Correct.
+//   * A_nla_cen uses nuisance.c1rhocrit_ia (= C1*rho_crit, dimensionless by
+//     construction in cosmolike) -> the NLA amplitude is dimensionless.
+//
+//  => Every term below is already in P_code. DO NOT apply any additional
+//     coverH0 power at the call site in cosmo2D.c. The only thing the caller
+//     must guarantee is that it passes k in code units (which it does:
+//     k = ell/fK where fK is in c/H0 units).
+//
+// ---------------------------------------------------------------------------
+// SIGN / AMPLITUDE CONVENTION (this is the subtle part)
+// ---------------------------------------------------------------------------
+// The FAST-PT path in cosmo2D.c writes, schematically, for shear-shear EE:
+//     ans = WK1*WK2*PK - WS1*WK2*C11*PK - WS2*WK1*C12*PK + WS1*WS2*C11*C12*PK
+// i.e. the IA amplitude C1 and the matter power spectrum PK are supplied
+// SEPARATELY and multiplied at the call site.
+//
+// The halo model does NOT factorize this way: P_II_halo and P_dI_halo return
+// the FULL spectra with the alignment amplitude already inside. The pipeline
+// must therefore substitute:
+//     C11*PK          ->  P_dI_halo(k,a,n1)
+//     C11*C12*PK      ->  P_II_halo(k,a,n1)   [auto-spectrum]
+// and must NOT multiply by C1/C2/b_ta/PK again.
+//
+// SIGN: A_nla_cen() carries the standard cosmolike minus sign
+//     A_NLA = -A_IA * C1*rho_crit * Omega_m / D(a) * ((1+z)/(1+z0))^eta
+// exactly like IA_A1_Z1Z2 in IA.c. So P_dI_halo has the SAME sign convention
+// as (C1*PK) in the FAST-PT branch, and the pipeline keeps its existing
+// "-WS*..." structure unchanged. P_II_halo is quadratic in the amplitude and
+// is positive-definite, matching "+WS1*WS2*C11*C12*PK".
+//
+// ---------------------------------------------------------------------------
+// LENS-BIN vs SOURCE-BIN CAVEAT
+// ---------------------------------------------------------------------------
+// The halo-model IA routines (p_II_1h_nointerp, p_dI_1h_nointerp,
+// b_red_cen, A_nla_cen, ...) are all indexed by a CLUSTERING (lens) bin,
+// because they need HOD parameters (nuisance.hod[ni][...]) and the red
+// central/satellite fractions, which only exist for lens bins.
+//
+// The shear kernels, however, need IA in SOURCE bins. We bridge this with
+// halo_IA_lensbin_of_sourcebin(). The default is an identity-with-clamp map.
+// If the lens and source samples are not the same galaxies, this is a
+// modelling assumption the user must own -- see the log_warn below.
+// ---------------------------------------------------------------------------
+
+int halo_IA_lensbin_of_sourcebin(const int ns)
+{
+  const int nlbin = redshift.clustering_nbin;
+  if (nlbin < 1) {
+    log_fatal("halo-model IA requires redshift.clustering_nbin >= 1 "
+              "(HOD parameters are defined per lens bin)");
+    exit(1);
+  }
+  if (ns < 0) {
+    log_fatal("invalid source bin ns = %d", ns);
+    exit(1);
+  }
+  // Identity map, clamped to the available lens bins.
+  return (ns > nlbin - 1) ? nlbin - 1 : ns;
+}
+
+// ---------------------------------------------------------------------------
+// Full II spectrum = 1-halo (satellite-satellite) + 2-halo (central NLA).
+// ni is a CLUSTERING bin index.
+// ---------------------------------------------------------------------------
+double P_II_halo_nointerp(const double k, const double a, const int ni,
+                          const int init)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni);
+    exit(1);
+  }
+  if (1 == init) {
+    // Touch the underlying static GSL tables serially before any omp region.
+    (void) I_for_IA_nointerp(k, a, ni, 1, 1);
+    (void) I_for_IA_nointerp(k, a, ni, 2, 1);
+    (void) I_bred_cen_nointerp(a, ni, 0, 1);
+    (void) I_bred_cen_nointerp(a, ni, 1, 1);
+    (void) Pdelta(k, a);
+    return 0.0;
+  }
+  const double p1h = p_II_1h_nointerp(k, a, ni);
+  const double p2h = p_II_2h_cen_nointerp(k, a, ni);
+  const double res = p1h + p2h;
+  return (res > 0.0) ? res : 0.0;   // II is positive-definite
+}
+
+// ---------------------------------------------------------------------------
+// Full dI spectrum = 1-halo (matter-satellite) + 2-halo (central NLA).
+// NOTE the sign: p_dI_2h_cen_nointerp is NEGATIVE for A_IA > 0 (via
+// A_nla_cen), while p_dI_1h_nointerp is built with fabs(u_ia) and a bare
+// nuisance.ia[5][ni] amplitude. To keep the two halo terms in a CONSISTENT
+// sign convention we force the 1-halo term to follow the sign of the 2-halo
+// (NLA) amplitude. Without this, the 1h and 2h terms can spuriously cancel.
+// ---------------------------------------------------------------------------
+double P_dI_halo_nointerp(const double k, const double a, const int ni,
+                          const int init)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni);
+    exit(1);
+  }
+  if (1 == init) {
+    (void) I_for_IA_nointerp(k, a, ni, 1, 1);
+    (void) I_for_IA_nointerp(k, a, ni, 3, 1);
+    (void) I_bred_cen_nointerp(a, ni, 0, 1);
+    (void) I_bred_cen_nointerp(a, ni, 1, 1);
+    (void) Pdelta(k, a);
+    return 0.0;
+  }
+  const double p2h = p_dI_2h_cen_nointerp(k, a, ni);
+  const double p1h_mag = p_dI_1h_nointerp(k, a, ni);   // magnitude-like
+  const double sgn = (A_nla_cen(ni, a) < 0.0) ? -1.0 : 1.0;
+  return p2h + sgn*fabs(p1h_mag);
+}
+
+// ---------------------------------------------------------------------------
+// Tabulated / interpolated wrappers.
+//
+// Caching follows the p_gg / p_gm pattern already used in this file:
+//   cache[0] cosmology, cache[1] Ntable, cache[2] IA nuisance,
+//   cache[3] clustering redshift.
+//
+// We tabulate in (a, ln k) per lens bin. II is stored as log(P) since it is
+// positive-definite. dI CHANGES SIGN in general (A_IA can be negative), so it
+// is stored LINEARLY -- storing log(dI) would silently produce NaNs.
+// ---------------------------------------------------------------------------
+
+static void halo_IA_setup_limits(double** lim, const int nbin, const int na)
+{
+  for (int l=0; l<nbin; l++) {
+    lim[l][0] = amin_lens(l);
+    lim[l][1] = amax_lens(l);
+    lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.0);
+  }
+  lim[nbin][0] = log(limits.k_min_cH0);
+  lim[nbin][1] = log(limits.k_max_cH0);
+  lim[nbin][2] = (lim[nbin][1] - lim[nbin][0])/((double) Ntable.N_k_nlin - 1.0);
+}
+
+double P_II_halo(const double k, const double a, const int ni)
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static double*** table = NULL;
+  static double** lim = NULL;
+
+  const int nbin = redshift.clustering_nbin;
+  const int na = (int) Ntable.N_a/5.0;
+
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
+    if (table != NULL) free(table);
+    table = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
+    if (lim != NULL) free(lim);
+    lim = (double**) malloc2d(nbin+1, 3);
+    halo_IA_setup_limits(lim, nbin, na);
+  }
+
+  if (fdiff2(cache[0], cosmology.random)   ||
+      fdiff2(cache[1], Ntable.random)      ||
+      fdiff2(cache[2], nuisance.random_ia) ||
+      fdiff2(cache[3], redshift.random_clustering))
+  {
+    halo_IA_setup_limits(lim, nbin, na);
+    // Build all static/GSL tables SERIALLY first -- nested omp inside
+    // Pdelta/growfac/sigma2 otherwise races (same reason as in p_gg).
+    (void) P_II_halo_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
+    (void) Pdelta(exp(lim[nbin][0]), lim[0][0]);
+    (void) growfac(lim[0][0]);
+    // MANDATORY: these three build shared lookup tables and MUST run serially.
+    // The parallel region below calls them read-only; building them lazily
+    // inside it races (concurrent malloc + nested omp) and segfaults.
+    u_ia_sat_init();
+    n_red_sat_bar_init();
+    b_red_cen_init();
+
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int l=0; l<nbin; l++) {
+      for (int i=0; i<na; i++) {
+        for (int j=0; j<Ntable.N_k_nlin; j++) {
+          const double p = P_II_halo_nointerp(exp(lim[nbin][0] + j*lim[nbin][2]),
+                                              lim[l][0] + i*lim[l][2], l, 0);
+          table[l][i][j] = log(p > 1.0e-30 ? p : 1.0e-30);
+        }
+      }
+    }
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
+    cache[2] = nuisance.random_ia;
+    cache[3] = redshift.random_clustering;
+  }
+
+  if (ni < 0 || ni > nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni);
+    exit(1);
+  }
+  if (a < lim[ni][0] || a > lim[ni][1]) return 0.0;
+
+  const double lnk = log(k);
+  if (lnk < lim[nbin][0] || lnk > lim[nbin][1]) return 0.0;
+
+  return exp(interpol2d(table[ni],
+      na, lim[ni][0], lim[ni][1], lim[ni][2], a,
+      Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1], lim[nbin][2], lnk));
+}
+
+double P_dI_halo(const double k, const double a, const int ni)
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static double*** table = NULL;
+  static double** lim = NULL;
+
+  const int nbin = redshift.clustering_nbin;
+  const int na = (int) Ntable.N_a/5.0;
+
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
+    if (table != NULL) free(table);
+    table = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
+    if (lim != NULL) free(lim);
+    lim = (double**) malloc2d(nbin+1, 3);
+    halo_IA_setup_limits(lim, nbin, na);
+  }
+
+  if (fdiff2(cache[0], cosmology.random)   ||
+      fdiff2(cache[1], Ntable.random)      ||
+      fdiff2(cache[2], nuisance.random_ia) ||
+      fdiff2(cache[3], redshift.random_clustering))
+  {
+    halo_IA_setup_limits(lim, nbin, na);
+    (void) P_dI_halo_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
+    (void) Pdelta(exp(lim[nbin][0]), lim[0][0]);
+    (void) growfac(lim[0][0]);
+    // MANDATORY serial table builds -- see the note in P_II_halo.
+    u_ia_sat_init();
+    n_red_sat_bar_init();
+    b_red_cen_init();
+
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int l=0; l<nbin; l++) {
+      for (int i=0; i<na; i++) {
+        for (int j=0; j<Ntable.N_k_nlin; j++) {
+          // stored LINEARLY: dI is sign-indefinite
+          table[l][i][j] = P_dI_halo_nointerp(exp(lim[nbin][0] + j*lim[nbin][2]),
+                                              lim[l][0] + i*lim[l][2], l, 0);
+        }
+      }
+    }
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
+    cache[2] = nuisance.random_ia;
+    cache[3] = redshift.random_clustering;
+  }
+
+  if (ni < 0 || ni > nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni);
+    exit(1);
+  }
+  if (a < lim[ni][0] || a > lim[ni][1]) return 0.0;
+
+  const double lnk = log(k);
+  if (lnk < lim[nbin][0] || lnk > lim[nbin][1]) return 0.0;
+
+  return interpol2d(table[ni],
+      na, lim[ni][0], lim[ni][1], lim[ni][2], a,
+      Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1], lim[nbin][2], lnk);
+}

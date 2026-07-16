@@ -384,6 +384,38 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
     }
     // init static vars 
     (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0));
+
+    // HALO-MODEL IA: force the P_dI/p_gm/p_gg interpolation tables to be built
+    // SERIALLY, here, before any parallel region below.
+    //
+    // WHY: unlike the ss driver -- which calls
+    //   C_ss_tomo_limber(..., init=1)
+    // and thereby RUNS the integrand once on a single thread -- the call above
+    // has no init argument and only does a table LOOKUP. It never executes
+    // int_for_C_gs_tomo_limber. Consequently P_dI_halo() and p_gm() would be
+    // reached for the first time from INSIDE the "#pragma omp parallel for"
+    // loops that follow. Both are lazy table builders that allocate with
+    // malloc3d and contain their own nested "#pragma omp parallel for":
+    // several threads would race to allocate and fill the same table, and one
+    // thread can free the buffer another is writing through => the process is
+    // killed. This is why cosmic shear (xi) and clustering (wtheta) work while
+    // galaxy-galaxy lensing (gammat) dies.
+    //
+    // Calling the builders once, serially, makes them read-only for the
+    // parallel regions -- the same discipline p_gg/p_gm and u_ia_sat_init use
+    // internally.
+    if (IA_CODE_HALO_MODEL == nuisance.IA_code) {
+      // One call builds the table for ALL lens bins, so a single touch is enough.
+      const double a_init = 0.5*(amin_lens(0) + amax_lens(0));
+      const double k_init = 1.0; // any k inside [k_min_cH0, k_max_cH0]
+      (void) P_dI_halo(k_init, a_init, 0);
+      if (1 == include_HOD_GX) {
+        (void) p_gm(k_init, a_init, 0);
+        (void) bgal(0, a_init);
+        (void) ngal(0, a_init);
+      }
+    }
+
     if (1 == limber) {
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
@@ -698,6 +730,21 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
     } 
     if (1 == limber) {
       (void) C_gk_tomo_limber((double) limits.LMIN_tab + 1, 0); // init static vars
+
+      // HALO-MODEL: same lazy-table race as in the gs driver -- the init call
+      // above is a lookup, not an integrand run, so p_gm/P_dI_halo would first
+      // be built inside the parallel region below. Force them serially here.
+      // See the long comment in C_gs_tomo_limber's driver.
+      if (IA_CODE_HALO_MODEL == nuisance.IA_code) {
+        const double a_init = 0.5*(amin_lens(0) + amax_lens(0));
+        const double k_init = 1.0;
+        (void) P_dI_halo(k_init, a_init, 0);
+        if (1 == include_HOD_GX) {
+          (void) p_gm(k_init, a_init, 0);
+          (void) bgal(0, a_init);
+          (void) ngal(0, a_init);
+        }
+      }
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
@@ -842,6 +889,13 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
     } 
     if (1 == limber) {      
       (void) C_ks_tomo_limber((double) limits.LMIN_tab + 1, 0); // init static vars
+
+      // HALO-MODEL: force P_dI_halo's table to build serially -- the ks kernel
+      // calls it, and the init above is a lookup, not an integrand run.
+      // See the long comment in C_gs_tomo_limber's driver.
+      if (IA_CODE_HALO_MODEL == nuisance.IA_code) {
+        (void) P_dI_halo(1.0, 0.5*(amin_lens(0) + amax_lens(0)), 0);
+      }
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
@@ -998,6 +1052,15 @@ static double int_for_C_ss_tomo_limber_core(
   {
     case IA_MODEL_TATT:
     {
+      if (IA_CODE_HALO_MODEL == nuisance.IA_code) {
+        log_fatal("nuisance.IA_code = IA_CODE_HALO_MODEL (%d) is not compatible "
+                  "with nuisance.IA_MODEL = IA_MODEL_TATT (%d). The halo model "
+                  "returns full IA power spectra, not the TATT perturbative "
+                  "kernels (tt/ta/mix) that this branch expects. Use "
+                  "IA_MODEL_NLA with the halo-model IA_code.",
+                  IA_CODE_HALO_MODEL, IA_MODEL_TATT);
+        exit(1);
+      }
       if (0 == nuisance.IA_code) { // call C-FAST-PT to compute IA terms
         get_FPT_IA();
       }
@@ -1083,6 +1146,57 @@ static double int_for_C_ss_tomo_limber_core(
     }
     case IA_MODEL_NLA:
     {
+      if (IA_CODE_HALO_MODEL == nuisance.IA_code)
+      { // ------------------------------------------------------------------
+        // HALO-MODEL IA.
+        //
+        // halo.c returns the FULL spectra, with the alignment amplitude and
+        // the matter power spectrum already folded in. So the substitutions
+        // relative to the FAST-PT/analytic NLA branch below are:
+        //
+        //     C11*PK      ->  P_dI_halo(k, a, l1)
+        //     C12*PK      ->  P_dI_halo(k, a, l2)
+        //     C11*C12*PK  ->  P_II_halo(k, a, l1)      (l1 == l2)
+        //
+        // and we must NOT multiply by C11/C12 or PK a second time.
+        //
+        // k here is ell/fK, already in c/H0 code units, and P_*_halo return
+        // P in (c/H0)^3 -- exactly the same convention as PK = Pdelta(k,a).
+        // No unit conversion is needed.
+        // ------------------------------------------------------------------
+        if (1 == EE) {
+          const int l1 = halo_IA_lensbin_of_sourcebin(n1);
+          const int l2 = halo_IA_lensbin_of_sourcebin(n2);
+
+          const double P_dI_1 = P_dI_halo(k, a, l1);
+          const double P_dI_2 = P_dI_halo(k, a, l2);
+
+          // For the II term the halo model is only defined for a single
+          // population; for l1 != l2 we use the geometric mean of the two
+          // auto-spectra, which reduces exactly to P_II for l1 == l2.
+          double P_II_12;
+          if (l1 == l2) {
+            P_II_12 = P_II_halo(k, a, l1);
+          }
+          else {
+            const double A = P_II_halo(k, a, l1);
+            const double B = P_II_halo(k, a, l2);
+            P_II_12 = sqrt((A > 0 ? A : 0.0)*(B > 0 ? B : 0.0));
+          }
+
+          ans =   WK1*WK2*PK
+                - WS1*WK2*P_dI_1
+                - WS2*WK1*P_dI_2
+                + WS1*WS2*P_II_12;
+        }
+        else {
+          // Halo-model IA as implemented here (NFW radial alignment + NLA
+          // 2-halo centrals) produces no B-mode power.
+          ans = 0.0;
+        }
+        break;
+      }
+
       if (1 == EE) { 
         double IA_A1[2];
         IA_A1_Z1Z2(a, growfac_a, n1, n2, IA_A1);
@@ -1435,6 +1549,12 @@ static double int_for_C_gs_tomo_limber_core(
   {
     case IA_MODEL_TATT:
     {
+      if (IA_CODE_HALO_MODEL == nuisance.IA_code) {
+        log_fatal("nuisance.IA_code = IA_CODE_HALO_MODEL (%d) is not compatible "
+                  "with nuisance.IA_MODEL = IA_MODEL_TATT (%d). Use IA_MODEL_NLA.",
+                  IA_CODE_HALO_MODEL, IA_MODEL_TATT);
+        exit(1);
+      }
       if (1 == include_HOD_GX) {
         log_fatal("HOD NOT IMPLEMENTED");
         exit(1);
@@ -1527,6 +1647,73 @@ static double int_for_C_gs_tomo_limber_core(
     }
     case IA_MODEL_NLA:
     {
+      if (IA_CODE_HALO_MODEL == nuisance.IA_code)
+      { // ------------------------------------------------------------------
+        // HALO-MODEL branch for galaxy-galaxy lensing.
+        //
+        // Two distinct pieces, both supplied as FULL spectra by halo.c:
+        //
+        //  (a) galaxy-matter clustering term. If include_HOD_GX is on we use
+        //      p_gm(k,a,nl), which already contains b_g*P_delta (2-halo) plus
+        //      the 1-halo GM02/ngal term. In that case the linear bias b1 and
+        //      the FAST-PT one-loop bias corrections must NOT be applied --
+        //      they would double count.
+        //      If include_HOD_GX is off we keep the standard b1*P_delta form
+        //      so that halo-model IA can be used with a linear-bias lens
+        //      sample.
+        //
+        //  (b) the IA cross term. FAST-PT supplies C1ZS and PK separately
+        //      (-WS*(...)*C1ZS*PK); the halo model supplies the product
+        //      directly as P_dI_halo. So:  C1ZS*PK -> P_dI_halo(k,a,ls).
+        //
+        // Units: k = ell/fK is in c/H0 units; p_gm and P_dI_halo both return
+        // (c/H0)^3, matching PK. No rescaling.
+        // ------------------------------------------------------------------
+        const double k = ell/fK;
+
+        double WRSD = 0.0;
+        if (1 == include_RSD_GS) {
+          if (1 == include_HOD_GX) {
+            log_fatal("RSD not implemented with (HOD = TRUE)");
+            exit(1);
+          }
+          const double chi_0 = f_K(ell/k);
+          const double chi_1 = f_K((ell+1.)/k);
+          const double a_0 = a_chi(chi_0);
+          const double a_1 = a_chi(chi_1);
+          WRSD = W_RSD(ell, a_0, a_1, nl);
+        }
+
+        // ---- (a) lens clustering side --------------------------------
+        double clustering_term;
+        if (1 == include_HOD_GX) {
+          // p_gm already includes the galaxy bias; do not re-apply b1.
+          clustering_term = WGAL*p_gm(k, a, nl)
+                          + WMAG*ell_prefactor*bmag*PK;
+        }
+        else {
+          clustering_term = (WGAL*b1 + WMAG*ell_prefactor*bmag + WRSD)*PK;
+        }
+
+        // ---- (b) IA side ----------------------------------------------
+        const int ls = halo_IA_lensbin_of_sourcebin(ns);
+        const double P_dI = P_dI_halo(k, a, ls);
+
+        // The IA term multiplies the same lens-side weight as the FAST-PT
+        // branch: (WGAL*b1 + WMAG*ell_prefactor*bmag).
+        double lens_weight_for_IA;
+        if (1 == include_HOD_GX) {
+          const double ng_b = bgal(nl, a);
+          lens_weight_for_IA = WGAL*ng_b + WMAG*ell_prefactor*bmag;
+        }
+        else {
+          lens_weight_for_IA = WGAL*b1 + WMAG*ell_prefactor*bmag;
+        }
+
+        ans = WK*clustering_term - WS*lens_weight_for_IA*P_dI;
+        break;
+      }
+
       if (include_HOD_GX == 1) {
         log_fatal("HOD NOT IMPLEMENTED");
         exit(1);
@@ -1991,8 +2178,13 @@ double int_for_C_gg_tomo_limber(double a, void* params)
   }
 
   double oneloop = 0.0;
-  if (1 == nonlinear_bias && 0 == use_linear_ps)
+  if (1 == nonlinear_bias && 0 == use_linear_ps &&
+      !(1 == include_HOD_GX && IA_CODE_HALO_MODEL == nuisance.IA_code))
   {
+    // NOTE: when the halo model supplies p_gg above, the nonlinear galaxy
+    // bias is ALREADY contained in the 1-halo + 2-halo decomposition. Adding
+    // the FAST-PT one-loop bias kernels on top would double count, so the
+    // block is skipped in that configuration.
     if (0 == nuisance.IA_code){
       get_FPT_bias();
     }
@@ -2249,7 +2441,10 @@ double int_for_C_gk_tomo_limber(double a, void* params)
     res *= PK;
   }
   double oneloop = 0.0;
-  if (1 == nonlinear_bias) {
+  if (1 == nonlinear_bias &&
+      !(1 == include_HOD_GX && IA_CODE_HALO_MODEL == nuisance.IA_code))
+  { // see note in int_for_C_gg_tomo_limber: p_gm already carries the
+    // nonlinear halo-model bias, so the FAST-PT one-loop terms are skipped.
     if (0 == nuisance.IA_code){
       get_FPT_bias();
     }
@@ -2423,12 +2618,27 @@ double int_for_C_ks_tomo_limber(double a, void* params)
   const double tmp = (l - 1.)*l*(l + 1.)*(l + 2.);    // prefactor correction (1812.05995 eqs 74-79)
   const double ell_prefactor2 = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0; 
 
-  const double A_Z1 = IA_A1_Z1(a, growfac_a, ni);
-  const double WS1  = W_source(a, ni, hoverh0) * A_Z1;
+  // CMB-lensing x shear. The FAST-PT/analytic path factorizes the IA term as
+  // (WK1 - WS*A_Z1)*PK. The halo model instead supplies the FULL dI spectrum,
+  // so the matter term keeps PK while the IA term uses P_dI_halo directly:
+  //     (WK1*PK - WS*P_dI_halo) * WK2
+  double res_times_PK;
+  if (IA_CODE_HALO_MODEL == nuisance.IA_code) {
+    if (IA_MODEL_TATT == nuisance.IA_MODEL) {
+      log_fatal("IA_CODE_HALO_MODEL is not compatible with IA_MODEL_TATT");
+      exit(1);
+    }
+    const int ls = halo_IA_lensbin_of_sourcebin(ni);
+    const double WS = W_source(a, ni, hoverh0);
+    res_times_PK = (WK1*PK - WS*P_dI_halo(k, a, ls))*WK2;
+  }
+  else {
+    const double A_Z1 = IA_A1_Z1(a, growfac_a, ni);
+    const double WS1  = W_source(a, ni, hoverh0) * A_Z1;
+    res_times_PK = (WK1 - WS1)*WK2*PK;
+  }
 
-  const double res = (WK1 - WS1)*WK2;
-
-  return (res*PK*chidchi.dchida/(fK*fK))*ell_prefactor1*ell_prefactor2;
+  return (res_times_PK*chidchi.dchida/(fK*fK))*ell_prefactor1*ell_prefactor2;
 }
 
 double C_ks_tomo_limber_nointerp(const double l, const int ni, const int init)
@@ -2810,6 +3020,17 @@ double int_for_C_ys_tomo_limber(double a, void* params)
 
   const double A_Z1 = IA_A1_Z1(a, growfac_a, ni);
   const double WS1  = W_source(a, ni, hoverh0) * A_Z1;
+
+  // NOTE: the halo-model IA path is not wired into the y x shear kernel.
+  // P_dI_halo is a matter-IA cross spectrum; the correct object here would be
+  // a gas(pressure)-IA cross spectrum, which halo.c does not provide. Rather
+  // than silently substitute the wrong spectrum, fail loudly.
+  if (IA_CODE_HALO_MODEL == nuisance.IA_code) {
+    log_fatal("IA_CODE_HALO_MODEL is not implemented for the Compton-y x shear "
+              "(ys) kernel: halo.c provides no pressure-IA cross spectrum. "
+              "Disable the ys probe or use a FAST-PT IA_code.");
+    exit(1);
+  }
 
   const double res = (WK1 - WS1)*WY;
 
