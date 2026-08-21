@@ -24,6 +24,7 @@
 #include "pt_cfastpt.h"
 #include "radial_weights.h"
 #include "redshift_spline.h"
+#include "sim_IA.h"
 #include "structs.h"
 #include "log.c/src/log.h"
 
@@ -1061,6 +1062,13 @@ static double int_for_C_ss_tomo_limber_core(
                   IA_CODE_HALO_MODEL, IA_MODEL_TATT);
         exit(1);
       }
+      if (IA_CODE_SIM == nuisance.IA_code) {
+        log_fatal("nuisance.IA_code = IA_CODE_SIM (%d) requires "
+                  "nuisance.IA_MODEL = IA_MODEL_NLA (%d), not IA_MODEL_TATT "
+                  "(%d). The sim tables are full spectra, not TATT kernels.",
+                  IA_CODE_SIM, IA_MODEL_NLA, IA_MODEL_TATT);
+        exit(1);
+      }
       if (0 == nuisance.IA_code) { // call C-FAST-PT to compute IA terms
         get_FPT_IA();
       }
@@ -1122,6 +1130,22 @@ static double int_for_C_ss_tomo_limber_core(
                          - 5.*(C11*C22 + C12*C21)*(mixA+mixB)
                          - 5.*(C11*bta1*C22+C12*bta2*C21)*mixEE
                          + 25.*C21*C22*tt);
+        // --- diagnostic dump: II E-mode P_EE at z=0 ---
+        // --- diagnostic: II E-mode P_EE at z=0, in sim units (h/Mpc, (Mpc/h)^3) ---
+        //if (fabs(a - 1.0) < 1e-3 && n1 == n2) {
+        //  const double R = 2997.92, R3 = R*R*R;
+        //  const double k_phys = k / R;                  // h/Mpc
+        //  if (k_phys >= 1e-3 && k_phys <= 10.0) {       // only physical range
+        //    const double P_EE_II = C11*C12*PK
+        //        + C11*C12*(bta1*bta2*ta + (bta1+bta2)*(ta_dE1+ta_dE2))
+        //        - 5.*(C11*C22 + C12*C21)*(mixA+mixB)
+        //        - 5.*(C11*bta1*C22 + C12*bta2*C21)*mixEE
+        //        + 25.*C21*C22*tt;
+        //    FILE* fp = fopen("PEE_z0.dat", "a");
+        //    fprintf(fp, "%.8e  %.8e\n", k_phys, P_EE_II*R3);
+        //    fclose(fp);
+        // }
+        //}
       }
       else  {
         double tt, ta, mix;
@@ -1146,6 +1170,37 @@ static double int_for_C_ss_tomo_limber_core(
     }
     case IA_MODEL_NLA:
     {
+      // ---------- SIMULATION full-spectrum IA -----------------------------
+      // Full II / GI spectra straight from the sim tables, already returned
+      // in code units by P_sim_*. No C1/C2/bTA, no growth, no PK multiply.
+      // The lensing auto term WK1*WK2*PK is genuine lensing, not IA, so it
+      // is kept. k here is ell/fK in code units (P_sim converts internally).
+      if (IA_CODE_SIM == nuisance.IA_code) {
+        if (1 == EE) {
+          const double P_EE  = P_sim_EE(k, a); // shear E auto (II,E)
+          const double P_dE1 = P_sim_dE(k, a); // density x E (single field:
+          const double P_dE2 = P_sim_dE(k, a); //  same table for both bins)
+          ans =   WK1*WK2*PK
+                + WS1*WK2*P_dE1
+                + WS2*WK1*P_dE2
+                + WS1*WS2*P_EE;
+            // --- diagnostic: dump PK, P_EE, P_dE at z=0 (code units, as used in ans) ---
+          if (a > 0.65 && a < 0.72 && n1 == n2) {
+            FILE* fp = fopen("sim_IA_spectra_z0.dat", "a");
+            // col0: k   col1: PK   col2: P_EE   col3: P_dE1   col4: P_dE2   (all code units)
+            fprintf(fp, "%.6e %.6e %.6e %.8e %.8e %.8e %.8e %.8e %.8e %.8e\n",
+                    a, fK, ell, k, PK, P_EE, P_dE1, WK1, WK2, WS1);
+            fclose(fp);
+          }
+        }
+        else {
+          // B modes: pure II; lensing produces no B-mode power.
+          ans = 0; //WS1*WS2*P_sim_BB(k, a);
+        }
+        break;
+      }
+      // ---------- end simulation branch -----------------------------------
+
       if (IA_CODE_HALO_MODEL == nuisance.IA_code)
       { // ------------------------------------------------------------------
         // HALO-MODEL IA.
@@ -1185,8 +1240,8 @@ static double int_for_C_ss_tomo_limber_core(
           }
 
           ans =   WK1*WK2*PK
-                - WS1*WK2*P_dI_1
-                - WS2*WK1*P_dI_2
+                + WS1*WK2*P_dI_1
+                + WS2*WK1*P_dI_2
                 + WS1*WS2*P_II_12;
         }
         else {
@@ -1442,9 +1497,9 @@ double C_ss_tomo_limber(
           sum_EE += int_for_C_ss_tomo_limber_core(a, fK, PK[i][p], growfac_a, 
             hoverh0, dchida, ell_prefactor[i], lx[i], Z1NZ, Z2NZ, 
             WK1, WK2, WS1, WS2, 1, 0) * wt;
-          if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-            sum_BB += int_for_C_ss_tomo_limber_core(a, fK, PK[i][p], growfac_a, 
-              hoverh0, dchida, ell_prefactor[i], lx[i], Z1NZ, Z2NZ, 
+          if (nuisance.IA_MODEL == IA_MODEL_TATT || IA_CODE_SIM == nuisance.IA_code) {
+            sum_BB += int_for_C_ss_tomo_limber_core(a, fK, PK[i][p], growfac_a,
+              hoverh0, dchida, ell_prefactor[i], lx[i], Z1NZ, Z2NZ,
               WK1, WK2, WS1, WS2, 0, 0) * wt;
           }
         }
@@ -1549,6 +1604,12 @@ static double int_for_C_gs_tomo_limber_core(
   {
     case IA_MODEL_TATT:
     {
+      if (IA_CODE_SIM == nuisance.IA_code) {
+        log_fatal("nuisance.IA_code = IA_CODE_SIM (%d) requires IA_MODEL_NLA "
+                  "(%d), not IA_MODEL_TATT (%d).",
+                  IA_CODE_SIM, IA_MODEL_NLA, IA_MODEL_TATT);
+        exit(1);
+      }
       if (IA_CODE_HALO_MODEL == nuisance.IA_code) {
         log_fatal("nuisance.IA_code = IA_CODE_HALO_MODEL (%d) is not compatible "
                   "with nuisance.IA_MODEL = IA_MODEL_TATT (%d). Use IA_MODEL_NLA.",
@@ -1647,6 +1708,32 @@ static double int_for_C_gs_tomo_limber_core(
     }
     case IA_MODEL_NLA:
     {
+      // ---------- SIMULATION full-spectrum IA -----------------------------
+      // Galaxy-shear: clustering(lens) x [ lensing(source) - IA(source) ].
+      // The IA side uses the FULL measured density x E spectrum, replacing
+      // C1ZS*PK. The lens clustering side keeps CosmoLike's linear bias b1*PK
+      // by default; set USE_SIM_CLUSTERING to 1 to substitute the measured
+      // Pdh instead (then b1 must NOT be applied, to avoid double counting).
+      if (IA_CODE_SIM == nuisance.IA_code) {
+        const double k = ell/fK;
+        const int USE_SIM_CLUSTERING = 0;
+
+        double clustering_term;
+        if (USE_SIM_CLUSTERING) {
+          clustering_term = WGAL*P_sim_dh(k, a) + WMAG*ell_prefactor*bmag*PK;
+        }
+        else {
+          clustering_term = (WGAL*b1 + WMAG*ell_prefactor*bmag)*PK;
+        }
+
+        const double P_dE = P_sim_dE(k, a);
+        const double lens_weight_for_IA = WGAL*b1 + WMAG*ell_prefactor*bmag;
+
+        ans = WK*clustering_term - WS*lens_weight_for_IA*P_dE;
+        break;
+      }
+      // ---------- end simulation branch -----------------------------------
+
       if (IA_CODE_HALO_MODEL == nuisance.IA_code)
       { // ------------------------------------------------------------------
         // HALO-MODEL branch for galaxy-galaxy lensing.
@@ -2226,8 +2313,8 @@ double int_for_C_gg_tomo_limber(double a, void* params)
     oneloop = 1.0;
     oneloop *= WGALi*WGALi;
     oneloop *= g4*(b1i*b2*d1d2 + 0.25*b2*b2 * d2d2 +
-      			   b1i*bs2*d1s2 + 0.5*b2*bs2 * d2s2 +
-      			   0.25*bs2*bs2*s2s2 + b1i*b3*d1p3) + (2*b1i*bk * k*k * PK);
+               b1i*bs2*d1s2 + 0.5*b2*bs2 * d2s2 +
+               0.25*bs2*bs2*s2s2 + b1i*b3*d1p3) + (2*b1i*bk * k*k * PK);
   }
   return (res +  oneloop)*chidchi.dchida/(fK*fK);
 }

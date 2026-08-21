@@ -11,6 +11,8 @@ namespace py = pybind11;
 #include <boost/lexical_cast.hpp>
 // At the top of generic_interface.cpp, already present
 #include "cosmolike/halo.h"
+#include "cosmolike/IA.h"
+#include "cosmolike/sim_IA.h"
 // std::isnan: no compile w/ -O3 or -fast-math stackoverflow.com/a/47703550/2472169
 
 static constexpr std::string_view errbegins = "Begins Execution"sv;
@@ -680,7 +682,7 @@ void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA
     exit(1);
   }
 
-  if (0 == IA_code || 1 == IA_code || 2 == IA_code) {
+  if (0 == IA_code || 1 == IA_code || 2 == IA_code || 3 == IA_code) {
     nuisance.IA_code = IA_code;
   }
   else [[unlikely]] {
@@ -697,6 +699,17 @@ void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA
              "IA_MODEL = 1 (TATT). Use IA_MODEL = 0 (NLA).", fname);
     exit(1);
   }
+
+  // IA_code == 3 (simulation tables, IA_CODE_SIM): sim_IA.c returns FULL
+  // measured P(k,z), same NLA-shaped injection points as the halo model, so
+  // it is likewise incompatible with TATT. The tables themselves must be
+  // configured separately via set_sim_IA_config()/init_sim_IA() (see
+  // init_IA_sim below).
+  if (3 == IA_code && 1 == IA_MODEL) [[unlikely]] {
+    critical("{}: IA_code = 3 (simulation tables) is incompatible with "
+             "IA_MODEL = 1 (TATT). Use IA_MODEL = 0 (NLA).", fname);
+    exit(1);
+  }
   debug("{}: {}", fname, errends);
   return;
 }
@@ -705,6 +718,51 @@ void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA
 void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
 {
 	init_IA_fastpt(IA_MODEL, IA_REDSHIFT_EVOL, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Simulation-tabulated IA (IA_code == IA_CODE_SIM == 3).
+//
+// Point CosmoLike at a directory of P<TAG>0_sn<sn>_nfold<nfold>.dat files
+// (produced by the IA_PS/Pds stage) and supply the snapshot->redshift map.
+// This sets IA_MODEL = NLA and IA_code = SIM, then loads the tables.
+//
+//   dir   : folder holding the .dat files
+//   sn    : snapshot indices used in the filenames
+//   zlist : matching redshifts (same length/order as sn)
+//   nfold : the nfold value in the filenames (usually 1)
+//
+// After this call the data vector uses the measured spectra directly; no IA
+// nuisance parameters (A_IA, bTA, ...) and no redshift-evolution model are
+// applied -- the per-redshift files already contain all of that.
+// ---------------------------------------------------------------------------
+void init_IA_sim(std::string dir,
+                 std::vector<int> sn,
+                 std::vector<double> zlist,
+                 const int nfold)
+{
+  static constexpr std::string_view fname = "init_IA_sim"sv;
+  debug("{}: {}", fname, errbegins);
+
+  if (sn.size() != zlist.size()) {
+    critical("{}: sn ({}) and zlist ({}) must have equal length",
+             fname, sn.size(), zlist.size());
+    exit(1);
+  }
+  if (sn.size() < 2) {
+    critical("{}: need >= 2 snapshots to interpolate in z (got {})",
+             fname, sn.size());
+    exit(1);
+  }
+
+  nuisance.IA_MODEL = IA_MODEL_NLA;
+  nuisance.IA_code  = IA_CODE_SIM;
+
+  set_sim_IA_config(dir.c_str(), (int) sn.size(),
+                    sn.data(), zlist.data(), nfold);
+  init_sim_IA();
+
+  debug("{}: {}", fname, errends);
 }
 
 // ---------------------------------------------------------------------------

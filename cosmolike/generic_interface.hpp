@@ -560,6 +560,16 @@ void init_IA(
     const int IA_REDSHIFT_EVOL
   );
 
+// Simulation-tabulated IA (IA_code = 3). Loads P<TAG>0_sn<sn>_nfold<nfold>.dat
+// from `dir` and sets IA_MODEL=NLA, IA_code=SIM. No IA nuisance params or
+// redshift-evolution model are applied (baked into the per-redshift tables).
+void init_IA_sim(
+    std::string dir,
+    std::vector<int> sn,
+    std::vector<double> zlist,
+    const int nfold
+  );
+
 void init_probes(
     std::string possible_probes
   );
