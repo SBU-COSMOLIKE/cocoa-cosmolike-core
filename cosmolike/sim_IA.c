@@ -79,7 +79,7 @@ typedef struct {
 static sim_spec SIM[SIM_NTYPES];
 
 // Config the host must set before first use (see init_sim_IA()).
-static char   SIM_DIR[1024]   = "/xdisk/timeifler/yijiezhu/cocoa_demo/Cocoa/PS_2re_unred_new";   // directory holding the .dat files
+static char   SIM_DIR[1024]   = "/xdisk/timeifler/yijiezhu/cocoa_demo/Cocoa/PS_2re_unred_new_2";   // directory holding the .dat files
 static int    SIM_NSN         = 0;     // number of snapshots
 static int*   SIM_SN          = NULL;  // snapshot indices, length NSN
 static double* SIM_Z          = NULL;  // matching redshifts, length NSN
@@ -287,7 +287,7 @@ double P_sim(sim_spec_t t, double k_code, double a) {
     }
   }
 
-  const double R = cosmology.coverH0 / cosmology.h0;//cosmology.coverH0 / cosmology.h0;   // c/H0 in Mpc/h
+  const double R = 2997.92;//cosmology.coverH0 / cosmology.h0;   // c/H0 in Mpc/h
   const double k_phys = k_code / R;                    // h/Mpc
   double lnk = log(k_phys);
   double z = 1.0/a - 1.0;

@@ -1871,12 +1871,55 @@ double A_nla_cen(const int ni, const double a)
   return amp * zev;
 }
 
+// ---------------------------------------------------------------------------
+// MATTER SPECTRUM USED IN THE 2-HALO CENTRAL IA TERM
+// ---------------------------------------------------------------------------
+// The NLA 2-halo central term is  (A*b)^n * P_mm(k,a). Two choices for the
+// matter spectrum P_mm:
+//
+//   HM_IA_2H_PMM == 0 : Pdelta(k,a)  -- the pipeline's nonlinear matter power
+//                       (CAMB/Halofit or EE2, whatever set_cosmology loaded).
+//                       This is the standard NLA choice used everywhere else
+//                       in cosmolike and matches Fortuna et al. (2020) Eq. 1
+//                       (NLA replaces P_lin with the nonlinear P).
+//
+//   HM_IA_2H_PMM == 1 : p_mm(k,a)    -- the halo model's OWN matter power
+//                       (1-halo + 2-halo built from I02_XY / I11_X). This makes
+//                       the IA 2-halo term consistent with the same halo-model
+//                       matter field the rest of the IA halo terms live in,
+//                       rather than mixing a halofit/EE2 P with halo-model IA.
+//
+// UNITS: p_mm and Pdelta share the exact same convention -- k in c/H0 units,
+// P in (c/H0)^3 -- so this is a drop-in swap with no rescaling.
+//
+// CAVEAT worth knowing before trusting results: the halo-model p_mm is NOT
+// identical to halofit/EE2. It is typically accurate at the ~10-20% level and
+// tends to under-predict power in the mildly nonlinear "trough" around
+// k ~ 0.1-1 h/Mpc where neither the 1h nor 2h term is complete. So switching
+// to p_mm makes the IA term self-consistent with the halo model, but it does
+// NOT make it more accurate in an absolute sense against N-body. Which one you
+// want depends on the goal: self-consistency (p_mm) vs. best matter power
+// (Pdelta). Validate by comparing the two data vectors on a fixed cosmology.
+// ---------------------------------------------------------------------------
+#ifndef HM_IA_2H_PMM
+#define HM_IA_2H_PMM 1   // 0 = Pdelta (pipeline nonlinear P), 1 = p_mm (halo model)
+#endif
+
+static inline double p_mm_2h_ia(const double k, const double a)
+{
+#if HM_IA_2H_PMM == 1
+  return p_mm(k, a);
+#else
+  return Pdelta(k, a);
+#endif
+}
+
 // 2-halo central II (intrinsic-intrinsic) power spectrum, NLA limit.
 double p_II_2h_cen_nointerp(const double k, const double a, const int ni)
 {
   const double A = A_nla_cen(ni, a);
   const double b = b_red_cen(ni, a);
-  return (A*b)*(A*b) * Pdelta(k, a);
+  return (A*b)*(A*b) * p_mm_2h_ia(k, a);
 }
 
 // 2-halo central dI (density-intrinsic / matter-IA) power spectrum, NLA limit.
@@ -1884,7 +1927,7 @@ double p_dI_2h_cen_nointerp(const double k, const double a, const int ni)
 {
   const double A = A_nla_cen(ni, a);
   const double b = b_red_cen(ni, a);
-  return (A*b) * Pdelta(k, a);
+  return (A*b) * p_mm_2h_ia(k, a);
 }
 
 // ---------------------------------------------------------------------------
@@ -2532,7 +2575,8 @@ void set_HOD(const int ni)
 //     dimensionless u profiles therefore yields (c/H0)^3 == P_code. Correct.
 //   * u_ia_sat() already converts the 0.06 Mpc/h alignment floor via
 //     "0.06/cosmology.coverH0" -> code units. Correct.
-//   * p_II_2h_cen / p_dI_2h_cen are built on Pdelta(k,a), which is already
+//   * p_II_2h_cen / p_dI_2h_cen are built on the matter spectrum selected by
+//     HM_IA_2H_PMM (Pdelta or the halo-model p_mm), which is already
 //     P_code, times dimensionless (A*b) factors. Correct.
 //   * A_nla_cen uses nuisance.c1rhocrit_ia (= C1*rho_crit, dimensionless by
 //     construction in cosmolike) -> the NLA amplitude is dimensionless.
@@ -2595,6 +2639,73 @@ int halo_IA_lensbin_of_sourcebin(const int ns)
 }
 
 // ---------------------------------------------------------------------------
+// HALO-EXCLUSION / 1h-2h TRANSITION WINDOWS
+// ---------------------------------------------------------------------------
+// The naive total P = P_1h + P_2h double-counts in the transition region: the
+// 2-halo term uses the (non)linear matter power, which already contains 1-halo
+// power at those scales. Following Fortuna et al. (2020), Appendix B, we
+// suppress each term where it should not contribute:
+//
+//   P_total(k) = f_1h(k) * P_1h(k)  +  f_2h(k) * P_2h(k)
+//   f_2h(k) = exp[ -(k/k_2h)^2 ]        -- kills 2-halo at HIGH k
+//   f_1h(k) = 1 - exp[ -(k/k_1h)^2 ]    -- kills 1-halo at LOW k
+//
+// with the paper's defaults k_2h = 6 h/Mpc, k_1h = 4 h/Mpc. The offset leaves
+// a small overlap so the transition is gradual, not a hard switch.
+//
+// UNITS (critical): k here is in CODE units (k_phys * coverH0), while the
+// thresholds are quoted in h/Mpc. So the code-unit threshold is
+//   k_thr_code = k_thr_hMpc * cosmology.coverH0.
+// Getting this wrong puts the transition at the wrong scale by a factor
+// coverH0 ~ 3000 and is silent -- do not use a bare 4.0 / 6.0 here.
+//
+// CAVEATS worth knowing (see Fortuna App. B, and Sect. 6.2.1):
+//   * This is a fudge to avoid double counting, NOT a simulation-calibrated
+//     halo exclusion. The paper found Stage-IV cosmological bias is sensitive
+//     to the exact recipe (a smoother/wider transition trades Omega_m bias
+//     against S8/w bias). k_1h, k_2h and the Gaussian form are all knobs.
+//   * The "right" k_2h depends on WHICH matter power the 2-halo term uses
+//     (Pdelta vs the halo-model p_mm, via HM_IA_2H_PMM): p_mm already carries
+//     its own 1h+2h split, so the double-counting structure differs. Fix the
+//     matter-power choice first, then tune the window against it.
+//
+// Toggle with HM_IA_TRUNC (0 = plain sum, as before; 1 = apply windows).
+// ---------------------------------------------------------------------------
+#ifndef HM_IA_TRUNC
+#define HM_IA_TRUNC 1        // 0 = plain 1h+2h sum, 1 = Fortuna App. B windows
+#endif
+#ifndef HM_IA_K1H_HMPC
+#define HM_IA_K1H_HMPC 4.0   // 1-halo low-k cutoff [h/Mpc]
+#endif
+#ifndef HM_IA_K2H_HMPC
+#define HM_IA_K2H_HMPC 6.0   // 2-halo high-k cutoff [h/Mpc]
+#endif
+
+static inline double f_1h_trunc(const double k)
+{
+#if HM_IA_TRUNC == 1
+  const double k1h = HM_IA_K1H_HMPC * cosmology.coverH0;  // -> code units
+  const double r = k / k1h;
+  return 1.0 - exp(-r*r);
+#else
+  (void) k;
+  return 1.0;
+#endif
+}
+
+static inline double f_2h_trunc(const double k)
+{
+#if HM_IA_TRUNC == 1
+  const double k2h = HM_IA_K2H_HMPC * cosmology.coverH0;  // -> code units
+  const double r = k / k2h;
+  return exp(-r*r);
+#else
+  (void) k;
+  return 1.0;
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // Full II spectrum = 1-halo (satellite-satellite) + 2-halo (central NLA).
 // ni is a CLUSTERING bin index.
 // ---------------------------------------------------------------------------
@@ -2616,7 +2727,7 @@ double P_II_halo_nointerp(const double k, const double a, const int ni,
   }
   const double p1h = p_II_1h_nointerp(k, a, ni);
   const double p2h = p_II_2h_cen_nointerp(k, a, ni);
-  const double res = p1h + p2h;
+  const double res = f_1h_trunc(k)*p1h + f_2h_trunc(k)*p2h;
   return (res > 0.0) ? res : 0.0;   // II is positive-definite
 }
 
@@ -2646,7 +2757,7 @@ double P_dI_halo_nointerp(const double k, const double a, const int ni,
   const double p2h = p_dI_2h_cen_nointerp(k, a, ni);
   const double p1h_mag = p_dI_1h_nointerp(k, a, ni);   // magnitude-like
   const double sgn = (A_nla_cen(ni, a) < 0.0) ? -1.0 : 1.0;
-  return p2h + sgn*fabs(p1h_mag);
+  return f_2h_trunc(k)*p2h + f_1h_trunc(k)*sgn*fabs(p1h_mag);
 }
 
 // ---------------------------------------------------------------------------
@@ -2701,6 +2812,11 @@ double P_II_halo(const double k, const double a, const int ni)
     (void) P_II_halo_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
     (void) Pdelta(exp(lim[nbin][0]), lim[0][0]);
     (void) growfac(lim[0][0]);
+#if HM_IA_2H_PMM == 1
+    // p_mm runs its own omp table build; force it serially here (same race
+    // class as Pdelta above) since the 2-halo central term now calls it.
+    (void) p_mm(exp(lim[nbin][0]), lim[0][0]);
+#endif
     // MANDATORY: these three build shared lookup tables and MUST run serially.
     // The parallel region below calls them read-only; building them lazily
     // inside it races (concurrent malloc + nested omp) and segfaults.
@@ -2764,6 +2880,9 @@ double P_dI_halo(const double k, const double a, const int ni)
     (void) P_dI_halo_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
     (void) Pdelta(exp(lim[nbin][0]), lim[0][0]);
     (void) growfac(lim[0][0]);
+#if HM_IA_2H_PMM == 1
+    (void) p_mm(exp(lim[nbin][0]), lim[0][0]);   // serial pre-build; see P_II_halo
+#endif
     // MANDATORY serial table builds -- see the note in P_II_halo.
     u_ia_sat_init();
     n_red_sat_bar_init();
