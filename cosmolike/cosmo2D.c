@@ -1729,7 +1729,7 @@ static double int_for_C_gs_tomo_limber_core(
         const double P_dE = P_sim_dE(k, a);
         const double lens_weight_for_IA = WGAL*b1 + WMAG*ell_prefactor*bmag;
 
-        ans = WK*clustering_term - WS*lens_weight_for_IA*P_dE;
+        ans = WK*clustering_term + WS*lens_weight_for_IA*P_dE;
         break;
       }
       // ---------- end simulation branch -----------------------------------
