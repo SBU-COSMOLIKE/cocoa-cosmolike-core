@@ -1901,33 +1901,83 @@ double A_nla_cen(const int ni, const double a)
 // want depends on the goal: self-consistency (p_mm) vs. best matter power
 // (Pdelta). Validate by comparing the two data vectors on a fixed cosmology.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MATTER POWER FOR THE 2-HALO CENTRAL IA TERM
+// ---------------------------------------------------------------------------
+// HM_IA_2H_PMM selects how the matter power enters the 2-halo central IA term:
+//
+//   0 : Pdelta(k,a)   -- pipeline nonlinear P (NLA convention; needs halo
+//                        exclusion to avoid double-counting the 1-halo IA)
+//   1 : p_mm(k,a)     -- halo-model matter power (own 1h+2h)
+//   2 : I2(k,a)^n * p_lin(k,a)  -- PROFILE-WEIGHTED 2-HALO matter power only.
+//        I2(k,a) = I11_X(k,a,func=0) is the bias-normalized, NFW-profile-
+//        weighted 2-halo matter integral, with I2 -> 1 as k -> 0. Using the
+//        2-halo matter power (rather than the full nonlinear P) means the
+//        2-halo central IA term contains NO 1-halo matter contribution, so it
+//        does NOT double-count against the 1-halo satellite IA term -- no halo
+//        exclusion / truncation window is needed for this piece.
+//
+//        Power of I2 differs by term:
+//          II (shape x shape across halos): TWO profile-weighted legs
+//                -> (A*b)^2 * I2(k)^2 * P_lin
+//          dI (matter x shape across halos): ONE matter leg (I2) + one IA leg
+//                -> (A*b)   * I2(k)   * P_lin
+//        Both reduce to the plain (A*b)^n * P_lin NLA-linear limit as k->0,
+//        since I2 -> 1, so the large-scale amplitude is unchanged.
+//
+//        CAVEAT: for STRICT centrals u(k|M) -> 1 (a central sits at the halo
+//        centre), so the profile weighting inside I2 really describes a tracer
+//        that follows the NFW profile (matter/satellites), not point-like
+//        centrals. This option treats the red-central population as a general
+//        profile-following biased tracer. If you want strict centrals, use the
+//        bare-P_lin form (set both I2 factors to 1, i.e. HM_IA_2H_PMM left at
+//        0/1 with p_mm_2h_ia returning p_lin).
+// ---------------------------------------------------------------------------
 #ifndef HM_IA_2H_PMM
-#define HM_IA_2H_PMM 1   // 0 = Pdelta (pipeline nonlinear P), 1 = p_mm (halo model)
+#define HM_IA_2H_PMM 2   // 0=Pdelta, 1=p_mm, 2=I2^n*p_lin (2-halo only)
 #endif
 
 static inline double p_mm_2h_ia(const double k, const double a)
 {
 #if HM_IA_2H_PMM == 1
   return p_mm(k, a);
+#elif HM_IA_2H_PMM == 2
+  return p_lin(k, a);          // I2 factors applied per-term below
 #else
   return Pdelta(k, a);
 #endif
 }
 
+// I2(k,a): bias-normalized, NFW-profile-weighted 2-halo matter integral.
+// I11_X func=0 is exactly this object; -> 1 as k -> 0.
+static inline double I2_2h(const double k, const double a)
+{
+#if HM_IA_2H_PMM == 2
+  return I11_X_nointerp(k, a, 0, 0);
+#else
+  (void) k; (void) a;
+  return 1.0;                  // no profile weighting for options 0/1
+#endif
+}
+
 // 2-halo central II (intrinsic-intrinsic) power spectrum, NLA limit.
+// Two profile-weighted legs -> I2(k)^2.
 double p_II_2h_cen_nointerp(const double k, const double a, const int ni)
 {
   const double A = A_nla_cen(ni, a);
   const double b = b_red_cen(ni, a);
-  return (A*b)*(A*b) * p_mm_2h_ia(k, a);
+  const double I2 = I2_2h(k, a);
+  return (A*b)*(A*b) * (I2*I2) * p_mm_2h_ia(k, a);
 }
 
 // 2-halo central dI (density-intrinsic / matter-IA) power spectrum, NLA limit.
+// One matter leg -> a single I2(k).
 double p_dI_2h_cen_nointerp(const double k, const double a, const int ni)
 {
   const double A = A_nla_cen(ni, a);
   const double b = b_red_cen(ni, a);
-  return (A*b) * p_mm_2h_ia(k, a);
+  const double I2 = I2_2h(k, a);
+  return (A*b) * I2 * p_mm_2h_ia(k, a);
 }
 
 // ---------------------------------------------------------------------------
@@ -2817,6 +2867,15 @@ double P_II_halo(const double k, const double a, const int ni)
     // class as Pdelta above) since the 2-halo central term now calls it.
     (void) p_mm(exp(lim[nbin][0]), lim[0][0]);
 #endif
+#if HM_IA_2H_PMM == 2
+    // I2 = I11_X(func=0) and its bias_norm build static GSL state; the 2-halo
+    // central term calls them inside the parallel region below, so warm them
+    // up serially here (same discipline as Pdelta/p_mm).
+    (void) bias_norm(lim[0][0]);
+    (void) I11_X_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
+    (void) I11_X_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0);
+    (void) p_lin(exp(lim[nbin][0]), lim[0][0]);
+#endif
     // MANDATORY: these three build shared lookup tables and MUST run serially.
     // The parallel region below calls them read-only; building them lazily
     // inside it races (concurrent malloc + nested omp) and segfaults.
@@ -2882,6 +2941,12 @@ double P_dI_halo(const double k, const double a, const int ni)
     (void) growfac(lim[0][0]);
 #if HM_IA_2H_PMM == 1
     (void) p_mm(exp(lim[nbin][0]), lim[0][0]);   // serial pre-build; see P_II_halo
+#endif
+#if HM_IA_2H_PMM == 2
+    (void) bias_norm(lim[0][0]);                 // serial pre-build; see P_II_halo
+    (void) I11_X_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
+    (void) I11_X_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0);
+    (void) p_lin(exp(lim[nbin][0]), lim[0][0]);
 #endif
     // MANDATORY serial table builds -- see the note in P_II_halo.
     u_ia_sat_init();
