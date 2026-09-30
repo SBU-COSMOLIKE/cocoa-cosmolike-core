@@ -78,13 +78,15 @@ double u_ia_sat_nointerp(const double c, const double k, const double m,
 void u_ia_sat_init(void);
 void n_red_sat_bar_init(void);
 void b_red_cen_init(void);
+void f_sat_sample_init(void);
 double I_for_IA_nointerp(const double k, const double a, const int ni,
                          const int ia_func, const int init);
 double n_red_sat_bar(const int ni, const double a);
 double p_II_1h_nointerp(const double k, const double a, const int ni);
 double int_for_bred_cen(double lnM, void* params);
 double I_bred_cen_nointerp(const double a, const int ni, const int func, const int init);
-double b_red_cen(const int ni, const double a);
+double f_red_cen_sample(const int ni, const double a);
+double f_sat_sample(const int ni, const double a);
 double A_nla_cen(const int ni, const double a);
 double p_II_2h_cen_nointerp(const double k, const double a, const int ni);
 double p_dI_2h_cen_nointerp(const double k, const double a, const int ni);

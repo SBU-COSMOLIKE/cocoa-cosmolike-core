@@ -3026,12 +3026,12 @@ double compute_p_dI_1h(const int ni, const double k, const double a)
   return p_dI_1h_nointerp(k, a, ni);
 }
 // Optional: expose the effective bias for sanity-checking
-double compute_b_red_cen(const int ni, const double a)
+double compute_f_red_cen_sample(const int ni, const double a)
 {
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) [[unlikely]] {
-    critical("compute_b_red_cen: ni={} out of range", ni); exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    critical("compute_f_red_cen_sample: ni={} out of range", ni); exit(1);
   }
-  return b_red_cen(ni, a);
+  return f_red_cen_sample(ni, a);
 }
 
 double compute_test_u_ia_sat(const double k, const double m, const double a)

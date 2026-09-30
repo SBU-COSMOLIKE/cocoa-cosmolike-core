@@ -1375,7 +1375,7 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
 double compute_p_II_1h(const int ni, const double k, const double a);
 double compute_p_II_2h_cen(const int ni, const double k, const double a);
 double compute_p_dI_2h_cen(const int ni, const double k, const double a);
-double compute_b_red_cen(const int ni, const double a);
+double compute_f_red_cen_sample(const int ni, const double a);
 double compute_test_u_ia_sat(const double k, const double m, const double a);
 double compute_p_gg(const int ni, const double k, const double a);
 double compute_p_gm(const int ni, const double k, const double a);

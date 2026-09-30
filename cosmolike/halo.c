@@ -30,7 +30,20 @@
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-static const double F2_ANGULAR = 3 * M_PI  / 2.0;   // ~= 4.712
+// Leading multipole of the satellite shape field (Fortuna 2021: fix theta_k=pi/2,
+// truncate at l_max=6; the l=2 term dominates -- Appendix C / Fig. C1).
+#ifndef IA_L_MULTIPOLE
+#define IA_L_MULTIPOLE 2
+#endif
+// Angular coefficient of the l=2 satellite IA multipole.
+//   3*pi/2 is the bare angular integral f_2 (Eq. C8, sin^b de-projection b=-2,
+//          theta_k=pi/2) -- what the code had before.
+//   (2l+1)/(4pi) is the multipole normalization from the plane-wave expansion
+//          (Eq. C1) plus the 1/(4pi) solid-angle factor -- it was MISSING.
+// Net: F2_ANGULAR = (3*pi/2)*(2*2+1)/(4*pi) = 15/8 = 1.875, making the profile
+// ~2.513x (=4pi/5) smaller. VALIDATE vs Fortuna Fig. C1 via test_u_ia_sat().
+static const double F2_ANGULAR =
+    (3.0 * M_PI / 2.0) * ((2.0 * IA_L_MULTIPOLE + 1.0) / (4.0 * M_PI));
 double hb1nu(const double nu, const double a)
 { // Halo bias based on peak-background split
 
@@ -1681,10 +1694,93 @@ double n_red_sat_bar(const int ni, const double a)
   return v0 + w*(v1 - v0);
 }
 
+// ---------------------------------------------------------------------------
+// Satellite SAMPLE fraction f_s(a) = nbar_sat / nbar_gal, mass-integrated.
+// Fortuna et al. (2020) f_s(z) in Eqs. 17-18; weights the 1-halo satellite IA.
+// k-independent -> tabulated in (ni, a) like n_red_sat_bar. Thread-safe:
+// allocate+fill serially in f_sat_sample_init(), read-only inside omp regions.
+// ---------------------------------------------------------------------------
+static double* fss_val  = NULL;   // [nbin*na]
+static int     fss_na   = 0;
+static int     fss_nbin = 0;
+static uint64_t fss_cache[MAX_SIZE_ARRAYS];
+
+static double f_sat_sample_direct(const int ni, const double a)
+{
+  const double fs = fsat_nointerp(ni, a, 0);   // n_sat/n_gal (case 2, /ngal)
+  if (fs < 0.0)  return 0.0;
+  if (fs > 1.0)  return 1.0;
+  return fs;
+}
+
+void f_sat_sample_init(void)
+{
+  const int na   = (int) Ntable.N_a/5.0;
+  const int nbin = redshift.clustering_nbin;
+
+  const int need_alloc = (NULL == fss_val) || (na != fss_na) || (nbin != fss_nbin);
+  const int need_fill = need_alloc ||
+      fdiff2(fss_cache[0], cosmology.random) ||
+      fdiff2(fss_cache[1], Ntable.random)    ||
+      fdiff2(fss_cache[2], nuisance.random_ia) ||
+      fdiff2(fss_cache[3], redshift.random_clustering);
+
+  if (!need_fill) return;
+
+  if (need_alloc) {
+    if (fss_val != NULL) free(fss_val);
+    fss_val  = (double*) malloc1d(nbin*na);
+    fss_na   = na;
+    fss_nbin = nbin;
+  }
+
+  (void) fsat_nointerp(0, amin_lens(0), 1);  // warm hm_funcs/ngal serially
+  (void) ngal(0, amin_lens(0));
+
+  for (int l=0; l<nbin; l++) {
+    const double amin = amin_lens(l);
+    const double amax = amax_lens(l);
+    const double da = (amax - amin)/((double) na - 1.0);
+    for (int i=0; i<na; i++) {
+      fss_val[l*na + i] = f_sat_sample_direct(l, amin + i*da);
+    }
+  }
+
+  fss_cache[0] = cosmology.random;
+  fss_cache[1] = Ntable.random;
+  fss_cache[2] = nuisance.random_ia;
+  fss_cache[3] = redshift.random_clustering;
+}
+
+double f_sat_sample(const int ni, const double a)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  if (NULL == fss_val || fss_na <= 0) {
+    return f_sat_sample_direct(ni, a);
+  }
+  const int na = fss_na;
+  const double amin = amin_lens(ni);
+  const double amax = amax_lens(ni);
+  const double da = (amax - amin)/((double) na - 1.0);
+  if (!(da > 0)) return f_sat_sample_direct(ni, a);
+  double r = (a - amin)/da;
+  if (r < 0.0 || r > (double)(na - 1)) return f_sat_sample_direct(ni, a);
+  int i0 = (int) floor(r);
+  if (i0 > na - 2) i0 = na - 2;
+  if (i0 < 0) i0 = 0;
+  const double w = r - i0;
+  return fss_val[ni*na + i0] + w*(fss_val[ni*na + i0 + 1] - fss_val[ni*na + i0]);
+}
+
 // 1-halo II satellite power spectrum, normalized and amplitude-weighted.
 // P_II^1h(k,a,ni) = A^2 * [ ∫dlnM dN/dlnM n_sat_red^2 u_ia^2 ] / n_bar^2
 double p_II_1h_nointerp(const double k, const double a, const int ni)
 {
+  // Fortuna Eq. 18: P^ss_II,1h = int dM n(M) f_s^2 <N_s(N_s-1)>/nbar_s^2 |gamma|^2
+  //   ns_red^2 == <N_s(N_s-1)> in the Poisson limit Fortuna assumes (Sect. 2).
+  //   f_s^2 is the satellite SAMPLE fraction (was missing).
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
@@ -1692,14 +1788,11 @@ double p_II_1h_nointerp(const double k, const double a, const int ni)
   if (!(nbar > 0)) {
     return 0.0;
   }
-  // Constant alignment amplitude stored by set_nuisance_ia_halo in ia[3][ni].
-  // NOTE: ia[3] is indexed per *source* bin in set_nuisance_ia_halo, but here
-  // ni is a *lens* bin. See the amplitude caveat in the notes below.
-  const double A = nuisance.ia[5][ni];;//nuisance.ia[3][ni];
-
+  const double A  = nuisance.ia[5][ni];      // satellite alignment amplitude a_1h
+  const double fs = f_sat_sample(ni, a);     // Fortuna f_s(z)
   const double I_II = I_for_IA_nointerp(k, a, ni, 2, 0);
 
-  return (A*A) * I_II / (nbar*nbar);
+  return (A*A) * (fs*fs) * I_II / (nbar*nbar);
 }
 // ---------------------------------------------------------------------------
 // 2-HALO CENTRAL IA (NLA limit)
@@ -1725,12 +1818,14 @@ double int_for_bred_cen(double lnM, void* params)
   const double nc      = HOD_nc(m, a, ni);
   const double fc      = HOD_fc(ni);
   const double fred_c  = f_red_cen(m, ni);
-  const double nc_red  = fc * nc * fred_c;
+  const double nc_red  = fc * nc * fred_c;   // red centrals
+  const double nc_all  = fc * nc;            // all centrals
 
-  if (func == 0) {
-    return dNdlnM * hb1nu(nu, a) * nc_red;   // bias-weighted
-  } else {
-    return dNdlnM * nc_red;                    // density (normalization)
+  switch (func) {
+    case 0:  return dNdlnM * hb1nu(nu, a) * nc_red;  // bias-weighted red (legacy)
+    case 1:  return dNdlnM * nc_red;                 // red-central density (numerator)
+    case 2:  return dNdlnM * nc_all;                 // all-central density (denominator)
+    default: log_fatal("int_for_bred_cen func=%d not supported", func); exit(1);
   }
 }
 
@@ -1778,15 +1873,16 @@ static int     brc_na   = 0;
 static int     brc_nbin = 0;
 static uint64_t brc_cache[MAX_SIZE_ARRAYS];
 
-static double b_red_cen_direct(const int ni, const double a)
+static double f_red_cen_sample_direct(const int ni, const double a)
 {
-  const double num = I_bred_cen_nointerp(a, ni, 0, 0);
-  const double den = I_bred_cen_nointerp(a, ni, 1, 0);
-  return (den > 0) ? num/den : 0.0;
+  const double num = I_bred_cen_nointerp(a, ni, 1, 0);  // red-central density
+  const double den = I_bred_cen_nointerp(a, ni, 2, 0);  // all-central density
+  const double f   = (den > 0) ? num/den : 0.0;
+  return (f < 0.0) ? 0.0 : (f > 1.0 ? 1.0 : f);
 }
 
 // Serial initializer: allocate + fill. MUST be called outside any omp region.
-void b_red_cen_init(void)
+void b_red_cen_init(void)   // name kept; now fills the red-central FRACTION table
 {
   const int na   = (int) Ntable.N_a/5.0;
   const int nbin = redshift.clustering_nbin;
@@ -1807,15 +1903,15 @@ void b_red_cen_init(void)
     brc_nbin = nbin;
   }
 
-  (void) I_bred_cen_nointerp(amin_lens(0), 0, 0, 1); // init static vars
-  (void) I_bred_cen_nointerp(amin_lens(0), 0, 1, 1);
+  (void) I_bred_cen_nointerp(amin_lens(0), 0, 1, 1); // init static vars
+  (void) I_bred_cen_nointerp(amin_lens(0), 0, 2, 1);
 
   for (int l=0; l<nbin; l++) {
     const double amin = amin_lens(l);
     const double amax = amax_lens(l);
     const double da = (amax - amin)/((double) na - 1.0);
     for (int i=0; i<na; i++) {
-      brc_val[l*na + i] = b_red_cen_direct(l, amin + i*da);
+      brc_val[l*na + i] = f_red_cen_sample_direct(l, amin + i*da);
     }
   }
 
@@ -1825,13 +1921,13 @@ void b_red_cen_init(void)
   brc_cache[3] = redshift.random_clustering;
 }
 
-double b_red_cen(const int ni, const double a)
+double f_red_cen_sample(const int ni, const double a)
 {
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   if (NULL == brc_val || brc_na <= 0) {
-    return b_red_cen_direct(ni, a);
+    return f_red_cen_sample_direct(ni, a);
   }
 
   const int na = brc_na;
@@ -1839,11 +1935,11 @@ double b_red_cen(const int ni, const double a)
   const double amax = amax_lens(ni);
   const double da = (amax - amin)/((double) na - 1.0);
   if (!(da > 0)) {
-    return b_red_cen_direct(ni, a);
+    return f_red_cen_sample_direct(ni, a);
   }
   double r = (a - amin)/da;
   if (r < 0.0 || r > (double)(na - 1)) {
-    return b_red_cen_direct(ni, a);
+    return f_red_cen_sample_direct(ni, a);
   }
   int i0 = (int) floor(r);
   if (i0 > na - 2) i0 = na - 2;
@@ -1964,20 +2060,21 @@ static inline double I2_2h(const double k, const double a)
 // Two profile-weighted legs -> I2(k)^2.
 double p_II_2h_cen_nointerp(const double k, const double a, const int ni)
 {
+  // Fortuna Eq. 4:  (f^red_cen)^2 * A_nla^2 * P(k). Centrals sit at halo centre
+  // => u_cen(k|M)=1 => NO profile weighting.
   const double A = A_nla_cen(ni, a);
-  const double b = b_red_cen(ni, a);
-  const double I2 = I2_2h(k, a);
-  return (A*b)*(A*b) * (I2*I2) * p_mm_2h_ia(k, a);
+  const double f = f_red_cen_sample(ni, a);   // FRACTION (was bias b_red_cen)
+  return (A*f)*(A*f) * Pdelta(k, a);
 }
 
 // 2-halo central dI (density-intrinsic / matter-IA) power spectrum, NLA limit.
 // One matter leg -> a single I2(k).
 double p_dI_2h_cen_nointerp(const double k, const double a, const int ni)
 {
+  // Fortuna Eq. 3:  f^red_cen * A_nla * P(k).
   const double A = A_nla_cen(ni, a);
-  const double b = b_red_cen(ni, a);
-  const double I2 = I2_2h(k, a);
-  return (A*b) * I2 * p_mm_2h_ia(k, a);
+  const double f = f_red_cen_sample(ni, a);   // FRACTION (was bias b_red_cen)
+  return (A*f) * Pdelta(k, a);
 }
 
 // ---------------------------------------------------------------------------
@@ -2473,17 +2570,20 @@ double p_gg(
 // P_dI^1h(k,a,ni) = A * [ ∫dlnM dN/dlnM (M/rhom) u_c n_sat_red u_ia ] / n_bar
 double p_dI_1h_nointerp(const double k, const double a, const int ni)
 {
+  // Fortuna Eq. 17: P^s_dI,1h = int dM n(M) (M/rhobar) f_s <N_s>/nbar_s |gamma| u
+  //   f_s is the satellite SAMPLE fraction (was missing).
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  const double nbar = n_red_sat_bar(ni, a);   // ∫ dN/dlnM n_sat_red  (case 1)
+  const double nbar = n_red_sat_bar(ni, a);   // int dN/dlnM n_sat_red  (case 1)
   if (!(nbar > 0)) {
     return 0.0;
   }
-  const double A = nuisance.ia[5][ni];          // satellite amplitude, lens-bin slot
+  const double A  = nuisance.ia[5][ni];       // satellite amplitude a_1h
+  const double fs = f_sat_sample(ni, a);      // Fortuna f_s(z)
   const double I_dI = I_for_IA_nointerp(k, a, ni, 3, 0);  // case 3 = matter-sat
 
-  return A * I_dI / nbar;
+  return A * fs * I_dI / nbar;
 }
 
 // ---------------------------------------------------------------------------
@@ -2882,6 +2982,7 @@ double P_II_halo(const double k, const double a, const int ni)
     u_ia_sat_init();
     n_red_sat_bar_init();
     b_red_cen_init();
+    f_sat_sample_init();
 
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int l=0; l<nbin; l++) {
@@ -2952,6 +3053,7 @@ double P_dI_halo(const double k, const double a, const int ni)
     u_ia_sat_init();
     n_red_sat_bar_init();
     b_red_cen_init();
+    f_sat_sample_init();
 
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int l=0; l<nbin; l++) {
