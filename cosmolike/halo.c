@@ -2056,26 +2056,28 @@ static inline double I2_2h(const double k, const double a)
 #endif
 }
 
-// 2-halo central II (intrinsic-intrinsic) power spectrum, NLA limit.
-// Two profile-weighted legs -> I2(k)^2.
+
+// 2-halo central II (intrinsic-intrinsic), NLA limit, Fortuna Eq. 4 weighting.
+// Matter power = 2-halo matter power only (HM_IA_2H_PMM, default 2):
+//   (f^red_cen A)^2 * I2(k)^2 * p_lin(k)   -- two profile-weighted legs.
 double p_II_2h_cen_nointerp(const double k, const double a, const int ni)
 {
-  // Fortuna Eq. 4:  (f^red_cen)^2 * A_nla^2 * P(k). Centrals sit at halo centre
-  // => u_cen(k|M)=1 => NO profile weighting.
-  const double A = A_nla_cen(ni, a);
-  const double f = f_red_cen_sample(ni, a);   // FRACTION (was bias b_red_cen)
-  return (A*f)*(A*f) * Pdelta(k, a);
+  const double A  = A_nla_cen(ni, a);
+  const double f  = f_red_cen_sample(ni, a);   // red-central FRACTION
+  const double I2 = I2_2h(k, a);               // -> 1 as k -> 0
+  return (A*f)*(A*f) * (I2*I2) * p_mm_2h_ia(k, a);
 }
 
-// 2-halo central dI (density-intrinsic / matter-IA) power spectrum, NLA limit.
-// One matter leg -> a single I2(k).
+// 2-halo central dI (density-intrinsic), NLA limit, Fortuna Eq. 3 weighting.
+//   (f^red_cen A) * I2(k) * p_lin(k)   -- one matter leg.
 double p_dI_2h_cen_nointerp(const double k, const double a, const int ni)
 {
-  // Fortuna Eq. 3:  f^red_cen * A_nla * P(k).
-  const double A = A_nla_cen(ni, a);
-  const double f = f_red_cen_sample(ni, a);   // FRACTION (was bias b_red_cen)
-  return (A*f) * Pdelta(k, a);
+  const double A  = A_nla_cen(ni, a);
+  const double f  = f_red_cen_sample(ni, a);
+  const double I2 = I2_2h(k, a);
+  return (A*f) * I2 * p_mm_2h_ia(k, a);
 }
+
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
