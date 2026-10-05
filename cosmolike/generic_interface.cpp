@@ -766,6 +766,60 @@ void init_IA_sim(std::string dir,
 }
 
 // ---------------------------------------------------------------------------
+// Shape convention of the simulation IA tables (see sim_IA.c header).
+//
+//   apply_shear : 1 -> divide each IA shape leg by 2R, R = 1 - e_rms^2, to go
+//                 from the measured distortion chi to the shear gamma^I that
+//                 the Limber integrals expect (needs e_rms, below).
+//   los_mode    : 0 = monopole as is, 1 = linear-alignment mu=0 factors from
+//                 the index-0 files (dE x 3/2, EE x 15/8), 2 = mu=0 rebuilt
+//                 from the index-0, 2, 4 files.
+// Default inside sim_IA.c: apply_shear = 1, los_mode = 1. Call after
+// init_IA_sim; the tables are rebuilt lazily on next use.
+// ---------------------------------------------------------------------------
+void set_IA_sim_shape_convention(const int apply_shear, const int los_mode)
+{
+  static constexpr std::string_view fname = "set_IA_sim_shape_convention"sv;
+  debug("{}: {}", fname, errbegins);
+  if (los_mode < 0 || los_mode > 2) [[unlikely]] {
+    critical("{}: los_mode = {} not supported (0 none, 1 LA, 2 multipole)",
+             fname, los_mode);
+    exit(1);
+  }
+  set_sim_IA_shape_convention(apply_shear, los_mode);
+  debug("{}: {}", fname, errends);
+}
+
+// Per-snapshot e_rms for the shear conversion. Snapshots of the init_IA_sim
+// list that are missing here (or have e_rms <= 0) are interpolated in z.
+void set_IA_sim_erms(std::vector<int> sn, std::vector<double> erms)
+{
+  static constexpr std::string_view fname = "set_IA_sim_erms"sv;
+  debug("{}: {}", fname, errbegins);
+  if (sn.size() != erms.size() || sn.empty()) [[unlikely]] {
+    critical("{}: sn ({}) and erms ({}) must have equal, nonzero length",
+             fname, sn.size(), erms.size());
+    exit(1);
+  }
+  set_sim_IA_erms((int) sn.size(), sn.data(), erms.data());
+  debug("{}: {}", fname, errends);
+}
+
+// Same, read from <dir>/hinfo_<stem>_sn<sn>_nfold<nfold>.dat (not .bak) written by
+// Galaxy_DS_Field, e_rms = (e1z_rms + e2z_rms)/2. Snapshots in `skip` are
+// interpolated instead (e.g. hinfo produced with a different galaxy cut).
+void set_IA_sim_erms_hinfo(std::string dir, std::string stem,
+                           std::vector<int> skip)
+{
+  static constexpr std::string_view fname = "set_IA_sim_erms_hinfo"sv;
+  debug("{}: {}", fname, errbegins);
+  const int n = set_sim_IA_erms_from_hinfo(dir.c_str(), stem.c_str(),
+                                           (int) skip.size(), skip.data());
+  info("{}: read e_rms from {} hinfo files in {}", fname, n, dir);
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

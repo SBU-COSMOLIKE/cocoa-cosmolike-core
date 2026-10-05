@@ -570,6 +570,26 @@ void init_IA_sim(
     const int nfold
   );
 
+// Shape convention of the sim IA tables: apply_shear (chi -> gamma via 1/2R
+// per shape leg) and los_mode (0 monopole, 1 LA mu=0 factors, 2 multipoles).
+void set_IA_sim_shape_convention(
+    const int apply_shear,
+    const int los_mode
+  );
+
+// Per-snapshot e_rms for the shear conversion (missing ones interpolated).
+void set_IA_sim_erms(
+    std::vector<int> sn,
+    std::vector<double> erms
+  );
+
+// e_rms read from Galaxy_DS_Field hinfo_<stem>_sn<sn>_nfold<n>.dat files.
+void set_IA_sim_erms_hinfo(
+    std::string dir,
+    std::string stem,
+    std::vector<int> skip
+  );
+
 void init_probes(
     std::string possible_probes
   );
