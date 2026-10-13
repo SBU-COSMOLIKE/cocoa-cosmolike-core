@@ -571,7 +571,8 @@ void init_IA_sim(
   );
 
 // Shape convention of the sim IA tables: apply_shear (chi -> gamma via 1/2R
-// per shape leg) and los_mode (0 monopole, 1 LA mu=0 factors, 2 multipoles).
+// per shape leg) and los_mode (0 monopole, 1 LA mu=0 factors, 2 multipoles,
+// 3 hybrid: LA for dE/dB, multipoles for EE/BB; default).
 void set_IA_sim_shape_convention(
     const int apply_shear,
     const int los_mode
@@ -617,7 +618,7 @@ void init_survey(
   );
 
 void init_ggl_exclude(
-	arma::Col<int> ggl_exclude
+  arma::Col<int> ggl_exclude
   );
 
 void set_cosmological_parameters(
@@ -665,11 +666,11 @@ void set_non_linear_power_spectrum(
   );
 
 void set_nuisance_bias_fastpt(
-	arma::Col<double> B1, 
-	arma::Col<double> B2, 
-	arma::Col<double> B_MAG,
-	arma::Col<double> B3nl,
-	arma::Col<double> BK
+  arma::Col<double> B1, 
+  arma::Col<double> B2, 
+  arma::Col<double> B_MAG,
+  arma::Col<double> B3nl,
+  arma::Col<double> BK
 );
   
 void set_nuisance_bias(

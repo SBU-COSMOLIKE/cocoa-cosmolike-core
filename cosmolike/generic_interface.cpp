@@ -717,7 +717,7 @@ void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA
 // backward compatibility
 void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
 {
-	init_IA_fastpt(IA_MODEL, IA_REDSHIFT_EVOL, 0);
+  init_IA_fastpt(IA_MODEL, IA_REDSHIFT_EVOL, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -771,18 +771,19 @@ void init_IA_sim(std::string dir,
 //   apply_shear : 1 -> divide each IA shape leg by 2R, R = 1 - e_rms^2, to go
 //                 from the measured distortion chi to the shear gamma^I that
 //                 the Limber integrals expect (needs e_rms, below).
-//   los_mode    : 0 = monopole as is, 1 = linear-alignment mu=0 factors from
+//   los_mode    : 0 = monopole as is, 3 = hybrid (LA factor for dE, multipole
+//                 rebuild for EE; default), 1 = linear-alignment mu=0 factors from
 //                 the index-0 files (dE x 3/2, EE x 15/8), 2 = mu=0 rebuilt
 //                 from the index-0, 2, 4 files.
-// Default inside sim_IA.c: apply_shear = 1, los_mode = 1. Call after
+// Default inside sim_IA.c: apply_shear = 1, los_mode = 3. Call after
 // init_IA_sim; the tables are rebuilt lazily on next use.
 // ---------------------------------------------------------------------------
 void set_IA_sim_shape_convention(const int apply_shear, const int los_mode)
 {
   static constexpr std::string_view fname = "set_IA_sim_shape_convention"sv;
   debug("{}: {}", fname, errbegins);
-  if (los_mode < 0 || los_mode > 2) [[unlikely]] {
-    critical("{}: los_mode = {} not supported (0 none, 1 LA, 2 multipole)",
+  if (los_mode < 0 || los_mode > 3) [[unlikely]] {
+    critical("{}: los_mode = {} not supported (0 none, 1 LA, 2 multipole, 3 hybrid)",
              fname, los_mode);
     exit(1);
   }

@@ -16,6 +16,9 @@ extern "C" {
                                 //   structure (1-mu^2)^n; default)
 #define SIM_IA_LOS_MULTIPOLE 2  // P(mu=0) = M0 - (5/2) M2 + (27/8) M4 from the
                                 //   index-0, 2 and 4 files (model independent)
+#define SIM_IA_LOS_HYBRID    3  // cross spectra (dE, dB): LA factor from the
+                                //   index-0 file; auto spectra (EE, BB): mu=0
+                                //   from the index-0, 2, 4 files (default)
 
 // Configure once at startup: directory, snapshot list, matching redshifts,
 // and the nfold value used in the filenames. (sn,z) pairs may be unsorted.
@@ -26,9 +29,17 @@ void set_sim_IA_config(const char* dir, int nsn, const int* sn,
 //   apply_shear : 1 -> convert the distortion chi to shear, dividing every
 //                 IA shape leg by 2R, R = 1 - e_rms^2 (needs e_rms, below);
 //                 0 -> use the tables as they are.
-//   los_mode    : SIM_IA_LOS_NONE / _LA / _MULTIPOLE.
-// Default: apply_shear = 1, los_mode = SIM_IA_LOS_LA.
+//   los_mode    : SIM_IA_LOS_NONE / _LA / _MULTIPOLE / _HYBRID.
+// Default: apply_shear = 1, los_mode = SIM_IA_LOS_HYBRID.
 void set_sim_IA_shape_convention(int apply_shear, int los_mode);
+
+// Mesh-window correction for the shape AUTO spectra (EE, BB), which were
+// painted with NGP on an ng^3 mesh of side boxsize/nfold. Each table row is
+// divided by the angle-averaged NGP window <W^2>(k). The cross spectra (dE,
+// dB) are left alone: their two windows (NGP shapes x the matter scheme)
+// cancel at O(k^2 Delta^2). Default: apply = 1, boxsize = 205 Mpc/h (TNG300),
+// ng = 1024. Call before the tables load (i.e. at setup).
+void set_sim_IA_window(int apply, double boxsize_hMpc, int ng);
 
 // Per-snapshot e_rms (per-component rms of the distortion, z projection).
 // Replaces any previous list. Snapshots of the configured list that are not

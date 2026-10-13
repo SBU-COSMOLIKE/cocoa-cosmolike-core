@@ -39,12 +39,28 @@
 //                            No angular model assumed; exact if the spectrum
 //                            has no l > 4 structure ((1-mu^2)^2 has none).
 //       SIM_IA_LOS_NONE      monopole as is (the previous behavior).
+//       SIM_IA_LOS_HYBRID    (default) LA factor for the cross spectra dE, dB
+//                            (index-0 file only; validated for dE at all k),
+//                            multipole rebuild for the autos EE, BB (whose
+//                            angular structure departs from LA at k > 0.3).
+//
+// (3) Mesh window (EE, BB only). The galaxy fields are painted with NGP, so a
+//     shape auto-spectrum is suppressed by W_NGP^2 = prod_i sinc^2(k_i D/2),
+//     D = L/(nfold ng): about 1 - (kD)^2/12, i.e. 3% at k = 3 and 16% at
+//     k = 7 h/Mpc for L = 205, ng = 1024, nfold = 1. Each row is divided by
+//     the angle average <W_NGP^2>(k). Aliasing is not corrected; it is small
+//     for these steeply falling spectra below ~k_Ny/2. The NGP shot noise is
+//     exactly white, so the constant subtracted upstream stays correct. The
+//     cross spectra dE, dB are not corrected: their two windows (NGP on the
+//     shapes, the matter scheme with W ~ 1 + (kD)^2/24 per axis) cancel to
+//     second order. See set_sim_IA_window().
 //
 // Both conversions are applied ONCE, per snapshot row, when a table is
 // loaded, so interpolation and extrapolation act on the converted spectra.
 // Pdd, Phh, Pdh are not shape spectra and are never converted.
 //
-// Default: apply_shear = 1, los_mode = SIM_IA_LOS_LA. With apply_shear = 1 an
+// Default: apply_shear = 1, los_mode = SIM_IA_LOS_HYBRID, window correction
+// on (L = 205 Mpc/h, ng = 1024). With apply_shear = 1 an
 // IA table refuses to load until e_rms has been supplied (fail loud rather
 // than silently inject distortion-unit spectra).
 //
@@ -150,7 +166,12 @@ static int     SIM_READY     = 0;
 
 // Shape convention.
 static int     SIM_SHEAR     = 1;
-static int     SIM_LOS       = SIM_IA_LOS_LA;
+static int     SIM_LOS       = SIM_IA_LOS_HYBRID;
+
+// Mesh window (shape auto spectra only).
+static int     SIM_WINDOW    = 1;
+static double  SIM_BOXSIZE   = 205.0;   // Mpc/h (TNG300)
+static int     SIM_NGRID     = 1024;
 
 // e_rms inputs: sparse (sn, e_rms) list as supplied by the host.
 static int     SIM_NE        = 0;
@@ -254,14 +275,50 @@ void set_sim_IA_config(const char* dir, int nsn, const int* sn,
 
 void set_sim_IA_shape_convention(int apply_shear, int los_mode) {
   if (los_mode != SIM_IA_LOS_NONE && los_mode != SIM_IA_LOS_LA &&
-      los_mode != SIM_IA_LOS_MULTIPOLE) {
-    log_fatal("sim_IA: unknown los_mode %d (use %d none, %d LA, %d multipole)",
-              los_mode, SIM_IA_LOS_NONE, SIM_IA_LOS_LA, SIM_IA_LOS_MULTIPOLE);
+      los_mode != SIM_IA_LOS_MULTIPOLE && los_mode != SIM_IA_LOS_HYBRID) {
+    log_fatal("sim_IA: unknown los_mode %d (use %d none, %d LA, %d multipole, "
+              "%d hybrid)", los_mode, SIM_IA_LOS_NONE, SIM_IA_LOS_LA,
+              SIM_IA_LOS_MULTIPOLE, SIM_IA_LOS_HYBRID);
     exit(1);
   }
   SIM_SHEAR = apply_shear ? 1 : 0;
   SIM_LOS   = los_mode;
   drop_tables();
+}
+
+void set_sim_IA_window(int apply, double boxsize_hMpc, int ng) {
+  if (apply && (!(boxsize_hMpc > 0.0) || ng < 2)) {
+    log_fatal("sim_IA: set_sim_IA_window needs boxsize > 0 and ng >= 2 "
+              "(got %g, %d)", boxsize_hMpc, ng);
+    exit(1);
+  }
+  SIM_WINDOW  = apply ? 1 : 0;
+  if (apply) { SIM_BOXSIZE = boxsize_hMpc; SIM_NGRID = ng; }
+  drop_tables();
+}
+
+// Angle average of the NGP window squared at |k| (h/Mpc), cell size D:
+//   <prod_i sinc^2(k_i D/2)>_{k-hat},  sinc(x) = sin(x)/x.
+// Midpoint rule in mu in [0,1] and phi in [0, pi/2] (the integrand is even
+// in every component), 48 x 48 points: converged to < 1e-6 for k D < 3.
+static double ngp_w2_avg(double k, double D) {
+  const int NMU = 48, NPHI = 48;
+  double sum = 0.0;
+  for (int a = 0; a < NMU; a++) {
+    const double mu = (a + 0.5)/NMU;
+    const double st = sqrt(1.0 - mu*mu);
+    for (int b = 0; b < NPHI; b++) {
+      const double ph = (b + 0.5)/NPHI * 0.5*M_PI;
+      const double x[3] = { 0.5*k*D*st*cos(ph), 0.5*k*D*st*sin(ph), 0.5*k*D*mu };
+      double w = 1.0;
+      for (int i = 0; i < 3; i++) {
+        const double s = (fabs(x[i]) < 1e-8) ? 1.0 : sin(x[i])/x[i];
+        w *= s*s;
+      }
+      sum += w;
+    }
+  }
+  return sum/(NMU*NPHI);
 }
 
 void set_sim_IA_erms(int n, const int* sn, const double* erms) {
@@ -467,7 +524,12 @@ static void load_spec(sim_spec_t t) {
   }
 
   const int is_shape = (SIM_NSHAPE[t] > 0);
-  const int los = is_shape ? SIM_LOS : SIM_IA_LOS_NONE;
+  const int is_auto  = (SIM_NSHAPE[t] == 2);          // EE, BB
+  int los = is_shape ? SIM_LOS : SIM_IA_LOS_NONE;
+  if (los == SIM_IA_LOS_HYBRID)
+    los = is_auto ? SIM_IA_LOS_MULTIPOLE : SIM_IA_LOS_LA;
+  const int do_window = (SIM_WINDOW && is_auto);
+  const double cell = SIM_BOXSIZE/((double) SIM_NFOLD*SIM_NGRID);   // Mpc/h
 
   const double kmin = SIM_KMIN_HMPC;
   const double kmax = (SIM_KMAX_HMPC > 0.0) ? SIM_KMAX_HMPC : INFINITY;
@@ -510,6 +572,11 @@ static void load_spec(sim_spec_t t) {
         }
         free(kl); free(Pl);
       }
+    }
+
+    // ---- mesh window (NGP, shape auto spectra only) ----
+    if (do_window) {
+      for (int i=0;i<nk;i++) P[i] /= ngp_w2_avg(k[i], cell);
     }
 
     // ---- shape convention: distortion -> shear, 1/(2R) per shape leg ----
@@ -557,12 +624,17 @@ static void load_spec(sim_spec_t t) {
   static const char* LOSNAME[3] = { "monopole", "LA mu=0 factor",
                                     "mu=0 from l=0,2,4" };
   log_info("sim_IA: loaded %s (nz=%d, nk=%d, z in [%.3f,%.3f], "
-           "k in [%.4g,%.4g] h/Mpc); %s; %s.",
+           "k in [%.4g,%.4g] h/Mpc); %s; %s; %s.",
            SIM_TAG[t], nz, nk_ref, s->z[0], s->z[nz-1],
            exp(s->lnk[0]), exp(s->lnk[nk_ref-1]),
            is_shape ? LOSNAME[los] : "no conversion (not a shape spectrum)",
            (is_shape && SIM_SHEAR) ? "shear units" :
-           (is_shape ? "DISTORTION units" : "-"));
+           (is_shape ? "DISTORTION units" : "-"),
+           do_window ? "NGP window removed" : "no window correction");
+  if (do_window)
+    log_info("sim_IA:   %s window: cell %.4g Mpc/h, <W^2> = %.4f at k = %.3g h/Mpc",
+             SIM_TAG[t], cell, ngp_w2_avg(exp(s->lnk[nk_ref-1]), cell),
+             exp(s->lnk[nk_ref-1]));
 }
 
 // ---------------------------------------------------------------------------
