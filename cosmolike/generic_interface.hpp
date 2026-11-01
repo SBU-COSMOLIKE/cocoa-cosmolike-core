@@ -39,6 +39,7 @@ using namespace std::literals; // enables "sv" literal
 #include "cosmolike/radial_weights.h"
 #include "cosmolike/pt_cfastpt.h"
 #include "cosmolike/redshift_spline.h"
+#include "cosmolike/sim_IA.h"
 #include "cosmolike/structs.h"
 
 // Python Binding
@@ -672,6 +673,38 @@ void init_include_HOD_GX(
 
 void init_include_halo_IA(
     const int include_halo_IA
+  );
+
+// Simulation-tabulated IA (sim_IA.c, nuisance.IA_code = IA_CODE_SIM = 3):
+// init_IA_sim sets NLA + IA_code = 3 and points sim_IA.c at the tables;
+// the setters configure the shape convention, e_rms and mesh window.
+void init_IA_sim(
+    std::string dir,
+    std::vector<int> sn,
+    std::vector<double> zlist,
+    const int nfold
+  );
+
+void set_IA_sim_shape_convention(
+    const int apply_shear,
+    const int los_mode
+  );
+
+void set_IA_sim_erms(
+    std::vector<int> sn,
+    std::vector<double> erms
+  );
+
+void set_IA_sim_erms_hinfo(
+    std::string dir,
+    std::string stem,
+    std::vector<int> skip
+  );
+
+void set_IA_sim_window(
+    const int apply,
+    const double boxsize_hMpc,
+    const int ng
   );
 
 void init_accuracy_boost(

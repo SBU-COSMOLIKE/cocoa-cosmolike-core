@@ -7,6 +7,12 @@ extern "C" {
 #define IA_MODEL_NLA 0
 #define IA_MODEL_TATT 1
 
+// nuisance.IA_code: which engine supplies the IA spectra.
+//   0 = C FAST-PT, 1 = Python FAST-PT (one-loop kernels; init_IA)
+//   3 = IA_CODE_SIM: full P_dE, P_EE tabulated from a simulation
+//       (sim_IA.c; set by init_IA_sim, NLA only, Limber ss/gs only)
+#define IA_CODE_SIM 3
+
 #define NO_IA 0
 #define IA_NLA_LF 1
 #define IA_REDSHIFT_BINNING 2

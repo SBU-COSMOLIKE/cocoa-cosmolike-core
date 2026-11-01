@@ -969,6 +969,102 @@ void init_include_halo_IA(const int include_halo_IA)
 }
 
 // ---------------------------------------------------------------------------
+// Simulation-tabulated IA (sim_IA.c; nuisance.IA_code = IA_CODE_SIM = 3).
+// The Limber C_ss and C_gs engines read P_sim_dE / P_sim_EE in place of
+// the NLA IA leg (see sim_IA_on in cosmo2D.c). Every setter redraws
+// nuisance.random_ia, the key every IA consumer caches on (the sim_IA.c
+// setters already drop the loaded tables, so the next read reloads them).
+// Call init_IA_sim AFTER init_IA: it has the final say on IA_code.
+// ---------------------------------------------------------------------------
+void init_IA_sim(
+    std::string dir,
+    std::vector<int> sn,
+    std::vector<double> zlist,
+    const int nfold
+  )
+{
+  static constexpr std::string_view fname = "init_IA_sim"sv;
+  debug("{}: {}", fname, errbegins);
+  if (sn.size() != zlist.size()) [[unlikely]] {
+    critical("{}: sn ({}) and zlist ({}) must have equal length",
+             fname, sn.size(), zlist.size());
+    exit(1);
+  }
+  if (sn.size() < 2) [[unlikely]] {
+    critical("{}: need >= 2 snapshots to interpolate in z (got {})",
+             fname, sn.size());
+    exit(1);
+  }
+  if (1 == get_include_halo_IA()) [[unlikely]] {
+    critical("{}: incompatible with include_halo_IA = 1", fname);
+    exit(1);
+  }
+  nuisance.IA_MODEL = IA_MODEL_NLA;
+  nuisance.IA_code  = IA_CODE_SIM;
+  set_sim_IA_config(dir.c_str(), (int) sn.size(),
+                    sn.data(), zlist.data(), nfold);
+  init_sim_IA();
+  nuisance.random_ia = RandomNumber::get_instance().get();
+  debug("{}: {}", fname, errends);
+}
+
+void set_IA_sim_shape_convention(const int apply_shear, const int los_mode)
+{
+  static constexpr std::string_view fname = "set_IA_sim_shape_convention"sv;
+  debug("{}: {}", fname, errbegins);
+  if (los_mode < 0 || los_mode > 3) [[unlikely]] {
+    critical("{}: los_mode = {} not supported (0 none, 1 LA, 2 multipole, "
+             "3 hybrid)", fname, los_mode);
+    exit(1);
+  }
+  set_sim_IA_shape_convention(apply_shear, los_mode);
+  nuisance.random_ia = RandomNumber::get_instance().get();
+  debug("{}: {}", fname, errends);
+}
+
+void set_IA_sim_erms(std::vector<int> sn, std::vector<double> erms)
+{
+  static constexpr std::string_view fname = "set_IA_sim_erms"sv;
+  debug("{}: {}", fname, errbegins);
+  if (sn.size() != erms.size() || sn.empty()) [[unlikely]] {
+    critical("{}: sn ({}) and erms ({}) must have equal, nonzero length",
+             fname, sn.size(), erms.size());
+    exit(1);
+  }
+  set_sim_IA_erms((int) sn.size(), sn.data(), erms.data());
+  nuisance.random_ia = RandomNumber::get_instance().get();
+  debug("{}: {}", fname, errends);
+}
+
+void set_IA_sim_erms_hinfo(
+    std::string dir,
+    std::string stem,
+    std::vector<int> skip
+  )
+{
+  static constexpr std::string_view fname = "set_IA_sim_erms_hinfo"sv;
+  debug("{}: {}", fname, errbegins);
+  const int n = set_sim_IA_erms_from_hinfo(dir.c_str(), stem.c_str(),
+                                           (int) skip.size(), skip.data());
+  info("{}: read e_rms from {} hinfo files in {}", fname, n, dir);
+  nuisance.random_ia = RandomNumber::get_instance().get();
+  debug("{}: {}", fname, errends);
+}
+
+void set_IA_sim_window(const int apply, const double boxsize_hMpc, const int ng)
+{
+  static constexpr std::string_view fname = "set_IA_sim_window"sv;
+  debug("{}: {}", fname, errbegins);
+  if (!(boxsize_hMpc > 0) || ng <= 0) [[unlikely]] {
+    critical("{}: invalid boxsize = {} or ng = {}", fname, boxsize_hMpc, ng);
+    exit(1);
+  }
+  set_sim_IA_window(apply, boxsize_hMpc, ng);
+  nuisance.random_ia = RandomNumber::get_instance().get();
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

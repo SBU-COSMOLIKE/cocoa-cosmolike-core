@@ -25,6 +25,7 @@
 #include "pt_cfastpt.h"
 #include "radial_weights.h"
 #include "redshift_spline.h"
+#include "sim_IA.h"
 #include "structs.h"
 #include "log.c/src/log.h"
 
@@ -113,6 +114,26 @@ static void halo_IA_unsupported(const char* where)
     log_fatal("include_halo_IA = 1 is not implemented in %s", where);
     exit(1);
   }
+  if (IA_CODE_SIM == nuisance.IA_code) {
+    log_fatal("simulation IA (IA_code = %d) is not implemented in %s",
+              IA_CODE_SIM, where);
+    exit(1);
+  }
+}
+
+// Simulation-tabulated IA (sim_IA.c) reuses the halo-model IA reduction
+// of the Limber ss and gs engines: with f_rc = 0 and KHI[0] = 0 the
+// central NLA piece vanishes, and the "1-halo" slots carry the full
+// tabulated spectra, KHI[1] = -P_sim_dE (the reduction subtracts the
+// IA leg; the tables carry their own GI sign) and KHI[2] = P_sim_EE.
+static int sim_IA_on(void)
+{
+  if (IA_CODE_SIM == nuisance.IA_code && 1 == include_halo_IA) {
+    log_fatal("simulation IA (IA_code = %d) and include_halo_IA = 1 "
+              "are mutually exclusive", IA_CODE_SIM);
+    exit(1);
+  }
+  return (IA_CODE_SIM == nuisance.IA_code) ? 1 : 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -2599,7 +2620,8 @@ static void C_ss_tomo_limber_work(
   // halo-model IA (include_halo_IA; Fortuna et al. 2021): the IA leg of
   // each source bin becomes f_rc(a) C1 P_delta f_2h + P_1h,dI and the
   // IA-IA term f_rc^2 C1 C1' P_delta f_2h + P_1h,II (halo.c readers)
-  const int halo_ia = include_halo_IA;
+  const int sim_ia = sim_IA_on();
+  const int halo_ia = (1 == include_halo_IA || 1 == sim_ia) ? 1 : 0;
   if (1 == halo_ia && nuisance.IA_MODEL == IA_MODEL_TATT) {
     log_fatal("include_halo_IA supports the NLA model only");
     exit(1);
@@ -2610,7 +2632,12 @@ static void C_ss_tomo_limber_work(
     const double hoh0 = cn->data[CN_HOVERH0][0];
     const double gf   = cn->data[CN_GROWFAC][0];
     const double ell  = lx[0] + 0.5;
-    if (1 == halo_ia) {
+    if (1 == sim_ia) {
+      // sim_IA.c loads its tables lazily: load them here, serially
+      (void) P_sim_dE(ell/fK, a);
+      (void) P_sim_EE(ell/fK, a);
+    }
+    else if (1 == halo_ia) {
       // halo.c builds its IA tables in its own OpenMP regions: trigger
       // them here, before this function's parallel regions
       (void) ia_f_red_central(a);
@@ -2715,7 +2742,7 @@ static void C_ss_tomo_limber_work(
   if (1 == halo_ia) {
     #pragma omp parallel for schedule(static)
     for (int p = 0; p < cn->npts; p++) {
-      FRC[p] = ia_f_red_central(cn->data[CN_A][p]);
+      FRC[p] = (1 == sim_ia) ? 0.0 : ia_f_red_central(cn->data[CN_A][p]);
     }
 
     #pragma omp parallel for collapse(2) schedule(static)
@@ -2723,10 +2750,16 @@ static void C_ss_tomo_limber_work(
       for (int i = 0; i < nell; i++) {
         const double a = cn->data[CN_A][p];
         const double k = (lx[i] + 0.5)/cn->data[CN_FK][p];
-
-        KHI[0][i][p] = KIA[10][i][p]*ia_window_2h(k); // P_delta f_2h
-        KHI[1][i][p] = ia_p1h_dI(k, a);               // satellites' dI
-        KHI[2][i][p] = ia_p1h_II(k, a);               // satellites' II
+        if (1 == sim_ia) {
+          KHI[0][i][p] = 0.0;
+          KHI[1][i][p] = -P_sim_dE(k, a);             // sim GI (see above)
+          KHI[2][i][p] = P_sim_EE(k, a);              // sim II
+        }
+        else {
+          KHI[0][i][p] = KIA[10][i][p]*ia_window_2h(k); // P_delta f_2h
+          KHI[1][i][p] = ia_p1h_dI(k, a);               // satellites' dI
+          KHI[2][i][p] = ia_p1h_II(k, a);               // satellites' II
+        }
       }
     }
   }
@@ -4029,7 +4062,8 @@ static void C_gs_tomo_limber_work(
   // halo-model IA (include_halo_IA): the source IA leg becomes f_rc C1
   // P_delta f_2h + P_1h,dI (see C_ss_tomo_limber_work); Limber, NLA and
   // perturbative-bias galaxies only in this version
-  const int halo_ia = include_halo_IA;
+  const int sim_ia = sim_IA_on();
+  const int halo_ia = (1 == include_halo_IA || 1 == sim_ia) ? 1 : 0;
   if (1 == halo_ia && (1 == hod || NULL != table_lin)) {
     log_fatal("include_halo_IA: needs include_HOD_GX = 0 and the "
               "Limber gs (adopt_limber_gs = 1)");
@@ -4077,7 +4111,10 @@ static void C_gs_tomo_limber_work(
       // regions; trigger them before this function's parallel regions
       (void) p_gm(ell/fK, a, 0);
     }
-    if (1 == halo_ia) {
+    if (1 == sim_ia) {
+      (void) P_sim_dE(ell/fK, a); // lazy table load, serially
+    }
+    else if (1 == halo_ia) {
       (void) ia_f_red_central(a);
       (void) ia_p1h_dI(ell/fK, a);
     }
@@ -4095,7 +4132,7 @@ static void C_gs_tomo_limber_work(
       if (0 == nuisance.IA_code) get_FPT_IA();
     }
     if (1 == nonlinear_bias) {
-      if (0 == nuisance.IA_code) {
+      if (1 != nuisance.IA_code) { // C FAST-PT unless Python FAST-PT
         get_FPT_bias();
       }
     }
@@ -4161,7 +4198,7 @@ static void C_gs_tomo_limber_work(
     limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
   }
   if (1 == nonlinear_bias) {
-    if (0 == nuisance.IA_code) get_FPT_bias();
+    if (1 != nuisance.IA_code) get_FPT_bias(); // C FAST-PT unless Python FAST-PT
     limbias[0] = log(FPTbias.krange[RANGE_MIN]);
     limbias[1] = log(FPTbias.krange[RANGE_MAX]);
     limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
@@ -4331,7 +4368,8 @@ static void C_gs_tomo_limber_work(
         if (p >= cn_all[zl].npts) {
           continue; // padding node: bin zl has fewer nodes
         }
-        FRC[zl][p] = ia_f_red_central(cn_all[zl].data[CN_A][p]);
+        FRC[zl][p] = (1 == sim_ia) ? 0.0 :
+                     ia_f_red_central(cn_all[zl].data[CN_A][p]);
       }
     }
 
@@ -4345,8 +4383,14 @@ static void C_gs_tomo_limber_work(
           const double a = cn_all[zl].data[CN_A][p];
           const double k = (lx[i] + 0.5)/cn_all[zl].data[CN_FK][p];
 
-          KHI[0][zl][i][p] = KIA[0][zl][i][p]*ia_window_2h(k); // P f_2h
-          KHI[1][zl][i][p] = ia_p1h_dI(k, a);                  // sats' dI
+          if (1 == sim_ia) {
+            KHI[0][zl][i][p] = 0.0;
+            KHI[1][zl][i][p] = -P_sim_dE(k, a);                // sim GI
+          }
+          else {
+            KHI[0][zl][i][p] = KIA[0][zl][i][p]*ia_window_2h(k); // P f_2h
+            KHI[1][zl][i][p] = ia_p1h_dI(k, a);                  // sats' dI
+          }
         }
       }
     }
@@ -5399,7 +5443,7 @@ static void C_gg_tomo_limber_work(
       (void) gbs2(0.1, 0);
       (void) gb3(0.1, 0);
       (void) gbK(0.1, 0);
-      if (0 == nuisance.IA_code) {
+      if (1 != nuisance.IA_code) { // C FAST-PT unless Python FAST-PT
         get_FPT_bias();
       }
     }
@@ -6187,7 +6231,7 @@ static void C_gk_tomo_limber_work(
       (void) gbs2(0.1, 0);
       (void) gb3(0.1, 0);
       (void) gbK(0.1, 0);
-      if (0 == nuisance.IA_code) {
+      if (1 != nuisance.IA_code) { // C FAST-PT unless Python FAST-PT
         get_FPT_bias();
       }
     }
