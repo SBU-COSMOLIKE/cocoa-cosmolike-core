@@ -258,6 +258,22 @@ void C_gg_tomo_limber_nl_lin_nointerp_ells(
     double** out_lin         // output [NSIZE][nell], linear term (or NULL)
   );
 
+// The four-output engine behind the wrapper above (each output may be
+// NULL): the two FKEM terms plus the density-density part of each
+// (kernel W_gal*b1 alone, one-loop bias kept in the full-model DD).
+// The DD outputs feed the low-rank non-Limber split (C_cl_tomo_lowrank),
+// which replaces only the DD part of the FKEM combination and needs
+// Limber DD terms from the same quadrature, mask and summation order.
+void C_gg_tomo_limber_nl_lin_dd_nointerp_ells(
+    const double* ells,      // array of multipole values (length nell)
+    const int nell,          // number of multipole values
+    const int NSIZE,         // number of gg power spectra (= clustering_nbin)
+    double** out,            // output [NSIZE][nell], full model (or NULL)
+    double** out_lin,        // output [NSIZE][nell], linear term (or NULL)
+    double** out_dd,         // output [NSIZE][nell], DD part of the full model (or NULL)
+    double** out_dd_lin      // output [NSIZE][nell], DD part of the linear term (or NULL)
+  );
+
 void C_gg_tomo_limber_nointerp_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
