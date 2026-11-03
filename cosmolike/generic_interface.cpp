@@ -405,6 +405,10 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 //                       -> IP::get_chi2
 //   lens/source file -> init_redshift_distributions_from_files
 //                       -> redshift.*_zdist_table -> redshift_spline.c
+//   nonlimber_lowrank_gg (+_rank, _lmax)
+//                    -> init_lowrank_nonlimber_gg
+//                                              -> use_lowrank_DD_GG et al.
+//                       -> the w_gg_tomo non-Limber dispatch (cosmo2D.c)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -1105,6 +1109,49 @@ void init_include_halo_IA(const int include_halo_IA)
     set_include_halo_IA(include_halo_IA);
     nuisance.random_ia = RandomNumber::get_instance().get();
   }
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// Switch the non-Limber w(theta) galaxy clustering to the experimental
+// low-rank density-density method, writing cosmo2D.c's use_lowrank_DD_GG
+// and its two knobs through set_lowrank_DD_GG: flag 0 = the FKEM split
+// (the default, bit-identical to the code without the feature), 1 = the
+// density-density term carries the full one-loop P_g through a per-bin
+// SVD factorization of sqrt(P_g) (C_cl_tomo_lowrank), with nrank kept
+// ranks and the path's own non-Limber cap lmax. Only the w_gg_tomo
+// non-Limber path dispatches on the flag; Fourier-space C_gg and every
+// other probe are untouched. Likelihood yaml keys: nonlimber_lowrank_gg,
+// nonlimber_lowrank_rank, nonlimber_lowrank_lmax. No nuisance random is
+// redrawn here: w_gg_tomo keys its cache on the three values directly,
+// so a flip invalidates exactly the one consumer and a round trip
+// restores the FKEM data vector bitwise.
+//
+// Validation: flag in {0, 1}; 1 <= nrank <= 16; 32 <= lmax <=
+// Ntable.LMAX; flag = 1 refuses include_HOD_GX = 1 (all enforced in
+// set_lowrank_DD_GG, which prints the offending value and exits).
+//
+// Parameters:
+//   flag  - 0 = FKEM non-Limber gg, 1 = low-rank DD non-Limber gg
+//   nrank - SVD ranks kept per lens bin
+//   lmax  - the low-rank path's non-Limber cap
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_lowrank_nonlimber_gg(const int flag, const int nrank,
+                               const int lmax)
+{
+  static constexpr std::string_view fname = "init_lowrank_nonlimber_gg"sv;
+  debug("{}: {}", fname, errbegins);
+  if (get_use_lowrank_DD_GG() == flag &&
+      get_lowrank_DD_GG_nrank() == nrank &&
+      get_lowrank_DD_GG_lmax() == lmax) {
+    debug("{}: {}", fname, errends);
+    return;
+  }
+  set_lowrank_DD_GG(flag, nrank, lmax);
   debug("{}: {}", fname, errends);
   return;
 }
