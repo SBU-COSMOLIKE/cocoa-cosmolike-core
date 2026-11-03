@@ -8575,7 +8575,16 @@ static void C_gg_lowrank_decomp_work(
     for (int iz=0; iz<NZ; iz++) {
       const double z = zsupport[bin][0] + iz*dz;
       zgrid[bin][iz] = z;
-      nz_weight[bin][iz] = nz_lens_photoz(z, bin)/nmax + 1.0e-10;
+      // The cubic-spline n(z) reconstruction undershoots to small
+      // negative values near sharp histogram edges (the lsst_y1 lens
+      // bins dip to about -1e-5 of max n inside their support), and
+      // sqrt of a negative weight is NaN - one bad z node poisons the
+      // whole SVD of its bin. The weight only tells the SVD which
+      // redshifts matter and cancels in the reconstruction, so the
+      // undershoot is clamped to zero before the floor; the kernels
+      // keep the raw spline, exactly as the FKEM density row does.
+      const double nz_at_node = nz_lens_photoz(z, bin);
+      nz_weight[bin][iz] = fmax(nz_at_node, 0.0)/nmax + 1.0e-10;
     }
   }
 
