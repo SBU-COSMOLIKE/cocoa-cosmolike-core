@@ -387,6 +387,16 @@ void C_cl_tomo(
     double tol
   );
 
+// The experimental low-rank counterpart of C_cl_tomo (cosmo2D.c
+// use_lowrank_DD_GG = 1): the density-density term carries the full
+// one-loop P_g through a per-bin SVD factorization of sqrt(P_g), one
+// FFTLog row per kept rank, with no Limber hand-off below the path's
+// own cap lowrank_DD_GG_lmax; RSD and magnification keep FKEM.
+void C_cl_tomo_lowrank(
+    double* const* const Cl, // output [clustering_nbin][>= lowrank lmax]
+    double tol               // Limber-convergence tolerance (w_gg: 0.002)
+  );
+
 // Fourier-space data vectors: Limber C_gg at arbitrary multipoles plus the
 // non-Limber correction of C_cl_tomo, interpolated between integers.
 void C_gg_tomo_ells(
