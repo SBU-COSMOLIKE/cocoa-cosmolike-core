@@ -59,10 +59,37 @@
 //   include_RSD_GY    = never read (no gy probe in this file)
 static int include_HOD_GX = 0; // 0 or 1
 static int include_halo_IA = 0; // 0 or 1
-static int include_RSD_GS = 0; // 0 or 1 
-static int include_RSD_GG = 1; // 0 or 1 
+static int include_RSD_GS = 0; // 0 or 1
+static int include_RSD_GG = 1; // 0 or 1
 static int include_RSD_GK = 0; // 0 or 1
 static int include_RSD_GY = 0; // 0 or 1
+
+// Experimental low-rank non-Limber galaxy clustering (default OFF =
+// today's FKEM path, bit-identical). FKEM hands everything nonlinear to
+// a Limber term, whose error shrinks with the width of the radial
+// kernel - so for a very thin lens bin the split stays wrong far past
+// the switch multipole, exactly where non-Limber accuracy was the goal.
+// The low-rank path (C_cl_tomo_lowrank) instead SVD-factorizes
+// sqrt(P_g(k, z)) per lens bin and projects each rank with its own
+// FFTLog row, so the density-density term needs no Limber hand-off at
+// any multipole; RSD and magnification keep FKEM (velocities do not
+// grow like densities nonlinearly, and the broad magnification kernel
+// is Limber-safe).
+//
+//   use_lowrank_DD_GG   = the runtime switch, 0 or 1; only the
+//                         w_gg_tomo non-Limber path dispatches on it
+//                         (Fourier-space C_gg_tomo_ells stays FKEM)
+//   lowrank_DD_GG_nrank = SVD ranks kept per lens bin (1..16; the rank
+//                         sweep of the validation battery)
+//   lowrank_DD_GG_lmax  = the multipole where the low-rank path splices
+//                         to the Limber table: its own cap, NOT
+//                         limits.LMAX_NOLIMBER - that shared limit also
+//                         sizes the gs non-Limber arrays, and the point
+//                         of the low-rank path is to raise the gg cap
+//                         without touching gs
+static int use_lowrank_DD_GG = 0;    // 0 or 1
+static int lowrank_DD_GG_nrank = 8;  // 1..16
+static int lowrank_DD_GG_lmax = 150; // 32..Ntable.LMAX
 
 // ---------------------------------------------------------------------------
 // Runtime switch of include_HOD_GX (generic_interface.cpp
@@ -104,6 +131,64 @@ void set_include_halo_IA(const int flag)
 int get_include_halo_IA(void)
 {
   return include_halo_IA;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime switch and knobs of the experimental low-rank non-Limber
+// galaxy clustering (generic_interface.cpp init_lowrank_nonlimber_gg;
+// the likelihoods read the yaml keys nonlimber_lowrank_gg,
+// nonlimber_lowrank_rank and nonlimber_lowrank_lmax). w_gg_tomo keys its
+// cache on all three values, so one process can flip the flag and get
+// back the FKEM data vector bitwise (the projects' round-trip test).
+//
+// Validation:
+//   flag  - 0 or 1; 1 refuses include_HOD_GX = 1 (the HOD galaxies have
+//           no perturbative sqrt(P_g) to factorize, and no non-Limber
+//           path at all);
+//   nrank - 1..16, the range the rank-convergence sweep of the
+//           validation battery exercises; the truncation error falls
+//           below the non-Limber early-exit tolerance well inside it;
+//   lmax  - 32..Ntable.LMAX: at least two FFTLog blocks of 16, and the
+//           Limber splice at lmax needs the interpolation table that
+//           covers limits.LMIN_tab (= 20) to Ntable.LMAX.
+// ---------------------------------------------------------------------------
+void set_lowrank_DD_GG(const int flag, const int nrank, const int lmax)
+{
+  if (flag != 0 && flag != 1) {
+    log_fatal("invalid use_lowrank_DD_GG = %d (0 or 1)", flag);
+    exit(1);
+  }
+  if (nrank < 1 || nrank > 16) {
+    log_fatal("invalid lowrank_DD_GG_nrank = %d (1..16)", nrank);
+    exit(1);
+  }
+  if (lmax < 32 || lmax > Ntable.LMAX) {
+    log_fatal("invalid lowrank_DD_GG_lmax = %d (32..Ntable.LMAX = %d)",
+              lmax, Ntable.LMAX);
+    exit(1);
+  }
+  if (1 == flag && 1 == include_HOD_GX) {
+    log_fatal("use_lowrank_DD_GG = 1 requires include_HOD_GX = 0");
+    exit(1);
+  }
+  use_lowrank_DD_GG = flag;
+  lowrank_DD_GG_nrank = nrank;
+  lowrank_DD_GG_lmax = lmax;
+}
+
+int get_use_lowrank_DD_GG(void)
+{
+  return use_lowrank_DD_GG;
+}
+
+int get_lowrank_DD_GG_nrank(void)
+{
+  return lowrank_DD_GG_nrank;
+}
+
+int get_lowrank_DD_GG_lmax(void)
+{
+  return lowrank_DD_GG_lmax;
 }
 
 // refuse a path that has no halo-model IA implementation

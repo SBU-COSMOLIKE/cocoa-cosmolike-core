@@ -82,6 +82,19 @@ void set_include_halo_IA(const int flag);
 
 int get_include_halo_IA(void);
 
+// runtime switch and knobs of the experimental low-rank non-Limber
+// galaxy clustering (cosmo2D.c use_lowrank_DD_GG and friends): flag 0
+// keeps today's FKEM path bit-identical; nrank = SVD ranks kept per
+// lens bin (1..16); lmax = the low-rank path's own non-Limber cap
+// (32..Ntable.LMAX), independent of limits.LMAX_NOLIMBER
+void set_lowrank_DD_GG(const int flag, const int nrank, const int lmax);
+
+int get_use_lowrank_DD_GG(void);
+
+int get_lowrank_DD_GG_nrank(void);
+
+int get_lowrank_DD_GG_lmax(void);
+
 double C_ks_tomo_limber(const double l, const int ni);
 
 double C_gk_tomo_limber(const double l, const int ni);
