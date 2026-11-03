@@ -8605,8 +8605,14 @@ static void C_gg_lowrank_decomp_work(
     apivd[bin] = 1.0/(1.0 + zmean(bin));
 #endif
     b1ref[bin] = fabs(gb1(zmean(bin), bin));
+    // print the offending value: a zero means the bias never reached
+    // the C side (the carma list-to-arma conversion silently zero-fills
+    // sequences longer than Armadillo's 16-element preallocation - pass
+    // numpy arrays, never plain lists, for > 16 bins), and a NaN means
+    // the caller's bias evolution produced one
     if (!(b1ref[bin] > 0.0)) {
-      log_fatal("gb1(zmean, bin = %d) = 0: sqrtPg_zref would vanish", bin);
+      log_fatal("gb1(zmean, bin = %d) = %e: sqrtPg_zref would vanish",
+                bin, gb1(zmean(bin), bin));
       exit(1);
     }
   }
