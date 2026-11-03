@@ -89,7 +89,12 @@ static int include_RSD_GY = 0; // 0 or 1
 //                         of the low-rank path is to raise the gg cap
 //                         without touching gs
 static int use_lowrank_DD_GG = 0;    // 0 or 1
-static int lowrank_DD_GG_nrank = 8;  // 1..16
+// nrank default 5: on the lsst_y1 frozen 3x2pt fiducial the gg-block
+// delta^T C^-1 delta against nrank = 16 falls 1.2e-2 -> 1.6e-5 ->
+// 4.8e-10 -> 4.1e-14 at nrank 1 -> 2 -> 4 -> 8, so five ranks leave
+// the truncation below 1e-10 - far under the 0.002 early-exit
+// tolerance - while costing three fewer FFTLog rows per bin than 8
+static int lowrank_DD_GG_nrank = 5;  // 1..16
 static int lowrank_DD_GG_lmax = 150; // 32..Ntable.LMAX
 
 // ---------------------------------------------------------------------------
