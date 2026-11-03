@@ -4,6 +4,7 @@
 #include <fftw3.h>
 #include <gsl/gsl_sum.h>
 #include <gsl/gsl_integration.h>
+#include <gsl/gsl_linalg.h>
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_math.h>
 #include <gsl/gsl_sf.h>
@@ -8240,6 +8241,453 @@ double C_kk_limber(const double l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+// number of redshift nodes per lens bin in the low-rank decomposition
+// below: the SVD is O(NK*NZ^2) per bin, and 128 nodes resolve any n(z)
+// the photo-z machinery can produce while keeping every decomposition
+// far cheaper than one FFTLog block
+#define GG_LOWRANK_NZ 128
+
+// ---------------------------------------------------------------------------
+// The per-lens-bin low-rank decomposition of sqrt(P_g(k, z)): the
+// factor tables that C_cl_tomo_lowrank turns into rank kernels.
+//
+// WHY A DECOMPOSITION AT ALL. The non-Limber projection needs
+// P_g(k; z1, z2) at unequal times, and FFTLog can only project
+// z-dependences that factorize: one k-function times one z-function per
+// transform row. FKEM gets a factorized form by construction - the
+// SEPARABLE LINEAR spectrum D(z1) D(z2) P_lin(k) - and pushes everything
+// nonlinear into a Limber term. Limber's error shrinks with the width of
+// the radial kernel, so for a very thin lens bin that Limber hand-off
+// stays wrong far past the switch multipole: the split fails exactly
+// where non-Limber accuracy was the goal. The fix: stop demanding ONE
+// separable term and let an SVD write the full nonlinear sqrt(P_g) as a
+// short SUM of separable terms,
+//
+//   sqrt(P_g(k, z)) ~ sum_r sqrtPg_kfactor_r(k) * sqrtPg_zfactor_r(z),
+//
+// each term cheap to project (one extra FFTLog row per rank). With the
+// geometric-mean unequal-time approximation
+//
+//   P_g(k; z1, z2) ~ sqrt(P_g(k, z1)) * sqrt(P_g(k, z2))
+//
+// (exact at equal times; it assumes the tracer fields at z1 and z2 are
+// fully correlated - the method's own physical approximation, and the
+// reason the flag stays experimental), the projected density-density
+// C_l becomes the square of the rank sum, with no Limber hand-off at
+// any multipole.
+//
+// THE WEIGHTED MATRIX. Per lens bin, on a (k, z) grid,
+//
+//   M[ik][iz] = sqrt(nz_weight(z)) * sqrt(P_g(k, z)) / sqrtPg_zref(k),
+//
+// and gsl_linalg_SV_decomp gives M = U Sigma V^T. Truncating at nrank is
+// the best rank-nrank approximation of M in least squares
+// (Eckart-Young), and the two factors put the truncation error where it
+// is harmless:
+//
+//   nz_weight = n(z)/max n(z) + 1e-10 CANCELS in the reconstruction
+//   (sqrt(w) enters M's columns and divides back out of sqrtPg_zfactor
+//   below); it only tells the SVD which redshifts matter, so the
+//   rank-nrank error lands at redshifts where the bin has no galaxies -
+//   the ones that never enter C_l. The 1e-10 floor keeps the division
+//   finite at the support edges.
+//
+//   sqrtPg_zref(k) = |b1(zmean)| * sqrt(Pdelta(k, a_ref)) is a fixed
+//   k-only normalization, the same anchor trick as the FKEM pivot
+//   (see C_cl_tomo), upgraded. Dividing each row by it makes the matrix
+//   entries sqrt(w) * sqrt(P_g(k, z)/P_g(k, z_ref)): the RATIO to the
+//   reference spectrum. Under scale-independent growth that ratio does
+//   not depend on k at all - every column of M is then proportional to
+//   the same vector and M is EXACTLY rank 1, the FKEM separable
+//   baseline. Every higher rank measures a genuine departure from
+//   separability: massive-neutrino scale-dependent growth, nonlinear
+//   evolution, the one-loop bias terms. FKEM picks its pivot to
+//   minimize a residual it then ignores; the SVD measures that residual
+//   and corrects it rank by rank - which is why the choice of z_ref
+//   barely matters (a different baseline moves power between ranks 1
+//   and 2, and the truncated sum compensates). a_ref follows the SAME
+//   macro as the FKEM pivot (COSMO2D_FKEM_PIVOT_Z0 selects z = 0), so
+//   one build flag moves both baselines consistently. The b1 factor
+//   stays at zmean in both cases: z = 0 can sit outside the
+//   evolving-bias support, and the factor is an overall per-bin k-shape
+//   that is multiplied back exactly in sqrtPg_kfactor - it conditions
+//   the SVD, never the result.
+//
+// THE TRACER SPECTRUM. P_g(k, z) is the FULL one-loop model of the
+// Limber gg integrand (C_gg_tomo_limber_work), evaluated at the same
+// biases gb1/gb2/gbs2/gb3/gbK(z, bin) and with the FPT tables zeroed
+// outside their k range:
+//
+//   P_g = b1^2 Pdelta(k, a)
+//       + D(a)^4 [ b1 b2 P_d1d2 + 1/4 b2^2 (P_d2d2 - 2 sigma4)
+//                  + b1 bs2 P_d1s2 + 1/2 b2 bs2 (P_d2s2 - 4/3 sigma4)
+//                  + 1/4 bs2^2 (P_s2s2 - 8/9 sigma4) + b1 b3 P_d1p3 ]
+//       + 2 b1 bK k^2 Pdelta(k, a).
+//
+// One-loop terms can drive this negative at high k and large |b2|,
+// where sqrt(P_g) stops existing; the clamp
+// P_g = fmax(P_g, 1e-15 b1^2 Pdelta) keeps the matrix real while
+// staying far below any physical power (the count is log_debug'd per
+// build; the subtracted Limber DD term keeps the unclamped integrand,
+// so clamping leaves a residual only where P_g itself is negligible).
+//
+// GRIDS. k: NK points uniform in ln k over [lnk0, lnk0 + (NK-1)*dlnkT],
+// handed in by the caller, who derives the range from its FFTLog chi
+// grid and multipole cap so every one of its queries is interior to the
+// table - no extrapolation by construction. z: GG_LOWRANK_NZ points
+// uniform over the n(z) support of the bin, the range where
+// n > 1e-8 max(n) inside the Limber lens range (the factors are zero
+// outside; zsupport reports the range so the caller's kernels cut the
+// same way).
+//
+// WHY GSL AND NOT A THREADED SOLVER. gsl_linalg_SV_decomp is
+// single-threaded and deterministic: one SVD per bin inside a plain
+// parallel-for over bins cannot race, and chi2 cannot depend on the
+// thread count (determinism is a correctness test here). The dense
+// algebra never leaves this translation unit, so no OpenBLAS thread
+// policy applies.
+//
+// STATIC WORKSPACES. The GSL matrices/vectors and the grid/weight
+// tables are function statics rebuilt only when (Ntable.random, nbins,
+// nrank, NK) change - the C_cl_tomo_core work-array idiom - and only
+// their CONTENTS are refilled at each chain point. The outputs stay
+// owned by the caller (its statics, same rebuild key), so this function
+// allocates nothing per call.
+//
+// Parameters:
+//   nrank          - SVD ranks kept per lens bin (1..16, validated by
+//                    the setter)
+//   NK             - number of ln k grid points (>= GG_LOWRANK_NZ, or
+//                    the SVD of the NK x NZ matrix is ill-posed)
+//   lnk0           - ln of the first k grid point, k in units of H0/c
+//   dlnkT          - uniform ln k grid spacing
+//   sqrtPg_kfactor - output [nbins][nrank][NK]: T_r(k) =
+//                    sqrtPg_zref(k) * sigma_r * U[ik][r]
+//   sqrtPg_zfactor - output [nbins][nrank][NZ]: alpha_r(z) =
+//                    V[iz][r] / sqrt(nz_weight(z))
+//   zsupport       - output [nbins][2]: the z range of the factors
+//
+// Returns:
+//   nothing; the factor tables and supports are written
+// ---------------------------------------------------------------------------
+static void C_gg_lowrank_decomp_work(
+    const int nrank,          // SVD ranks kept per lens bin
+    const int NK,             // number of ln k grid points
+    const double lnk0,        // ln k of the first grid point (k in H0/c units)
+    const double dlnkT,       // uniform ln k spacing
+    double*** sqrtPg_kfactor, // output [nbins][nrank][NK]
+    double*** sqrtPg_zfactor, // output [nbins][nrank][GG_LOWRANK_NZ]
+    double** zsupport         // output [nbins][2], the z range of the factors
+  )
+{
+  const int nbins = redshift.clustering_nbin;
+  const int NZ = GG_LOWRANK_NZ;
+
+  if (NK < NZ) {
+    log_fatal("NK = %d < NZ = %d: gsl_linalg_SV_decomp needs rows >= columns",
+              NK, NZ);
+    exit(1);
+  }
+  if (nbins <= 0 || nbins > MAX_SIZE_ARRAYS) {
+    log_fatal("invalid clustering_nbin = %d", nbins);
+    exit(1);
+  }
+
+  // -------------------------------------------------------------------------
+  // Static workspaces: rebuilt only when the sizes change, refilled
+  // every call. svd_matrix[bin] holds M on input to the SVD and U in
+  // place after it (the GSL thin-SVD convention).
+  // -------------------------------------------------------------------------
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static gsl_matrix** svd_matrix = NULL; // [nbins]: M, then U in place
+  static gsl_matrix** svd_V = NULL;      // [nbins]: V (NZ x NZ)
+  static gsl_vector** sigma_r = NULL;    // [nbins]: singular values
+  static gsl_vector** svd_work = NULL;   // [nbins]: GSL scratch
+  static double** kgrid = NULL;          // [1][NK]: one ln k grid, every bin
+  static double** zgrid = NULL;          // [nbins][NZ]
+  static double** nz_weight = NULL;      // [nbins][NZ]
+  static double** sqrtPg_zref = NULL;    // [nbins][NK]
+
+  if (NULL == svd_matrix ||
+      fdiff2(cache[0], Ntable.random) ||
+      cache[1] != (uint64_t) nbins ||
+      cache[2] != (uint64_t) nrank ||
+      cache[3] != (uint64_t) NK)
+  {
+    if (svd_matrix != NULL) {
+      for (int bin=0; bin<(int) cache[1]; bin++) {
+        gsl_matrix_free(svd_matrix[bin]);
+        gsl_matrix_free(svd_V[bin]);
+        gsl_vector_free(sigma_r[bin]);
+        gsl_vector_free(svd_work[bin]);
+      }
+      free(svd_matrix); free(svd_V); free(sigma_r); free(svd_work);
+      free(kgrid); free(zgrid); free(nz_weight); free(sqrtPg_zref);
+    }
+    svd_matrix = (gsl_matrix**) malloc(sizeof(gsl_matrix*)*nbins);
+    svd_V      = (gsl_matrix**) malloc(sizeof(gsl_matrix*)*nbins);
+    sigma_r    = (gsl_vector**) malloc(sizeof(gsl_vector*)*nbins);
+    svd_work   = (gsl_vector**) malloc(sizeof(gsl_vector*)*nbins);
+    if (NULL == svd_matrix || NULL == svd_V ||
+        NULL == sigma_r || NULL == svd_work) {
+      log_fatal("array allocation failed");
+      exit(1);
+    }
+    for (int bin=0; bin<nbins; bin++) {
+      svd_matrix[bin] = gsl_matrix_alloc(NK, NZ);
+      svd_V[bin]      = gsl_matrix_alloc(NZ, NZ);
+      sigma_r[bin]    = gsl_vector_alloc(NZ);
+      svd_work[bin]   = gsl_vector_alloc(NZ);
+      if (NULL == svd_matrix[bin] || NULL == svd_V[bin] ||
+          NULL == sigma_r[bin] || NULL == svd_work[bin]) {
+        log_fatal("GSL SVD workspace allocation failed");
+        exit(1);
+      }
+    }
+    kgrid       = (double**) malloc2d(1, NK);
+    zgrid       = (double**) malloc2d(nbins, NZ);
+    nz_weight   = (double**) malloc2d(nbins, NZ);
+    sqrtPg_zref = (double**) malloc2d(nbins, NK);
+    cache[0] = Ntable.random;
+    cache[1] = (uint64_t) nbins;
+    cache[2] = (uint64_t) nrank;
+    cache[3] = (uint64_t) NK;
+  }
+
+  const int oneloop_bias = has_b2_galaxies();
+
+  // -------------------------------------------------------------------------
+  // Warm up all functions that lazily initialize internal static tables.
+  // Must be called single-threaded before any parallel region touches
+  // them (the C_gg_tomo_limber_work prelude, trimmed to this function's
+  // needs).
+  // -------------------------------------------------------------------------
+  {
+    (void) Pdelta(0.1, 0.9);
+    (void) growfac(0.9);
+    for (int bin=0; bin<nbins; bin++) {
+      (void) nz_lens_photoz(0.5, bin);
+      (void) gb1(0.5, bin);
+      (void) zmean(bin);
+    }
+    if (1 == oneloop_bias) {
+      (void) gb2(0.5, 0);
+      (void) gbs2(0.5, 0);
+      (void) gb3(0.5, 0);
+      (void) gbK(0.5, 0);
+      if (0 == nuisance.IA_code) {
+        get_FPT_bias();
+      }
+    }
+  }
+  double limbias[3] = {0.0, 0.0, 0.0};
+  double s4 = 0.0;
+  if (1 == oneloop_bias) {
+    limbias[0] = log(FPTbias.krange[RANGE_MIN]);
+    limbias[1] = log(FPTbias.krange[RANGE_MAX]);
+    limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
+    s4 = FPTbias.sigma4;
+  }
+
+  // the uniform ln k grid, shared by every bin
+  for (int ik=0; ik<NK; ik++) {
+    kgrid[0][ik] = exp(lnk0 + ik*dlnkT);
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-bin z support and weight: scan n(z) over the Limber lens range
+  // and keep the range where n > 1e-8 max(n). The scan is serial - a
+  // few thousand spline reads per bin - and nz_weight stores
+  // n/max(n) + 1e-10 on the NZ-point uniform grid of that support.
+  // -------------------------------------------------------------------------
+  for (int bin=0; bin<nbins; bin++) {
+    const double z_lo_lim = 1.0/amax_lens(bin) - 1.0;
+    const double z_hi_lim = 1.0/amin_lens(bin) - 1.0;
+    const int nscan = 4096;
+    double nscan_val[4096];
+    const double dzs = (z_hi_lim - z_lo_lim)/((double) nscan - 1.0);
+    double nmax = 0.0;
+    for (int m=0; m<nscan; m++) {
+      nscan_val[m] = nz_lens_photoz(z_lo_lim + m*dzs, bin);
+      if (nscan_val[m] > nmax) {
+        nmax = nscan_val[m];
+      }
+    }
+    if (!(nmax > 0.0)) {
+      log_fatal("n(z) of lens bin %d vanishes on its Limber range", bin);
+      exit(1);
+    }
+    const double ncut = 1.0e-8*nmax;
+    int mlo = 0;
+    while (mlo < nscan - 1 && nscan_val[mlo] < ncut) {
+      mlo++;
+    }
+    int mhi = nscan - 1;
+    while (mhi > 0 && nscan_val[mhi] < ncut) {
+      mhi--;
+    }
+    if (mhi <= mlo) {
+      log_fatal("empty n(z) support of lens bin %d", bin);
+      exit(1);
+    }
+    zsupport[bin][0] = z_lo_lim + mlo*dzs;
+    zsupport[bin][1] = z_lo_lim + mhi*dzs;
+    const double dz = (zsupport[bin][1] - zsupport[bin][0])/((double) NZ - 1.0);
+    for (int iz=0; iz<NZ; iz++) {
+      const double z = zsupport[bin][0] + iz*dz;
+      zgrid[bin][iz] = z;
+      nz_weight[bin][iz] = nz_lens_photoz(z, bin)/nmax + 1.0e-10;
+    }
+  }
+
+  // the k-only normalization sqrtPg_zref (see the header comment): the
+  // reference scale factor follows the FKEM pivot macro, the b1 factor
+  // stays at zmean (it is multiplied back exactly in sqrtPg_kfactor)
+  double apivd[MAX_SIZE_ARRAYS];
+  double b1ref[MAX_SIZE_ARRAYS];
+  for (int bin=0; bin<nbins; bin++) {
+#ifdef COSMO2D_FKEM_PIVOT_Z0
+    apivd[bin] = 1.0;
+#else
+    apivd[bin] = 1.0/(1.0 + zmean(bin));
+#endif
+    b1ref[bin] = fabs(gb1(zmean(bin), bin));
+    if (!(b1ref[bin] > 0.0)) {
+      log_fatal("gb1(zmean, bin = %d) = 0: sqrtPg_zref would vanish", bin);
+      exit(1);
+    }
+  }
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int bin=0; bin<nbins; bin++) {
+    for (int ik=0; ik<NK; ik++) {
+      sqrtPg_zref[bin][ik] = b1ref[bin]*sqrt(Pdelta(kgrid[0][ik], apivd[bin]));
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Fill M[ik][iz] = sqrt(w) sqrt(P_g) / zref: the dominant cost of the
+  // build (nbins * NK * NZ one-loop P_g evaluations), parallel over
+  // (bin, k-row). The one-loop FPT kernels depend on k alone, so they
+  // are interpolated once per row and reused down the z column; each
+  // iteration writes its own row, so the schedule cannot change a bit
+  // of the result.
+  // -------------------------------------------------------------------------
+  long nclamp = 0;
+  #pragma omp parallel for collapse(2) schedule(static) reduction(+:nclamp)
+  for (int bin=0; bin<nbins; bin++) {
+    for (int ik=0; ik<NK; ik++) {
+      const double lnk = lnk0 + ik*dlnkT;
+      const double k = kgrid[0][ik];
+      double fpt[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+      if (1 == oneloop_bias &&
+          lnk >= limbias[0] && lnk <= limbias[1]) {
+        const double* lb = limbias;
+        const int N = FPTbias.N;
+        // sigma4 subtractions: the same operator renormalization as the
+        // Limber gg integrand (the derivation lives there)
+        fpt[0] = interpol1d(FPTbias.tab[0], N, lb[0], lb[1], lb[2], lnk);
+        fpt[1] = interpol1d(FPTbias.tab[1], N, lb[0], lb[1], lb[2], lnk) - 2.*s4;
+        fpt[2] = interpol1d(FPTbias.tab[2], N, lb[0], lb[1], lb[2], lnk);
+        fpt[3] = interpol1d(FPTbias.tab[3], N, lb[0], lb[1], lb[2], lnk) - 4./3.*s4;
+        fpt[4] = interpol1d(FPTbias.tab[4], N, lb[0], lb[1], lb[2], lnk) - 8./9.*s4;
+        fpt[5] = interpol1d(FPTbias.tab[5], N, lb[0], lb[1], lb[2], lnk);
+      }
+      gsl_matrix* M = svd_matrix[bin];
+      const double* restrict zg = zgrid[bin];
+      const double* restrict wg = nz_weight[bin];
+      const double zref = sqrtPg_zref[bin][ik];
+      for (int iz=0; iz<NZ; iz++) {
+        const double z = zg[iz];
+        const double a = 1.0/(1.0 + z);
+        const double PK = Pdelta(k, a);
+        const double b1 = gb1(z, bin);
+        double Pg = b1*b1*PK;
+        if (1 == oneloop_bias) {
+          const double gf = growfac(a);
+          const double g4 = gf*gf*gf*gf;
+          const double b2  = gb2(z, bin);
+          const double bs2 = gbs2(z, bin);
+          const double b3  = gb3(z, bin);
+          const double bk  = gbK(z, bin);
+          Pg += g4*(b1*b2*fpt[0] + 0.25*b2*b2*fpt[1] + b1*bs2*fpt[2] +
+                    0.5*b2*bs2*fpt[3] + 0.25*bs2*bs2*fpt[4] + b1*b3*fpt[5]) +
+                2.0*b1*bk*k*k*PK;
+        }
+        // sqrt(P_g) must exist: one-loop terms can drive P_g negative at
+        // high k and large |b2| (see the header comment)
+        const double floorPg = 1.0e-15*b1*b1*PK;
+        if (Pg < floorPg) {
+          Pg = floorPg;
+          nclamp++;
+        }
+        gsl_matrix_set(M, ik, iz, sqrt(wg[iz])*sqrt(Pg)/zref);
+      }
+    }
+  }
+  if (nclamp > 0) {
+    log_debug("C_gg_lowrank_decomp_work: %ld of %d sqrt(P_g) entries clamped "
+              "to the 1e-15 b1^2 Pdelta floor", nclamp, nbins*NK*NZ);
+  }
+
+  // -------------------------------------------------------------------------
+  // One SVD per bin. gsl_linalg_SV_decomp is single-threaded, so a
+  // parallel-for over bins is race-free; per-bin status is collected and
+  // checked after the region (log_fatal inside a parallel region would
+  // interleave).
+  // -------------------------------------------------------------------------
+  int status[MAX_SIZE_ARRAYS];
+  #pragma omp parallel for schedule(static)
+  for (int bin=0; bin<nbins; bin++) {
+    status[bin] = gsl_linalg_SV_decomp(svd_matrix[bin], svd_V[bin],
+                                       sigma_r[bin], svd_work[bin]);
+  }
+  for (int bin=0; bin<nbins; bin++) {
+    if (0 != status[bin]) {
+      log_fatal("gsl_linalg_SV_decomp failed on lens bin %d (status %d)",
+                bin, status[bin]);
+      exit(1);
+    }
+  }
+  // the singular-value spectra: the rank-convergence diagnostic (a
+  // truncated tail far below sigma_1 means the kept ranks suffice)
+  for (int bin=0; bin<nbins; bin++) {
+    char buf[512];
+    int off = 0;
+    for (int r=0; r<nrank && off < (int) sizeof(buf) - 16; r++) {
+      off += snprintf(buf + off, sizeof(buf) - off, " %.3e",
+                      gsl_vector_get(sigma_r[bin], r));
+    }
+    log_debug("lowrank gg decomp bin %d: sigma_r =%s", bin, buf);
+  }
+
+  // -------------------------------------------------------------------------
+  // Unpack the truncated factorization:
+  //
+  //   sqrtPg_kfactor[bin][r](k) = sqrtPg_zref(k) * sigma_r * U[ik][r]
+  //   sqrtPg_zfactor[bin][r](z) = V[iz][r] / sqrt(nz_weight(z))
+  //
+  // The zref division and the sqrt(w) weighting of M both undo here, so
+  // the product of the two factors reconstructs sqrt(P_g) itself (all
+  // ranks kept: exactly; truncated: best approximation in the w-weighted
+  // norm). The SVD fixes each pair (u_r, v_r) only up to a common sign;
+  // the product is sign-invariant, so C_l cannot depend on it.
+  // -------------------------------------------------------------------------
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int bin=0; bin<nbins; bin++) {
+    for (int r=0; r<nrank; r++) {
+      const double sr = gsl_vector_get(sigma_r[bin], r);
+      for (int ik=0; ik<NK; ik++) {
+        sqrtPg_kfactor[bin][r][ik] =
+            sqrtPg_zref[bin][ik]*sr*gsl_matrix_get(svd_matrix[bin], ik, r);
+      }
+      for (int iz=0; iz<NZ; iz++) {
+        sqrtPg_zfactor[bin][r][iz] =
+            gsl_matrix_get(svd_V[bin], iz, r)/sqrt(nz_weight[bin][iz]);
+      }
+    }
+  }
+}
 
 
 // ----------------------------------------------------------------------------
