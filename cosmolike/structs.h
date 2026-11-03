@@ -11,7 +11,19 @@ extern "C" {
 #define MAX_GRID_SEGMENTS 10
 
 #define CHAR_MAX_SIZE 1024
+// Capacity of every fixed tomography array (nuisance.gb, photo-z shifts,
+// redshift.*_zdist tables, cache keys, ...): bins per sample must stay
+// below it. A project whose tomography exceeds 20 bins raises it at
+// COMPILE time from its own MakefileCosmolike, e.g.
+//   COMMON_FLAGS += -DMAX_SIZE_ARRAYS=80
+// (each project compiles its own copy of the core, so the setting never
+// leaks across projects; lssty1xdesi carries 76 spectroscopic DESI bins).
+// It is a compile-time constant, not a runtime knob: these arrays are
+// embedded in global structs by value, and sizing them dynamically would
+// touch every struct consumer in the core.
+#ifndef MAX_SIZE_ARRAYS
 #define MAX_SIZE_ARRAYS 20
+#endif
 
 // Slots of every [min, max] range array (limits.halo_m[], limits.k_cH0[],
 // Ntable.vt[], redshift.shear_zdist_z[][], cmb.lk_wxk[], ...)
