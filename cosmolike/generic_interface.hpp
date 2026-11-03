@@ -705,9 +705,17 @@ void init_baryons_contamination(std::string sim); // OLD API
 void init_bias(arma::Col<double> bias_z_evol_model);
 
 void init_binning_fourier(
-    const int Ncl, 
-    const int lmin, 
-    const int lmax, 
+    const int Ncl,
+    const int lmin,
+    const int lmax,
+    const int lmax_shear
+  );
+
+// explicit band-power centers (not log-spaced; need not be integers):
+// like.ell takes the list verbatim, so a covariance built per band
+// elsewhere applies band by band with no remapping
+void init_binning_fourier_ells(
+    arma::Col<double> ells,
     const int lmax_shear
   );
 

@@ -1120,9 +1120,10 @@ void init_include_halo_IA(const int include_halo_IA)
 // (the default, bit-identical to the code without the feature), 1 = the
 // density-density term carries the full one-loop P_g through a per-bin
 // SVD factorization of sqrt(P_g) (C_cl_tomo_lowrank), with nrank kept
-// ranks and the path's own non-Limber cap lmax. Only the w_gg_tomo
-// non-Limber path dispatches on the flag; Fourier-space C_gg and every
-// other probe are untouched. Likelihood yaml keys: nonlimber_lowrank_gg,
+// ranks and the path's own non-Limber cap lmax. The w_gg_tomo
+// non-Limber path and the Fourier-space C_gg_tomo_ells both dispatch on
+// the flag; every other probe is untouched. Likelihood yaml keys:
+// nonlimber_lowrank_gg,
 // nonlimber_lowrank_rank, nonlimber_lowrank_lmax. No nuisance random is
 // redrawn here: w_gg_tomo keys its cache on the three values directly,
 // so a flip invalidates exactly the one consumer and a round trip
@@ -1501,6 +1502,69 @@ void init_binning_fourier(
         "lmax",
         lmax
       );*/
+  }
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// Define the Fourier-space band powers from an explicit list of centers.
+//
+// The sibling of init_binning_fourier for band powers that are not
+// log-spaced: writes like.Ncl = the list's length, like.lrange as the
+// integer envelope of the first and last center, like.lmax_shear, and
+// reallocates like.ell with the given centers verbatim. A survey that
+// bins linearly with (2l+1)-weighted centers (lssty1xdesi's DESI
+// spectroscopic bandpowers: Delta l = 10 with centers 19.9, 29.8, ...)
+// hands them in here, so a covariance built per band elsewhere applies
+// band by band with no remapping. Everything downstream (the templated
+// Fourier data vectors, the *_ells functions of cosmo2D.c) reads
+// like.ell and cannot tell the two inits apart.
+//
+// Validation: at least one center, every center positive and strictly
+// increasing, else critical() + exit(1).
+//
+// Parameters:
+//   ells       - the band-power centers, in increasing order (need not
+//                be integers)
+//   lmax_shear - highest shear-shear multipole (like.lmax_shear)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_binning_fourier_ells(arma::Col<double> ells, const int lmax_shear)
+{
+  static constexpr std::string_view fname = "init_binning_fourier_ells"sv;
+  debug("{}: {}", fname, errbegins);
+  const int nells = (int) ells.n_elem;
+  if (!(nells > 0)) [[unlikely]] {
+    critical(errorns2, fname, "Number of l modes (nells)", nells);
+    exit(1);
+  }
+  for (int i=0; i<nells; i++) {
+    if (!(ells(i) > 0.0) || (i > 0 && !(ells(i) > ells(i - 1)))) [[unlikely]] {
+      critical("{}: band centers must be positive and strictly increasing",
+               fname);
+      exit(1);
+    }
+  }
+  debug(debugsel, fname, "nells", nells);
+  debug(debugsel, fname, "l_min", ells(0));
+  debug(debugsel, fname, "l_max", ells(nells - 1));
+  debug(debugsel, fname, "l_max_shear", lmax_shear);
+
+  like.Ncl = nells;
+  // lrange holds ints; the envelope of the (possibly fractional) centers
+  like.lrange[RANGE_MIN] = (int) std::floor(ells(0));
+  like.lrange[RANGE_MAX] = (int) std::ceil(ells(nells - 1));
+  like.lmax_shear = lmax_shear;
+
+  if (like.ell != NULL) {
+    free(like.ell);
+  }
+  like.ell = (double*) malloc(sizeof(double)*like.Ncl);
+  for (int i=0; i<like.Ncl; i++) {
+    like.ell[i] = ells(i);
   }
   debug("{}: {}", fname, errends);
   return;

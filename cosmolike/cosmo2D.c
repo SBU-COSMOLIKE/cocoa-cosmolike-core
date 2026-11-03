@@ -77,9 +77,9 @@ static int include_RSD_GY = 0; // 0 or 1
 // grow like densities nonlinearly, and the broad magnification kernel
 // is Limber-safe).
 //
-//   use_lowrank_DD_GG   = the runtime switch, 0 or 1; only the
-//                         w_gg_tomo non-Limber path dispatches on it
-//                         (Fourier-space C_gg_tomo_ells stays FKEM)
+//   use_lowrank_DD_GG   = the runtime switch, 0 or 1; the w_gg_tomo
+//                         non-Limber path and the Fourier-space
+//                         C_gg_tomo_ells both dispatch on it
 //   lowrank_DD_GG_nrank = SVD ranks kept per lens bin (1..16; the rank
 //                         sweep of the validation battery)
 //   lowrank_DD_GG_lmax  = the multipole where the low-rank path splices
@@ -10743,6 +10743,79 @@ void C_cl_tomo_lowrank(
 // Returns:
 //   nothing; the result is written into out
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// The low-rank counterpart of C_gg_tomo_ells (below), dispatched from it
+// when use_lowrank_DD_GG = 1: the same band-center protocol - exact
+// Limber at the band centers, the non-Limber correction computed at the
+// two integers around each center and interpolated linearly between
+// them - with C_cl_tomo_lowrank_core and the path's OWN cap
+// lowrank_DD_GG_lmax in place of limits.LMAX_NOLIMBER. tol = 0, as in
+// the twin: the early exit is a real-space optimization whose
+// truncation step the band centers would see.
+// ---------------------------------------------------------------------------
+static void C_gg_tomo_lowrank_ells(
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of gg power spectra (= clustering_nbin)
+    double** out         // output [NSIZE][nell]
+  )
+{
+  const int LNL   = lowrank_DD_GG_lmax;
+  const int BLOCK = 16; // C_cl_tomo_lowrank_core's per-block arrays
+  C_gg_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
+
+  // the integers next to every corrected band center, as runs of
+  // consecutive multipoles no longer than a block (the twin's builder)
+  int need[LNL];
+  for (int l=0; l<LNL; l++) {
+    need[l] = 0;
+  }
+  for (int i=0; i<nell; i++) {
+    if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
+      const int l0 = (int) floor(ells[i]);
+      need[l0] = 1;
+      need[l0 + 1] = 1;
+    }
+  }
+  int runs[2*LNL];
+  int nruns = 0;
+  for (int l=0; l<LNL; l++) {
+    if (!need[l]) continue;
+    if (nruns > 0 && runs[2*nruns-1] == l &&
+        runs[2*nruns-1] - runs[2*nruns-2] < BLOCK) {
+      runs[2*nruns-1] = l + 1;  // extends the open run
+    }
+    else {
+      runs[2*nruns]   = l;
+      runs[2*nruns+1] = l + 1;
+      nruns++;
+    }
+  }
+  if (0 == nruns) {
+    return;
+  }
+
+  double** Cnl = (double**) malloc2d(NSIZE, LNL);
+  int LMAX[NSIZE];
+  double** CLnl = C_cl_tomo_lowrank_core(Cnl, LMAX, 0.0, runs, nruns);
+
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
+        const int l0 = (int) floor(ells[i]);
+        const double t = ells[i] - l0;
+        // (tol = 0: no bin freezes, LMAX[nz] = lowrank_DD_GG_lmax)
+        const double d0 = (l0 < LMAX[nz]) ?
+          Cnl[nz][l0] - CLnl[nz][l0] : 0.0;
+        const double d1 = (l0 + 1 < LMAX[nz]) ?
+          Cnl[nz][l0 + 1] - CLnl[nz][l0 + 1] : 0.0;
+        out[nz][i] += (1.0 - t)*d0 + t*d1;
+      }
+    }
+  }
+  free((void*) Cnl);
+}
+
 void C_gg_tomo_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
@@ -10750,6 +10823,11 @@ void C_gg_tomo_ells(
     double** out         // output [NSIZE][nell]
   )
 {
+  // the experimental low-rank DD path, with its own cap (the twin above)
+  if (1 == use_lowrank_DD_GG) {
+    C_gg_tomo_lowrank_ells(ells, nell, NSIZE, out);
+    return;
+  }
   const int LNL   = limits.LMAX_NOLIMBER;
   const int BLOCK = 16; // C_cl_tomo_core's per-block arrays
   C_gg_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
