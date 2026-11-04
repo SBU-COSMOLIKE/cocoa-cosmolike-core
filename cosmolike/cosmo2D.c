@@ -9295,8 +9295,20 @@ void cfftlog_ells_p2(
   // (k+1)/x_max up to (k+1)/x_min. The FFTLog convolution naturally
   // produces the transform on this reciprocal grid; (k+1) rescales it
   // per multipole.
+  //
+  // The grid depends only on (k, q), never on the row i: every row
+  // holds the same numbers. A caller may therefore alias every y[i] to
+  // ONE shared row table instead of storing SIZE1 identical copies
+  // (C_cl_tomo_lowrank_core does: at its 456 rows and a boosted chi
+  // grid, distinct copies would be tens of GB and every copy a
+  // duplicate write). The aliasing is detected by pointer identity of
+  // the first two rows, and the shared table is then filled once,
+  // through row 0, so no two threads ever write the same entry. A
+  // caller with distinct rows (every pre-existing one) has
+  // y[1] != y[0], takes n_y_rows = SIZE1, and this loop is unchanged.
+  const int n_y_rows = (SIZE1 > 1 && y[1] == y[0]) ? 1 : SIZE1;
   #pragma omp parallel for collapse(2) schedule(static)
-  for(int i=0; i<SIZE1; i++) {
+  for(int i=0; i<n_y_rows; i++) {
     for(int q=0; q<Nx; q++) { // q < Nx
       for (int k=ks; k<kmax; k++) {
         y[i][k][q] = (k + 1.) / x[Nx -1 -q];
@@ -10195,9 +10207,55 @@ static double** C_cl_tomo_lowrank_core(
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* x = NULL;
   static double*** fx= NULL;
-  static double*** y = NULL;
-  static double**** Fy = NULL;
-  static double*** vres = NULL;
+  /* POINTER VIEWS OVER REUSED DATA POOLS
+
+     A "4D array" from malloc4d is not one rectangular slab addressed
+     by index arithmetic; it is a tree of pointers. Fy[i] points to an
+     array of slot pointers, Fy[i][j] to an array of row pointers, and
+     only the last level, Fy[i][j][k], points at actual numbers: one
+     row of nchi doubles. Every access walks this tree - no code here
+     or in the transform engine ever computes an address across rows -
+     so the tree itself defines the map from indices to storage, and
+     the caller may rebuild that map freely as long as each row an
+     access reaches holds the right numbers at that moment.
+
+     y, Fy and vres below exploit this twice. The pass loops and the
+     engine keep indexing them exactly like the FKEM twin's arrays
+     (y[i][k][q], Fy[i][j][k][q], vres[i][k][q], k the absolute
+     multipole), but the storage behind the indices is small:
+
+     y    - the wavenumber grid (k+1)/x[Nx-1-q] never depends on the
+            row i: all SIZE1 rows would hold the same numbers. Every
+            y[i] therefore points at ONE shared [LNL][nchi] table
+            (y_rows), the way many catalog cards reference one book.
+            The engine fills the shared table once - it detects the
+            aliasing by pointer identity (see the y fill in
+            cfftlog_ells_p2) - so no two threads write one entry.
+
+     Fy   - a multipole's data lives only inside its own 16-multipole
+            convergence block: p2 fills it, pass 1/2 read it, the Cl
+            sum closes it, and no later block looks back at it. The k
+            level therefore keeps all LNL pointer SLOTS (so consumers
+            can index by absolute k) but only BLOCK rows of NUMBERS
+            exist per (row, slot): before each block, slots
+            k = ks..ke-1 are pointed at pool rows 0..ke-ks-1, and the
+            next block repoints the same rows. Slots of other k hold
+            stale addresses that nothing reads.
+
+     vres - same block lifetime, same rewiring, pool vres_pool.
+
+     The numbers computed, their order and their values are untouched -
+     only the addresses they transit through changed - so the outputs
+     are bitwise those of the plain-array layout. At the DESI
+     configuration (456 rows, LNL = 1000, boosted nchi = 8192) the
+     plain shapes would be 30 + 90 + 5 GB of address space; the pools
+     are 65 MB + 1.4 GB + 80 MB. */
+  static double*** y = NULL;        // row view: y[i] == y_rows for all i
+  static double** y_rows = NULL;    // shared wavenumber grid [LNL][nchi]
+  static double**** Fy = NULL;      // view [SIZE1][SIZE2][LNL] -> pool rows
+  static double**** Fy_pool = NULL; // data [SIZE1][SIZE2][BLOCK][nchi]
+  static double*** vres = NULL;     // view [nbins][LNL] -> pool rows
+  static double*** vres_pool = NULL;// data [nbins][BLOCK][nchi]
   static double** CLnl = NULL;
   static double** CLlin = NULL;
   static double** CLdd_nl = NULL;
@@ -10219,6 +10277,9 @@ static double** C_cl_tomo_lowrank_core(
   const int SIZE2 = 3; // always 3 (see the header comment): the mag slot
                        // is masked off per row instead of dropped, so the
                        // p1/p2 plan caches never rebuild on a bmag flip
+  const int BLOCK = 16; // multipoles per convergence block: the k extent
+                        // of the Fy/vres pools, and the largest run the
+                        // caller may pass (validated below)
 
   if (NULL == x ||
       NULL == y ||
@@ -10231,14 +10292,72 @@ static double** C_cl_tomo_lowrank_core(
   {
     if (x != NULL) free((void*) x);
     x =  (double*) malloc1d(nchi);
+
+    // ---- y: one shared wavenumber table behind SIZE1 aliased rows ----
+    // The engine writes the row-independent grid once (it detects the
+    // aliasing by pointer identity; see the y fill in cfftlog_ells_p2)
+    // and the pass loops read y[i][k] through any row alias.
+    if (y_rows != NULL) free((void*) y_rows);
+    y_rows = (double**) malloc2d(LNL, nchi);
     if (y != NULL) free((void*) y);
-    y  = (double***) malloc3d(SIZE1, LNL, nchi);
+    y = (double***) malloc(sizeof(double**) * SIZE1);
+    if (NULL == y) {
+      log_fatal("array allocation failed"); exit(1);
+    }
+    for (int i=0; i<SIZE1; i++) {
+      y[i] = y_rows;
+    }
+
+    // ---- Fy: absolute-k pointer view over the per-block data pool ----
+    // The view is one allocation holding its two upper pointer levels
+    // and the LNL row-pointer slots per (row, slot); the k slots are
+    // rewired to Fy_pool rows before every block's p2 call, so freeing
+    // the view is one free and never touches the pool.
+    if (Fy_pool != NULL) free((void*) Fy_pool);
+    Fy_pool = (double****) malloc4d(SIZE1, SIZE2, BLOCK, nchi);
     if (Fy != NULL) free((void*) Fy);
-    Fy = (double****) malloc4d(SIZE1, SIZE2, LNL, nchi);
+    {
+      const size_t n_top  = (size_t) SIZE1;
+      const size_t n_mid  = (size_t) SIZE1 * SIZE2;
+      const size_t n_leaf = (size_t) SIZE1 * SIZE2 * LNL;
+      void* block = malloc(n_top*sizeof(double***) +
+                           n_mid*sizeof(double**) +
+                           n_leaf*sizeof(double*));
+      if (NULL == block) {
+        log_fatal("array allocation failed"); exit(1);
+      }
+      Fy = (double****) block;
+      double*** mid = (double***) (Fy + n_top);
+      double** leaf = (double**) (mid + n_mid);
+      for (size_t i=0; i<n_top; i++) {
+        Fy[i] = mid + i*SIZE2;
+        for (size_t j=0; j<(size_t) SIZE2; j++) {
+          Fy[i][j] = leaf + (i*SIZE2 + j)*LNL;
+        }
+      }
+    }
+
     if (fx != NULL) free((void*) fx);
     fx = (double***) malloc3d(SIZE1, SIZE2, nchi);
+
+    // ---- vres: the same view-over-pool construction as Fy ----
+    if (vres_pool != NULL) free((void*) vres_pool);
+    vres_pool = (double***) malloc3d(nbins, BLOCK, nchi);
     if (vres != NULL) free((void*) vres);
-    vres = (double***) malloc3d(nbins, LNL, nchi);
+    {
+      const size_t n_top  = (size_t) nbins;
+      const size_t n_leaf = (size_t) nbins * LNL;
+      void* block = malloc(n_top*sizeof(double**) +
+                           n_leaf*sizeof(double*));
+      if (NULL == block) {
+        log_fatal("array allocation failed"); exit(1);
+      }
+      vres = (double***) block;
+      double** leaf = (double**) (vres + n_top);
+      for (size_t i=0; i<n_top; i++) {
+        vres[i] = leaf + i*LNL;
+      }
+    }
     if (CLnl != NULL) free((void*) CLnl);
     CLnl = (double**) malloc2d(nbins, LNL);
     if (CLlin != NULL) free((void*) CLlin);
@@ -10496,7 +10615,6 @@ static double** C_cl_tomo_lowrank_core(
                   SIZE1,
                   SIZE2);
 
-  const int BLOCK = 16;
   for (int r=0; r<nruns; r++) {
     if (runs[2*r] < 0 || runs[2*r+1] > LNL ||
         runs[2*r+1] <= runs[2*r] || runs[2*r+1] - runs[2*r] > BLOCK ||
@@ -10536,6 +10654,24 @@ static double** C_cl_tomo_lowrank_core(
         for (int rr=0; rr<nrank; rr++) {
           row_done[nbins + i*nrank + rr] = 0;
         }
+      }
+    }
+
+    // Point this block's absolute-k view slots into the reused pools:
+    // p2 then writes Fy[i][j][k] (k in [ks, ke)) into pool row k - ks,
+    // and pass 1/2 below read the same pointers. Slots of other
+    // multipoles keep stale pointers, which nothing reads: every
+    // consumer loop in this function is bounded to [ks, ke).
+    for (int i=0; i<SIZE1; i++) {
+      for (int j=0; j<SIZE2; j++) {
+        for (int k=ks; k<ke; k++) {
+          Fy[i][j][k] = Fy_pool[i][j][k - ks];
+        }
+      }
+    }
+    for (int i=0; i<nbins; i++) {
+      for (int k=ks; k<ke; k++) {
+        vres[i][k] = vres_pool[i][k - ks];
       }
     }
 
