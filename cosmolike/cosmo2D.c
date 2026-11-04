@@ -10272,7 +10272,19 @@ static double** C_cl_tomo_lowrank_core(
   const int nchi  = Ntable.NL_Nchi;
   const int nrank = lowrank_DD_GG_nrank;
   const int LNL   = lowrank_DD_GG_lmax; // the path's own cap (see the setter)
-  const int NK    = nchi;               // ln k nodes of the decomposition
+  // NK = ln k nodes of the sqrt(P_g) decomposition: the k axis of the
+  // sqrtPg_kfactor tables, the column count of every per-bin SVD in
+  // C_gg_lowrank_decomp_work, and the grid pass 2 interpolates. The
+  // nonlimber accuracy boost exists to refine the FFTLog chi comb that
+  // samples narrow radial kernels; sqrt(P_g(k, z)) is smooth in ln k,
+  // so the decomposition gains nothing from riding that refinement -
+  // while the SVD cost grows linearly with NK and dominated the
+  // boosted evaluation (GSL qrstep/householder were the hottest
+  // symbols at nchi = 8192). Dividing the nonlimber factor back out
+  // leaves NK = baseline x global accuracy boost: identical to nchi
+  // whenever no nonlimber boost is set (every pre-existing project),
+  // and the decomposition resolution the accuracy studies validated.
+  const int NK = (int) ceil(((double) nchi)/Ntable.NL_Nchi_boost);
   const int SIZE1 = nbins + nbins*nrank; // FKEM rows + rank rows
   const int SIZE2 = 3; // always 3 (see the header comment): the mag slot
                        // is masked off per row instead of dropped, so the
