@@ -157,7 +157,23 @@ def _snapshot(harness, native, model, point, likelihood_name):
         vector = np.array(native.compute_data_vector_cluster_masked(), copy=True)
         inverse = np.array(native.get_inv_cov_masked_cluster(), copy=True)
     else:
-        vector = np.array(native.compute_data_vector_masked(), copy=True)
+        getter = native.compute_data_vector_masked
+        if (getattr(harness, "BINNING_SPACE", "real") == "fourier"
+                and hasattr(native, "compute_data_vector_fourier_masked")):
+            # A dual-space interface keeps the generic name on the
+            # real-space layout; band-power projects read a fourier
+            # twin - the extended one when an appended gg-cross block
+            # is installed, since that is the vector the likelihood
+            # scores.
+            getter = native.compute_data_vector_fourier_masked
+            if hasattr(native,
+                       "compute_data_vector_fourier_with_gg_cross_sizes"):
+                sizes = \
+                    native.compute_data_vector_fourier_with_gg_cross_sizes()
+                if int(sizes[3]) > 0:
+                    getter = \
+                        native.compute_data_vector_fourier_gg_cross_masked
+        vector = np.array(getter(), copy=True)
         inverse = np.array(native.get_inv_cov_masked(), copy=True)
     if not np.all(np.isfinite(vector)) or not np.all(np.isfinite(inverse)):
         raise AssertionError("The n(z) comparison produced a nonfinite vector or covariance")

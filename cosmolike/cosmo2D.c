@@ -13120,12 +13120,14 @@ static void C_gg_cross_tomo_limber_nointerp_ells(
 // The Fourier-space gg cross block: one spectrum per installed pair
 // at the band centers of the data vector.
 //
-// With the low-rank path on (use_lowrank_DD_GG = 1), each pair is the
-// Limber base computed here plus the stashed correction of this
-// evaluation's core run (the cross pass of C_cl_tomo_lowrank_core).
+// With the low-rank path on (use_lowrank_DD_GG = 1) and non-Limber
+// autos, each pair is the Limber base computed here plus the stashed
+// correction of this evaluation's core run (the cross pass of
+// C_cl_tomo_lowrank_core).
 //
-// With the path off, the pairs are Limber at every multipole -
-// consistent with Limber autos.
+// With the path off, or with Limber autos (adopt_limber_gg = 1, where
+// the low-rank core never runs), the pairs are Limber at every
+// multipole - consistent with the autos.
 //
 // Parameters:
 //   ells - band centers (length nell)
@@ -13147,7 +13149,11 @@ void C_gg_cross_tomo_ells(
   // non-Limber correction (when the low-rank path is on) sits on
   C_gg_cross_tomo_limber_nointerp_ells(ells, nell, out);
 
-  if (1 == use_lowrank_DD_GG) {
+  // The correction exists only when the autos ran the low-rank core
+  // this evaluation; with Limber autos the Limber base alone is the
+  // consistent prediction.
+  if (1 == use_lowrank_DD_GG &&
+      0 == like.adopt_limber[LIMBER_GG]) {
     // The corrections were computed in the same core run as the auto
     // spectra and stashed by C_gg_tomo_lowrank_ells (the contract at
     // ggx_stash). A missing or stale stash is a call order this path

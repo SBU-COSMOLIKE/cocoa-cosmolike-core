@@ -1,6 +1,7 @@
 """Run an opt-in study of n(z) interpretation and numerical refinement.
 
-The physical inputs come from the project's stored NLA example2 point.
+The physical inputs come from the project's stored NLA point (the
+example argument, the donor family's 3x2pt entry by default).
 Only accuracyboost and integration_accuracy are taken from today's likelihood
 YAML for the default arm. The refined arms compare the original midpoint
 curve with fixed 3/5/7-point histogram preparation followed by Akima.
@@ -23,7 +24,8 @@ from cobaya.yaml import yaml_load_file
 from cocoa_nz_testing import _snapshot
 
 
-def calculate(harness, native, project, output, part, boost=5.0, level=7):
+def calculate(harness, native, project, output, part, boost=5.0, level=7,
+              example="example2"):
     """Save one default or refined calculation without overwriting a result.
 
     Arguments:
@@ -48,7 +50,7 @@ def calculate(harness, native, project, output, part, boost=5.0, level=7):
 
     harness.require_cocoa_environment()
     harness.verify_frozen()
-    name = harness.EXAMPLES["example2"]["likelihood"]
+    name = harness.EXAMPLES[example]["likelihood"]
     project_root = Path(harness.__file__).resolve().parents[1]
     defaults_path = project_root / "likelihood" / (name.split(".")[-1] + ".yaml")
     defaults = yaml_load_file(file_name=str(defaults_path))
@@ -56,7 +58,7 @@ def calculate(harness, native, project, output, part, boost=5.0, level=7):
         boost = float(defaults["accuracyboost"])
         level = int(defaults["integration_accuracy"])
 
-    info = harness.load_frozen_info(example="example2", tatt=False)
+    info = harness.load_frozen_info(example=example, tatt=False)
     options = info["likelihood"][name]
     options.update(
         photoz_histogram_akima=0,
@@ -72,7 +74,7 @@ def calculate(harness, native, project, output, part, boost=5.0, level=7):
     model = harness.make_model(info=info)
     vectors = {}
     try:
-        point = harness.build_point(model=model, example="example2", tatt=False)
+        point = harness.build_point(model=model, example=example, tatt=False)
         likelihood = model.likelihood[name]
         inputs = {}
         for key in ("source_file", "lens_file", "cov_file", "mask_file", "data_vector_file"):
@@ -223,7 +225,7 @@ def audit_and_plot(harness, native, project, output):
                                 output_file=output / "reconstructions.png")
 
 
-def main(harness, native, project):
+def main(harness, native, project, example="example2"):
     """Parse the explicitly requested study; ordinary pytest never calls this."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -236,6 +238,7 @@ def main(harness, native, project):
     for part in parts:
         if part in ("defaults", "refined"):
             calculate(harness=harness, native=native, project=project,
+                      example=example,
                       output=args.output, part=part, boost=args.boost,
                       level=args.integration_accuracy)
     if args.part in ("all", "compare"):

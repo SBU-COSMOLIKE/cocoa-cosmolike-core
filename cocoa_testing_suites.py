@@ -45,6 +45,122 @@ def _interface(u):
     return importlib.import_module(u._H.interface_module)
 
 
+def _native_space(u, ci):
+    """The binning space the project's frozen examples score in.
+
+    A single-space interface binds the generic getter names
+    (compute_data_vector_masked, the 3x2pt sizes) to its native
+    space, so the space follows from which size binding exists. A
+    dual-space interface binds both families and keeps the generic
+    names on the real-space layout; its shim says which space the
+    frozen examples use through a module constant BINNING_SPACE
+    ("real" or "fourier").
+
+    Arguments:
+      u  = the project's cocoa_test_utils module.
+      ci = the imported interface module.
+
+    Returns:
+      "real" or "fourier".
+    """
+    space = getattr(u, "BINNING_SPACE", None)
+    if space is None:
+        space = ("real"
+                 if hasattr(ci, "compute_data_vector_3x2pt_real_sizes")
+                 else "fourier")
+    return space
+
+
+def _masked_vector_fn(u, ci):
+    """The masked theory-vector getter matching _native_space.
+
+    compute_data_vector_masked returns the theory vector of the
+    state the last evaluation left in cosmolike. On a dual-space
+    interface that name keeps the real-space layout and indexes out
+    of bounds when the loaded dataset holds Fourier band powers, so
+    the Fourier twin must be read instead.
+
+    Arguments:
+      u  = the project's cocoa_test_utils module.
+      ci = the imported interface module.
+
+    A Fourier project may append a gg-cross block after the three
+    probe blocks; the plain Fourier getter leaves those entries
+    zero, so the extended getter is the vector the likelihood
+    scores. The choice is made at call time, because the cross-pair
+    list is installed by the first model build, after this function
+    is bound.
+
+    Returns:
+      a zero-argument callable returning the masked theory vector.
+    """
+    def masked_vector():
+        if (_native_space(u, ci) == "fourier"
+                and hasattr(ci, "compute_data_vector_fourier_masked")):
+            if _ggx_len(ci) > 0:
+                return ci.compute_data_vector_fourier_gg_cross_masked()
+            return ci.compute_data_vector_fourier_masked()
+        return ci.compute_data_vector_masked()
+    return masked_vector
+
+
+def _ggx_len(ci):
+    """The appended gg-cross block's entry count (0 when absent).
+
+    Interfaces with an extended [EE | gs | gg | gg-cross] Fourier
+    layout expose the four block sizes; the fourth stays zero until
+    the likelihood installs its cross-pair list.
+
+    Arguments:
+      ci = the imported interface module.
+
+    Returns:
+      the number of appended gg-cross entries.
+    """
+    if hasattr(ci, "compute_data_vector_fourier_with_gg_cross_sizes"):
+        return int(
+            ci.compute_data_vector_fourier_with_gg_cross_sizes()[3])
+    return 0
+
+
+def _ggl_excluded(like):
+    """The excluded (lens, source) ggl pairs as a set of tuples.
+
+    The likelihood yaml accepts a list of pairs or the string "all"
+    (a clustering-only likelihood drops every pair).
+
+    Arguments:
+      like = the likelihood object.
+
+    Returns:
+      {(lens bin, source bin), ...} of the excluded pairs.
+    """
+    raw = getattr(like, "ggl_exclude", None)
+    if isinstance(raw, str):
+        return {(zl, zs)
+                for zl in range(int(like.lens_ntomo))
+                for zs in range(int(like.source_ntomo))}
+    return {(int(a), int(b)) for a, b in (raw or [])}
+
+
+def _fourier_nlen(like):
+    """The entries per spectrum of a Fourier data vector.
+
+    Fourier likelihoods carry the multipole count under one of two
+    names: an n_cl dataset key (ncl), or an explicit list of band
+    centers (band_ells).
+
+    Arguments:
+      like = the likelihood object.
+
+    Returns:
+      the number of multipole entries per spectrum.
+    """
+    if hasattr(like, "ncl"):
+        return int(like.ncl)
+    return len(like.band_ells)
+
+
 def _chi2_method(u, example, number, label, tatt):
     """Build one chi2-vs-frozen-reference test method.
 
@@ -1003,26 +1119,14 @@ DRIFT: {name}: {label}
 
 # ---- the interface-level families (in-process cache checks) -----------------
 
-# The photo-z convention sweep: (report tag,
-# photoz_interpolation_type, photoz_zmid_convention). The default, each
-# alternative, and the default again.
-PHOTOZ_SETTINGS = (
-    ("cspline/Z_LOW (default)", 0, 0),
-    ("linear", 1, 0),
-    ("steffen", 2, 0),
-    ("Z_MID", 0, 1),
-    ("default again (round trip)", 0, 0),
-)
-
-# The alternatives must be seen (a stale n(z) cache would give exactly
-# zero); the floors are orders of magnitude below the measured deltas,
-# so they only catch a dead flag, never normal numerical drift. Z_MID
-# shifts every distribution by dz/2, hence its larger floor.
-PHOTOZ_DCHI2_FLOORS = {"linear": 1.0e-8, "steffen": 1.0e-8,
-                       "Z_MID": 1.0e-2}
+# The photo-z convention sweep is built inside the factory from the
+# project's default pair (interp_default, zmid_default): the default,
+# each alternative stage-1 interpolant, the other z-column reading,
+# and the default again (the round trip).
 
 
-def photoz_conventions_suite(u, name, example="example1"):
+def photoz_conventions_suite(u, name, example="example1",
+                             interp_default=0, zmid_default=0):
     """Build the runtime photo-z convention sweep class.
 
     The likelihood exposes two runtime knobs that control how the
@@ -1030,7 +1134,7 @@ def photoz_conventions_suite(u, name, example="example1"):
     Limber integrals consume: photoz_interpolation_type (the stage-1
     interpolant) and photoz_zmid_convention (how the z column of the
     n(z) file is read). The class evaluates the frozen cosmic-shear
-    fiducial under the five PHOTOZ_SETTINGS in one process, measures
+    fiducial under the five settings of its sweep in one process, measures
     each alternative's delta chi2 = delta^T C^-1 delta against the
     default vector, and asserts the dead-flag floors, the frozen
     reference, and the bitwise round trip back to the default.
@@ -1044,10 +1148,42 @@ def photoz_conventions_suite(u, name, example="example1"):
                 the same module-level name, so test ids do not
                 change).
       example = the key of u.EXAMPLES the sweep evaluates.
+      interp_default = the project's photoz_interpolation_type
+                default (0 cubic spline, 1 linear, 2+ Steffen).
+      zmid_default = the project's photoz_zmid_convention default
+                (0: the z column holds left bin edges, 1: it holds
+                the sample points). The frozen references carry the
+                project defaults, so the sweep's baseline must sit
+                there, not at a universal (0, 0).
 
     Returns:
       a unittest.TestCase subclass named `name`.
     """
+
+    # The sweep: the default pair, the two alternative stage-1
+    # interpolants at the default z reading, the other z reading at
+    # the default interpolant, and the default pair again (the round
+    # trip).
+    interp_names = {0: "cspline", 1: "linear", 2: "steffen"}
+    zmid_names = {0: "Z_LOW", 1: "Z_MID"}
+    default_tag = (f"{interp_names[interp_default]}/"
+                   f"{zmid_names[zmid_default]} (default)")
+    alternatives = [(interp_names[i], i, zmid_default)
+                    for i in sorted(interp_names)
+                    if i != interp_default]
+    alternatives.append((zmid_names[1 - zmid_default], interp_default,
+                         1 - zmid_default))
+    settings = ((default_tag, interp_default, zmid_default),
+                *alternatives,
+                ("default again (round trip)", interp_default,
+                 zmid_default))
+    # The alternatives must be seen (a stale n(z) cache would give
+    # exactly zero); the floors are orders of magnitude below the
+    # measured deltas, so they only catch a dead flag, never normal
+    # numerical drift. The z-reading flip shifts every distribution
+    # by dz/2, hence its larger floor.
+    floors = {tag: (1.0e-2 if tag in zmid_names.values() else 1.0e-8)
+              for tag, _, _ in alternatives}
 
     class TestPhotozConventions(unittest.TestCase):
         """The five-setting sweep, sharing one frozen-state verification."""
@@ -1075,7 +1211,7 @@ def photoz_conventions_suite(u, name, example="example1"):
 
             results = {}
             icov = None
-            for tag, interp, zmid in PHOTOZ_SETTINGS:
+            for tag, interp, zmid in settings:
                 print(f"  building model ({example}, NLA, {tag}) ...",
                       flush=True)
                 info = u.load_frozen_info(example, tatt=False)
@@ -1101,21 +1237,21 @@ def photoz_conventions_suite(u, name, example="example1"):
                     # the first build serves every comparison
                     icov = np.array(ci.get_inv_cov_masked())
 
-            chi2_default, dv_default = results[PHOTOZ_SETTINGS[0][0]]
+            chi2_default, dv_default = results[settings[0][0]]
             reference_key = f"{example}_nla"
 
             print(f"\n  chi2 report ({example}, NLA):")
             print(f"    default: chi2 = {chi2_default:.6f} "
                   f"(frozen reference "
                   f"{self.reference[reference_key]:.6f})")
-            for tag in ("linear", "steffen", "Z_MID"):
+            for tag, _, _ in alternatives:
                 chi2, dv = results[tag]
                 delta = dv - dv_default
                 dchi2 = float(delta @ icov @ delta)
                 print(f"    {tag:8s}: chi2 = {chi2:.6f}, "
                       f"delta^T C^-1 delta vs default = {dchi2:.6e}")
                 self.assertGreater(
-                    dchi2, PHOTOZ_DCHI2_FLOORS[tag],
+                    dchi2, floors[tag],
                     f"{tag}: the flag change was not seen by the n(z) "
                     "cache (delta chi2 at or below the dead-flag "
                     "floor)")
@@ -1129,7 +1265,7 @@ def photoz_conventions_suite(u, name, example="example1"):
             # round trip: after all the flips, the default settings
             # must reproduce the first vector identically: the cache
             # rebuilt back to the same state
-            _, dv_return = results[PHOTOZ_SETTINGS[-1][0]]
+            _, dv_return = results[settings[-1][0]]
             self.assertTrue(
                 np.array_equal(dv_return, dv_default),
                 "returning to the default settings did not reproduce "
@@ -1204,6 +1340,7 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
 
             import numpy as np
             ci = _interface(u)
+            masked_vector = _masked_vector_fn(u, ci)
 
             reference_key = f"{example}_nla"
             vectors = {}
@@ -1227,27 +1364,27 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
                       "first evaluation of the model)", flush=True)
                 # full-precision model vector (the printed one keeps
                 # 9 digits)
-                vectors[tag] = np.array(ci.compute_data_vector_masked())
+                vectors[tag] = np.array(masked_vector())
                 if icov is None:
                     # all settings share one data set (mask,
                     # covariance), so the first build's masked inverse
                     # covariance serves all
                     icov = np.array(ci.get_inv_cov_masked())
                     like = model.likelihood[lk_name]
-                    if hasattr(ci,
-                               "compute_data_vector_3x2pt_real_sizes"):
+                    if _native_space(u, ci) == "real":
                         sizes = ci.compute_data_vector_3x2pt_real_sizes()
                         nlen = int(like.ntheta)
                     else:
                         sizes = \
                             ci.compute_data_vector_3x2pt_fourier_sizes()
-                        nlen = int(like.ncl)
+                        nlen = _fourier_nlen(like)
+                    # clustering physics may extend past the three
+                    # probe blocks (an appended gg-cross block)
+                    ggx = _ggx_len(ci)
                     if kind == "ggl":
                         # the kept (lens, source) pairs, lens bin
                         # outer, for the per-pair report labels
-                        excluded = {(int(zl), int(zs)) for zl, zs in
-                                    (getattr(like, "ggl_exclude", None)
-                                     or [])}
+                        excluded = _ggl_excluded(like)
                         pairs = [(zl, zs)
                                  for zl in range(int(like.lens_ntomo))
                                  for zs in range(int(like.source_ntomo))
@@ -1266,12 +1403,17 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
                 # the clustering block follows cosmic shear and
                 # galaxy-galaxy lensing in every probe combination:
                 # entries [b0, b1), one block of nlen entries per
-                # lens bin
+                # spectrum. An appended gg-cross block is clustering
+                # physics, so the window spans it too.
                 b0 = int(sizes[0]) + int(sizes[1])
-                b1 = b0 + int(sizes[2])
-                nblocks = int(sizes[2]) // nlen
-                block_label = "lens bin"
-                per_block_note = "per lens bin (the bin's block alone):"
+                b1 = b0 + int(sizes[2]) + ggx
+                nblocks = (int(sizes[2]) + ggx) // nlen
+                block_label = "lens bin" if ggx == 0 else "spectrum"
+                per_block_note = (
+                    "per lens bin (the bin's block alone):"
+                    if ggx == 0 else
+                    "per clustering spectrum (the spectrum's block "
+                    "alone):")
             else:
                 # the ggl block follows cosmic shear: entries
                 # [b0, b1), one block of nlen entries per kept
@@ -1423,6 +1565,7 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
 
             import numpy as np
             ci = _interface(u)
+            masked_vector = _masked_vector_fn(u, ci)
 
             reference_key = f"{example}_nla"
             vectors = {}
@@ -1446,27 +1589,29 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
                 print(f"    chi2 = {chi2s[tag]:.6f}  (steady-state "
                       f"evaluation {steady[tag]:.2f} s)", flush=True)
                 vectors[tag] = \
-                    np.array(ci.compute_data_vector_masked())
+                    np.array(masked_vector())
                 if icov is None:
                     # all settings share one data set (mask,
                     # covariance), so the first build's masked
                     # inverse covariance serves all
                     icov = np.array(ci.get_inv_cov_masked())
-                    if hasattr(ci,
-                               "compute_data_vector_3x2pt_real_sizes"):
+                    if _native_space(u, ci) == "real":
                         sizes = ci.compute_data_vector_3x2pt_real_sizes()
                     else:
                         sizes = \
                             ci.compute_data_vector_3x2pt_fourier_sizes()
+                    # an appended gg-cross block is clustering too
+                    ggx = _ggx_len(ci)
 
             dv_default = vectors[settings[0][0]]
             delta = vectors[settings[1][0]] - dv_default
             dchi2 = float(delta @ icov @ delta)
 
             # the clustering block follows cosmic shear and
-            # galaxy-galaxy lensing in every probe combination
+            # galaxy-galaxy lensing in every probe combination; an
+            # appended gg-cross block belongs to it as well
             b0 = int(sizes[0]) + int(sizes[1])
-            b1 = b0 + int(sizes[2])
+            b1 = b0 + int(sizes[2]) + ggx
 
             print(f"\n  engine report ({example}, NLA):")
             print(f"    {settings[0][0]}: chi2 = "
@@ -1613,7 +1758,8 @@ def _ladder_deltas_for(sector, names):
     return out
 
 
-def cache_ladder_suite(u, name, example="example2"):
+def cache_ladder_suite(u, name, example="example2",
+                       required_sectors=("cosmo", "dz_source", "m")):
     """Build the sector-wise cache-invalidation class (the ladder).
 
     cosmolike keeps the result of every expensive stage in memory and
@@ -1639,6 +1785,11 @@ def cache_ladder_suite(u, name, example="example2"):
       example = the key of u.EXAMPLES the ladder evaluates (the
                 flagship combination, so every sector enters its
                 data vector).
+      required_sectors = the sectors that must sample at least one
+                parameter: the typo net (an accidentally empty
+                sector would pass every later check vacuously).
+                Projects that declare no source nuisance parameters
+                shrink this to the sectors they sample.
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -1693,12 +1844,12 @@ def cache_ladder_suite(u, name, example="example2"):
               clustering both are -1).
             """
             ci = _interface(u)
-            real = hasattr(ci, "compute_data_vector_3x2pt_real_sizes")
+            real = _native_space(u, ci) == "real"
             sizes = [int(x) for x in
                      (ci.compute_data_vector_3x2pt_real_sizes()
                       if real else
                       ci.compute_data_vector_3x2pt_fourier_sizes())]
-            nlen = int(like.ntheta) if real else int(like.ncl)
+            nlen = int(like.ntheta) if real else _fourier_nlen(like)
             nsrc = int(like.source_ntomo)
             # sspairs = every source pair (i, j) with i <= j, in
             # data-vector order (the two for clauses nest like two C
@@ -1706,11 +1857,9 @@ def cache_ladder_suite(u, name, example="example2"):
             sspairs = [(i, j) for i in range(nsrc)
                        for j in range(i, nsrc)]
             # excluded = the set of (lens, source) pairs the
-            # likelihood drops from gamma_t; getattr returns None
-            # when the likelihood has no ggl_exclude attribute, and
-            # `or []` turns that into an empty list
-            excluded = {(int(a), int(b)) for a, b in
-                        (getattr(like, "ggl_exclude", None) or [])}
+            # likelihood drops from gamma_t ("all" excludes every
+            # pair)
+            excluded = _ggl_excluded(like)
             # gglpairs = every (lens, source) pair kept in gamma_t,
             # lens bin outer, source bin inner
             gglpairs = [(zl, zs)
@@ -1719,7 +1868,10 @@ def cache_ladder_suite(u, name, example="example2"):
                         if (zl, zs) not in excluded]
             # start with -1 ("no factor") everywhere; the loops below
             # fill the shear and gamma_t rows block by block
-            fac = np_.zeros((sum(sizes), 2), dtype=int) - 1
+            # an appended gg-cross block carries no factor: its rows
+            # stay (-1, -1) like the rest of clustering
+            fac = np_.zeros((sum(sizes) + _ggx_len(ci), 2),
+                            dtype=int) - 1
             k = 0
             # xi_plus + xi_minus in real space
             ssrep = sspairs + sspairs if real else sspairs
@@ -1757,6 +1909,7 @@ def cache_ladder_suite(u, name, example="example2"):
             """
             import numpy as np
             ci = _interface(u)
+            masked_vector = _masked_vector_fn(u, ci)
 
             lk_name = u.EXAMPLES[example]["likelihood"]
             results = {}
@@ -1772,7 +1925,7 @@ def cache_ladder_suite(u, name, example="example2"):
                         s, [n for n in fid
                             if _ladder_sector_of(n) == s])
                     for s, _ in LADDER_SECTORS}
-                for s in ("cosmo", "dz_source", "m"):
+                for s in required_sectors:
                     self.assertTrue(
                         self.sector_deltas[s],
                         f"no sampled parameters in sector {s}")
@@ -1791,7 +1944,7 @@ def cache_ladder_suite(u, name, example="example2"):
                 # compute_data_vector_masked returns the theory
                 # vector of the state the last evaluation left in
                 # cosmolike
-                prev = np.array(ci.compute_data_vector_masked())
+                prev = np.array(masked_vector())
                 mfac = self._mpairs(model.likelihood[lk_name], np)
 
                 for sector in phases:
@@ -1803,7 +1956,7 @@ def cache_ladder_suite(u, name, example="example2"):
                         steps[sector] = r
                         point = self._point_at(fid, steps)
                         u.evaluate_chi2(model, point)
-                        dv = np.array(ci.compute_data_vector_masked())
+                        dv = np.array(masked_vector())
                         self.assertFalse(
                             np.array_equal(dv, prev),
                             f"{order}: {sector} step {r} left the "
@@ -1844,13 +1997,13 @@ def cache_ladder_suite(u, name, example="example2"):
 
                 final_point = self._point_at(fid, steps)
                 final_chi2 = u.evaluate_chi2(model, final_point)
-                final_dv = np.array(ci.compute_data_vector_masked())
+                final_dv = np.array(masked_vector())
 
                 # no-op probe: identical point again, bitwise
                 u.evaluate_chi2(model, dict(final_point))
                 self.assertTrue(
                     np.array_equal(
-                        np.array(ci.compute_data_vector_masked()),
+                        np.array(masked_vector()),
                         final_dv),
                     f"{order}: a no-op re-evaluation changed the "
                     "data vector")
@@ -1863,7 +2016,7 @@ def cache_ladder_suite(u, name, example="example2"):
                 # return: the ladder's final point must reproduce
                 # bitwise
                 back_chi2 = u.evaluate_chi2(model, final_point)
-                back_dv = np.array(ci.compute_data_vector_masked())
+                back_dv = np.array(masked_vector())
                 self.assertTrue(
                     np.array_equal(back_dv, final_dv),
                     f"{order}: returning after the scramble did not "
@@ -1891,6 +2044,9 @@ def cache_ladder_suite(u, name, example="example2"):
 
         def test_cache_consistency_tatt(self):
             """The ladder checks 1-5 hold for the TATT configuration."""
+            if not getattr(u, "TATT_POINT", None):
+                self.skipTest(
+                    "the project declares no TATT parameters")
             self._run_ladder(tatt=True)
 
     TestCacheLadder.__name__ = name
