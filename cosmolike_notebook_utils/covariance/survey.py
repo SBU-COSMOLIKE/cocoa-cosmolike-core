@@ -567,11 +567,13 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
 
     # Settings without a gaussian entry use zero-IA Limber Gaussian spectra.
     model = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
-    if model["ia"] != "none":
+    # model.get: older saved settings predate the rsd choice and mean False
+    rsd = model.get("rsd", False)
+    if model["ia"] != "none" or rsd:
         snapshot = limber_spectra(
             interface=interface, ell=ell, a_edges=settings["a_edges"],
             nquad=settings["radial_nquad"], nwindow=settings["nwindow"],
-            include_ia=True, include_rsd=False, linear=False,
+            include_ia=model["ia"] != "none", include_rsd=rsd, linear=False,
         )
     if model["nonlimber"]:
         # Recompute multipoles through the cutoff with the non-Limber
