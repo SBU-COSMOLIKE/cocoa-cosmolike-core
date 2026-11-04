@@ -910,20 +910,43 @@ void init_fpt_internal_boost(const double internal_boost)
 
 // ---------------------------------------------------------------------------
 // The unboosted NL_Nchi and the last global accuracy boost, shared by
-// init_accuracy_boost and init_nonlimber_accuracy_boost so that
+// init_accuracy_boost and init_nonlimber_accuracy_boost so that the same
+// rule holds whichever of the two runs last (the baseline is captured
+// once, by the first of them to run, before either has scaled NL_Nchi).
 //
-//   Ntable.NL_Nchi = ceil(baseline * accuracy_boost * Ntable.NL_Nchi_boost)
-//
-// holds whichever of the two runs last (the baseline is captured once, by
-// the first of them to run, before either has scaled NL_Nchi).
+// The non-Limber chi grid is endpoint-inclusive in log chi (cosmo2D.c:
+// dlnchi = log(chi_max/chi_min)/(NL_Nchi - 1)), so only interval
+// doubling nests its nodes: NL_Nchi - 1 = (baseline - 1)*m with m a
+// power of two. The old ceil(baseline * boost) re-placed every node at
+// every boost, and two grids then differed by node placement as well as
+// resolution: a thin-bin survey measured delta chi2 = 1.3, 1.1 across
+// consecutive doublings 8192 -> 16384 -> 32768 - a placement floor, not
+// convergence. Nested refinement (the N_a scheme of init_accuracy_boost)
+// makes a higher boost strictly tighten the same grid, for the FKEM
+// paths and the low-rank engine alike. A combined factor at or below 1
+// keeps ceil(baseline * factor), as N_a does.
 // ---------------------------------------------------------------------------
 static int nl_nchi_base = 0;
 static double nl_accuracy_boost = 1.0;
 
+static void set_nl_nchi(void)
+{
+  const double f = nl_accuracy_boost*Ntable.NL_Nchi_boost;
+  if (f > 1.0) {
+    const int m = (int) fmin(pow(2.0, ceil(log2(f))), 1024.0);
+    Ntable.NL_Nchi = (nl_nchi_base - 1)*m + 1;
+  }
+  else {
+    Ntable.NL_Nchi = (int) ceil(nl_nchi_base*f);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Refine the non-Limber FFTLog chi grid on top of the accuracy boost:
-// Ntable.NL_Nchi = ceil(512 * accuracy_boost * nonlimber_boost) (512 = the
-// baseline). The yaml key nonlimber_accuracyboost of every likelihood.
+// NL_Nchi - 1 = 511 * m, with m the combined accuracy_boost *
+// nonlimber_boost rounded up to a power of two (the nested rule at
+// set_nl_nchi; 512 = the baseline). The yaml key nonlimber_accuracyboost
+// of every likelihood.
 //
 // Why a separate knob: the non-Limber C_l (C_gs_tomo, C_cl_tomo and their
 // Fourier-space versions) sample the radial kernels on a log chi grid over
@@ -959,8 +982,8 @@ void init_nonlimber_accuracy_boost(const double nonlimber_boost)
     nl_nchi_base = Ntable.NL_Nchi;
   }
   Ntable.NL_Nchi_boost = nonlimber_boost;
-  Ntable.NL_Nchi = static_cast<int>(
-    ceil(nl_nchi_base*nl_accuracy_boost*Ntable.NL_Nchi_boost));
+  set_nl_nchi();
+  debug("{}: NL_Nchi = {}", fname, Ntable.NL_Nchi);
   Ntable.random = RandomNumber::get_instance().get(); // update cache
   debug("{}: {}", fname, errends);
   return;
@@ -1187,8 +1210,9 @@ void init_lowrank_nonlimber_gg(const int flag, const int nrank,
 //   Ntable.halo_nfw_n              -> ceil(baseline * boost)
 //   Ntable.halo_na_lens            -> ceil(baseline * boost)
 //   Ntable.halo_ia_na              -> ceil(baseline * boost)
-//   Ntable.NL_Nchi                 -> ceil(baseline * boost *
-//                                     Ntable.NL_Nchi_boost)
+//   Ntable.NL_Nchi                 -> nested interval doubling of the
+//                                     combined boost * NL_Nchi_boost
+//                                     (the rule at set_nl_nchi)
 //   Ntable.nz_fine_sampling_factor -> ceil(baseline * boost)
 //   Ntable.FPT_internal_accuracy_boost -> baseline * boost (double)
 //
@@ -1252,13 +1276,14 @@ void init_accuracy_boost(
   Ntable.dCX_dlnk_nlnk[NODES_DENSE] = static_cast<int>(ceil(cache[2]*accuracy_boost));
 
   // NL_Nchi: the baseline shared with init_nonlimber_accuracy_boost (see
-  // nl_nchi_base), times the boost, times the non-Limber refinement
+  // nl_nchi_base); the combined boost refines by nested interval
+  // doubling (the rule at set_nl_nchi)
   if (0 == nl_nchi_base) {
     nl_nchi_base = Ntable.NL_Nchi;
   }
   nl_accuracy_boost = accuracy_boost;
-  Ntable.NL_Nchi = static_cast<int>(
-    ceil(nl_nchi_base*accuracy_boost*Ntable.NL_Nchi_boost));
+  set_nl_nchi();
+  debug("{}: NL_Nchi = {}", fname, Ntable.NL_Nchi);
 
   if (0 == cache[4]) cache[4] = Ntable.nz_fine_sampling_factor;
   Ntable.nz_fine_sampling_factor = 
