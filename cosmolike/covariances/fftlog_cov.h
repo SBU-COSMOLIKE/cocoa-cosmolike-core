@@ -36,7 +36,10 @@ struct fftlog_workspace_cov* fftlog_create_cov(
     const double chi_min,            // positive first physical distance
     const double dlnchi,             // positive uniform logarithmic step
     const int nfield,                // independent radial functions
-    const int* inverse_power,        // [field], each 0 or 2
+    const int* inverse_power,        // [field], kernel selector:
+                                     // 0 = j_l (density),
+                                     // 2 = j_l/(k chi)^2 (lensing),
+                                     // 3 = j_l'' (redshift distortions)
     const double* const* radial      // [field][nchi], finite signed f
   );
 

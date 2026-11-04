@@ -37,7 +37,8 @@ struct fftlog_workspace_cov {
   int extra;                   // extra reciprocal-grid samples per end
   int nfield;                  // number of radial functions
   int nthreads;                // allocated worker count
-  int* inverse_power;          // [field], density 0 or lensing 2
+  int* inverse_power;          // [field], kernel selector: density 0,
+                               // lensing 2, redshift distortions 3
   double chi_min;              // first physical distance
   double dlnchi;               // uniform logarithmic spacing
   double** real;               // [thread][nfft], input or inverse output
@@ -59,7 +60,8 @@ struct fftlog_workspace_cov {
 // We use bias nu=1: Fourier transform f(chi)/chi, so each mode of f is
 // chi^(1+i eta), then restore the removed power through the Mellin kernel
 // and 1/k (fftlog_execute_cov). The Mellin integrals converge for
-// -l < Re(s) < 2 (density) and 2-l < Re(s) < 4 (lensing, j_l(t)/t^2);
+// -l < Re(s) < 2 (density) and 2-l < Re(s) < 4 (lensing, j_l(t)/t^2,
+// which also carries the redshift-distortion kernel j_l'');
 // Re(s) = nu = 1 lies inside both for every l >= 2.
 // This is the single-Bessel construction of Fang et al. (1911.11947).
 //
@@ -201,8 +203,9 @@ struct fftlog_workspace_cov* fftlog_create_cov(
     id = omp_get_thread_num();
 #endif
     if (inverse_power[field] != 0
-        && inverse_power[field] != 2) {
-      log_fatal("fftlog_create_cov: kernel power must be 0 or 2");
+        && inverse_power[field] != 2
+        && inverse_power[field] != 3) {
+      log_fatal("fftlog_create_cov: kernel selector must be 0, 2 or 3");
       exit(1);
     }
     work->inverse_power[field] = inverse_power[field];
@@ -452,10 +455,22 @@ void fftlog_execute_cov(
         // Density (p = 0) uses M_l(s) from the shared table. Lensing
         // (p = 2) divides by (l+s-2)(l+3-s), which turns it into
         // M_l(s-2), the Mellin integral of j_l(t)/t^2.
+        //
+        // Redshift distortions (selector 3) need the second-derivative
+        // kernel. Integrating by parts twice, with boundary terms that
+        // vanish inside the Mellin convergence strip,
+        //   integral dt t^(s-1) j_l''(t) = (s-1)(s-2) M_l(s-2),
+        // so the distortion kernel is the lensing kernel times
+        // (s-1)(s-2) - the same factors the data-vector FFTLog carries
+        // in its derivative-2 configuration.
         double complex kernel = work->kernel[index][node];
         if (work->inverse_power[field] == 2) {
           const double complex s = 1.0+I*(2.0*M_PI*node/period);
           kernel /= (ell+s-2.0)*(ell+3.0-s);
+        }
+        else if (work->inverse_power[field] == 3) {
+          const double complex s = 1.0+I*(2.0*M_PI*node/period);
+          kernel *= (s-1.0)*(s-2.0)/((ell+s-2.0)*(ell+3.0-s));
         }
 
         // Step 5: the conjugate lets FFTW's exp(+i...) inverse evaluate

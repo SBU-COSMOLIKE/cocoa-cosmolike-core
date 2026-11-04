@@ -185,9 +185,10 @@ static py::dict covariance_limber_spectra(
     exit(1);
   }
   if (nonlimber_lmax > 0) {
-    if (include_rsd
-        || cosmology.Omega_nu != 0.0) {
-      critical("{}: non-Limber covariance currently requires no RSD and mnu=0",
+    // The separable field D(a) delta(k,1) does not describe the
+    // scale-dependent growth that massive neutrinos introduce.
+    if (cosmology.Omega_nu != 0.0) {
+      critical("{}: non-Limber covariance currently requires mnu=0",
         "covariance_limber_spectra");
       exit(1);
     }
@@ -263,6 +264,7 @@ static py::dict covariance_limber_spectra(
   // rows stay Limber. a_edges[0] is the far radial boundary of FFTLog.
   if (nonlimber_lmax > 0) {
     apply_nonlimber_cov(radial.get(), a_edges.data()[0], nwindow, include_ia,
+        include_rsd ? 1 : 0,
         nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min,
         nell, ell.data(), rows.data());
   }

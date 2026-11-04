@@ -1357,7 +1357,7 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
 
 
 def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
-                     example="example2"):
+                     example="example2", default=0):
     """Build one FKEM-vs-low-rank-SVD clustering class.
 
     The likelihood key nonlimber_lowrank_gg picks the non-Limber
@@ -1393,12 +1393,19 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
       rtol     = the relative band around `measured`.
       floor    = the dead-flag floor on the delta chi2.
       example  = the key of u.EXAMPLES the sweep evaluates.
+      default  = the project's nonlimber_lowrank_gg default (0 = FKEM,
+                 1 = the low-rank SVD engine): the sweep starts and
+                 ends on it, with the other engine in between.
 
     Returns:
       a unittest.TestCase subclass named `name`.
     """
-    settings = (("FKEM (default)", 0), ("low-rank SVD", 1),
-                ("FKEM again (round trip)", 0))
+    names = {0: "FKEM", 1: "low-rank SVD"}
+    settings = (
+        (f"{names[default]} (default)", default),
+        (names[1 - default], 1 - default),
+        (f"{names[default]} again (round trip)", default),
+    )
 
     class TestLowrank(unittest.TestCase):
         """FKEM vs low-rank SVD clustering on the frozen fiducial."""
@@ -1462,20 +1469,21 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
             b1 = b0 + int(sizes[2])
 
             print(f"\n  engine report ({example}, NLA):")
-            print(f"    FKEM: chi2 = {chi2s[settings[0][0]]:.6f} "
-                  f"(frozen reference "
+            print(f"    {settings[0][0]}: chi2 = "
+                  f"{chi2s[settings[0][0]]:.6f} (frozen reference "
                   f"{self.reference[reference_key]:.6f}), "
                   f"{steady[settings[0][0]]:.2f} s")
-            print(f"    SVD:  chi2 = {chi2s[settings[1][0]]:.6f}, "
+            print(f"    {settings[1][0]}: chi2 = "
+                  f"{chi2s[settings[1][0]]:.6f}, "
                   f"{steady[settings[1][0]]:.2f} s")
             print(f"    delta^T C^-1 delta = {dchi2:.6e} "
                   f"(measured {measured:.6e})")
 
             self.assertGreater(
                 dchi2, floor,
-                "the SVD engine did not change the data vector: the "
-                "nonlimber_lowrank_gg flag did not reach the C code, "
-                "or the clustering cache did not rebuild")
+                "switching the engine did not change the data vector: "
+                "the nonlimber_lowrank_gg flag did not reach the C "
+                "code, or the clustering cache did not rebuild")
 
             outside = np.concatenate((delta[:b0], delta[b1:]))
             self.assertTrue(
@@ -1485,9 +1493,9 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
 
             self.assertTrue(
                 np.array_equal(vectors[settings[-1][0]], dv_default),
-                "returning to FKEM did not reproduce the first data "
-                "vector bit for bit; the clustering cache did not "
-                "rebuild cleanly")
+                "returning to the default engine did not reproduce "
+                "the first data vector bit for bit; the clustering "
+                "cache did not rebuild cleanly")
 
             self.assertLess(
                 abs(dchi2/measured - 1.0), rtol,
@@ -1500,8 +1508,8 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
                 abs(chi2s[settings[0][0]]
                     - self.reference[reference_key]),
                 u.CHI2_TOLERANCE,
-                f"FKEM default: chi2 = {chi2s[settings[0][0]]:.6f} "
-                f"vs frozen reference "
+                f"{settings[0][0]}: chi2 = "
+                f"{chi2s[settings[0][0]]:.6f} vs frozen reference "
                 f"{self.reference[reference_key]:.6f}")
 
     def test(self):

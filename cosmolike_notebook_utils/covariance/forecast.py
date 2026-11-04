@@ -29,9 +29,11 @@ def gaussian_model(gaussian, nsource):
     Arguments:
         gaussian = optional mapping with nonlimber (bool, default True),
             rsd (bool, default False: add the lens redshift-space
-            distortion window to the Gaussian spectra; spectroscopic
-            thin lens bins need it, wide photometric bins do not), ia
-            (none/NLA/TATT, default none), A1, A2 and B_TA (default 0).
+            distortions to the Gaussian spectra - the Limber window,
+            and the distortion transfer of the non-Limber recompute
+            when nonlimber is true; spectroscopic thin lens bins need
+            it, wide photometric bins do not), ia (none/NLA/TATT,
+            default none), A1, A2 and B_TA (default 0).
             Amplitudes are constants per source bin: a scalar applies to
             all bins; an array needs one value per bin. The core supplies
             the standard growth dependence. No redshift power law is
@@ -43,10 +45,9 @@ def gaussian_model(gaussian, nsource):
         lists A1, A2 and B_TA. The supplied mapping is not modified.
     Raises:
         ValueError for an unknown key, a non-boolean nonlimber or rsd,
-        rsd combined with nonlimber (the covariance non-Limber transfers
-        carry density only), another IA model, nonfinite amplitudes or a
-        wrong amplitude count, nonzero amplitudes with ia=none, or
-        nonzero A2/B_TA with NLA.
+        another IA model, nonfinite amplitudes or a wrong amplitude
+        count, nonzero amplitudes with ia=none, or nonzero A2/B_TA with
+        NLA.
     """
     # --- 1. THE SUPPLIED MAPPING: ONLY THE FIVE KNOWN KEYS ---
 
@@ -72,11 +73,6 @@ def gaussian_model(gaussian, nsource):
         raise ValueError("gaussian.nonlimber must be true or false")
     if not isinstance(rsd, bool):
         raise ValueError("gaussian.rsd must be true or false")
-    if rsd and nonlimber:
-        raise ValueError(
-            "gaussian.rsd needs gaussian.nonlimber false: the covariance "
-            "non-Limber transfers carry density only, so the low-multipole "
-            "recompute would silently drop the distortion window")
     if model not in ("none", "NLA", "TATT"):
         raise ValueError("gaussian.ia must be none, NLA or TATT")
 

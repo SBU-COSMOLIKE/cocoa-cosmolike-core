@@ -584,7 +584,7 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         low = interface.covariance_spectra(
             ell=ell[selected], a_edges=np.ascontiguousarray(settings["a_edges"]),
             nquad=settings["radial_nquad"], nwindow=settings["nwindow"],
-            include_ia=model["ia"] != "none", include_rsd=False, linear=False,
+            include_ia=model["ia"] != "none", include_rsd=rsd, linear=False,
             nonlimber_lmax=cutoff, nonlimber_nchi=settings["nonlimber_nchi"],
         )
         # Without IA, Gaussian and SSC share one array: copy it before the

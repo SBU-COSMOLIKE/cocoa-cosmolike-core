@@ -16,14 +16,17 @@ extern "C" {
 //   exact[p][l-2]   = (2/pi) integral dlnk k^3 P_lin(k,1) F_A F_B,
 //   matched[p][l-2] = the Limber projection of D(a)^2 P_lin(k,1),
 // with F the spherical-Bessel transfer of each field of pair p.
-// amin, nwindow and include_ia must equal the values used to build
-// radial, so that both terms see the same windows. Requires flat
-// geometry and massless neutrinos; call outside OpenMP regions.
+// include_rsd adds the lens redshift-distortion transfer (the j_l''
+// kernel) to the exact term and the matching distortion window to the
+// Limber term. amin, nwindow and include_ia must equal the values used
+// to build radial, so that both terms see the same windows. Requires
+// flat geometry and massless neutrinos; call outside OpenMP regions.
 void nonlimber_spectra_cov(
     const struct radial_cov* radial, // existing common quadrature snapshot
     const double amin,              // far boundary enclosing both catalogs
     const int nwindow,               // cumulative lensing-efficiency samples
     const int include_ia,            // signed linear alignment contribution
+    const int include_rsd,           // lens redshift-distortion transfer
     const int lmax,                  // integer multipoles 2..lmax
     const int nchi,                  // log-distance samples, 2^n+1 >= 65
     const double chi_min,            // positive near distance in c/H0
@@ -43,6 +46,7 @@ void apply_nonlimber_cov(
     const double amin,              // far boundary in scale factor
     const int nwindow,               // efficiency interpolation samples
     const int include_ia,            // signed linear alignment
+    const int include_rsd,           // lens redshift distortions
     const int lmax,                  // last corrected integer multipole
     const int nchi,                  // logarithmic radial samples
     const double chi_min,            // near distance in c/H0

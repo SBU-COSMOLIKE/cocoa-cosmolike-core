@@ -5,6 +5,7 @@
 #include "fftlog_cov.h"
 #include "cosmolike/basics.h"
 #include "cosmolike/cosmo3D.h"
+#include "cosmolike/radial_weights.h"
 #include "cosmolike/structs.h"
 #include "log.c/src/log.h"
 #include "simde/x86/sse2.h"
@@ -72,9 +73,10 @@ typedef simde__m128d v2d;
 // matrix; the latter must be checked after its Limber residual is added.
 //
 // The routine supports flat geometry, zero massive neutrinos, density,
-// magnification and linear/NLA alignment, but no RSD transfer. It returns
-// ss as a diagnostic too; callers choosing gg/gs corrections may leave
-// their shear-shear model Limber. SSC and cNG never call this routine.
+// magnification, linear/NLA alignment and, with include_rsd, the lens
+// redshift-distortion transfer (the j_l'' kernel). It returns ss as a
+// diagnostic too; callers choosing gg/gs corrections may leave their
+// shear-shear model Limber. SSC and cNG never call this routine.
 //
 // Parameters:
 //   radial     - quadrature snapshot from radial_inputs_cov; supplies the
@@ -84,6 +86,9 @@ typedef simde__m128d v2d;
 //   nwindow    - uniform-a efficiency samples, as used for radial
 //   include_ia - 1 adds the signed NLA window to the source fields, as
 //                used for radial
+//   include_rsd - 1 adds the redshift-distortion transfer to every lens
+//                field, and the matching distortion window to the
+//                matched Limber subtraction
 //   lmax       - last integer multipole; outputs cover l = 2..lmax
 //   nchi       - ln(chi) samples including both ends, 2^n+1 >= 65
 //   chi_min    - near boundary in c/H0; the exact term omits closer
@@ -100,6 +105,7 @@ void nonlimber_spectra_cov(
     const double amin,              // far radial boundary
     const int nwindow,               // efficiency samples
     const int include_ia,            // include linear alignment
+    const int include_rsd,           // include redshift distortions
     const int lmax,                  // last integer multipole
     const int nchi,                  // physical logarithmic samples
     const double chi_min,            // near radial boundary in c/H0
@@ -134,10 +140,12 @@ void nonlimber_spectra_cov(
   // the same physical windows on log distance, independently of that
   // integration rule. Forward transforms are computed only once below.
   // nfield observed fields, lenses then sources; ncomponent radial
-  // inputs, one density per lens plus one spin input per field; npair
-  // unordered field pairs, crosses included.
+  // inputs, one density per lens plus one spin input per field, plus -
+  // with distortions - one distortion input per lens, appended after
+  // the spin inputs; npair unordered field pairs, crosses included.
   const int nfield = radial->nlens+radial->nsource;
-  const int ncomponent = radial->nlens+nfield;
+  const int nspin = radial->nlens+nfield;
+  const int ncomponent = nspin+(include_rsd ? radial->nlens : 0);
   const int npair = nfield*(nfield+1)/2;
 
   // matched[p][l-2]: the Limber projection at l = 2..lmax of the same
@@ -146,7 +154,7 @@ void nonlimber_spectra_cov(
   for (int index=0; index<lmax-1; index++) {
     multipoles[index] = index+2.0;
   }
-  limber_spectra_cov(radial, lmax-1, multipoles, 2, 0, matched);
+  limber_spectra_cov(radial, lmax-1, multipoles, 2, include_rsd, matched);
   free(multipoles);
 
   // The same windows at chi_i = chi_min*exp(i*dlnchi), i = 0..nchi-1, up
@@ -165,6 +173,13 @@ void nonlimber_spectra_cov(
   // only reads the tables installed by the cosmology interface, so this
   // call is a safeguard rather than a required initialization.
   (void) p_lin(1.0, 1.0);
+  if (include_rsd) {
+    // The distortion inputs read these lazily built tables inside the
+    // parallel fill below; the first touch must be serial.
+    (void) growfac_all(0.9);
+    (void) hoverh0(0.9);
+    (void) W_gal(0.9, 0, hoverh0(0.9));
+  }
 
   // Components are lens densities first, then one spin kernel per field.
   // A spin kernel means magnification for a lens and lensing+IA for a
@@ -177,11 +192,28 @@ void nonlimber_spectra_cov(
   #pragma omp parallel for schedule(static)
   for (int component=0; component<ncomponent; component++) {
     const int density = component < radial->nlens;
-    const int field = density ? component : component-radial->nlens;
-    powers[component] = density ? 0 : 2;
+    const int distortion = component >= nspin;
+    const int field = density ? component
+        : (distortion ? component-nspin : component-radial->nlens);
+    powers[component] = density ? 0 : (distortion ? 3 : 2);
     for (int node=0; node<nchi; node++) {
       const double a = logarithmic->geometry[0][node];
       const double distance = chi_min*exp(node*dlnchi);
+
+      if (distortion) {
+        // The distortion input of lens field: the unbiased galaxy
+        // weight W_gal (no b1 - the velocity field traces matter)
+        // times the growth rate f, against the j_l'' kernel.
+        //
+        // The sign follows the plane-parallel expansion
+        // delta_s = (b + f mu^2) delta: the mu^2 projection brings
+        // -j_l'', carried as a negative input against the positive
+        // kernel, the data-vector FFTLog's convention.
+        const struct growths both = growfac_all(a);
+        inputs[component][node] = -distance
+            *W_gal(a, field, hoverh0(a))*both.D*both.f;
+        continue;
+      }
 
       // window[0]: b1 times the lens distribution per unit distance.
       // window[1]+window[2]: the lensing window (times b_mag for a lens)
@@ -299,9 +331,24 @@ void nonlimber_spectra_cov(
         if (field >= radial->nlens) {
           factor = sqrt((ell-1.0)*ell*(ell+1.0)*(ell+2.0));
         }
-        for (int node=0; node<nk; node++) {
-          const double density = field < radial->nlens ? output[node] : 0;
-          output[node] = density+factor*spin[node];
+
+        // With distortions, a lens field also receives its j_l''
+        // transfer, at unit weight: that kernel already carries every
+        // angular factor. Distortion rows sit after the spin rows
+        // (index nspin+field > nfield), so they are never overwritten
+        // before this read. Without distortions the statement is the
+        // two-part sum it always was.
+        if (include_rsd && field < radial->nlens) {
+          const double* velocity = transfer[index][nspin+field];
+          for (int node=0; node<nk; node++) {
+            output[node] = output[node]+factor*spin[node]+velocity[node];
+          }
+        }
+        else {
+          for (int node=0; node<nk; node++) {
+            const double density = field < radial->nlens ? output[node] : 0;
+            output[node] = density+factor*spin[node];
+          }
         }
       }
     }
@@ -407,8 +454,8 @@ void nonlimber_spectra_cov(
 //
 // Keep the hybrid addition shared between production and notebook APIs.
 // Its inputs have already been validated by their public boundary:
-// integer ell inside [2,lmax], nchi = 2^n+1 >= 65, chi_min > 0, no RSD
-// and massless neutrinos. Parameters as in nonlimber_spectra_cov, plus
+// integer ell inside [2,lmax], nchi = 2^n+1 >= 65, chi_min > 0 and
+// massless neutrinos. Parameters as in nonlimber_spectra_cov, plus
 // the caller's nell multipoles ell[nell] and spectra[npair][nell], the
 // nonlinear Limber input that becomes the hybrid output for gg and gs.
 // -----------------------------------------------------------------------
@@ -417,6 +464,7 @@ void apply_nonlimber_cov(
     const double amin,              // far radial boundary
     const int nwindow,               // lensing-efficiency samples
     const int include_ia,            // signed linear alignment
+    const int include_rsd,           // lens redshift distortions
     const int lmax,                  // correction cutoff
     const int nchi,                  // logarithmic radial samples
     const double chi_min,            // near distance in c/H0
@@ -430,8 +478,8 @@ void apply_nonlimber_cov(
   const int nfield = radial->nlens+radial->nsource;
   const int npair = nfield*(nfield+1)/2;
   double*** correction = (double***) malloc3d(2, npair, lmax-1);
-  nonlimber_spectra_cov(radial, amin, nwindow, include_ia, lmax, nchi,
-      chi_min, correction[0], correction[1]);
+  nonlimber_spectra_cov(radial, amin, nwindow, include_ia, include_rsd,
+      lmax, nchi, chi_min, correction[0], correction[1]);
 
   // Only a pair with at least one galaxy (lens) field receives the
   // correction. Retain the caller's shear-shear spectra, including IA.
