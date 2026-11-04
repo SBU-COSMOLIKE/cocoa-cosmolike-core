@@ -990,6 +990,49 @@ void init_nonlimber_accuracy_boost(const double nonlimber_boost)
 }
 
 // ---------------------------------------------------------------------------
+// Set limits.LMAX_NOLIMBER, the multipole cap of the FKEM non-Limber
+// paths: below it C_gg is the FKEM split (autos, and the cross pairs of
+// a survey that installs them) and C_gs too; above it both are Limber.
+// The yaml key lmax_nonlimber of a likelihood that binds it; structs.c
+// sets the default, 150. The low-rank gg engine has its own cap and
+// ignores this one.
+//
+// Why settable: radial kernels much narrower than a photometric bin
+// stay non-Limber far past the default, and comparing FKEM fairly with
+// an engine of a higher cap needs both at the same cap.
+//
+// Memory: the FKEM twin with cross pairs stores one block of 16
+// multipoles at a time, so its footprint does not grow with the cap.
+// The standard gg and gs cores hold every multipole below the cap
+// (rows x cap x NL_Nchi doubles): raise it with care elsewhere.
+//
+// Cache invalidation:
+// bumps Ntable.random (the non-Limber arrays are sized by the cap).
+//
+// Validation: 32 <= lmax <= Ntable.LMAX, else critical() + exit(1).
+//
+// Parameters:
+//   lmax - the new limits.LMAX_NOLIMBER
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_lmax_nonlimber(const int lmax)
+{
+  static constexpr std::string_view fname = "init_lmax_nonlimber"sv;
+  debug("{}: {}", fname, errbegins);
+  if (lmax < 32 || lmax > Ntable.LMAX) {
+    critical("{}: invalid lmax = {} (range 32 .. Ntable.LMAX = {})",
+             fname, lmax, Ntable.LMAX);
+    exit(1);
+  }
+  limits.LMAX_NOLIMBER = lmax;
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
 // Choose the galaxy-galaxy lensing C_l^gs computation, writing
 // like.adopt_limber[LIMBER_GS]: 1 = Limber at every multipole (the default); 0 =
 // the non-Limber C_gs_tomo below limits.LMAX_NOLIMBER, in gamma_t

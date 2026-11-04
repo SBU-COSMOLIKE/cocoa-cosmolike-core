@@ -413,7 +413,9 @@ void C_cl_tomo_lowrank(
   );
 
 // Fourier-space data vectors: Limber C_gg at arbitrary multipoles plus the
-// non-Limber correction of C_cl_tomo, interpolated between integers.
+// non-Limber correction of C_cl_tomo, interpolated between integers. With
+// cross pairs installed it dispatches to a twin that also stashes their
+// band-center corrections for C_gg_cross_tomo_ells.
 void C_gg_tomo_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values

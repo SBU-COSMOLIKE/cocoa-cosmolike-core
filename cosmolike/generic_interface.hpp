@@ -668,6 +668,10 @@ void init_nonlimber_accuracy_boost(
     const double nonlimber_boost
   );
 
+void init_lmax_nonlimber(
+    const int lmax
+  );
+
 void init_adopt_limber_gs(
     const int adopt_limber_gs
   );

@@ -9630,13 +9630,17 @@ void C_cl_tomo(
 }
 
 // ---------------------------------------------------------------------------
-// The low-rank thin-bin machinery lives in its own section
-// at the END of this file (search for LOW-RANK THIN-BIN), so the
-// long-standing ordering of cosmo2D.c stays familiar. C_gg_tomo_ells
-// below dispatches into it, hence this forward declaration.
+// The thin-bin machinery lives in its own sections at the END of this
+// file (search for LOW-RANK THIN-BIN and CROSS-BIN), so the long-standing
+// ordering of cosmo2D.c stays familiar. C_gg_tomo_ells below dispatches
+// into two of its twins - the low-rank engine, and FKEM with cross
+// pairs - hence these forward declarations.
 // ---------------------------------------------------------------------------
 static void C_gg_tomo_lowrank_ells(const double* ells, const int nell,
                                    const int NSIZE, double** out);
+
+static void C_gg_tomo_fkem_pairs_ells(const double* ells, const int nell,
+                                      const int NSIZE, double** out);
 
 void C_gg_tomo_ells(
     const double* ells,  // array of multipole values (length nell)
@@ -9649,6 +9653,13 @@ void C_gg_tomo_ells(
   // in the LOW-RANK THIN-BIN section at the end of the file)
   if (1 == use_lowrank_DD_GG) {
     C_gg_tomo_lowrank_ells(ells, nell, NSIZE, out);
+    return;
+  }
+  // installed cross pairs: the FKEM twin that also computes the pairs,
+  // in the CROSS-BIN section (a project without pairs never leaves
+  // this function)
+  if (get_gg_cross_npairs() > 0) {
+    C_gg_tomo_fkem_pairs_ells(ells, nell, NSIZE, out);
     return;
   }
   const int LNL   = limits.LMAX_NOLIMBER;
@@ -10929,18 +10940,20 @@ static void C_gg_lowrank_decomp_work(
 }
 
 // ---------------------------------------------------------------------------
-// cfftlog_ells_p2_lowrank: the low-rank gg path's own copy of
-// cfftlog_ells_p2.
+// cfftlog_ells_p2_lowrank: the thin-bin copy of cfftlog_ells_p2, used
+// by both thin-bin gg cores (the low-rank engine and the FKEM twin with
+// cross pairs).
 //
 // The mathematics, the per-(row, slot, multipole) arithmetic and
 // therefore the outputs are identical to the shared engine's.
 //
-// What changes is the parallel layout. With narrow bins, SIZE1 =
-// nbins*(1+nrank) radial rows can reach the hundreds, and there the
-// serial per-row loop with one small parallel region each wastes
-// threads; it becomes one flattened worklist region per block (the
-// scheduling banner in the body). With the handful of wide bins of a
-// photometric survey the layout matters little either way.
+// What changes is the parallel layout. With narrow bins the radial rows
+// (nbins in the FKEM twin, nbins*(1+nrank) in the low-rank engine) can
+// reach the hundreds, and there the serial per-row loop with one small
+// parallel region each wastes threads; it becomes one flattened
+// worklist region per block (the scheduling banner in the body). With
+// the handful of wide bins of a photometric survey the layout matters
+// little either way.
 //
 // The shared engine stays untouched, so every other project keeps its
 // exact code path. Keep the two bodies in sync when the transform
@@ -11070,9 +11083,9 @@ void cfftlog_ells_p2_lowrank(
   // to one shared row table instead of storing SIZE1 identical
   // copies.
   //
-  // C_cl_tomo_lowrank_core does exactly that: with many rank rows the
-  // distinct copies would multiply one table by the row count, and
-  // every copy would be a duplicate write.
+  // Both thin-bin gg cores do exactly that: with many rows the distinct
+  // copies would multiply one table by the row count, and every copy
+  // would be a duplicate write.
   //
   // The aliasing is detected by pointer identity of the first two
   // rows, and the shared table is then filled once, through row 0, so
@@ -12445,6 +12458,54 @@ static double** ggx_stash = NULL;   // [npairs][nell] corrections
 static uint64_t ggx_stash_key[4];   // nonces, npairs, nell at fill time
 static int ggx_stash_fresh = 0;     // 1 = filled and not yet consumed
 
+// Fill the stash from one core run's pair corrections Clx[n][l], given
+// at the integer multipoles below the engine's cap LNL: the same
+// band-center interpolation as the auto splice, then the keys that tie
+// the stash to this evaluation.
+//
+// Clx = NULL stores zeros: no band center fell below the cap, so every
+// pair stays Limber.
+//
+// Both engines with pairs call it: the low-rank C_gg_tomo_lowrank_ells
+// and the FKEM twin C_gg_tomo_fkem_pairs_ells.
+static void ggx_stash_store(
+    const double* ells,           // band centers (length nell)
+    const int nell,               // number of band centers
+    const int LNL,                // the engine's multipole cap
+    const int npairs,             // number of installed pairs
+    double* const* const Clx      // pair corrections [npairs][LNL] (or NULL)
+  )
+{
+  if (ggx_stash == NULL ||
+      ggx_stash_key[2] != (uint64_t) npairs ||
+      ggx_stash_key[3] != (uint64_t) nell) {
+    if (ggx_stash != NULL) {
+      free((void*) ggx_stash);
+    }
+    ggx_stash = (double**) malloc2d(npairs, nell);
+  }
+  // every (pair, band center) writes only its own entry; both engines
+  // run tol = 0, so no pair ever freezes below the cap
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int n=0; n<npairs; n++) {
+    for (int i=0; i<nell; i++) {
+      ggx_stash[n][i] = 0.0;
+      if (NULL != Clx && ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
+        const int l0 = (int) floor(ells[i]);
+        const double t = ells[i] - l0;
+        const double d0 = Clx[n][l0];
+        const double d1 = (l0 + 1 < LNL) ? Clx[n][l0 + 1] : 0.0;
+        ggx_stash[n][i] = (1.0 - t)*d0 + t*d1;
+      }
+    }
+  }
+  ggx_stash_key[0] = cosmology.random;
+  ggx_stash_key[1] = Ntable.random;
+  ggx_stash_key[2] = (uint64_t) npairs;
+  ggx_stash_key[3] = (uint64_t) nell;
+  ggx_stash_fresh = 1;
+}
+
 static void C_gg_tomo_lowrank_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
@@ -12496,6 +12557,11 @@ static void C_gg_tomo_lowrank_ells(
     }
   }
   if (0 == nruns) {
+    // no band center below the cap: everything stays Limber, and the
+    // pairs get zero corrections
+    if (get_gg_cross_npairs() > 0) {
+      ggx_stash_store(ells, nell, LNL, get_gg_cross_npairs(), NULL);
+    }
     return;
   }
 
@@ -12528,40 +12594,10 @@ static void C_gg_tomo_lowrank_ells(
     }
   }
 
-  // the cross corrections at the band centers, stashed for
-  // C_gg_cross_tomo_ells (the module comment at ggx_stash explains the
-  // one-evaluation contract); the same interpolation as the auto
-  // splice, with the path's cap in place of the per-bin freeze points
-  // (tol = 0 here: no pair ever freezes)
+  // Step 5: the cross corrections at the band centers, stashed for
+  // C_gg_cross_tomo_ells (the one-evaluation contract at ggx_stash)
   if (npairs > 0) {
-    if (ggx_stash == NULL ||
-        ggx_stash_key[2] != (uint64_t) npairs ||
-        ggx_stash_key[3] != (uint64_t) nell) {
-      if (ggx_stash != NULL) {
-        free((void*) ggx_stash);
-      }
-      ggx_stash = (double**) malloc2d(npairs, nell);
-    }
-    // Step 5: the same interpolation as the auto splice, stashed per
-    // pair; every (pair, band center) writes only its own entry
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int n=0; n<npairs; n++) {
-      for (int i=0; i<nell; i++) {
-        ggx_stash[n][i] = 0.0;
-        if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
-          const int l0 = (int) floor(ells[i]);
-          const double t = ells[i] - l0;
-          const double d0 = Clx[n][l0];
-          const double d1 = (l0 + 1 < LNL) ? Clx[n][l0 + 1] : 0.0;
-          ggx_stash[n][i] = (1.0 - t)*d0 + t*d1;
-        }
-      }
-    }
-    ggx_stash_key[0] = cosmology.random;
-    ggx_stash_key[1] = Ntable.random;
-    ggx_stash_key[2] = (uint64_t) npairs;
-    ggx_stash_key[3] = (uint64_t) nell;
-    ggx_stash_fresh = 1;
+    ggx_stash_store(ells, nell, LNL, npairs, Clx);
     free((void*) Clx);
   }
   free((void*) Cnl);
@@ -12581,8 +12617,10 @@ static void C_gg_tomo_lowrank_ells(
 // quadrature node builder, the batched pair Limber integrals, and the
 // Fourier-space entry point the extended data vector calls.
 //
-// No pre-existing function changes: a project that never sets a pair
-// list compiles and runs the exact code it always did.
+// Pre-existing code gains only branches taken with a pair list
+// installed (C_gg_tomo_ells dispatches to the FKEM twin of this
+// section): a project that never sets a pair list runs the exact code
+// it always did.
 //
 // The pair list is data, not a rule: the measured pairs come from
 // redshift proximity (adjacent thin bins, and same-z bins of
@@ -13116,18 +13154,541 @@ static void C_gg_cross_tomo_limber_nointerp_ells(
   gsl_integration_glfixed_table_free(w);
 }
 
+// ============================================================================
+// FKEM WITH CROSS PAIRS: the thin-bin twin of C_cl_tomo_core
+// ============================================================================
+// With a pair list installed and the low-rank path off, C_gg_tomo_ells
+// dispatches here. The twin computes, in one run of transforms:
+//
+//   - the autos: C_cl_tomo_core's FKEM split, bitwise;
+//   - every installed pair: the same split with the two bins' kernels.
+//
+// Why a twin rather than an extension of C_cl_tomo_core: every project
+// without pairs keeps its exact code path and array sizes, and the
+// thin-bin needs live next to the low-rank engine that shares them.
+//
+// What differs from C_cl_tomo_core (its header documents the rest):
+//
+//   - Fourier only, tol = 0: no early exit, no freeze points;
+//   - pooled storage (C_cl_tomo_lowrank_core's storage comment): memory
+//     grows with one block of 16 multipoles, not with the cap times the
+//     chi grid, so the cap can rise on a refined grid;
+//   - the clustering transform copy cfftlog_ells_p2_lowrank (flattened
+//     scheduling for many bins; identical arithmetic);
+//   - the pair pass after each block's autos.
+//
+// Per pair (i, j), the auto's squared kernel becomes the product of the
+// two bins' kernels:
+//
+//   Clx = (2/pi) dlnk sum_q F_i F_j k^3 P_lin(k, a_pair)/D(a_pair)^2
+//         - C_l^limber(i, j; separable linear).
+//
+// That is the pair's non-Limber correction: the Fourier entry stashes
+// it, and C_gg_cross_tomo_ells adds it to the pair Limber value, as the
+// auto splice adds Cl - CLnl.
+//
+// The pair pivot a_pair is the midpoint of the two bins' mean redshifts,
+// the pivot of the pair Limber batch, so the split cancels at high l
+// (the rule the autos obey per bin).
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// The twin core (the section comment above says what differs from
+// C_cl_tomo_core).
+//
+// Parameters:
+//   Cl    - output [clustering_nbin][>= LMAX_NOLIMBER]: the FKEM C_l of
+//           every bin at the run multipoles
+//   Clx   - output [gg_cross_npairs][>= LMAX_NOLIMBER]: the pair
+//           corrections at the run multipoles
+//   runs  - runs of integer multipoles [2*nruns], as for C_cl_tomo_core
+//   nruns - number of runs
+//
+// Returns:
+//   CLnl, the auto Limber C_l(P_delta) at the run multipoles, indexed
+//   CLnl[i][l] (static: valid until the next call)
+// ---------------------------------------------------------------------------
+static double** C_cl_tomo_fkem_pairs_core(
+    double* const* const Cl,    // output [nbins][>= LMAX_NOLIMBER]
+    double* const* const Clx,   // output [npairs][>= LMAX_NOLIMBER]
+    const int* const runs,      // runs of multipoles [2*nruns]
+    const int nruns             // number of runs
+  )
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static double* x = NULL;
+  static double*** fx = NULL;         // radial kernels [nbins][3][nchi]
+  static double*** y = NULL;          // row view: y[i] == y_rows for all i
+  static double** y_rows = NULL;      // shared wavenumber grid [LNL][nchi]
+  static double**** Fy = NULL;        // view [nbins][3][LNL] -> pool rows
+  static double**** Fy_pool = NULL;   // data [nbins][3][BLOCK][nchi]
+  static double*** vres_pool = NULL;  // auto integrands [nbins][BLOCK][nchi]
+  static double*** vresx_pool = NULL; // pair integrands [npairs][BLOCK][nchi]
+  static double** CLnl = NULL;        // auto Limber, full model [nbins][LNL]
+  static double** CLlin = NULL;       // auto Limber, separable linear
+  static double** CLlinx = NULL;      // pair Limber, separable linear
+  static double* lx = NULL;
+  static config cfg[3];
+
+  const int nbins  = redshift.clustering_nbin;
+  const int npairs = gg_cross_npairs;
+  const int nchi   = Ntable.NL_Nchi;
+  const int LNL    = limits.LMAX_NOLIMBER;
+  const int BLOCK  = 16; // multipoles per block: the l extent of the pools
+                         // and the longest run the caller may pass
+
+  if (npairs <= 0) {
+    log_fatal("C_cl_tomo_fkem_pairs_core called with no pair list");
+    exit(1);
+  }
+  if (NULL == x ||
+      fdiff2(cache[0], Ntable.random) ||
+      cache[1] != (uint64_t) nbins ||
+      cache[2] != (uint64_t) LNL ||
+      cache[3] != (uint64_t) npairs)
+  {
+    if (x != NULL) free((void*) x);
+    x = (double*) malloc1d(nchi);
+    if (fx != NULL) free((void*) fx);
+    fx = (double***) malloc3d(nbins, 3, nchi);
+    // y: the grid (k+1)/x is the same for every bin, so every row aliases
+    // one shared table, which the transform fills once
+    if (y_rows != NULL) free((void*) y_rows);
+    y_rows = (double**) malloc2d(LNL, nchi);
+    if (y != NULL) free((void*) y);
+    y = (double***) malloc(sizeof(double**) * nbins);
+    if (NULL == y) {
+      log_fatal("array allocation failed"); exit(1);
+    }
+    for (int i=0; i<nbins; i++) {
+      y[i] = y_rows;
+    }
+    // Fy: an absolute-l pointer view (no data) over a one-block pool; the
+    // l slots are rewired to pool rows before every block
+    if (Fy_pool != NULL) free((void*) Fy_pool);
+    Fy_pool = (double****) malloc4d(nbins, 3, BLOCK, nchi);
+    if (Fy != NULL) free((void*) Fy);
+    Fy = (double****) malloc3d_ptr(nbins, 3, LNL);
+    if (vres_pool != NULL) free((void*) vres_pool);
+    vres_pool = (double***) malloc3d(nbins, BLOCK, nchi);
+    if (vresx_pool != NULL) free((void*) vresx_pool);
+    vresx_pool = (double***) malloc3d(npairs, BLOCK, nchi);
+    if (CLnl != NULL) free((void*) CLnl);
+    CLnl = (double**) malloc2d(nbins, LNL);
+    if (CLlin != NULL) free((void*) CLlin);
+    CLlin = (double**) malloc2d(nbins, LNL);
+    if (CLlinx != NULL) free((void*) CLlinx);
+    CLlinx = (double**) malloc2d(npairs, LNL);
+    if (lx != NULL) free((void*) lx);
+    lx = (double*) malloc1d(LNL);
+    // C_cl_tomo_core's FFTLog configurations (its comment explains why
+    // N_pad scales with nchi): density, RSD, magnification
+    cfg[0].nu = 1.;
+    cfg[0].c_window_width = 0.25;
+    cfg[0].derivative = 0;
+    cfg[0].N_pad = (long) ceil(200.0*nchi/512.0);
+    cfg[1].nu = 1.01;
+    cfg[1].c_window_width = 0.25;
+    cfg[1].derivative = 2;
+    cfg[1].N_pad = (long) ceil(500.0*nchi/512.0);
+    cfg[2].nu = 1.;
+    cfg[2].c_window_width = 0.25;
+    cfg[2].derivative = 0;
+    cfg[2].N_pad = (long) ceil(500.0*nchi/512.0);
+    cache[0] = Ntable.random;
+    cache[1] = (uint64_t) nbins;
+    cache[2] = (uint64_t) LNL;
+    cache[3] = (uint64_t) npairs;
+  }
+
+  // the chi grid of C_cl_tomo_core: z = 0.002 to 4, log-spaced, in Mpc
+  const double real_coverH0 = cosmology.coverH0/cosmology.h0;
+  const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // Mpc
+  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // Mpc
+  const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
+  const double dlnk    = dlnchi;
+  { // INIT: make sure static init variables inside the funcs are defined
+    const double chi = chi_min/real_coverH0;
+    const double a   = a_chi(chi);
+    const double z   = 1. / a - 1.;
+    const double fK = chi;
+    (void) growfac_all(a);
+    (void) hoverh0(a);
+    for (int i=0; i<nbins; i++) {
+      (void) nz_lens_photoz(z,i);
+      (void) W_mag(a,fK,i);
+      (void) gb1(z,i);
+    }
+    (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
+  }
+
+  // the run multipoles, validated first: ascending, inside the cap, none
+  // longer than the pools
+  int nlx = 0;
+  for (int r=0; r<nruns; r++) {
+    if (runs[2*r] < 0 || runs[2*r+1] > LNL ||
+        runs[2*r+1] <= runs[2*r] || runs[2*r+1] - runs[2*r] > BLOCK ||
+        (r > 0 && runs[2*r] < runs[2*r-1])) {
+      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
+      exit(1);
+    }
+    for (int l=runs[2*r]; l<runs[2*r+1]; l++) {
+      lx[nlx++] = (double) l;
+    }
+  }
+
+  // The Limber terms at the run multipoles, indexed by integer l: the
+  // autos' full model and separable-linear counterpart (C_cl_tomo_core's
+  // batch), then the pairs' separable-linear term (the pair batch, on
+  // panel nodes over each pair's union support).
+  {
+    double** tnl  = (double**) malloc2d(nbins, nlx);
+    double** tlin = (double**) malloc2d(nbins, nlx);
+    C_gg_tomo_limber_nl_lin_nointerp_ells(lx, nlx, nbins, tnl, tlin);
+    for (int i=0; i<nbins; i++) {
+      for (int m=0; m<nlx; m++) {
+        const int l = (int) lx[m];
+        CLnl[i][l]  = tnl[i][m];
+        CLlin[i][l] = tlin[i][m];
+      }
+    }
+    free((void*) tnl);
+    free((void*) tlin);
+  }
+  {
+    const size_t nsize_integration = 128 + 64*Ntable.high_def_integration;
+    gsl_integration_glfixed_table* w =
+        gsl_integration_glfixed_table_alloc(nsize_integration);
+    if (NULL == w) {
+      log_fatal("GSL rule allocation failed");
+      exit(1);
+    }
+    cosmo_nodes* cnx = (cosmo_nodes*) malloc(sizeof(cosmo_nodes)*npairs);
+    if (NULL == cnx) {
+      log_fatal("array allocation failed");
+      exit(1);
+    }
+    for (int n=0; n<npairs; n++) {
+      cnx[n] = create_cosmo_nodes_lens_pair(gg_cross_i[n], gg_cross_j[n], w);
+    }
+    double** tlinx = (double**) malloc2d(npairs, nlx);
+    C_gg_cross_tomo_limber_work(cnx, lx, nlx, NULL, tlinx, NULL, NULL);
+    for (int n=0; n<npairs; n++) {
+      for (int m=0; m<nlx; m++) {
+        CLlinx[n][(int) lx[m]] = tlinx[n][m];
+      }
+    }
+    free((void*) tlinx);
+    for (int n=0; n<npairs; n++) {
+      free_cosmo_nodes(&cnx[n]);
+    }
+    free(cnx);
+    gsl_integration_glfixed_table_free(w);
+  }
+
+  // The radial kernels of C_cl_tomo_core (its header defines the three
+  // slots and the Limber lens range they live on).
+  double zlo[nbins];
+  double zhi[nbins];
+  for (int i=0; i<nbins; i++) {
+    zlo[i] = 1./amax_lens(i) - 1.;
+    zhi[i] = 1./amin_lens(i) - 1.;
+  }
+  const int rsd = (1 == include_RSD_GG && 0 == include_HOD_GX) ? 1 : 0;
+
+  #pragma omp parallel for schedule(static)
+  for (int j=0; j<nchi; j++) {
+    x[j] = chi_min * exp(dlnchi * j);
+    const double chi = x[j]/real_coverH0;
+    const double a   = a_chi(chi);
+    const double z   = 1. / a - 1.;
+    const double hoverh0_a = hoverh0(a);
+    const double fK = chi;
+    struct growths growfac_a = growfac_all(a);
+    const double D = growfac_a.D;
+    const double f = growfac_a.f;
+    for (int i=0; i<nbins; i++) {
+      if (z < zlo[i] || z > zhi[i]) {
+        fx[i][0][j] = 0.;
+        fx[i][1][j] = 0.;
+        fx[i][2][j] = 0.;
+      }
+      else {
+        const double pf = nz_lens_photoz(z,i);
+        const double WM = W_mag(a, fK, i);
+        fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
+        fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
+        fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2]
+      }
+    }
+  }
+
+  int is_bmag_zero = 1;
+  for (int i=0; i<nbins; i++) {
+    if (fabs(gbmag(0.,i)) > 1.e-12) {
+      is_bmag_zero = 0;
+    }
+  }
+
+  // FFT sizes per slot, as in C_cl_tomo_core: padded length rounded up
+  // to an even size with only the prime factors 2, 3, 5 and 7
+  const int SIZE2 = (is_bmag_zero == 0) ? 3 : 2;
+  int Nmax = 0;
+  int N[SIZE2][3];
+  for(int j=0; j<SIZE2; j++) {
+    N[j][0] = cfg[j].N_pad;
+    N[j][1] = nchi;
+    long raw = 2*N[j][0] + N[j][1];
+    if (raw % 2) raw++;
+    N[j][2] = (int) next_fft_size(raw);
+    if (N[j][2] % 2) {
+      N[j][2] = (int) next_fft_size(N[j][2] + 1);
+    }
+    if (N[j][2] > Nmax)
+      Nmax = N[j][2];
+  }
+
+  fftw_complex** toutfwd = (fftw_complex**) malloc2d_fftwc(nbins*SIZE2, Nmax/2+1);
+  double** eta_m = (double**) malloc2d(SIZE2, Nmax/2+1);
+
+  // the FKEM pivots: per bin at its mean redshift (C_cl_tomo_core), per
+  // pair at the midpoint of the two means (the pair Limber batch's
+  // formula; keep the two in step)
+  double apiv[nbins];
+  double invgf2piv[nbins];
+  for (int i=0; i<nbins; i++) {
+#ifdef COSMO2D_FKEM_PIVOT_Z0
+    apiv[i] = 1.0;
+#else
+    apiv[i] = 1.0/(1.0 + zmean(i));
+#endif
+    const double gfp = growfac(apiv[i]);
+    invgf2piv[i] = 1.0/(gfp*gfp);
+  }
+  double apivx[npairs];
+  double invgf2x[npairs];
+  for (int n=0; n<npairs; n++) {
+#ifdef COSMO2D_FKEM_PIVOT_Z0
+    apivx[n] = 1.0;
+#else
+    apivx[n] = 1.0/(1.0 + 0.5*(zmean(gg_cross_i[n]) + zmean(gg_cross_j[n])));
+#endif
+    const double gfp = growfac(apivx[n]);
+    invgf2x[n] = 1.0/(gfp*gfp);
+  }
+
+  cfftlog_ells_p1((double* const) x,
+                  (double* const* const* const) fx,
+                  nchi,
+                  cfg,
+                  (fftw_complex* const* const) toutfwd,
+                  (double* const* const) eta_m,
+                  N,
+                  Nmax,
+                  NULL, // SIZE2 already drops the mag slot when bmag = 0
+                  nbins,
+                  SIZE2);
+
+  // the transform's row-skip flags: tol = 0, so no row is ever skipped
+  int converged[nbins];
+  for (int i=0; i<nbins; i++) {
+    converged[i] = 0;
+  }
+
+  for (int r=0; r<nruns; r++)
+  {
+    const int ks = runs[2*r];
+    const int ke = runs[2*r+1];
+
+    // Point this block's l slots into the pool: the transform writes
+    // Fy[i][j][k] (k in [ks, ke)) into pool row k - ks, and the loops
+    // below read the same pointers. All three slots are wired: the
+    // magnification slot is zeroed below when the transform skips it.
+    for (int i=0; i<nbins; i++) {
+      for (int j=0; j<3; j++) {
+        for (int k=ks; k<ke; k++) {
+          Fy[i][j][k] = Fy_pool[i][j][k - ks];
+        }
+      }
+    }
+
+    cfftlog_ells_p2_lowrank((double* const) x,
+                            nchi,
+                            cfg,
+                            LNL,
+                            (double* const* const* const) y,
+                            (double* const* const* const* const) Fy,
+                            (fftw_complex* const* const) toutfwd,
+                            (double* const* const) eta_m,
+                            N,
+                            Nmax,
+                            ks,
+                            ke,
+                            converged,
+                            NULL, // all slots active (see the p1 call)
+                            nbins,
+                            SIZE2);
+    // with SIZE2 = 2 the transform never writes the magnification slot,
+    // and its pool rows hold an earlier block's numbers: zero them, as
+    // C_cl_tomo_core does (the assembly reads the slot unconditionally)
+    if (0 != is_bmag_zero) {
+      for (int i=0; i<nbins; i++) {
+        for (int k=ks; k<ke; k++) {
+          for (int q=0; q<nchi; q++) {
+            Fy[i][2][k][q] = 0.0;
+          }
+        }
+      }
+    }
+
+    // the autos: C_cl_tomo_core's integrand and sum, line for line
+    for (int i=0; i<nbins; i++) {
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int k=ks; k<ke; k++) {
+        for (int q=0; q<nchi; q++) {
+          const double ell_prefactor = k * (k + 1.);
+          const double ty    = y_rows[k][q];
+          const double k1cH0 = ty*real_coverH0;
+          const double bmag = gbmag(0.,i);
+          const double F = Fy[i][0][k][q] + Fy[i][1][k][q] +
+                           bmag*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
+          vres_pool[i][k - ks][q] = F*F*(k1cH0*k1cH0*k1cH0)*
+                                    p_lin(k1cH0, apiv[i])*invgf2piv[i];
+        }
+      }
+      #pragma omp parallel for
+      for (int k=ks; k<ke; k++) {
+        const double tcl = simd_array_sum(vres_pool[i][k - ks], nchi);
+        Cl[i][k] = tcl * dlnk * 2. / M_PI + CLnl[i][k] - CLlin[i][k];
+      }
+    }
+
+    // the pairs (the Clx formula of the section comment). F_b assembles
+    // bin b's kernel exactly as the auto loop does; each (pair,
+    // multipole) writes only its own pool row and Clx entry, so the
+    // parallel loop is deterministic.
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int n=0; n<npairs; n++) {
+      for (int k=ks; k<ke; k++) {
+        const int bi = gg_cross_i[n];
+        const int bj = gg_cross_j[n];
+        const double ell_prefactor = k * (k + 1.);
+        const double bmag_i = gbmag(0., bi);
+        const double bmag_j = gbmag(0., bj);
+        const double* restrict ty = y_rows[k];
+        double* restrict vrx = vresx_pool[n][k - ks];
+        for (int q=0; q<nchi; q++) {
+          const double tyq = ty[q];
+          const double k1cH0 = tyq*real_coverH0;
+          const double F_i = Fy[bi][0][k][q] + Fy[bi][1][k][q] +
+              bmag_i*ell_prefactor*Fy[bi][2][k][q]/(tyq*tyq);
+          const double F_j = Fy[bj][0][k][q] + Fy[bj][1][k][q] +
+              bmag_j*ell_prefactor*Fy[bj][2][k][q]/(tyq*tyq);
+          vrx[q] = F_i*F_j*(k1cH0*k1cH0*k1cH0)*
+                   p_lin(k1cH0, apivx[n])*invgf2x[n];
+        }
+        const double tclx = simd_array_sum(vrx, nchi);
+        Clx[n][k] = tclx * dlnk * 2. / M_PI - CLlinx[n][k];
+      }
+    }
+  }
+
+  free((void*) toutfwd);
+  free((void*) eta_m);
+  return CLnl;
+}
+
+// ---------------------------------------------------------------------------
+// C_gg_tomo_fkem_pairs_ells: C_gg_tomo_ells with a pair list installed
+// (it dispatches here). The mechanics - the Limber base at every band
+// center, the non-Limber difference at the two integers around each
+// center, the linear splice - are C_gg_tomo_ells's. What differs: the
+// core is the twin above, and the pairs' band-center corrections go to
+// the stash for C_gg_cross_tomo_ells (the contract at ggx_stash).
+// ---------------------------------------------------------------------------
+static void C_gg_tomo_fkem_pairs_ells(
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of gg power spectra (= clustering_nbin)
+    double** out         // output [NSIZE][nell]
+  )
+{
+  const int LNL    = limits.LMAX_NOLIMBER;
+  const int BLOCK  = 16; // the twin core's pools
+  const int npairs = gg_cross_npairs;
+  C_gg_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
+
+  // the integers next to every corrected band center, packed into runs of
+  // consecutive multipoles no longer than a block (C_gg_tomo_ells's
+  // packing)
+  int need[LNL];
+  for (int l=0; l<LNL; l++) {
+    need[l] = 0;
+  }
+  for (int i=0; i<nell; i++) {
+    if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
+      const int l0 = (int) floor(ells[i]);
+      need[l0] = 1;
+      need[l0 + 1] = 1;
+    }
+  }
+  int runs[2*LNL];
+  int nruns = 0;
+  for (int l=0; l<LNL; l++) {
+    if (!need[l]) continue;
+    if (nruns > 0 && runs[2*nruns-1] == l &&
+        runs[2*nruns-1] - runs[2*nruns-2] < BLOCK) {
+      runs[2*nruns-1] = l + 1;  // extends the open run
+    }
+    else {
+      runs[2*nruns]   = l;
+      runs[2*nruns+1] = l + 1;
+      nruns++;
+    }
+  }
+  if (0 == nruns) {
+    // no band center below the cap: everything stays Limber, and the
+    // pairs get zero corrections
+    ggx_stash_store(ells, nell, LNL, npairs, NULL);
+    return;
+  }
+
+  double** Cnl = (double**) malloc2d(NSIZE, LNL);
+  double** Clx = (double**) malloc2d(npairs, LNL);
+  double** CLnl = C_cl_tomo_fkem_pairs_core(Cnl, Clx, runs, nruns);
+
+  // the auto splice: each (bin, band center) writes only its own entry
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
+        const int l0 = (int) floor(ells[i]);
+        const double t = ells[i] - l0;
+        const double d0 = Cnl[nz][l0] - CLnl[nz][l0];
+        const double d1 = Cnl[nz][l0 + 1] - CLnl[nz][l0 + 1];
+        out[nz][i] += (1.0 - t)*d0 + t*d1;
+      }
+    }
+  }
+
+  ggx_stash_store(ells, nell, LNL, npairs, Clx);
+  free((void*) Clx);
+  free((void*) Cnl);
+}
+
 // ---------------------------------------------------------------------------
 // The Fourier-space gg cross block: one spectrum per installed pair
 // at the band centers of the data vector.
 //
-// With the low-rank path on (use_lowrank_DD_GG = 1) and non-Limber
-// autos, each pair is the Limber base computed here plus the stashed
-// correction of this evaluation's core run (the cross pass of
-// C_cl_tomo_lowrank_core).
+// With non-Limber autos (adopt_limber_gg = 0), each pair is the Limber
+// base computed here plus the stashed correction of this evaluation's
+// core run: the pair pass of C_cl_tomo_lowrank_core with the low-rank
+// path on, of the FKEM twin C_cl_tomo_fkem_pairs_core with it off. Each
+// cuts off where its autos do.
 //
-// With the path off, or with Limber autos (adopt_limber_gg = 1, where
-// the low-rank core never runs), the pairs are Limber at every
-// multipole - consistent with the autos.
+// With Limber autos (adopt_limber_gg = 1, where no non-Limber core
+// runs), the pairs are Limber at every multipole - consistent with the
+// autos.
 //
 // Parameters:
 //   ells - band centers (length nell)
@@ -13149,16 +13710,15 @@ void C_gg_cross_tomo_ells(
   // non-Limber correction (when the low-rank path is on) sits on
   C_gg_cross_tomo_limber_nointerp_ells(ells, nell, out);
 
-  // The correction exists only when the autos ran the low-rank core
-  // this evaluation; with Limber autos the Limber base alone is the
-  // consistent prediction.
-  if (1 == use_lowrank_DD_GG &&
-      0 == like.adopt_limber[LIMBER_GG]) {
+  // The correction exists whenever the autos ran a non-Limber core this
+  // evaluation (FKEM or low-rank); with Limber autos the Limber base
+  // alone is the consistent prediction.
+  if (0 == like.adopt_limber[LIMBER_GG]) {
     // The corrections were computed in the same core run as the auto
-    // spectra and stashed by C_gg_tomo_lowrank_ells (the contract at
-    // ggx_stash). A missing or stale stash is a call order this path
-    // does not support - stopped, never papered over with a silent
-    // recomputation.
+    // spectra and stashed by the Fourier auto entry (the low-rank or the
+    // FKEM twin; the contract at ggx_stash). A missing or stale stash is
+    // a call order this path does not support - stopped, never papered
+    // over with a silent recomputation.
     if (0 == ggx_stash_fresh ||
         fdiff2(ggx_stash_key[0], cosmology.random) ||
         fdiff2(ggx_stash_key[1], Ntable.random) ||
