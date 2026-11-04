@@ -739,6 +739,57 @@ void*** malloc2d_ptr(
 }
 
 // ---------------------------------------------------------------------------
+// Allocate a 3D table of double* entries (a pointer view): the two upper
+// indirection levels plus nx*ny*nz double* slots, in one 64-byte-aligned
+// block, with no data region. result[i][j][k] is a slot the caller
+// points at a row it owns elsewhere (a reused data pool, say).
+//
+// The caller is responsible for freeing the returned pointer (a single
+// free() releases all three pointer levels). Buffers attached to the
+// slots are separate allocations, freed by their owner.
+// ---------------------------------------------------------------------------
+void**** malloc3d_ptr(
+    const long nx,  // extent of the 1st dimension
+    const long ny,  // extent of the 2nd dimension
+    const long nz   // double* slots per (i, j)
+  )
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(double***);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(double***);
+
+  size_t nxyp = nx * ny * sizeof(double**);
+  if (nxyp % align != 0) nxyp = nxyp + (align - nxyp % align);
+  nxyp = nxyp / sizeof(double**);
+
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, align,
+                     sizeof(double***) * nxp +
+                     sizeof(double**)  * nxyp +
+                     sizeof(double*)   * nx * ny * nz) != 0) {
+    log_fatal("array allocation failed (malloc3d_ptr)");
+    exit(1);
+  }
+
+  double**** tab = (double****) raw_block;
+  double***  mid = (double***)
+    ((char*) raw_block + sizeof(double***) * nxp);
+  double**  slots = (double**)
+    ((char*) raw_block + sizeof(double***) * nxp
+                       + sizeof(double**)  * nxyp);
+
+  for (int i = 0; i < nx; i++) {
+    tab[i] = mid + i * ny;
+    for (int j = 0; j < ny; j++) {
+      tab[i][j] = slots + (i * ny + j) * nz;
+    }
+  }
+  return (void****) tab;
+}
+
+// ---------------------------------------------------------------------------
 // Allocate a 3D array of double complex as a single 64-byte-aligned
 // contiguous block with pointer indirection for convenient multi-index
 // access (result[i][j][k]).

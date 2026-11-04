@@ -10641,8 +10641,10 @@ static void C_gg_lowrank_decomp_work(
       svd_mats[1][bin] = gsl_matrix_alloc(NZ, NZ);
       svd_vecs[0][bin] = gsl_vector_alloc(NZ);
       svd_vecs[1][bin] = gsl_vector_alloc(NZ);
-      if (NULL == svd_mats[0][bin] || NULL == svd_mats[1][bin] ||
-          NULL == svd_vecs[0][bin] || NULL == svd_vecs[1][bin]) {
+      if (NULL == svd_mats[0][bin] ||
+          NULL == svd_mats[1][bin] ||
+          NULL == svd_vecs[0][bin] ||
+          NULL == svd_vecs[1][bin]) {
         log_fatal("GSL SVD workspace allocation failed");
         exit(1);
       }
@@ -10825,7 +10827,8 @@ static void C_gg_lowrank_decomp_work(
       const double k = kgrid[0][ik];
       double fpt[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
       if (1 == nonlinear_bias &&
-          lnk >= limbias[0] && lnk <= limbias[1]) {
+          lnk >= limbias[0] &&
+          lnk <= limbias[1]) {
         const double* lb = limbias;
         const int N = FPTbias.N;
         // sigma4 subtractions: the same operator renormalization as the
@@ -11670,38 +11673,14 @@ static double** C_cl_tomo_lowrank_core(
     }
 
     // ---- Fy: absolute-k pointer view over the per-block data pool ----
-    // The view is one allocation holding its two upper pointer levels
-    // and the LNL row-pointer slots per (row, slot); the k slots are
-    // rewired to Fy_pool rows before every block's p2 call, so freeing
-    // the view is one free and never touches the pool.
+    // The view (malloc3d_ptr) holds pointer levels only, no data: the
+    // k slots are rewired to Fy_pool rows before every block's p2
+    // call, so freeing the view is one free and never touches the
+    // pool.
     if (Fy_pool != NULL) free((void*) Fy_pool);
     Fy_pool = (double****) malloc4d(SIZE1, SIZE2, BLOCK, nchi);
     if (Fy != NULL) free((void*) Fy);
-    {
-      // the three pointer levels of the Fy[i][j][k] tree, named by
-      // depth: top = the SIZE1 row pointers Fy[i], mid = the SIZE2
-      // slot pointers Fy[i][j] under each row, leaf = the LNL
-      // multipole slots Fy[i][j][k] under each slot (each leaf will
-      // point at one pool row of nchi doubles)
-      const size_t n_top  = (size_t) SIZE1;
-      const size_t n_mid  = (size_t) SIZE1 * SIZE2;
-      const size_t n_leaf = (size_t) SIZE1 * SIZE2 * LNL;
-      void* block = malloc(n_top*sizeof(double***) +
-                           n_mid*sizeof(double**) +
-                           n_leaf*sizeof(double*));
-      if (NULL == block) {
-        log_fatal("array allocation failed"); exit(1);
-      }
-      Fy = (double****) block;
-      double*** mid = (double***) (Fy + n_top);
-      double** leaf = (double**) (mid + n_mid);
-      for (size_t i=0; i<n_top; i++) {
-        Fy[i] = mid + i*SIZE2;
-        for (size_t j=0; j<(size_t) SIZE2; j++) {
-          Fy[i][j] = leaf + (i*SIZE2 + j)*LNL;
-        }
-      }
-    }
+    Fy = (double****) malloc3d_ptr(SIZE1, SIZE2, LNL);
 
     if (fx != NULL) free((void*) fx);
     fx = (double***) malloc3d(SIZE1, SIZE2, nchi);
@@ -11710,23 +11689,7 @@ static double** C_cl_tomo_lowrank_core(
     if (vres_pool != NULL) free((void*) vres_pool);
     vres_pool = (double***) malloc3d(nbins, BLOCK, nchi);
     if (vres != NULL) free((void*) vres);
-    {
-      // two pointer levels here (vres[i][k] has no slot axis): top =
-      // the nbins row pointers vres[i], leaf = the LNL multipole
-      // slots vres[i][k], each to point at one pool row
-      const size_t n_top  = (size_t) nbins;
-      const size_t n_leaf = (size_t) nbins * LNL;
-      void* block = malloc(n_top*sizeof(double**) +
-                           n_leaf*sizeof(double*));
-      if (NULL == block) {
-        log_fatal("array allocation failed"); exit(1);
-      }
-      vres = (double***) block;
-      double** leaf = (double**) (vres + n_top);
-      for (size_t i=0; i<n_top; i++) {
-        vres[i] = leaf + i*LNL;
-      }
-    }
+    vres = (double***) malloc2d_ptr(nbins, LNL);
     if (CL4 != NULL) free((void*) CL4);
     CL4 = (double***) malloc3d(4, nbins, LNL);
     if (lx != NULL) free((void*) lx);
@@ -12093,8 +12056,10 @@ static double** C_cl_tomo_lowrank_core(
                   SIZE2);
 
   for (int r=0; r<nruns; r++) {
-    if (runs[2*r] < 0 || runs[2*r+1] > LNL ||
-        runs[2*r+1] <= runs[2*r] || runs[2*r+1] - runs[2*r] > BLOCK ||
+    if (runs[2*r] < 0 ||
+        runs[2*r+1] > LNL ||
+        runs[2*r+1] <= runs[2*r] ||
+        runs[2*r+1] - runs[2*r] > BLOCK ||
         (r > 0 && runs[2*r] < runs[2*r-1])) {
       log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
       exit(1);
@@ -12422,6 +12387,14 @@ void C_cl_tomo_lowrank(
   // freeze point LMAX[i] a bin takes the Limber values - the exact
   // batched CLnl up to l = LMIN_tab (where the interpolation table has
   // no nodes yet) and the C_gg_tomo_limber table above that.
+  //
+  // The C_gg_tomo_limber read interpolates its l table. That is fine
+  // here and only here: this function serves real space, where these
+  // C_l enter Legendre sums over thousands of multipoles and the
+  // table is how every probe evaluates them. A Fourier data vector
+  // never sees this loop - C_gg_tomo_lowrank_ells below evaluates its
+  // Limber base exactly at the band centers (the nointerp batch), so
+  // no table interpolation touches a measured ell.
   for (int i=0; i<nbins; i++) {
     for (int k=LMAX[i]; k<LNL; k++) {
       Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) : CLnl[i][k];
@@ -12440,6 +12413,21 @@ void C_cl_tomo_lowrank(
 // path's own cap lowrank_DD_GG_lmax, and with tol = 0 - the early
 // exit is a real-space optimization whose truncation step the band
 // centers would see directly in chi2.
+//
+// The steps, in order:
+//
+//   1. the Limber base, evaluated exactly at every band center
+//      (C_gg_tomo_limber_nointerp_ells - no table interpolation on a
+//      measured ell);
+//   2. mark the integer multipoles the splice needs: dC is computed
+//      at the two integers around each band center, floor(ell) and
+//      floor(ell) + 1, and interpolated linearly between them;
+//   3. pack the marked integers into runs (below), call the core once
+//      for all bins and runs;
+//   4. splice: out += (1 - t) dC(l0) + t dC(l0 + 1), t the fractional
+//      part of the band center;
+//   5. with cross pairs installed, stash their band-center
+//      corrections for C_gg_cross_tomo_ells (same evaluation).
 // ---------------------------------------------------------------------------
 
 // The cross-pair corrections of one evaluation, stashed between the
@@ -12468,8 +12456,9 @@ static void C_gg_tomo_lowrank_ells(
   const int BLOCK = 16; // C_cl_tomo_lowrank_core's per-block arrays
   C_gg_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
 
-  // the integers next to every corrected band center, as runs of
-  // consecutive multipoles no longer than a block (the twin's builder)
+  // Step 2: need[l] = 1 exactly where the splice will read dC - the
+  // two integers around each band center. Everything else stays 0 and
+  // is never computed.
   int need[LNL];
   for (int l=0; l<LNL; l++) {
     need[l] = 0;
@@ -12481,13 +12470,24 @@ static void C_gg_tomo_lowrank_ells(
       need[l0 + 1] = 1;
     }
   }
+  // Step 3: pack the marked integers into runs - half-open intervals
+  // [runs[2r], runs[2r+1]) of consecutive multipoles, each at most
+  // BLOCK long, the unit the core's convergence blocks process.
+  //
+  // Walking l upward: when l is marked and the last run ends exactly
+  // at l with room to spare, extend that run by one; otherwise open a
+  // new run [l, l+1). Band centers usually sit far apart, so most
+  // runs hold just the two integers of one band center.
   int runs[2*LNL];
   int nruns = 0;
   for (int l=0; l<LNL; l++) {
-    if (!need[l]) continue;
-    if (nruns > 0 && runs[2*nruns-1] == l &&
+    if (!need[l]) {
+      continue;
+    }
+    if (nruns > 0 &&
+        runs[2*nruns-1] == l &&
         runs[2*nruns-1] - runs[2*nruns-2] < BLOCK) {
-      runs[2*nruns-1] = l + 1;  // extends the open run
+      runs[2*nruns-1] = l + 1;  // extend the open run
     }
     else {
       runs[2*nruns]   = l;
@@ -12508,6 +12508,11 @@ static void C_gg_tomo_lowrank_ells(
   double** CLnl = C_cl_tomo_lowrank_core(Cnl, LMAX, 0.0, runs, nruns,
                                          npairs, pbi, pbj, Clx);
 
+  // Step 4: the splice. Each (bin, band center) writes only its own
+  // out entry, so the parallel fill is deterministic. (The loop is
+  // tiny next to the core call above; the pragma is for uniformity,
+  // not speed.)
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int nz=0; nz<NSIZE; nz++) {
     for (int i=0; i<nell; i++) {
       if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
@@ -12537,6 +12542,9 @@ static void C_gg_tomo_lowrank_ells(
       }
       ggx_stash = (double**) malloc2d(npairs, nell);
     }
+    // Step 5: the same interpolation as the auto splice, stashed per
+    // pair; every (pair, band center) writes only its own entry
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int n=0; n<npairs; n++) {
       for (int i=0; i<nell; i++) {
         ggx_stash[n][i] = 0.0;
@@ -12625,7 +12633,8 @@ void set_gg_cross_pairs(
     exit(1);
   }
   for (int n=0; n<npairs; n++) {
-    if (bi[n] < 0 || bj[n] <= bi[n] ||
+    if (bi[n] < 0 ||
+        bj[n] <= bi[n] ||
         bj[n] >= redshift.clustering_nbin) {
       log_fatal("invalid gg cross pair %d: (%d, %d) with "
                 "clustering_nbin = %d", n, bi[n], bj[n],
