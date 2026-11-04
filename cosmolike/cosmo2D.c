@@ -9637,6 +9637,623 @@ void cfftlog_ells_p2(
   return;
 }
 
+
+// ---------------------------------------------------------------------------
+// cfftlog_ells_p2_lowrank: the low-rank gg path's own copy of
+// cfftlog_ells_p2. The mathematics, the per-(row, slot, multipole)
+// arithmetic and therefore the outputs are identical to the shared
+// engine's; what changes is the parallel layout, specialized to this
+// path's extreme shape (SIZE1 = nbins*(1+nrank) radial rows, hundreds
+// of them, against the handful every other caller brings): the serial
+// per-row loop with one small parallel region each becomes one
+// flattened worklist region per block (see the scheduling banner in
+// the body). The shared engine stays untouched so every other project
+// keeps its exact code path; keep the two bodies in sync when the
+// transform mathematics changes. The documentation of the algorithm
+// itself follows, copied from the shared engine:
+// ---------------------------------------------------------------------------
+// Non-Limber projection via FFTLog: Phase 2 (ell-dependent inverse
+// transform). Shared by C_cl_tomo (gg) and C_gs_tomo (gs).
+//
+// Processes a block of multipoles l = ks..ke-1, computing the projected
+// radial functions Fy[i][j][k][q] and wavenumber grid y[i][k][q] for each
+// radial row i, radial component j, multipole k, and chi-node q.
+//
+// Called from C_cl_tomo_core and C_gs_tomo_core in a loop over runs of
+// at most BLOCK = 16 multipoles, with early termination when the
+// non-Limber result converges to the Limber result (rows whose spectra
+// have all converged are skipped via the converged array).
+//
+// Algorithmic steps for each block:
+//
+//   1. Wavenumber grid: y[i][k][q] = (k+1) / x[Nx-1-q]
+//      The output wavenumber at each chi-node, reversed relative to x.
+//
+//   2. Gamma-function kernel gl[j][k][q]:
+//      The Bessel-function transform kernel in Fourier space, computed via
+//      the Lanczos approximation to ln(Gamma). Depends on cfg[j].derivative:
+//        case 0: gl = exp(z*ln2) * Gamma((k+z)/2) / Gamma((3+k-z)/2)
+//        case 1: gl = -(z-1) * exp((z-1)*ln2) * Gamma((k+z-1)/2) / Gamma((4+k-z)/2)
+//        case 2: gl = (z-1)(z-2) * exp((z-2)*ln2) * Gamma((k+z-2)/2) / Gamma((5+k-z)/2)
+//      where z = nu + i*eta_m[j][q] is the complex biasing parameter.
+//
+//      Optimization: only the first two ells (ks, ks+1) are computed from
+//      the full Lanczos formula. Subsequent ells use the Gamma recurrence
+//      relation Gamma(a+1) = a*Gamma(a), which gives:
+//        gl[k+2] = gl[k] * (k + z - d) / (k + 3 - z + d)
+//      with d = cfg[j].derivative (the case blocks below spell out each).
+//      This reduces O(BLOCK * N/2) Lanczos evaluations to O(2 * N/2)
+//      plus O(BLOCK * N/2) complex multiplies - a major speedup since
+//      each lnGamma costs 8 complex divisions and 2 clog (plus a csin and
+//      a clog on the reflection branch), and each gl two lnGamma and a
+//      cexp.
+//
+//   3. Inverse FFT: for each (bin i, component j, multipole k):
+//      - Multiply forward FFT coefficients (from p1) by the phase shift
+//        exp(-i * eta_m[q] * ln(base_j * y[i][k][0])) and by gl[j][k][q]
+//      - Conjugate the result
+//      - Inverse FFT via FFTW (c2r) using per-thread buffers
+//      - Extract the unpadded region and normalize:
+//        Fy[i][j][k][q] = outbcw[N_pad + q] * sqrt(pi) / (4*N * y^nu)
+//
+//      Phase rotation optimization: instead of computing
+//      cos/sin per q, uses a rotating phasor (complex multiply per step)
+//      with periodic exact recomputation every 1024 steps to prevent drift.
+//
+//      SIMD optimization for Fy normalization: the y^(-nu) factor is
+//      rewritten using y = (k+1)/x[Nx-1-q], precomputing x^nu once in
+//      x_pow_nu[j][q]. The inner loop then uses AVX2 vector multiply
+//      instead of per-element pow().
+//
+// Thread safety: each OpenMP thread uses its own outfwd[id] and outbcw[id]
+// buffers with fftw_execute_dft_c2r (new-array interface), avoiding races
+// on shared FFTW arrays.
+//
+// Cache invalidation:
+// the static FFTW inverse plans (planb), the gl
+// kernel array, the per-thread outfwd/outbcw buffers and base_j rebuild
+// when NTHREADS, Nmax or SIZE2 change, when any N[j][2] changes, or when
+// the block size ke - ks exceeds the cached one - not on every cosmology
+// evaluation (the base_j values themselves are recomputed every call:
+// x depends on the cosmology through chi_min/chi_max).
+//
+// Parameters:
+//   x         - chi grid values, length Nx (log-spaced, as passed to p1)
+//   Nx        - number of chi grid points
+//   cfg       - FFTLog config per component (nu, derivative, N_pad)
+//   LMAX      - highest multipole the y/Fy arrays hold (clips ke)
+//   y         - output wavenumber grid y[SIZE1][LMAX][Nx]
+//   Fy        - output projected functions Fy[SIZE1][SIZE2][LMAX][Nx]
+//   toutfwd   - forward FFT coefficients from p1 [SIZE1*SIZE2][Nmax/2+1]
+//   eta_m     - Fourier frequencies from p1 [SIZE2][Nmax/2+1]
+//   N         - per-component sizes: N[j][0] = N_pad, N[j][1] = Nx,
+//               N[j][2] = FFT size
+//   Nmax      - max(N[j][2]) across all components
+//   ks        - first multipole in this block (inclusive)
+//   ke        - last multipole in this block (exclusive)
+//   converged - per-row skip flags [SIZE1]: row i is skipped when
+//               converged[i] = 1
+//   active    - per-(row, component) activity mask [SIZE1][SIZE2], or
+//               NULL for all active: an inactive (i, j) slot skips its
+//               inverse FFTs and zero-fills Fy[i][j] for the block
+//   SIZE1     - number of radial rows (bins)
+//   SIZE2     - number of radial components per row (2 or 3)
+//
+// Returns:
+//   nothing; y and Fy are filled for the block's multipoles
+// ---------------------------------------------------------------------------
+void cfftlog_ells_p2_lowrank(
+    double* const x,                        // chi grid values, length Nx (log-spaced, from p1)
+    int const Nx,                           // number of chi grid points
+    config* const cfg,                      // FFTLog config per component (nu, derivative, N_pad)
+    int const LMAX,                         // maximum multipole for convergence clipping
+    double* const* const* const y,          // output wavenumber grid y[SIZE1][LMAX][Nx]
+    double* const* const* const* const Fy,  // output projected functions Fy[SIZE1][SIZE2][LMAX][Nx]
+    fftw_complex* const* const toutfwd,     // forward FFT coefficients from p1 [SIZE1*SIZE2][Nmax/2+1]
+    double* const* const eta_m,             // Fourier frequencies from p1 [SIZE2][Nmax/2+1]
+    int  N[][3],                            // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
+    int const Nmax,                         // max(N[j][2]) across all components
+    int const ks,                           // first multipole in this block (inclusive)
+    int const ke,                           // last multipole in this block (exclusive)
+    const int* const converged,             // per-row skip flags [SIZE1]; 1 = skip row i
+    const int* const* const active,         // activity mask [SIZE1][SIZE2]; NULL = all active
+    int const SIZE1,                        // number of radial rows (bins)
+    int const SIZE2                         // number of radial components (2 or 3)
+  )
+{
+  static int cache[MAX_SIZE_ARRAYS];
+  static int cached_N2[MAX_SIZE_ARRAYS]; // track N[j][2] for FFTW plan validity
+  static fftw_complex** outfwd = NULL;
+  static double** outbcw = NULL;
+  static double complex*** gl = NULL;
+  static fftw_plan* planb = NULL;
+  static double* base_j = NULL;
+  // Lanczos approximation to lnGamma, the standard g = 7, n = 9
+  // coefficient set: with t = a + 6.5, i.e. t = (a-1) + g + 1/2,
+  //
+  //   lnGamma(a) = ln sqrt(2 pi) + (a - 1/2)*ln(t) - t
+  //                + ln[ pfac[0] + sum_{w=1..8} pfac[w]/((a-1) + w) ]
+  //
+  // accurate to ~1e-15 for Re(a) >= 1/2; arguments left of that strip
+  // go through the reflection formula instead (see the branch pair in
+  // the cases below).
+  static double pfac[] = {0.99999999999980993227684700473478,
+                           676.520368121885098567009190444019,
+                          -1259.13921672240287047156078755283,
+                           771.3234287776530788486528258894,
+                          -176.61502916214059906584551354,
+                           12.507343278686904814458936853,
+                          -0.13857109526572011689554707,
+                           9.984369578019570859563e-6,
+                           1.50563273514931155834e-7};
+
+  if (SIZE1 < 1 || SIZE2 < 1) {
+    log_fatal("SIZE1 and SIZE2 must be >= 1"); exit(1);
+  }
+
+  const int kmax = (ke < LMAX) ? ke : LMAX;
+  const int BLOCK = ke - ks;
+  #ifdef _OPENMP
+  const int NTHREADS = omp_get_max_threads();
+  #else
+  const int NTHREADS = 1;
+  #endif
+  const double sqrtpi = sqrt(M_PI);
+  const double ln2 = log(2.);
+  const double x0   = x[0];
+  const double dlnx = log(x[1]/x[0]);
+  const double complex clogpi = clog(M_PI);
+  const double ln2pio2 = 0.5*log(2*M_PI);
+
+  int rebuild = (outfwd == NULL   || 
+      NTHREADS != cache[0] ||
+      Nmax != cache[1] || 
+      BLOCK > cache[2] || 
+      SIZE2 != cache[3]);
+  for (int j=0; j<SIZE2 && !rebuild; j++) {
+    if (cached_N2[j] != N[j][2]) rebuild = 1;
+  }
+
+  if (rebuild) 
+  {
+    if (gl != NULL) free((void*) gl);
+    gl = (double complex***) malloc3d_complex(SIZE2, BLOCK, Nmax/2+1);
+    
+    if (outfwd != NULL) free((void*) outfwd);
+    outfwd = (fftw_complex**) malloc2d_fftwc(NTHREADS, Nmax/2+1);
+    
+    if (outbcw != NULL) free((void*) outbcw);
+    outbcw = (double**) malloc2d(NTHREADS, Nmax);
+
+    if (planb != NULL) {
+      for (int j=0; j<cache[3]; j++) fftw_destroy_plan(planb[j]);
+      free(planb);
+    }
+    planb = (fftw_plan*) malloc(sizeof(fftw_plan)*SIZE2);
+    for(int j=0; j<SIZE2; j++) {
+      planb[j] = fftw_plan_dft_c2r_1d(N[j][2],
+                                      outfwd[0], 
+                                      outbcw[0], 
+                                      FFTW_ESTIMATE);
+    }
+
+    if (base_j != NULL) free((void*) base_j);
+    base_j = (double*) malloc(sizeof(double) * SIZE2);
+
+    cache[0] = NTHREADS;
+    cache[1] = Nmax;
+    cache[2] = BLOCK; 
+    cache[3] = SIZE2;
+    for (int j=0; j<SIZE2; j++) {
+      cached_N2[j] = N[j][2];
+    }
+  }
+
+  // base_j = the log-grid origin shifted down by the two N_pad guard
+  // bands: x0 * exp(-2 * N_pad * dlnx). It enters only through the
+  // phase exp(-i * eta_m * ln(base_j * y0)) applied to the forward
+  // coefficients below, which rotates the circular convolution so the
+  // physical (unpadded) window of the output lands at indices
+  // N_pad..N_pad+Nx-1, where Fy is read. Recomputed every call: x
+  // depends on the cosmology through chi_min/chi_max.
+  for(int j=0; j<SIZE2; j++) {
+    base_j[j] = x0 / exp(2 * N[j][0] * dlnx); // x depends on cosmo (chi_min/max)
+  }
+
+  // Output wavenumber grid, log-spaced like x but reversed relative to
+  // it: y[i][k][q] = (k+1)/x[Nx-1-q], so q runs from
+  // (k+1)/x_max up to (k+1)/x_min. The FFTLog convolution naturally
+  // produces the transform on this reciprocal grid; (k+1) rescales it
+  // per multipole.
+  //
+  // The grid depends only on (k, q), never on the row i: every row
+  // holds the same numbers. A caller may therefore alias every y[i] to
+  // ONE shared row table instead of storing SIZE1 identical copies
+  // (C_cl_tomo_lowrank_core does: at its 456 rows and a boosted chi
+  // grid, distinct copies would be tens of GB and every copy a
+  // duplicate write). The aliasing is detected by pointer identity of
+  // the first two rows, and the shared table is then filled once,
+  // through row 0, so no two threads ever write the same entry. A
+  // caller with distinct rows (every pre-existing one) has
+  // y[1] != y[0], takes n_y_rows = SIZE1, and this loop is unchanged.
+  const int n_y_rows = (SIZE1 > 1 && y[1] == y[0]) ? 1 : SIZE1;
+  #pragma omp parallel for collapse(2) schedule(static)
+  for(int i=0; i<n_y_rows; i++) {
+    for(int q=0; q<Nx; q++) { // q < Nx
+      for (int k=ks; k<kmax; k++) {
+        y[i][k][q] = (k + 1.) / x[Nx -1 -q];
+      }
+    }
+  } 
+
+  // ---------------------------------------------------------------------------
+  // Gamma function recurrence Gamma(a+1) = a*Gamma(a)
+  //   For case 0:
+  //     gl[k] = exp(z*ln2) * Gamma((k+z)/2) / Gamma((3+k-z)/2)
+  //     When k -> k+2, both arguments shift by 1:
+  //     Gamma((k+2+z)/2) = Gamma((k+z)/2 + 1) = (k+z)/2 * Gamma((k+z)/2)
+  //     Gamma((5+k-z)/2) = Gamma((3+k-z)/2 + 1) = (3+k-z)/2 * Gamma((3+k-z)/2)
+  //   So:
+  //     gl[k+2] / gl[k] = ((k+z)/2) / ((3+k-z)/2) = (k+z) / (k+3-z)
+  for(int j=0; j<SIZE2; j++) {
+    const double nu = cfg[j].nu;
+    switch(cfg[j].derivative) 
+    { 
+      case 0: 
+      {
+        const int ks2 = (ks + 2 < ke) ? ks + 2 : ke;
+
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int k=ks; k<ks2; k++) {
+          for(int q=0; q<N[j][2]/2+1; q++) 
+          {
+            const double complex z = nu + I*eta_m[j][q];
+            double complex part1; // lnGamma((k+z)/2)
+            {
+              const double complex a = 0.5*(k + z);
+              // Re(a) < 1/2: reflection Gamma(a)*Gamma(1-a) =
+              // pi/sin(pi a) in log form,
+              //   lnGamma(a) = ln(pi) - ln(sin(pi a)) - lnGamma(1-a),
+              // with lnGamma(1-a) from the direct Lanczos expression
+              // below at argument 1-a (so (a-1) -> -a, t = -a + 7.5).
+              if(creal(a) < 0.5) {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+                const double complex t = (-a) + 7.5;
+                part1 = clogpi - clog(csin(M_PI*a)) - 
+                        (ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+              }
+              // Re(a) >= 1/2: direct Lanczos,
+              //   lnGamma(a) = ln sqrt(2 pi) + (a-1/2)*ln(t) - t
+              //                + ln(series), t = (a-1) + 7.5
+              // (the coefficient set is documented at pfac above; the
+              // same two branches repeat for every part1/part2 pair in
+              // the cases below).
+              else {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+                const double complex t = (a-1) + 7.5;
+                part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+              }
+            }
+            double complex part2; // lnGamma((3+k-z)/2), same branches
+            {
+              const double complex a = 0.5*(3 + k - z);
+              if(creal(a) < 0.5) {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+                const double complex t = (-a) + 7.5;
+                part2 = clogpi - clog(csin(M_PI*a)) - 
+                        (ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+              }
+              else {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+                const double complex t = (a-1) + 7.5;
+                part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+              }
+            }
+            gl[j][k-ks][q] = cexp(z*ln2 + part1 - part2); 
+          }
+        }
+        #pragma omp parallel for schedule(static)
+        for (int q = 0; q < N[j][2]/2+1; q++) {
+          const double complex z = nu + I * eta_m[j][q];
+          for (int k=ks+2; k < ke; k++) {
+            gl[j][k-ks][q] = gl[j][k-ks-2][q] * (k-2+z) / (k + 1 - z);
+          }
+        }
+        break;
+      }
+      case 1: 
+      {
+        const int ks2 = (ks + 2 < ke) ? ks + 2 : ke;
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int k = ks; k < ks2; k++) {
+          for(int q=0; q<N[j][2]/2+1; q++) {
+            const double complex z = nu + I*eta_m[j][q];
+            double complex part1;
+            {
+              const double complex a = 0.5*(k + z - 1.);
+              if(creal(a) < 0.5) {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+                const double complex t = (-a) + 7.5;
+                part1 = clogpi - clog(csin(M_PI*a)) - 
+                        (ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+              }
+              else {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+                const double complex t = (a-1) + 7.5;
+                part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+              }
+            }
+            double complex part2;
+            {
+              const double complex a = 0.5*(4 + k - z);
+              if(creal(a) < 0.5) {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+                const double complex t = (-a) + 7.5;
+                part2 = clogpi - clog(csin(M_PI*a)) - 
+                        (ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+              }
+              else {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+                const double complex t = (a-1) + 7.5;
+                part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+              }
+            }
+            gl[j][k-ks][q] = -(z-1)*cexp((z-1)*ln2 + part1 - part2);
+          }
+        }
+        // the case-0 kernel with z -> z-1, so the same
+        // Gamma(a+1) = a*Gamma(a) step gives
+        // gl[k]/gl[k-2] = (k-3+z)/(k+2-z)
+        #pragma omp parallel for schedule(static)
+        for (int q = 0; q < N[j][2]/2+1; q++) {
+          for (int k = ks + 2; k < ke; k++) {
+            const double complex z = nu + I * eta_m[j][q];
+            gl[j][k-ks][q] = gl[j][k-ks-2][q] * (k - 3 + z) / (k + 2 - z);
+          }
+        }
+        break;
+      }
+      case 2: 
+      {
+        const int ks2 = (ks + 2 < ke) ? ks + 2 : ke;
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int k=ks; k<ks2; k++) {
+          for(int q=0; q<N[j][2]/2+1; q++) {
+            const double complex z = nu + I*eta_m[j][q];
+            double complex part1;
+            {
+              const double complex a = 0.5*(k + z - 2);
+              if(creal(a) < 0.5) {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+                const double complex t = (-a) + 7.5;
+                part1 = clogpi - clog(csin(M_PI*a)) - 
+                        (ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+              }
+              else {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+                const double complex t = (a-1) + 7.5;
+                part1 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+              }
+            }
+            double complex part2;
+            {
+              const double complex a = 0.5*(5 + k - z);
+              if(creal(a) < 0.5) {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
+                const double complex t = (-a) + 7.5;
+                part2 = clogpi - clog(csin(M_PI*a)) - 
+                        (ln2pio2 + ((-a) + 0.5)*clog(t) - t + clog(tmp));
+              }
+              else {
+                double complex tmp = pfac[0];
+                for(int w=1; w<9; w++) tmp += pfac[w] / ((a-1) + w);
+                const double complex t = (a-1) + 7.5;
+                part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
+              }
+            }
+            gl[j][k-ks][q] = (z-1)*(z-2)*cexp((z-2)*ln2+part1-part2);
+          }
+        }
+        // the case-0 kernel with z -> z-2, so the same
+        // Gamma(a+1) = a*Gamma(a) step gives
+        // gl[k]/gl[k-2] = (k-4+z)/(k+3-z)
+        #pragma omp parallel for schedule(static)
+        for (int q = 0; q < N[j][2]/2+1; q++) {
+          for (int k = ks + 2; k < ke; k++) {  
+            const double complex z = nu + I * eta_m[j][q];
+            gl[j][k-ks][q] = gl[j][k-ks-2][q] * (k - 4 + z) / (k + 3 - z);
+          }
+        }
+        break;
+      }
+      default:
+      {
+        log_fatal("unsupported derivative = %d", cfg[j].derivative);
+        exit(1);
+      }
+    }
+  } 
+  // Per-component table of x^nu on the reversed grid, precomputed so
+  // the SIMD normalization below multiplies instead of calling pow()
+  // per element (y^-nu = x^nu / (k+1)^nu on this grid).
+  double** x_pow_nu = (double**) malloc2d(SIZE2, Nx);
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int j=0; j<SIZE2; j++) {
+    for (int q=0; q<Nx; q++) {
+      const double xr = x[Nx - 1 - q];
+      x_pow_nu[j][q] = (cfg[j].nu == 1.0) ? xr : pow(xr, cfg[j].nu);
+    }
+  }
+
+  // ---- FLATTENED TRANSFORM SCHEDULING (the lowrank specialization) ----
+  // The shared engine (cfftlog_ells_p2) opens one parallel region per
+  // radial row: fine for its callers' handful of rows, but the lowrank
+  // gg path brings SIZE1 = 456 rows per 16-multipole block, i.e.
+  // thousands of tiny regions per evaluation whose static chunks mix
+  // inverse FFTs of two different lengths with skipped slots. Profiles
+  // of that layout show threads parked (cvwait) behind each region's
+  // slowest chunk. Here every (row, slot) that actually runs
+  // transforms becomes one work item first, and ONE parallel region
+  // per block executes all (item, multipole) pairs under a dynamic
+  // schedule, so a thread that finishes early takes the next pair
+  // instead of idling. Each iteration writes only its own Fy[i][j][k]
+  // row through its own per-thread FFT buffers: the assignment of
+  // items to threads cannot change a bit of the output.
+  int nwork = 0; // (row, slot) pairs that run inverse FFTs
+  int nzero = 0; // active-mask holes to zero-fill instead
+  int* work_ij = (int*) malloc(sizeof(int)*2*SIZE1*SIZE2);
+  int* zero_ij = (int*) malloc(sizeof(int)*2*SIZE1*SIZE2);
+  if (NULL == work_ij || NULL == zero_ij) {
+    log_fatal("array allocation failed"); exit(1);
+  }
+  for (int i=0; i<SIZE1; i++) {
+    if (converged[i]) {
+      continue;
+    }
+    for (int j=0; j<SIZE2; j++) {
+      if (active != NULL && !active[i][j]) {
+        zero_ij[2*nzero] = i;
+        zero_ij[2*nzero + 1] = j;
+        nzero++;
+      }
+      else {
+        work_ij[2*nwork] = i;
+        work_ij[2*nwork + 1] = j;
+        nwork++;
+      }
+    }
+  }
+
+  // zero kernels: their block rows are zero-filled, never transformed
+  // (bitwise what transforming the zero kernel would store)
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int w=0; w<nzero; w++) {
+    for (int k=ks; k<kmax; k++) {
+      const int i = zero_ij[2*w];
+      const int j = zero_ij[2*w + 1];
+      for (int q=0; q<Nx; q++) {
+        Fy[i][j][k][q] = 0.0;
+      }
+    }
+  }
+
+  #pragma omp parallel for collapse(2) schedule(dynamic, 1)
+  for (int w=0; w<nwork; w++) {
+    for (int k=ks; k<kmax; k++) {
+      const int i = work_ij[2*w];
+      const int j = work_ij[2*w + 1];
+#ifdef _OPENMP
+      const int id = omp_get_thread_num(); 
+#else
+      const int id = 0;
+#endif 
+      const double lnbase = log(base_j[j] * y[i][k][0]);    
+      // Exploit the fact that the phase eta_m[j][q] is linear in q
+      const double delta_phase = -eta_m[j][1] * lnbase;
+      double step_re, step_im;
+      cosmo_sincos(delta_phase, &step_im, &step_re);
+      double phasor_re = 1.0; // Phasor starts at exp(i * 0) = 1 + 0i.
+      double phasor_im = 0.0; // Phasor starts at exp(i * 0) = 1 + 0i.
+      for(int q=0; q<(N[j][2]/2+1); q++) {
+        fftw_complex val = toutfwd[i*SIZE2+j][q];
+        if (q > 0 && (q % 1024) == 0) {
+          // recompute the phasor exactly every 1024 steps, bounding the
+          // rounding drift of the repeated complex multiply; at the
+          // default grid sizes N/2 + 1 < 1024, so only boosted grids
+          // reach this branch
+          const double exact_phase = -eta_m[j][q] * lnbase;
+          cosmo_sincos(exact_phase, &phasor_im, &phasor_re);
+        }
+        val *= phasor_re + I * phasor_im;
+        // Rotate phasor by one step: phasor *= step.
+        const double new_re = phasor_re*step_re - phasor_im*step_im;
+        const double new_im = phasor_re*step_im + phasor_im*step_re;
+        phasor_re = new_re;
+        phasor_im = new_im;
+        val *= gl[j][k-ks][q];
+        outfwd[id][q] = conj(val);
+      }
+
+      // FFTW's new-array execute interface: The plan was created with
+      // outfwd[0]/outbcw[0], but each OpenMP thread executes it on its 
+      // own buffers outfwd[id]/outbcw[id]. Do not replace this with
+      // fftw_execute(planb[j]), which would use the plan's original arrays.
+      fftw_execute_dft_c2r(planb[j], outfwd[id], outbcw[id]);
+
+      // Normalization sqrt(pi)/4: the Mellin transform of the
+      // spherical Bessel kernel is
+      //
+      //   integral_0^inf t^(z-1) j_l(t) dt
+      //     = (sqrt(pi)/4) * 2^z * Gamma((l+z)/2) / Gamma((l+3-z)/2)
+      //
+      // (check l = 0, z = 1: integral j_0 = pi/2 = (sqrt(pi)/4)*2*
+      // Gamma(1/2)). The 2^z * Gamma/Gamma part is carried by gl
+      // above; the constant sqrt(pi)/4 is applied here. The
+      // 1/N[j][2] normalizes FFTW's unnormalized c2r, and y^-nu
+      // undoes the x^nu bias applied in p1. The output is read at
+      // offset N[j][0], past the front guard band (see base_j).
+      // Using the fact that y[i][k][q] = (k + 1.) / x[Nx -1 -q];
+      const double prefactor = 
+                  sqrtpi / (4.0 * N[j][2] * pow((double)(k + 1), cfg[j].nu));
+      
+      double* RESTRICT Fy_ijk = Fy[i][j][k];
+      const double* RESTRICT ob = outbcw[id] + N[j][0];
+      const double* RESTRICT xnu = x_pow_nu[j];
+      
+      // scalar:
+      //   for (int q = 0; q < Nx; q++) {
+      //     Fy_ijk[q] = ob[q] * prefactor * xnu[q];
+      //   }
+      // ob[q] is the unnormalized inverse transform at chi node q (past
+      // the front guard band) and xnu[q] = x[Nx-1-q]^nu, so
+      // prefactor*xnu[q] = sqrt(pi)/(4 N[j][2]) y^-nu. The vector loop
+      // takes nodes q..q+3 per pass (lane m holds node q + m) and
+      // multiplies in the scalar order, (ob*prefactor)*xnu, so every
+      // lane equals the scalar result bitwise; the scalar tail finishes
+      // the last Nx % 4 nodes.
+      //
+      // prefactor in all four lanes (set1 copies one scalar into every
+      // lane)
+      v4d vpre = simde_mm256_set1_pd(prefactor); // [pf | pf | pf | pf]
+      
+      int q = 0;
+      for (; q <= Nx - 4; q += 4) {
+        // ob[q..q+3]: the transform at chi nodes q..q+3 (loadu reads
+        // four consecutive doubles; no vector-aligned address needed)
+        v4d vob  = simde_mm256_loadu_pd(ob + q);  // ob[q..q+3]
+        // xnu[q..q+3]: x^nu at the same four chi nodes
+        v4d vxnu = simde_mm256_loadu_pd(xnu + q); // xnu[q..q+3]
+        // first multiply, lane m = ob[q+m]*prefactor:
+        //   vtmp = [ ob[q]*pf | ob[q+1]*pf | ob[q+2]*pf | ob[q+3]*pf ]
+        v4d vtmp = simde_mm256_mul_pd(vob, vpre);
+        // second multiply, lane m = (ob[q+m]*prefactor)*xnu[q+m]:
+        //   vres = [ vtmp[0]*xnu[q] | ... | vtmp[3]*xnu[q+3] ]
+        v4d vres = simde_mm256_mul_pd(vtmp, vxnu);
+        // Store 4 results back to Fy_ijk[q..q+3]
+        simde_mm256_storeu_pd(Fy_ijk + q, vres);
+      }
+      for (; q < Nx; q++) { // Scalar tail
+        Fy_ijk[q] = ob[q] * prefactor * xnu[q];
+      }    
+    }
+  }
+  free((void*) work_ij);
+  free((void*) zero_ij);
+  free((void*) x_pow_nu);
+  return;
+}
+
 // ---------------------------------------------------------------------------
 // Non-Limber galaxy clustering C_l via the FFTLog algorithm: C_cl_tomo,
 // defined after its worker C_cl_tomo_core (whose header follows this one).
@@ -10692,7 +11309,7 @@ static double** C_cl_tomo_lowrank_core(
       }
     }
 
-    cfftlog_ells_p2((double* const) x,
+    cfftlog_ells_p2_lowrank((double* const) x,
                      nchi,
                      cfg,
                      LNL,
