@@ -1499,19 +1499,21 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
 
 
 def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
-                     example="example2", default=0):
+                     example="example2", default=0, overrides=None):
     """Build one FKEM-vs-low-rank-SVD clustering class.
 
     The likelihood key nonlimber_lowrank_gg picks the non-Limber
     clustering engine: 0 = FKEM (every project's default), 1 = the
     low-rank SVD thin-bin engine (C_cl_tomo_lowrank in cosmo2D.c).
-    Both are exact low-l projections, so unlike the Limber-vs-
-    non-Limber suite the delta here is small: the SVD's rank
-    truncation against FKEM's Limber hand-off of the nonlinear
-    density term.
+    The delta measures FKEM's approximations - its Limber treatment
+    of the nonlinear density term, and its multipole cap
+    lmax_nonlimber - against the SVD's rank truncation. Its size
+    depends on the bins: small for photometric ones, large for thin
+    spectroscopic ones unless FKEM's cap covers every band.
 
     The class evaluates the frozen fiducial three times in one
-    process (FKEM, SVD, FKEM again) and asserts:
+    process (the default engine, the other one, the default again)
+    and asserts:
 
       1. the engine delta chi2 is above a dead-flag floor (the flag
          reached the C code and the clustering cache rebuilt);
@@ -1519,7 +1521,7 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
       3. the round trip reproduces the first vector bitwise;
       4. the delta chi2 matches the project's measured value to the
          relative band;
-      5. the FKEM default reproduces the frozen reference chi2
+      5. the default engine reproduces the frozen reference chi2
          (last, so a stale snapshot cannot hide checks 1-4).
 
     It also reports each engine's steady-state runtime (one second
@@ -1538,6 +1540,11 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
       default  = the project's nonlimber_lowrank_gg default (0 = FKEM,
                  1 = the low-rank SVD engine): the sweep starts and
                  ends on it, with the other engine in between.
+      overrides = optional {likelihood key: value} applied to all
+                 three builds, e.g. {"lmax_nonlimber": 550} for an
+                 FKEM cap that covers every band. Each engine ignores
+                 the other's keys, so one dictionary serves both; with
+                 None every build keeps the frozen configuration.
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -1580,6 +1587,10 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
                 lk_name = u.EXAMPLES[example]["likelihood"]
                 info["likelihood"][lk_name]["nonlimber_lowrank_gg"] = \
                     flag
+                # the same overrides in every build, so the engine
+                # flag is the only difference between them
+                for key, value in (overrides or {}).items():
+                    info["likelihood"][lk_name][key] = value
                 model = u.make_model(info)
                 point = u.build_point(model, example, tatt=False)
                 chi2s[tag] = u.evaluate_chi2(model, point)
@@ -1613,7 +1624,8 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
             b0 = int(sizes[0]) + int(sizes[1])
             b1 = b0 + int(sizes[2]) + ggx
 
-            print(f"\n  engine report ({example}, NLA):")
+            print(f"\n  engine report ({example}, NLA"
+                  f"{', ' + str(overrides) if overrides else ''}):")
             print(f"    {settings[0][0]}: chi2 = "
                   f"{chi2s[settings[0][0]]:.6f} (frozen reference "
                   f"{self.reference[reference_key]:.6f}), "
