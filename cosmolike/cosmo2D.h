@@ -103,6 +103,10 @@ void set_gg_cross_pairs(const int* bi, const int* bj, const int npairs);
 
 int get_gg_cross_npairs(void);
 
+const int* get_gg_cross_bins_i(void);
+
+const int* get_gg_cross_bins_j(void);
+
 void C_gg_cross_tomo_ells(const double* ells, const int nell,
                           double** out);
 
