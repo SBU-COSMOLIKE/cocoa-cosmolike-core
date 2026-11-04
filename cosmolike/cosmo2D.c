@@ -8835,10 +8835,15 @@ void cfftlog_ells_p2(
   // ONE shared row table instead of storing SIZE1 identical copies
   // (C_cl_tomo_lowrank_core does: at its 456 rows and a boosted chi
   // grid, distinct copies would be tens of GB and every copy a
-  // duplicate write). The aliasing is detected by pointer identity of
-  // the first two rows, and the shared table is then filled once,
-  // through row 0, so no two threads ever write the same entry. A
-  // caller with distinct rows (every pre-existing one) has
+  // duplicate write; that caller enters through the engine's lowrank
+  // twin, cfftlog_ells_p2_lowrank, which keeps this guard identical).
+  // The aliasing is detected by pointer identity of the first two
+  // rows, and the shared table is then filled once, through row 0, so
+  // no two threads ever write the same entry. Only two layouts are
+  // supported - every row aliased to row 0's table, or every row
+  // distinct - so the y[1] == y[0] test decides completely; a
+  // partially aliased y would be a caller bug this guard cannot see.
+  // A caller with distinct rows (every pre-existing one) has
   // y[1] != y[0], takes n_y_rows = SIZE1, and this loop is unchanged.
   const int n_y_rows = (SIZE1 > 1 && y[1] == y[0]) ? 1 : SIZE1;
   #pragma omp parallel for collapse(2) schedule(static)
@@ -9649,7 +9654,8 @@ void C_gg_tomo_ells(
     double** out         // output [NSIZE][nell]
   )
 {
-  // the experimental low-rank DD path, with its own cap (the twin above)
+  // the experimental low-rank DD path, with its own cap (the twin lives
+  // in the LOW-RANK THIN-BIN section at the end of the file)
   if (1 == use_lowrank_DD_GG) {
     C_gg_tomo_lowrank_ells(ells, nell, NSIZE, out);
     return;
@@ -10297,8 +10303,9 @@ void C_gs_tomo(
 // C_gs_tomo_core (its Limber P_delta values there are exact too).
 //
 // No early exit: the core runs with tol = 0, so every pair gets its exact
-// dC at every needed integer (see C_gg_tomo_ells for why: the real-space
-// early exit is a truncation error that the band centers see).
+// dC at every needed integer (see C_gg_tomo_ells's protocol header, now
+// beside the low-rank section at the end of the file, for why: the
+// real-space early exit is a truncation error that the band centers see).
 //
 // Example: l = 35.4 gives l0 = 35, t = 0.4 and
 //   C(35.4) = C^limber(35.4) + 0.6*dC(35) + 0.4*dC(36).
@@ -10515,8 +10522,12 @@ void C_gs_tomo_ells(
 // Parameters:
 //   nrank          - SVD ranks kept per lens bin (1..16, validated by
 //                    the setter)
-//   NK             - number of ln k grid points (>= GG_LOWRANK_NZ, or
-//                    the SVD of the NK x NZ matrix is ill-posed)
+//   NK             - number of ln k grid points; NK >= GG_LOWRANK_NZ is
+//                    required because the k nodes are the matrix rows
+//                    and gsl_linalg_SV_decomp only accepts matrices
+//                    with at least as many rows as columns (a
+//                    wider-than-tall SVD exists mathematically; GSL
+//                    simply does not implement it)
 //   lnk0           - ln of the first k grid point, k in units of H0/c
 //   dlnkT          - uniform ln k grid spacing
 //   sqrtPg_kfactor - output [nbins][nrank][NK]: T_r(k) =
@@ -10878,19 +10889,21 @@ static void C_gg_lowrank_decomp_work(
 // the body). The shared engine stays untouched so every other project
 // keeps its exact code path; keep the two bodies in sync when the
 // transform mathematics changes. The documentation of the algorithm
-// itself follows, copied from the shared engine:
+// itself follows, copied from the shared engine (with the caller names
+// adapted to this path):
 // ---------------------------------------------------------------------------
 // Non-Limber projection via FFTLog: Phase 2 (ell-dependent inverse
-// transform). Shared by C_cl_tomo (gg) and C_gs_tomo (gs).
+// transform). The shared engine serves C_cl_tomo (gg) and C_gs_tomo
+// (gs); this copy serves C_cl_tomo_lowrank_core alone.
 //
 // Processes a block of multipoles l = ks..ke-1, computing the projected
 // radial functions Fy[i][j][k][q] and wavenumber grid y[i][k][q] for each
 // radial row i, radial component j, multipole k, and chi-node q.
 //
-// Called from C_cl_tomo_core and C_gs_tomo_core in a loop over runs of
-// at most BLOCK = 16 multipoles, with early termination when the
-// non-Limber result converges to the Limber result (rows whose spectra
-// have all converged are skipped via the converged array).
+// Called from C_cl_tomo_lowrank_core in a loop over runs of at most
+// BLOCK = 16 multipoles, with early termination when the non-Limber
+// result converges to the Limber result (a converged lens bin freezes
+// its FKEM row and all its rank rows together via the converged array).
 //
 // Algorithmic steps for each block:
 //
@@ -10901,8 +10914,10 @@ static void C_gg_lowrank_decomp_work(
 //      The Bessel-function transform kernel in Fourier space, computed via
 //      the Lanczos approximation to ln(Gamma). Depends on cfg[j].derivative:
 //        case 0: gl = exp(z*ln2) * Gamma((k+z)/2) / Gamma((3+k-z)/2)
-//        case 1: gl = -(z-1) * exp((z-1)*ln2) * Gamma((k+z-1)/2) / Gamma((4+k-z)/2)
-//        case 2: gl = (z-1)(z-2) * exp((z-2)*ln2) * Gamma((k+z-2)/2) / Gamma((5+k-z)/2)
+//        case 1: gl = -(z-1) * exp((z-1)*ln2)
+//                     * Gamma((k+z-1)/2) / Gamma((4+k-z)/2)
+//        case 2: gl = (z-1)(z-2) * exp((z-2)*ln2)
+//                     * Gamma((k+z-2)/2) / Gamma((5+k-z)/2)
 //      where z = nu + i*eta_m[j][q] is the complex biasing parameter.
 //
 //      Optimization: only the first two ells (ks, ks+1) are computed from
@@ -10971,22 +10986,22 @@ static void C_gg_lowrank_decomp_work(
 //   nothing; y and Fy are filled for the block's multipoles
 // ---------------------------------------------------------------------------
 void cfftlog_ells_p2_lowrank(
-    double* const x,                        // chi grid values, length Nx (log-spaced, from p1)
+    double* const x,                        // chi grid, length Nx, from p1
     int const Nx,                           // number of chi grid points
-    config* const cfg,                      // FFTLog config per component (nu, derivative, N_pad)
-    int const LMAX,                         // maximum multipole for convergence clipping
-    double* const* const* const y,          // output wavenumber grid y[SIZE1][LMAX][Nx]
-    double* const* const* const* const Fy,  // output projected functions Fy[SIZE1][SIZE2][LMAX][Nx]
-    fftw_complex* const* const toutfwd,     // forward FFT coefficients from p1 [SIZE1*SIZE2][Nmax/2+1]
-    double* const* const eta_m,             // Fourier frequencies from p1 [SIZE2][Nmax/2+1]
-    int  N[][3],                            // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
-    int const Nmax,                         // max(N[j][2]) across all components
-    int const ks,                           // first multipole in this block (inclusive)
-    int const ke,                           // last multipole in this block (exclusive)
-    const int* const converged,             // per-row skip flags [SIZE1]; 1 = skip row i
-    const int* const* const active,         // activity mask [SIZE1][SIZE2]; NULL = all active
+    config* const cfg,                      // FFTLog config per component
+    int const LMAX,                         // max multipole; clips ke
+    double* const* const* const y,          // out: y[SIZE1][LMAX][Nx]
+    double* const* const* const* const Fy,  // out: Fy[SIZE1][SIZE2][LMAX][Nx]
+    fftw_complex* const* const toutfwd,     // from p1 [SIZE1*SIZE2][Nmax/2+1]
+    double* const* const eta_m,             // from p1 [SIZE2][Nmax/2+1]
+    int  N[][3],                            // N[j] = {N_pad, Nx, FFT size}
+    int const Nmax,                         // max N[j][2] over components
+    int const ks,                           // first multipole (inclusive)
+    int const ke,                           // last multipole (exclusive)
+    const int* const converged,             // [SIZE1]; 1 = skip row i
+    const int* const* const active,         // [SIZE1][SIZE2]; NULL = all on
     int const SIZE1,                        // number of radial rows (bins)
-    int const SIZE2                         // number of radial components (2 or 3)
+    int const SIZE2                         // radial components (2 or 3)
   )
 {
   static int cache[MAX_SIZE_ARRAYS];
@@ -11099,10 +11114,15 @@ void cfftlog_ells_p2_lowrank(
   // ONE shared row table instead of storing SIZE1 identical copies
   // (C_cl_tomo_lowrank_core does: at its 456 rows and a boosted chi
   // grid, distinct copies would be tens of GB and every copy a
-  // duplicate write). The aliasing is detected by pointer identity of
-  // the first two rows, and the shared table is then filled once,
-  // through row 0, so no two threads ever write the same entry. A
-  // caller with distinct rows (every pre-existing one) has
+  // duplicate write; that caller enters through the engine's lowrank
+  // twin, cfftlog_ells_p2_lowrank, which keeps this guard identical).
+  // The aliasing is detected by pointer identity of the first two
+  // rows, and the shared table is then filled once, through row 0, so
+  // no two threads ever write the same entry. Only two layouts are
+  // supported - every row aliased to row 0's table, or every row
+  // distinct - so the y[1] == y[0] test decides completely; a
+  // partially aliased y would be a caller bug this guard cannot see.
+  // A caller with distinct rows (every pre-existing one) has
   // y[1] != y[0], takes n_y_rows = SIZE1, and this loop is unchanged.
   const int n_y_rows = (SIZE1 > 1 && y[1] == y[0]) ? 1 : SIZE1;
   #pragma omp parallel for collapse(2) schedule(static)
@@ -11330,14 +11350,15 @@ void cfftlog_ells_p2_lowrank(
   // gg path brings SIZE1 = 456 rows per 16-multipole block, i.e.
   // thousands of tiny regions per evaluation whose static chunks mix
   // inverse FFTs of two different lengths with skipped slots. Profiles
-  // of that layout show threads parked (cvwait) behind each region's
-  // slowest chunk. Here every (row, slot) that actually runs
-  // transforms becomes one work item first, and ONE parallel region
-  // per block executes all (item, multipole) pairs under a dynamic
-  // schedule, so a thread that finishes early takes the next pair
-  // instead of idling. Each iteration writes only its own Fy[i][j][k]
-  // row through its own per-thread FFT buffers: the assignment of
-  // items to threads cannot change a bit of the output.
+  // of that layout show threads parked in condition-variable waits
+  // (idle at the region barrier) behind each region's slowest chunk.
+  // Here every (row, slot) pair that has transforms to run becomes one
+  // work item first, and ONE parallel region per block executes all
+  // (item, multipole) pairs under a dynamic schedule, so a thread that
+  // finishes early takes the next pair instead of idling. Each
+  // iteration writes only its own Fy[i][j][k] row through its own
+  // per-thread FFT buffers: the assignment of items to threads cannot
+  // change a bit of the output.
   int nwork = 0; // (row, slot) pairs that run inverse FFTs
   int nzero = 0; // active-mask holes to zero-fill instead
   int* work_ij = (int*) malloc(sizeof(int)*2*SIZE1*SIZE2);
@@ -11376,6 +11397,15 @@ void cfftlog_ells_p2_lowrank(
     }
   }
 
+  // The one transform region of the block (see the scheduling banner
+  // above). An iteration is work item w at multipole k: rotate row w's
+  // forward coefficients by the base phase, apply the Bessel kernel
+  // gl, inverse-FFT through this thread's own buffers, and normalize
+  // the unpadded window into Fy[i][j][k]. Every pair writes only that
+  // row, so the dynamic schedule changes which thread computes a pair,
+  // never its value. Chunk size 1: one inverse FFT dwarfs the
+  // scheduling overhead, and the pairs cost unevenly (the slots mix
+  // two FFT lengths), which is the reason for self-scheduling.
   #pragma omp parallel for collapse(2) schedule(dynamic, 1)
   for (int w=0; w<nwork; w++) {
     for (int k=ks; k<kmax; k++) {
@@ -11468,7 +11498,9 @@ void cfftlog_ells_p2_lowrank(
         // second multiply, lane m = (ob[q+m]*prefactor)*xnu[q+m]:
         //   vres = [ vtmp[0]*xnu[q] | ... | vtmp[3]*xnu[q+3] ]
         v4d vres = simde_mm256_mul_pd(vtmp, vxnu);
-        // Store 4 results back to Fy_ijk[q..q+3]
+        // store the four lanes to Fy_ijk[q..q+3]: storeu, like loadu,
+        // needs no vector-aligned address, and q <= Nx - 4 here, so
+        // all four destination elements Fy_ijk[q..q+3] exist
         simde_mm256_storeu_pd(Fy_ijk + q, vres);
       }
       for (; q < Nx; q++) { // Scalar tail
@@ -11516,8 +11548,8 @@ void cfftlog_ells_p2_lowrank(
 // Cl -> CLnl + O(truncation): the existing convergence test
 // |Cl/CLnl - 1| < tol and the Limber splice work exactly as in the twin.
 // With RSD off and bmag = 0 the combination collapses to
-// CLnl == CLdd_nl identically (same sums node by node, step 1 of the
-// implementation), a built-in consistency check.
+// CLnl == CLdd_nl identically (the batched Limber engine computes both
+// from the same sums, node by node), a built-in consistency check.
 //
 // WHY RSD AND MAGNIFICATION KEEP FKEM: the velocity field does not grow
 // like the density field nonlinearly (the one-loop P_g says nothing
@@ -11607,7 +11639,7 @@ static double** C_cl_tomo_lowrank_core(
      the caller may rebuild that map freely as long as each row an
      access reaches holds the right numbers at that moment.
 
-     y, Fy and vres below exploit this twice. The pass loops and the
+     y, Fy and vres below exploit this in two ways. The pass loops and the
      engine keep indexing them exactly like the FKEM twin's arrays
      (y[i][k][q], Fy[i][j][k][q], vres[i][k][q], k the absolute
      multipole), but the storage behind the indices is small:
@@ -11618,7 +11650,8 @@ static double** C_cl_tomo_lowrank_core(
             (y_rows), the way many catalog cards reference one book.
             The engine fills the shared table once - it detects the
             aliasing by pointer identity (see the y fill in
-            cfftlog_ells_p2) - so no two threads write one entry.
+            cfftlog_ells_p2_lowrank, the engine this core calls) - so
+            no two threads write one entry.
 
      Fy   - a multipole's data lives only inside its own 16-multipole
             convergence block: p2 fills it, pass 1/2 read it, the Cl
@@ -11660,18 +11693,21 @@ static double** C_cl_tomo_lowrank_core(
   const int nchi  = Ntable.NL_Nchi;
   const int nrank = lowrank_DD_GG_nrank;
   const int LNL   = lowrank_DD_GG_lmax; // the path's own cap (see the setter)
-  // NK = ln k nodes of the sqrt(P_g) decomposition: the k axis of the
-  // sqrtPg_kfactor tables, the column count of every per-bin SVD in
-  // C_gg_lowrank_decomp_work, and the grid pass 2 interpolates. The
-  // nonlimber accuracy boost exists to refine the FFTLog chi comb that
-  // samples narrow radial kernels; sqrt(P_g(k, z)) is smooth in ln k,
-  // so the decomposition gains nothing from riding that refinement -
-  // while the SVD cost grows linearly with NK and dominated the
-  // boosted evaluation (GSL qrstep/householder were the hottest
-  // symbols at nchi = 8192). Dividing the nonlimber factor back out
-  // leaves NK = baseline x global accuracy boost: identical to nchi
-  // whenever no nonlimber boost is set (every pre-existing project),
-  // and the decomposition resolution the accuracy studies validated.
+  // NK = number of ln k nodes of the sqrt(P_g) decomposition: the k
+  // axis of the sqrtPg_kfactor tables, the row count (not the column
+  // count) of every per-bin SVD matrix in C_gg_lowrank_decomp_work,
+  // and the grid the rank assembly (pass 2 below) interpolates. It is
+  // nchi with the nonlimber accuracy boost divided back out
+  // (Ntable.NL_Nchi_boost, already multiplied into nchi). That boost
+  // exists to refine the FFTLog chi grid that samples narrow radial
+  // kernels; sqrt(P_g(k, z)) is smooth in ln k, so the decomposition
+  // gains nothing from riding the refinement - while the SVD cost
+  // grows linearly with NK, and at a boosted nchi = 8192 the
+  // Householder/QR steps inside GSL's SVD became the hottest functions
+  // of the whole evaluation. What remains is NK = baseline x global
+  // accuracy boost: identical to nchi when no nonlimber boost is set
+  // (every pre-existing project), and the decomposition resolution the
+  // accuracy studies validated.
   const int NK = (int) ceil(((double) nchi)/Ntable.NL_Nchi_boost);
   const int SIZE1 = nbins + nbins*nrank; // FKEM rows + rank rows
   const int SIZE2 = 3; // always 3 (see the header comment): the mag slot
@@ -11695,8 +11731,9 @@ static double** C_cl_tomo_lowrank_core(
 
     // ---- y: one shared wavenumber table behind SIZE1 aliased rows ----
     // The engine writes the row-independent grid once (it detects the
-    // aliasing by pointer identity; see the y fill in cfftlog_ells_p2)
-    // and the pass loops read y[i][k] through any row alias.
+    // aliasing by pointer identity; see the y fill in
+    // cfftlog_ells_p2_lowrank) and the pass loops read y[i][k] through
+    // any row alias.
     if (y_rows != NULL) free((void*) y_rows);
     y_rows = (double**) malloc2d(LNL, nchi);
     if (y != NULL) free((void*) y);
@@ -11804,6 +11841,12 @@ static double** C_cl_tomo_lowrank_core(
   const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // Mpc
   const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
   const double dlnk    = dlnchi;
+
+  // Warm the lazily built static tables (a_chi, growfac_all, hoverh0,
+  // the n(z) splines, W_mag, the bias and power readers) with one
+  // serial call each: the kernel fill below calls them inside a
+  // parallel region, and a first call there would race on the table
+  // build.
   { // INIT: make sure static init variables inside the funcs are defined
     const double chi = chi_min/real_coverH0;
     const double a   = a_chi(chi);
@@ -11820,12 +11863,13 @@ static double** C_cl_tomo_lowrank_core(
   }
 
   // Limber terms at the multipoles of the runs, batched in one pass:
-  // the two FKEM terms AND the DD part of each (the four-output batch
-  // engine of step 1). They share the nodes, the radial weights and the
-  // RSD kernel; the DD terms come from the same quadrature, mask and
-  // summation order as the full ones, which the four-term combination
-  // below needs to cancel at high l at machine precision. Indexed
-  // CLnl[i][l] etc. (entries of other l are not written).
+  // the two FKEM terms AND the DD part of each, from the four-output
+  // batch engine C_gg_tomo_limber_nl_lin_dd_nointerp_ells. They share
+  // the nodes, the radial weights and the RSD kernel; the DD terms
+  // come from the same quadrature, mask and summation order as the
+  // full ones, which the four-term combination below needs to cancel
+  // at high l at machine precision. Indexed CLnl[i][l] etc. (entries
+  // of other l are not written).
   int nlx = 0;
   for (int r=0; r<nruns; r++) {
     for (int l=runs[2*r]; l<runs[2*r+1]; l++) {
@@ -11880,6 +11924,15 @@ static double** C_cl_tomo_lowrank_core(
   // cancel at high l). HOD is refused above.
   const int rsd = (1 == include_RSD_GG) ? 1 : 0;
 
+  // The FFTLog inputs: every radial kernel sampled on the log-spaced
+  // chi grid. One iteration owns one chi node j: the background
+  // quantities (a, z, H(a)/H0, the growth D and f) are computed once
+  // and shared by every bin at that node. The FKEM rows take the same
+  // kernels as C_cl_tomo_core - density chi n(z) (H/H0) D b1, RSD,
+  // magnification; forms and units are documented there - and the rank
+  // rows take the sqrtPg_zfactor kernels explained below. Each node
+  // writes only its own fx[.][.][j] entries, so the parallel fill is
+  // deterministic at any thread count.
   #pragma omp parallel for schedule(static)
   for (int j=0; j<nchi; j++) {
     x[j] = chi_min * exp(dlnchi * j);
@@ -12023,14 +12076,18 @@ static double** C_cl_tomo_lowrank_core(
       exit(1);
     }
   }
-  // per-thread scratch of the rank assembly below: GQ[t] = the
-  // accumulating rank sum G (the KPN idiom of C_gg_tomo_limber_work)
+  // Per-thread scratch for the rank assembly (pass 2 below): GQ[t] is
+  // thread t's own row holding the accumulating rank sum G(k_q) - the
+  // same per-thread-row ownership as the KPN scratch of
+  // C_gg_tomo_limber_work. A thread writes only GQ[its own id], so the
+  // parallel loop needs no reduction and cannot race.
   double** GQ = (double**) malloc2d(omp_get_max_threads(), nchi);
   // ln k at the chi nodes of each multipole in the current block. The
   // wavenumber grid y[i][k][q] = (k+1)/x[Nx-1-q] never depends on the
   // bin, so neither does its logarithm: one [BLOCK][nchi] table per
   // block replaces recomputing nchi logarithms per (bin, multipole) in
-  // the rank-assembly pass (a factor nbins = 76 fewer log calls here).
+  // the rank-assembly pass - a factor nbins fewer log calls (76 of
+  // them in the first user, lssty1xdesi).
   double** lnk_block = (double**) malloc2d(BLOCK, nchi);
   int converged[nbins]; // per lens bin
   int row_done[SIZE1];  // per radial row: a bin freezes all its rows
@@ -12100,8 +12157,10 @@ static double** C_cl_tomo_lowrank_core(
     // ln k at this block's chi nodes, once per block (see lnk_block's
     // declaration). p2 has just filled the shared wavenumber rows
     // y_rows[k] for k in [ks, ke), so their logarithms are ready to
-    // take; real_coverH0 converts the c/H0-unit grid to 1/Mpc, the
-    // argument convention of the decomposition's ln k axis.
+    // take. The y grid is in 1/Mpc (its chi grid x is in Mpc), and
+    // multiplying by real_coverH0 - the Mpc value of c/H0 - rescales it
+    // to the internal H0/c wavenumber units, the argument convention of
+    // the decomposition's ln k axis (the lnkT0/lnkT1 derivation above).
     #pragma omp parallel for schedule(static)
     for (int k=ks; k<ke; k++) {
       double* restrict lnk_row = lnk_block[k - ks];
@@ -12143,8 +12202,10 @@ static double** C_cl_tomo_lowrank_core(
       //
       //   G(k_q) = sum_r sqrtPg_kfactor[i][r](k_q) * Fy[rank row r][0]
       //
-      // (the factorized single sum; squaring it reproduces the note's
-      // double rank sum exactly), then
+      // (one sum over ranks; its square G^2 expands into the full
+      // double sum over rank pairs (r, r') that the geometric-mean
+      // P_g(k; z1, z2) produces, so no pair term is ever formed
+      // explicitly), then
       //
       //   vres = (vres + G^2) * k^3.
       //
@@ -12257,8 +12318,10 @@ void C_cl_tomo_lowrank(
   int LMAX[nbins];
   double** CLnl = C_cl_tomo_lowrank_core(Cl, LMAX, tol, runs, nruns);
 
-  // Limber continuation of converged bins: the Limber-path values (the
-  // batch up to LMIN_tab, the interpolation table above)
+  // Limber continuation of converged bins, as in C_cl_tomo: above its
+  // freeze point LMAX[i] a bin takes the Limber values - the exact
+  // batched CLnl up to l = LMIN_tab (where the interpolation table has
+  // no nodes yet) and the C_gg_tomo_limber table above that.
   for (int i=0; i<nbins; i++) {
     for (int k=LMAX[i]; k<LNL; k++) {
       Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) : CLnl[i][k];
@@ -12267,6 +12330,11 @@ void C_cl_tomo_lowrank(
 }
 
 // ---------------------------------------------------------------------------
+// The band-center protocol of C_gg_tomo_ells, documented here beside its
+// low-rank counterpart so both variants are read against one protocol.
+// The function itself is defined in the classic section above (it
+// dispatches to C_gg_tomo_lowrank_ells below when use_lowrank_DD_GG = 1).
+//
 // Galaxy clustering C_l^gg (auto spectra) at arbitrary multipoles, with the
 // non-Limber correction below limits.LMAX_NOLIMBER. The Fourier-space data
 // vectors call it (generic_interface.hpp, like.adopt_limber[LIMBER_GG] = 0):
@@ -12305,14 +12373,15 @@ void C_cl_tomo_lowrank(
 //   nothing; the result is written into out
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// The low-rank counterpart of C_gg_tomo_ells (below), dispatched from it
-// when use_lowrank_DD_GG = 1: the same band-center protocol - exact
-// Limber at the band centers, the non-Limber correction computed at the
-// two integers around each center and interpolated linearly between
-// them - with C_cl_tomo_lowrank_core and the path's OWN cap
-// lowrank_DD_GG_lmax in place of limits.LMAX_NOLIMBER. tol = 0, as in
-// the twin: the early exit is a real-space optimization whose
-// truncation step the band centers would see.
+// The low-rank counterpart of C_gg_tomo_ells (documented right above,
+// defined in the classic section), dispatched from it when
+// use_lowrank_DD_GG = 1: the same band-center protocol - exact Limber
+// at the band centers, the non-Limber correction computed at the two
+// integers around each center and interpolated linearly between them -
+// with C_cl_tomo_lowrank_core and the path's OWN cap lowrank_DD_GG_lmax
+// in place of limits.LMAX_NOLIMBER. tol = 0, as in the twin: the early
+// exit is a real-space optimization whose truncation step the band
+// centers would see.
 // ---------------------------------------------------------------------------
 static void C_gg_tomo_lowrank_ells(
     const double* ells,  // array of multipole values (length nell)
