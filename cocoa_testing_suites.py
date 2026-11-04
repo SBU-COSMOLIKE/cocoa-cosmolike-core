@@ -1356,6 +1356,165 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
     return TestNonLimber
 
 
+def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
+                     example="example2"):
+    """Build one FKEM-vs-low-rank-SVD clustering class.
+
+    The likelihood key nonlimber_lowrank_gg picks the non-Limber
+    clustering engine: 0 = FKEM (every project's default), 1 = the
+    low-rank SVD thin-bin engine (C_cl_tomo_lowrank in cosmo2D.c).
+    Both are exact low-l projections, so unlike the Limber-vs-
+    non-Limber suite the delta here is small: the SVD's rank
+    truncation against FKEM's Limber hand-off of the nonlinear
+    density term.
+
+    The class evaluates the frozen fiducial three times in one
+    process (FKEM, SVD, FKEM again) and asserts:
+
+      1. the engine delta chi2 is above a dead-flag floor (the flag
+         reached the C code and the clustering cache rebuilt);
+      2. only clustering entries change;
+      3. the round trip reproduces the first vector bitwise;
+      4. the delta chi2 matches the project's measured value to the
+         relative band;
+      5. the FKEM default reproduces the frozen reference chi2
+         (last, so a stale snapshot cannot hide checks 1-4).
+
+    It also reports each engine's steady-state runtime (one second
+    evaluation per model; informational, never asserted).
+
+    Arguments:
+      u        = the project's cocoa_test_utils module.
+      name     = the class name to build (assigned by the caller to
+                 the same module-level name, so test ids do not
+                 change).
+      measured = the engine delta chi2 measured for this project's
+                 frozen fiducial.
+      rtol     = the relative band around `measured`.
+      floor    = the dead-flag floor on the delta chi2.
+      example  = the key of u.EXAMPLES the sweep evaluates.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+    settings = (("FKEM (default)", 0), ("low-rank SVD", 1),
+                ("FKEM again (round trip)", 0))
+
+    class TestLowrank(unittest.TestCase):
+        """FKEM vs low-rank SVD clustering on the frozen fiducial."""
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR, verify the frozen state, load the references."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+            cls.reference = u.load_reference()
+
+        def _run_sweep(self):
+            """Evaluate the three settings and assert the five checks."""
+            import time
+
+            import numpy as np
+            ci = _interface(u)
+
+            reference_key = f"{example}_nla"
+            vectors = {}
+            chi2s = {}
+            steady = {}
+            icov = None
+            sizes = None
+            for tag, flag in settings:
+                print(f"  building model ({example}, NLA, {tag}) ...",
+                      flush=True)
+                info = u.load_frozen_info(example, tatt=False)
+                lk_name = u.EXAMPLES[example]["likelihood"]
+                info["likelihood"][lk_name]["nonlimber_lowrank_gg"] = \
+                    flag
+                model = u.make_model(info)
+                point = u.build_point(model, example, tatt=False)
+                chi2s[tag] = u.evaluate_chi2(model, point)
+                start = time.perf_counter()
+                u.evaluate_chi2(model, point)
+                steady[tag] = time.perf_counter() - start
+                print(f"    chi2 = {chi2s[tag]:.6f}  (steady-state "
+                      f"evaluation {steady[tag]:.2f} s)", flush=True)
+                vectors[tag] = \
+                    np.array(ci.compute_data_vector_masked())
+                if icov is None:
+                    # all settings share one data set (mask,
+                    # covariance), so the first build's masked
+                    # inverse covariance serves all
+                    icov = np.array(ci.get_inv_cov_masked())
+                    if hasattr(ci,
+                               "compute_data_vector_3x2pt_real_sizes"):
+                        sizes = ci.compute_data_vector_3x2pt_real_sizes()
+                    else:
+                        sizes = \
+                            ci.compute_data_vector_3x2pt_fourier_sizes()
+
+            dv_default = vectors[settings[0][0]]
+            delta = vectors[settings[1][0]] - dv_default
+            dchi2 = float(delta @ icov @ delta)
+
+            # the clustering block follows cosmic shear and
+            # galaxy-galaxy lensing in every probe combination
+            b0 = int(sizes[0]) + int(sizes[1])
+            b1 = b0 + int(sizes[2])
+
+            print(f"\n  engine report ({example}, NLA):")
+            print(f"    FKEM: chi2 = {chi2s[settings[0][0]]:.6f} "
+                  f"(frozen reference "
+                  f"{self.reference[reference_key]:.6f}), "
+                  f"{steady[settings[0][0]]:.2f} s")
+            print(f"    SVD:  chi2 = {chi2s[settings[1][0]]:.6f}, "
+                  f"{steady[settings[1][0]]:.2f} s")
+            print(f"    delta^T C^-1 delta = {dchi2:.6e} "
+                  f"(measured {measured:.6e})")
+
+            self.assertGreater(
+                dchi2, floor,
+                "the SVD engine did not change the data vector: the "
+                "nonlimber_lowrank_gg flag did not reach the C code, "
+                "or the clustering cache did not rebuild")
+
+            outside = np.concatenate((delta[:b0], delta[b1:]))
+            self.assertTrue(
+                np.all(outside == 0.0),
+                "entries outside the clustering block changed with "
+                "nonlimber_lowrank_gg")
+
+            self.assertTrue(
+                np.array_equal(vectors[settings[-1][0]], dv_default),
+                "returning to FKEM did not reproduce the first data "
+                "vector bit for bit; the clustering cache did not "
+                "rebuild cleanly")
+
+            self.assertLess(
+                abs(dchi2/measured - 1.0), rtol,
+                f"engine delta chi2 = {dchi2:.6e} differs from the "
+                f"measured {measured:.6e} by more than {rtol:.0%}")
+
+            # last, so that a stale frozen snapshot does not hide the
+            # four checks above
+            self.assertLess(
+                abs(chi2s[settings[0][0]]
+                    - self.reference[reference_key]),
+                u.CHI2_TOLERANCE,
+                f"FKEM default: chi2 = {chi2s[settings[0][0]]:.6f} "
+                f"vs frozen reference "
+                f"{self.reference[reference_key]:.6f}")
+
+    def test(self):
+        self._run_sweep()
+    test.__name__ = "test_nonlimber_lowrank_gg"
+    test.__doc__ = ("FKEM vs low-rank SVD clustering: the five "
+                    "checks of the factory docstring.\n        ")
+    setattr(TestLowrank, test.__name__, test)
+    TestLowrank.__name__ = name
+    TestLowrank.__qualname__ = name
+    return TestLowrank
+
+
 # ---- the sector-ladder cache checks -----------------------------------------
 
 # Sector membership by sampled-parameter name. re.compile builds a
