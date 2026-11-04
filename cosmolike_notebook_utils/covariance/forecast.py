@@ -269,11 +269,16 @@ def initialize_forecast(interface, settings, project):
 
     # Nuisance state of the forecast: linear bias B1 per lens bin, and zero
     # for every other bias term, photo-z shift and shear calibration.
-    # [0.0]*n is a list of n zeros.
-    lens_zero = [0.0]*nlens
-    source_zero = [0.0]*nsource
+    # Every per-bin vector crosses the pybind/carma boundary as a numpy
+    # array, never a Python list: a list longer than about 16 entries
+    # arrives zero-filled on the C++ side, which silently erased the 76
+    # thin-bin biases of a spectroscopic survey (a 5-bin list slips
+    # through, so wide-bin projects never saw it).
+    lens_zero = np.zeros(nlens)
+    source_zero = np.zeros(nsource)
     interface.set_nuisance_bias(
-        B1=settings["bias"], B2=lens_zero, B_MAG=lens_zero,
+        B1=np.ascontiguousarray(settings["bias"], dtype=float),
+        B2=lens_zero, B_MAG=lens_zero,
         B3nl=lens_zero, BK=lens_zero,
     )
     set_gaussian_model(interface=interface, settings=settings)
