@@ -12446,3 +12446,524 @@ static void C_gg_tomo_lowrank_ells(
   free((void*) Cnl);
 }
 
+// ============================================================================
+// [SECTION] CROSS-BIN GALAXY CLUSTERING FOR THIN BINS (gg pairs)
+// ============================================================================
+// The DESI thin-bin forecast measures C_l^gg between DIFFERENT lens
+// bins: the within-sample adjacent pairs, whose FoG-smeared n(z) tails
+// overlap, and the LRG x ELG pairs at the same redshift, whose kernels
+// overlap fully. The long-standing gg machinery above is auto-spectrum
+// only (one spectrum per bin, ni = nj everywhere), so everything the
+// pairs need lives here, beside the low-rank thin-bin section: an
+// explicit pair list set by the project, a pair-aware quadrature node
+// builder, the batched pair Limber integrals, and the Fourier-space
+// entry point the extended data vector calls. No pre-existing function
+// changes: a project that never sets a pair list compiles and runs the
+// exact code it always did.
+//
+// The pair list is DATA, not a rule: the measured pairs come from
+// redshift proximity (adjacent thin bins, and same-z bins of different
+// samples that sit far apart in the global bin index), so the project
+// reads them from its dataset files and hands them over as-is.
+// ============================================================================
+
+// upper bound on the installed pair list: the DESI DR3 forecast
+// measures 97 pairs over 76 bins; 512 leaves room for any plausible
+// thin-bin survey without sizing the arrays off the full upper triangle
+#define GG_CROSS_MAX_PAIRS 512
+
+// the measured cross pairs (set_gg_cross_pairs): bin indices with
+// pair_i < pair_j, in the data-vector's gg-cross block order
+static int gg_cross_npairs = 0;
+static int gg_cross_i[GG_CROSS_MAX_PAIRS];
+static int gg_cross_j[GG_CROSS_MAX_PAIRS];
+
+// ---------------------------------------------------------------------------
+// Install the gg cross-pair list. Each pair (bi[n], bj[n]) becomes
+// spectrum n of the gg-cross block, in the caller's order; the layout,
+// the mask and the covariance of the extended data vector all count on
+// that order, so the caller passes the same sorted list it wrote into
+// its dataset files. Re-installing replaces the list. npairs = 0
+// restores the auto-only behavior.
+//
+// Validation: 0 <= bi < bj < clustering_nbin for every pair, npairs
+// within GG_CROSS_MAX_PAIRS; violations are fatal (a wrong pair list
+// would silently scramble the data-vector layout).
+//
+// Cache invalidation:
+// none here - the C++ wrapper (init_gg_cross_pairs) bumps
+// Ntable.random after this call, the convention of every setter pair
+// in this file.
+// ---------------------------------------------------------------------------
+void set_gg_cross_pairs(
+    const int* bi,     // first bin of each pair [npairs]
+    const int* bj,     // second bin of each pair [npairs]
+    const int npairs   // number of pairs (0 clears the list)
+  )
+{
+  if (npairs < 0 || npairs > GG_CROSS_MAX_PAIRS) {
+    log_fatal("invalid gg cross pair count %d (max %d)",
+              npairs, GG_CROSS_MAX_PAIRS);
+    exit(1);
+  }
+  for (int n=0; n<npairs; n++) {
+    if (bi[n] < 0 || bj[n] <= bi[n] ||
+        bj[n] >= redshift.clustering_nbin) {
+      log_fatal("invalid gg cross pair %d: (%d, %d) with "
+                "clustering_nbin = %d", n, bi[n], bj[n],
+                redshift.clustering_nbin);
+      exit(1);
+    }
+    gg_cross_i[n] = bi[n];
+    gg_cross_j[n] = bj[n];
+  }
+  gg_cross_npairs = npairs;
+}
+
+int get_gg_cross_npairs(void)
+{
+  return gg_cross_npairs;
+}
+
+// ---------------------------------------------------------------------------
+// Gauss-Legendre nodes of the PAIR (ni, nj) Limber integrals.
+//
+// The pair integrand multiplies both bins' kernels at the same comoving
+// distance, so it lives on the union of the two Limber ranges - but its
+// density-density part lives only on the OVERLAP of the two n(z)
+// supports, which for two adjacent thin bins is a sliver of the union
+// (the FoG-smeared tails). One rule across the union would spend almost
+// all its nodes where one kernel vanishes and leave the sliver
+// unresolved. The union is therefore split into panels at every
+// interior support edge (the sorted distinct values of the four bounds
+// amin/amax of the two bins), one full rule per panel: the overlap
+// panel gets the same node density as any other, however narrow it is.
+// This is the same panel reasoning create_cosmo_nodes_lens applies to
+// the magnification foreground.
+//
+// Magnification is not supported for pairs (the thin-bin projects run
+// bmag = 0); a nonzero bmag on either bin is fatal rather than silently
+// mis-integrated.
+//
+// Thread safety: call outside parallel regions (lazy chi/growth init).
+//
+// Parameters:
+//   ni, nj - the two lens bins (ni < nj)
+//   w      - Gauss-Legendre rule of each panel
+//
+// Returns:
+//   a cosmo_nodes the caller releases with free_cosmo_nodes
+// ---------------------------------------------------------------------------
+static cosmo_nodes create_cosmo_nodes_lens_pair(
+    const int ni,                           // first lens bin
+    const int nj,                           // second lens bin
+    const gsl_integration_glfixed_table* w  // rule per panel
+  )
+{
+  if (gbmag(0.0, ni) != 0 || gbmag(0.0, nj) != 0) {
+    log_fatal("gg cross pair (%d, %d): magnification is not supported "
+              "on cross spectra (set bmag = 0)", ni, nj);
+    exit(1);
+  }
+
+  // --- 1. THE PANEL EDGES: EVERY DISTINCT SUPPORT BOUND, SORTED ---
+  double edge[4] = {amin_lens(ni), amax_lens(ni),
+                    amin_lens(nj), amax_lens(nj)};
+  for (int pass=0; pass<3; pass++) {       // tiny fixed-size sort
+    for (int m=0; m<3-pass; m++) {
+      if (edge[m] > edge[m+1]) {
+        const double tmp = edge[m];
+        edge[m] = edge[m+1];
+        edge[m+1] = tmp;
+      }
+    }
+  }
+
+  int npanel = 0;
+  double panel_lower[3];
+  double panel_upper[3];
+  for (int m=0; m<3; m++) {
+    if (edge[m+1] > edge[m]) {             // skip zero-width panels
+      panel_lower[npanel] = edge[m];
+      panel_upper[npanel] = edge[m+1];
+      npanel++;
+    }
+  }
+  if (0 == npanel) {
+    log_fatal("gg cross pair (%d, %d): empty Limber range", ni, nj);
+    exit(1);
+  }
+
+  // --- 2. ONE RULE PER PANEL, CONCATENATED ---
+  const int nodes_per_panel = (int) w->n;
+
+  cosmo_nodes cn;
+  cn.npts = npanel*nodes_per_panel;
+  cn.data = (double**) malloc2d(CN_NPARAMS, cn.npts);
+
+  for (int panel=0; panel<npanel; panel++) {
+    for (int q=0; q<nodes_per_panel; q++) {
+      const int p = panel*nodes_per_panel + q;
+      gsl_integration_glfixed_point(panel_lower[panel],
+                                    panel_upper[panel],
+                                    q,
+                                    &cn.data[CN_A][p],
+                                    &cn.data[CN_WT][p],
+                                    w);
+      const double a      = cn.data[CN_A][p];
+      struct chis chidchi = chi_all(a);
+      cn.data[CN_FK][p]      = chidchi.chi;
+      cn.data[CN_GROWFAC][p] = growfac(a);
+      cn.data[CN_HOVERH0][p] = hoverh0v2(a, chidchi.dchida);
+      cn.data[CN_DCHIDA][p]  = chidchi.dchida;
+    }
+  }
+  return cn;
+}
+
+// ---------------------------------------------------------------------------
+// Batched cross-pair Limber C_l^gg: the pair twin of
+// C_gg_tomo_limber_work, with the squared one-bin kernel replaced by
+// the product of the two bins' kernels.
+//
+/* PHYSICAL DERIVATION & LOGIC FLOW
+   1. The Limber C_l between lens bins i and j multiplies both radial
+      kernels at the SAME comoving distance:
+
+        C_l^(ij) = integral da (dchi/da) / fK^2
+                   * K_i(l, a) * K_j(l, a) * P(k, a),
+        k = (l + 1/2)/fK,
+        K_b(l, a) = W_gal(a, b)*b1_b(z) + W_RSD(l + 1/2, a; b).
+
+      For the auto spectrum (i = j) this square is what
+      C_gg_tomo_limber_work sums; here the two factors differ.
+   2. The linear-term output replaces P(k, a) by the separable model
+      (D(a)/D(a_piv))^2 P_lin(k, a_piv), the same growth factor on both
+      kernels, with ONE pivot per pair: the separable model is
+      pivot-independent for scale-independent growth, and using the same
+      pivot in the FFTLog term and in this Limber term is what lets the
+      future non-Limber split cancel at high l.
+   3. The DD outputs keep only the density parts W_gal*b1 of both
+      kernels: the low-rank non-Limber split replaces exactly that
+      product, and must subtract it with the same nodes, the same mask
+      and the same summation order (the C_gg_tomo_limber_work rule).
+   4. One-loop (b2-type) bias has no cross-pair implementation here:
+      fatal when active, never silently dropped. */
+//
+// Computes, for every pair n = (i, j) of the installed list and every
+// multipole in lx,
+//
+//   C_l = SUM_p wt_p * mask_p * K_i * K_j * PK * (dchi/da) / fK^2
+//
+// over the pair's panel nodes (cn_all[n]), with
+//   mask_p = 0 where EITHER bin's RSD kernel would reach beyond
+//            chi(limits.a_min), 1 elsewhere (the auto work's reach
+//            mask, applied per bin and combined)
+//
+// Parameters:
+//   cn_all        - quadrature nodes per pair [gg_cross_npairs]
+//   lx            - multipole values (length nell)
+//   nell          - number of multipole values
+//   table         - output [npairs][nell], the full model  (or NULL)
+//   table_lin     - output [npairs][nell], the linear term (or NULL)
+//   table_dd      - output [npairs][nell], the density-density part of
+//                   the full model (or NULL)
+//   table_dd_lin  - output [npairs][nell], the density-density part of
+//                   the linear term (or NULL)
+// ---------------------------------------------------------------------------
+static void C_gg_cross_tomo_limber_work(
+    const cosmo_nodes* cn_all,    // nodes per pair [gg_cross_npairs]
+    const double* lx,             // multipole values (length nell)
+    const int nell,               // number of multipole values
+    double** table,               // full model  [npairs][nell] (or NULL)
+    double** table_lin,           // linear term [npairs][nell] (or NULL)
+    double** table_dd,            // DD of the full model (or NULL)
+    double** table_dd_lin         // DD of the linear term (or NULL)
+  )
+{
+  const int npairs = gg_cross_npairs;
+  if (npairs <= 0) {
+    log_fatal("C_gg_cross_tomo_limber_work called with no pair list");
+    exit(1);
+  }
+  if (1 == include_HOD_GX) {
+    log_fatal("gg cross pairs have no HOD implementation");
+    exit(1);
+  }
+  if (1 == has_b2_galaxies()) {
+    log_fatal("gg cross pairs have no one-loop bias implementation");
+    exit(1);
+  }
+
+  // per-node arrays are padded to the largest node count over the pairs
+  int npts_max = 0;
+  for (int n=0; n<npairs; n++) {
+    if (cn_all[n].npts > npts_max) {
+      npts_max = cn_all[n].npts;
+    }
+  }
+
+  const int rsd = (1 == include_RSD_GG) ? 1 : 0;
+
+  // -------------------------------------------------------------------------
+  // Warm up every lazily initialized table single-threaded, before the
+  // parallel regions below touch them (the auto work's prelude).
+  // -------------------------------------------------------------------------
+  {
+    const cosmo_nodes* cn = &cn_all[0];
+    const double a    = cn->data[CN_A][0];
+    const double fK   = cn->data[CN_FK][0];
+    const double hoh0 = cn->data[CN_HOVERH0][0];
+    const double ell  = lx[0] + 0.5;
+    (void) W_gal(a, gg_cross_i[0], hoh0);
+    (void) Pdelta(ell/fK, a);
+    if (NULL != table_lin || NULL != table_dd_lin) {
+      (void) p_lin(ell/fK, a);
+    }
+    (void) gb1(0.1, 0);
+    if (1 == rsd) {
+      (void) chi(limits.a_min);
+      (void) a_chi(0.9);
+      (void) W_RSD(100, 0.9, 0.95, 0);
+    }
+  }
+  const double chi_a_min = (1 == rsd) ? chi(limits.a_min) : 0.0;
+
+  // -------------------------------------------------------------------------
+  // Precomputed tables. One kernel row per pair SIDE: side 0 holds bin
+  // i's values at the pair's nodes, side 1 bin j's. The per-(ell, node)
+  // table KG packs, per side, the RSD kernel; the power spectrum and
+  // the separable linear spectrum are side-independent.
+  //
+  //   WB[2][side][pair][node]        W_gal, b1
+  //   KG[side][pair][ell][node]      W_RSD (zero when rsd = 0)
+  //   KP[pair][ell][node]            P_delta(k, a)
+  //   KL[pair][ell][node]            separable linear spectrum
+  //   MASKP[pair][ell][node]         the combined RSD reach mask
+  // -------------------------------------------------------------------------
+  double**** WB = (double****) malloc4d(2, 2, npairs, npts_max);
+  double**** KG = NULL;
+  if (1 == rsd) {
+    KG = (double****) malloc4d(2, npairs, nell, npts_max);
+  }
+  double*** KP = (double***) malloc3d(npairs, nell, npts_max);
+  double*** KL = NULL;
+  if (NULL != table_lin || NULL != table_dd_lin) {
+    KL = (double***) malloc3d(npairs, nell, npts_max);
+  }
+  double*** MASKP = (double***) malloc3d(npairs, nell, npts_max);
+
+  // the pair pivot of the separable linear model (see the derivation)
+  double apivw[GG_CROSS_MAX_PAIRS];
+  double invgf2w[GG_CROSS_MAX_PAIRS];
+  if (NULL != table_lin || NULL != table_dd_lin) {
+    for (int n=0; n<npairs; n++) {
+#ifdef COSMO2D_FKEM_PIVOT_Z0
+      apivw[n] = 1.0;
+#else
+      apivw[n] = 1.0/(1.0 + 0.5*(zmean(gg_cross_i[n])
+                                 + zmean(gg_cross_j[n])));
+#endif
+      const double gfp = growfac(apivw[n]);
+      invgf2w[n] = 1.0/(gfp*gfp);
+    }
+  }
+
+  #pragma omp parallel
+  {
+    // --- 1. LENS WEIGHTS AND BIASES OF BOTH SIDES AT THE PAIR NODES ---
+    #pragma omp for collapse(2) schedule(static) nowait
+    for (int n=0; n<npairs; n++) {
+      for (int p=0; p<npts_max; p++) {
+        const cosmo_nodes* cn = &cn_all[n];
+        if (p >= cn->npts) {
+          continue; // padding node: this pair has fewer nodes
+        }
+        const double a = cn->data[CN_A][p];
+        const double z = 1.0/a - 1.0;
+        const double hoh0 = cn->data[CN_HOVERH0][p];
+        const int bins[2] = {gg_cross_i[n], gg_cross_j[n]};
+        for (int side=0; side<2; side++) {
+          WB[0][side][n][p] = W_gal(a, bins[side], hoh0);
+          WB[1][side][n][p] = gb1(z, bins[side]);
+        }
+      }
+    }
+
+    // --- 2. P(k, a), THE LINEAR MODEL, RSD AND THE REACH MASK ---
+    // One iteration = one (pair, multipole): it walks the pair's nodes,
+    // reads the power spectra at the Limber wavenumber k = ell/fK, and
+    // evaluates both bins' RSD kernels at the two radii the extended-
+    // Limber recipe samples (chi_0 = fK, chi_1 = (l + 3/2)/k; the
+    // physics note lives at the auto work function). The mask kills a
+    // node when either bin's chi_1 would leave the distance table.
+    #pragma omp for collapse(2) schedule(static)
+    for (int n=0; n<npairs; n++) {
+      for (int i=0; i<nell; i++) {
+        const cosmo_nodes* cn = &cn_all[n];
+        const double ell = lx[i] + 0.5;
+        for (int p=0; p<cn->npts; p++) {
+          const double a  = cn->data[CN_A][p];
+          const double fK = cn->data[CN_FK][p];
+          const double k  = ell/fK;
+          KP[n][i][p] = Pdelta(k, a);
+          if (NULL != KL) {
+            const double gf = cn->data[CN_GROWFAC][p];
+            KL[n][i][p] = gf*gf*invgf2w[n]*p_lin(k, apivw[n]);
+          }
+          double maskp = 1.0;
+          if (1 == rsd) {
+            const double chi_0 = fK;
+            const double chi_1 = (ell + 1.0)/k;
+            if (chi_1 > chi_a_min) {
+              maskp = 0.0;
+            }
+            else {
+              const double a_0 = a_chi(chi_0);
+              const double a_1 = a_chi(chi_1);
+              KG[0][n][i][p] = W_RSD(ell, a_0, a_1, gg_cross_i[n]);
+              KG[1][n][i][p] = W_RSD(ell, a_0, a_1, gg_cross_j[n]);
+            }
+          }
+          MASKP[n][i][p] = maskp;
+        }
+      }
+    }
+
+    // --- 3. THE PAIR LIMBER SUMS ---
+    // One iteration = one (pair, multipole): a serial sum over the
+    // pair's nodes in node order (deterministic at any thread count).
+    // K_i and K_j are assembled per node from the tables above; each
+    // requested output accumulates its own combination.
+    #pragma omp for collapse(2) schedule(static)
+    for (int n=0; n<npairs; n++) {
+      for (int i=0; i<nell; i++) {
+        const cosmo_nodes* cn = &cn_all[n];
+        double sum    = 0.0;
+        double sumlin = 0.0;
+        double sumdd  = 0.0;
+        double sumddl = 0.0;
+        for (int p=0; p<cn->npts; p++) {
+          const double fK = cn->data[CN_FK][p];
+          const double wt = cn->data[CN_WT][p]*cn->data[CN_DCHIDA][p]/
+                            (fK*fK);
+          const double maskp = MASKP[n][i][p];
+          const double dd_i = WB[0][0][n][p]*WB[1][0][n][p];
+          const double dd_j = WB[0][1][n][p]*WB[1][1][n][p];
+          const double rsd_i = (1 == rsd) ? KG[0][n][i][p] : 0.0;
+          const double rsd_j = (1 == rsd) ? KG[1][n][i][p] : 0.0;
+          const double K_i = dd_i + rsd_i;
+          const double K_j = dd_j + rsd_j;
+          if (NULL != table) {
+            sum    += wt*maskp*K_i*K_j*KP[n][i][p];
+          }
+          if (NULL != table_lin) {
+            sumlin += wt*maskp*K_i*K_j*KL[n][i][p];
+          }
+          if (NULL != table_dd) {
+            sumdd  += wt*maskp*dd_i*dd_j*KP[n][i][p];
+          }
+          if (NULL != table_dd_lin) {
+            sumddl += wt*maskp*dd_i*dd_j*KL[n][i][p];
+          }
+        }
+        if (NULL != table) {
+          table[n][i] = sum;
+        }
+        if (NULL != table_lin) {
+          table_lin[n][i] = sumlin;
+        }
+        if (NULL != table_dd) {
+          table_dd[n][i] = sumdd;
+        }
+        if (NULL != table_dd_lin) {
+          table_dd_lin[n][i] = sumddl;
+        }
+      }
+    }
+  }
+
+  free((void*) WB);
+  if (NULL != KG) {
+    free((void*) KG);
+  }
+  free((void*) KP);
+  if (NULL != KL) {
+    free((void*) KL);
+  }
+  free((void*) MASKP);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-pair Limber C_l^gg at explicit multipoles: builds the pair
+// nodes, runs the batch above for the full model alone, and releases
+// the nodes. The node build is a few thousand chi/growth reads per
+// pair - no caching, so there is no invalidation state to maintain.
+//
+// Parameters:
+//   ells - multipole values (length nell)
+//   nell - number of multipole values
+//   out  - output [gg_cross_npairs][nell]
+// ---------------------------------------------------------------------------
+static void C_gg_cross_tomo_limber_nointerp_ells(
+    const double* ells,  // multipole values (length nell)
+    const int nell,      // number of multipole values
+    double** out         // output [gg_cross_npairs][nell]
+  )
+{
+  const int npairs = gg_cross_npairs;
+  const size_t nsize_integration = 128 + 64*Ntable.high_def_integration;
+  gsl_integration_glfixed_table* w =
+      gsl_integration_glfixed_table_alloc(nsize_integration);
+  if (NULL == w) {
+    log_fatal("GSL rule allocation failed");
+    exit(1);
+  }
+
+  cosmo_nodes* cn_all =
+      (cosmo_nodes*) malloc(sizeof(cosmo_nodes)*npairs);
+  if (NULL == cn_all) {
+    log_fatal("array allocation failed");
+    exit(1);
+  }
+  for (int n=0; n<npairs; n++) {
+    cn_all[n] = create_cosmo_nodes_lens_pair(gg_cross_i[n],
+                                             gg_cross_j[n], w);
+  }
+
+  C_gg_cross_tomo_limber_work(cn_all, ells, nell, out,
+                              NULL, NULL, NULL);
+
+  for (int n=0; n<npairs; n++) {
+    free_cosmo_nodes(&cn_all[n]);
+  }
+  free(cn_all);
+  gsl_integration_glfixed_table_free(w);
+}
+
+// ---------------------------------------------------------------------------
+// The Fourier-space gg cross block: one spectrum per installed pair at
+// the band centers of the data vector. Limber at every multipole for
+// now: the non-Limber correction of the pairs (the low-rank G_i G_j
+// product against the four-term Limber subtraction, reusing the auto
+// run's transforms) is the designed next step, and until it lands this
+// entry point is honest about what it computes.
+//
+// Parameters:
+//   ells - band centers (length nell)
+//   nell - number of band centers
+//   out  - output [gg_cross_npairs][nell]
+// ---------------------------------------------------------------------------
+void C_gg_cross_tomo_ells(
+    const double* ells,  // band centers (length nell)
+    const int nell,      // number of band centers
+    double** out         // output [gg_cross_npairs][nell]
+  )
+{
+  if (gg_cross_npairs <= 0) {
+    log_fatal("C_gg_cross_tomo_ells: no pair list installed "
+              "(set_gg_cross_pairs)");
+    exit(1);
+  }
+  C_gg_cross_tomo_limber_nointerp_ells(ells, nell, out);
+}

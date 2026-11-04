@@ -2289,6 +2289,45 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 }
 
 // ---------------------------------------------------------------------------
+// Install the gg cross-pair list of a thin-bin survey. pairs_flat =
+// [i0, j0, i1, j1, ...], the init_ggl_exclude flattening: each (i, j)
+// becomes one spectrum of the gg-cross block the extended data vector
+// appends after the auto gg block, in this order. An empty list
+// restores the auto-only behavior. Pair validation (0 <= i < j <
+// clustering_nbin, the pair cap) lives in set_gg_cross_pairs
+// (cosmo2D.c), which this wrapper feeds.
+//
+// Cache invalidation:
+// bumps Ntable.random, so every consumer of the layout rebuilds.
+//
+// Parameters:
+//   pairs_flat - flat (i0, j0, i1, j1, ...) pair list
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_gg_cross_pairs(arma::Col<int> pairs_flat)
+{
+  static constexpr std::string_view fname = "init_gg_cross_pairs"sv;
+  debug("{}: {}", fname, errbegins);
+  if (0 != pairs_flat.n_elem % 2) {
+    critical("{}: odd flattened pair list ({} entries)", fname,
+             pairs_flat.n_elem);
+    exit(1);
+  }
+  const int npairs = static_cast<int>(pairs_flat.n_elem) / 2;
+  arma::Col<int> bi(npairs);
+  arma::Col<int> bj(npairs);
+  for (int n=0; n<npairs; n++) {
+    bi(n) = pairs_flat(2*n);
+    bj(n) = pairs_flat(2*n + 1);
+  }
+  set_gg_cross_pairs(bi.memptr(), bj.memptr(), npairs);
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: npairs = {}; {}", fname, npairs, errends);
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

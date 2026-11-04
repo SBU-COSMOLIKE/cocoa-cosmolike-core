@@ -95,6 +95,17 @@ int get_lowrank_DD_GG_nrank(void);
 
 int get_lowrank_DD_GG_lmax(void);
 
+// gg cross pairs for thin-bin surveys (the cross-pair section at the
+// end of cosmo2D.c): the measured pair list, each pair one spectrum of
+// the data vector's appended gg-cross block; npairs = 0 (the default)
+// keeps every pre-existing project on its exact auto-only path
+void set_gg_cross_pairs(const int* bi, const int* bj, const int npairs);
+
+int get_gg_cross_npairs(void);
+
+void C_gg_cross_tomo_ells(const double* ells, const int nell,
+                          double** out);
+
 double C_ks_tomo_limber(const double l, const int ni);
 
 double C_gk_tomo_limber(const double l, const int ni);

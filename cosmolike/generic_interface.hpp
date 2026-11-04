@@ -793,6 +793,10 @@ void init_ggl_exclude(
 	arma::Col<int> ggl_exclude
   );
 
+void init_gg_cross_pairs(
+	arma::Col<int> pairs_flat
+  );
+
 // omega_nu_h2 = omega_nu h^2 of the massive neutrinos (CAMB's omnuh2);
 // the default 0 keeps a three-argument caller compiling
 void set_cosmological_parameters(
