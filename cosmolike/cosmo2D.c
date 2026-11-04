@@ -10623,10 +10623,15 @@ static double** C_cl_tomo_lowrank_core(
       exit(1);
     }
   }
-  // per-thread scratch of the rank assembly below: GQ[2t] = ln k at the
-  // chi nodes, GQ[2t+1] = the accumulating rank sum G (the KPN idiom of
-  // C_gg_tomo_limber_work)
-  double** GQ = (double**) malloc2d(2*omp_get_max_threads(), nchi);
+  // per-thread scratch of the rank assembly below: GQ[t] = the
+  // accumulating rank sum G (the KPN idiom of C_gg_tomo_limber_work)
+  double** GQ = (double**) malloc2d(omp_get_max_threads(), nchi);
+  // ln k at the chi nodes of each multipole in the current block. The
+  // wavenumber grid y[i][k][q] = (k+1)/x[Nx-1-q] never depends on the
+  // bin, so neither does its logarithm: one [BLOCK][nchi] table per
+  // block replaces recomputing nchi logarithms per (bin, multipole) in
+  // the rank-assembly pass (a factor nbins = 76 fewer log calls here).
+  double** lnk_block = (double**) malloc2d(BLOCK, nchi);
   int converged[nbins]; // per lens bin
   int row_done[SIZE1];  // per radial row: a bin freezes all its rows
   for (int i=0; i<nbins; i++) {
@@ -10692,6 +10697,20 @@ static double** C_cl_tomo_lowrank_core(
                      SIZE1,
                      SIZE2);
 
+    // ln k at this block's chi nodes, once per block (see lnk_block's
+    // declaration). p2 has just filled the shared wavenumber rows
+    // y_rows[k] for k in [ks, ke), so their logarithms are ready to
+    // take; real_coverH0 converts the c/H0-unit grid to 1/Mpc, the
+    // argument convention of the decomposition's ln k axis.
+    #pragma omp parallel for schedule(static)
+    for (int k=ks; k<ke; k++) {
+      double* restrict lnk_row = lnk_block[k - ks];
+      const double* restrict ty = y_rows[k];
+      for (int q=0; q<nchi; q++) {
+        lnk_row[q] = log(ty[q]*real_coverH0);
+      }
+    }
+
     for (int i=0; i<nbins; i++) {
       if (converged[i] || ks >= LMAX[i]) continue;
       const int kk = (ke < LMAX[i]) ? ke : LMAX[i];
@@ -10732,17 +10751,16 @@ static double** C_cl_tomo_lowrank_core(
       // G^2 carries its own power spectrum - sqrtPg_kfactor is
       // sqrt(P)-valued - so unlike the FKEM term there is no p_lin
       // factor here. The rank tables are hoisted as restrict locals;
-      // ln k at the chi nodes is computed once and reused by every
-      // rank's interpolation. Deterministic at any thread count: each
-      // (k, q) is written by one thread, the rank sum runs in a fixed
-      // order.
+      // ln k at the chi nodes comes from the per-block table
+      // lnk_block (bin-independent; filled right after p2 above).
+      // Deterministic at any thread count: each (k, q) is written by
+      // one thread, the rank sum runs in a fixed order.
       #pragma omp parallel for schedule(static)
       for (int k=ks; k<kk; k++) {
-        double* restrict lnkq = GQ[2*omp_get_thread_num()];
-        double* restrict gq   = GQ[2*omp_get_thread_num() + 1];
+        double* restrict gq = GQ[omp_get_thread_num()];
+        const double* restrict lnkq = lnk_block[k - ks];
         const double* restrict ty = y[i][k];
         for (int q=0; q<nchi; q++) {
-          lnkq[q] = log(ty[q]*real_coverH0);
           gq[q] = 0.0;
         }
         for (int rr=0; rr<nrank; rr++) {
@@ -10800,6 +10818,7 @@ static double** C_cl_tomo_lowrank_core(
   }
 
   free((void*) GQ);
+  free((void*) lnk_block);
   free((void*) active);
   free((void*) toutfwd);
   free((void*) eta_m);
