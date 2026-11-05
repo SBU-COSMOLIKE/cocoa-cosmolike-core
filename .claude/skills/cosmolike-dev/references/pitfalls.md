@@ -134,3 +134,21 @@ preprocessor-guard fallback path.
   algorithmic change.
 - **Fix/rule:** renames are separate, mechanical commits. Functional patches
   preserve surrounding naming and structure exactly.
+
+## 13. Model state outside the reset structs survives `initial_setup`
+
+- **Symptom:** a process that builds a second likelihood (a Fisher
+  notebook combining probes, a test sweep over examples) dies in a
+  bin-index check, e.g. `gbmag: error in selecting bin number ni = 6`
+  with five lens bins, or silently computes spectra of the previous
+  model's layout.
+- **Cause:** `initial_setup` resets the global structs (`reset_*_struct`),
+  but a file-scope static in a module (here the gg cross-pair list of
+  `cosmo2D.c`) is not part of any struct. A likelihood that never calls
+  that module's setter (a project without cross pairs) inherits the
+  previous model's value.
+- **Fix/rule:** every model-defining static gets cleared in
+  `initial_setup` (`set_gg_cross_pairs(NULL, NULL, 0)` since 2026-11-04).
+  A new static setter must add its reset there in the same patch.
+  Validate by building a model with the feature, then one without it,
+  in one process.

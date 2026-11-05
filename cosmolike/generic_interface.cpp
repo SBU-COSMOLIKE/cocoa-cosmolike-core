@@ -458,6 +458,12 @@ void initial_setup()
   reset_like_struct();
   reset_cmb_struct();
 
+  // The gg cross-pair list lives in cosmo2D.c, outside the structs
+  // above. Clear it too: a model built after a pair-carrying one in
+  // the same process would otherwise inherit pairs between bins it
+  // may not have.
+  set_gg_cross_pairs(NULL, NULL, 0);
+
   like.adopt_limber[LIMBER_GG] = 0;
   like.adopt_limber[LIMBER_GS] = 1;
 
