@@ -1004,9 +1004,12 @@ FASTPT_FROZEN_SETTINGS = {
 # check (CocoaTestHarness.random_model_accuracy): model m draws its
 # point from numpy.random.default_rng(RANDOM_MODEL_SEED + m). The value
 # 137 is arbitrary; what matters is that it is fixed, so two runs (on
-# any machine) evaluate the same points, and that each model has its
-# own seed, so model m's point does not depend on how many models a
-# run asks for.
+# any machine) evaluate the same points and draw the same figure, and
+# that each model has its own seed, so model m's point does not depend
+# on how many models a run asks for. A project may pass its own base
+# (accuracy_suite's nmodels_seed), and a user may set one for a run
+# with COCOA_ACCURACY_NMODELS_SEED; the report and the figure's file
+# name state the base used.
 RANDOM_MODEL_SEED = 137
 
 # The EuclidEmulator2 commit that precedes the Cocoa modifications, in
@@ -1335,6 +1338,28 @@ TEST {number}: {label}
   -> {'OK' if delta < tol else 'EXCEEDS LIMIT'}
 {'-' * 66}""", flush=True)
     return delta
+
+
+def held_parameter(name, hold):
+    """Return whether the N-random-models hold list covers one parameter.
+
+    An entry ending in "_" is a name prefix (LSST_B1_ covers LSST_B1_1
+    to LSST_B1_5); any other entry is an exact name.
+
+    Arguments:
+      name = a sampled parameter name.
+      hold = the hold list, a tuple of names and prefixes.
+
+    Returns:
+      True when an entry covers the name.
+    """
+    for entry in hold:
+        if entry.endswith("_"):
+            if name.startswith(entry):
+                return True
+        elif name == entry:
+            return True
+    return False
 
 
 def report_random_model(index, n_models, point, chi2_high):
@@ -2436,7 +2461,7 @@ class CocoaTestHarness:
 
     # ---- worker-subprocess isolation ----------------------------------------
     # ---- the N-random-models check -------------------------------------------
-    def draw_uniform_point(self, info, example, rng):
+    def draw_uniform_point(self, info, example, rng, box_overrides=None):
         """Draw one random sampled-parameter point across the priors.
 
         Every freely varied parameter with a uniform box prior (a
@@ -2450,6 +2475,13 @@ class CocoaTestHarness:
         inside those Gaussian priors while the box-prior parameters
         explore the full volume.
 
+        A box override narrows the box of one parameter for the draw
+        (a project whose examples tightened a prior after the freeze
+        passes the new box instead of refreezing). The draw still
+        consumes one random number per parameter in the same order, so
+        an override changes only that parameter's values: every other
+        parameter of a seeded point is the same with and without it.
+
         Arguments:
           info    = the cobaya input dictionary of the frozen
                     configuration (a load_frozen_info result); its
@@ -2459,6 +2491,9 @@ class CocoaTestHarness:
                     covers.
           rng     = a numpy random Generator; the caller seeds it,
                     which is what makes the draw reproducible.
+          box_overrides = None, or {parameter name: (min, max)}: the
+                    box to draw that parameter from instead of its
+                    frozen one (random_model_accuracy validates it).
 
         Returns:
           {parameter name: value} with the same names as the frozen
@@ -2479,14 +2514,19 @@ class CocoaTestHarness:
             # box
             if isinstance(prior, dict) and "min" in prior and "max" in prior:
                 # a uniform box prior: the draw is a prior sample
-                drawn[name] = float(rng.uniform(prior["min"], prior["max"]))
+                low = prior["min"]
+                high = prior["max"]
+                if box_overrides is not None and name in box_overrides:
+                    low, high = box_overrides[name]
+                drawn[name] = float(rng.uniform(low, high))
             else:
                 # Gaussian prior or no prior: keep the frozen value
                 drawn[name] = point[name]
         return drawn
 
     def random_model_accuracy(self, example, n_models,
-                              seed=RANDOM_MODEL_SEED):
+                              seed=RANDOM_MODEL_SEED, points_out=None,
+                              box_overrides=None, hold=None):
         """Return delta chi2 at N random prior points, each against its own vector.
 
         The accuracy checks measure the numerical error of the default
@@ -2538,6 +2578,23 @@ class CocoaTestHarness:
           seed     = base of the per-model rng seeds (seed + m);
                      RANDOM_MODEL_SEED unless a caller needs a second,
                      different reproducible set.
+          points_out = None, or a list the caller owns: each drawn
+                     point is appended to it as a {name: value} dict,
+                     in model order, for the N-random-models figure.
+                     The return value is the same either way.
+          box_overrides = None, or {parameter name: (min, max)}: a
+                     narrower box for a box-prior parameter (see
+                     draw_uniform_point); each must lie inside the
+                     frozen box.
+          hold     = None, or a tuple of parameter names (an entry
+                     ending in "_" is a name prefix; held_parameter):
+                     every odd model (m = 1, 3, ...) resets them to the
+                     frozen point after the draw, so its delta chi2
+                     measures what the remaining drawn parameters do to
+                     the accuracy; even models keep the full draw.
+                     Alternating, rather than splitting the run in
+                     halves, keeps each model's kind independent of
+                     n_models.
 
         Returns:
           the list of per-model delta chi2 values (floats), in model
@@ -2558,6 +2615,43 @@ class CocoaTestHarness:
 
         cfg = self.examples[example]
         frozen_data_dir = os.path.join(self.frozen_dir, "data")
+        # the overrides are checked before any model is built (each
+        # costs minutes): a box-prior parameter, min < max, and a box
+        # inside the frozen one
+        if box_overrides is not None:
+            frozen_params = self.load_frozen_info(example, tatt=False)["params"]
+            for name in box_overrides:
+                low, high = box_overrides[name]
+                spec = frozen_params.get(name)
+                prior = None
+                if isinstance(spec, dict):
+                    prior = spec.get("prior")
+                if not (isinstance(prior, dict) and "min" in prior
+                        and "max" in prior):
+                    raise ValueError(
+                        f"box override for {name!r}: {example} has no "
+                        "box prior for it in its frozen configuration; "
+                        "override only parameters with a min/max prior")
+                if not (prior["min"] <= low < high <= prior["max"]):
+                    raise ValueError(
+                        f"box override for {name!r} is ({low}, {high}); "
+                        "it must satisfy min < max inside the frozen box "
+                        f"({prior['min']}, {prior['max']})")
+        # the hold list is checked before any model is built: every
+        # entry must cover at least one sampled parameter
+        frozen_point = self.load_frozen_point(example)
+        if hold is not None:
+            for entry in hold:
+                covered = False
+                for name in frozen_point:
+                    if held_parameter(name, (entry,)):
+                        covered = True
+                if not covered:
+                    raise ValueError(
+                        f"hold entry {entry!r} covers no sampled "
+                        f"parameter of {example} "
+                        f"({sorted(frozen_point)}): use an exact name, "
+                        "or a prefix ending in '_'")
         deltas = []
         for m in range(n_models):
             rng = np.random.default_rng(seed + m)
@@ -2565,7 +2659,21 @@ class CocoaTestHarness:
             # also supplies the prior boxes the draw reads
             info = self.load_frozen_info(example, tatt=False)
             likelihood_block = info["likelihood"][cfg["likelihood"]]
-            point = self.draw_uniform_point(info, example, rng)
+            point = self.draw_uniform_point(info, example, rng,
+                                            box_overrides=box_overrides)
+            if hold is not None and m % 2 == 1:
+                # an odd model keeps the held parameters at the frozen
+                # point: its delta chi2 then measures what the other
+                # drawn parameters do to the accuracy
+                for name in point:
+                    if held_parameter(name, hold):
+                        point[name] = frozen_point[name]
+                print(f"  model {m + 1}/{n_models}: held at the "
+                      f"fiducial: {', '.join(hold)}", flush=True)
+            if points_out is not None:
+                # a copy, so a later change to the point cannot alter
+                # the record the caller keeps
+                points_out.append(dict(point))
             # mkdtemp creates a fresh private directory; this model's
             # vector, descriptor, and symlinks live and die inside it
             workdir = tempfile.mkdtemp(prefix="cocoa_random_model_")

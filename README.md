@@ -705,9 +705,42 @@ points drawn across the prior: per point, draw, generate a synthetic
 data vector at that point with the default settings (the zero-baseline
 mechanism), and evaluate the high-accuracy chi2 against it. The draws
 are seeded, so every run draws exactly the same points and the numbers
-compare across reruns and machines. The report streams one block per
-model and ends with the min/median/max delta chi2; advisory, the
-deltas only have to be finite. Each model costs a default and a
+compare across reruns and machines: model $m$ uses the seed $137 + m$
+(`RANDOM_MODEL_SEED`), a project may set another base, and a user may
+set one for a run with `COCOA_ACCURACY_NMODELS_SEED`. The draw reads
+the prior boxes of the frozen configuration; a project whose examples
+tightened a box after the freeze passes the narrower box to the check
+(`nmodels_box` of `accuracy_suite`) instead of refreezing. The draw
+consumes the same random numbers either way, so an override changes
+only that parameter's values. With a hold list (`nmodels_hold`), every
+odd model resets the listed parameters to the fiducial after its draw,
+so half of the models measure what the other parameters do to the
+accuracy; alternating keeps each model's kind independent of the
+number of models. The report
+streams one block per model and ends with the min/median/max delta
+chi2. The check is advisory, so the deltas only have to be finite,
+unless the project sets a pass limit (`nmodels_limit` of
+`accuracy_suite`).
+
+The check also draws each point's delta chi2 against the two
+quantities that set it, and prints the file path: the matter density
+$\Omega_m$ (a higher $\Omega_m$ raises the shear signal and pushes the
+matter power deeper into the nonlinear regime, where the relative
+error itself grows) and, when the configuration samples linear galaxy
+biases, the largest clustering-amplitude ratio
+$A_s b_i^2/(A_s b_i^2)_{\rm fid}$ over the lens bins (a numerical
+error that is a fixed fraction of the signal grows by that ratio, and
+its delta chi2 against the fiducial covariance by the ratio squared).
+The figure is a triangle: the diagonal panels show delta chi2
+against each quantity, and the lower panel shows $\Omega_m$ against the
+amplitude ratio, colored by delta chi2, which tells whether a failing
+point at low amplitude sits at high $\Omega_m$. All x axes are linear
+and the delta chi2 axes are logarithmic. The figure goes into the
+folder
+`COCOA_ACCURACY_NMODELS_FIGURES` names, or into the system temporary
+folder when the variable is unset, so an ordinary run changes no
+project file; its name carries the example and the seed base
+(`accuracy_nmodels_<example>_seed<base>.png`). Each model costs a default and a
 high-accuracy build-plus-evaluation, minutes per model, so the check
 is off by default: with `COCOA_ACCURACY_NMODELS` unset (or 0) it
 prints how to enable itself and passes.

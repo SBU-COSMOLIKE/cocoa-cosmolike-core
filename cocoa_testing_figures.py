@@ -1,18 +1,30 @@
-"""The shared machinery of the photo-z convention figure scripts.
+"""The shared figures of the data-vector checks.
 
-Every project's tests/data_vector/generate_photoz_convention_figure.py
-evaluates the frozen cosmic-shear fiducial under the four runtime
-photo-z settings (cspline/Z_LOW default, linear, Steffen, Z_MID; see
-the core README's shared data-vector checks for what they mean) and
-plots the fractional data-vector differences against the default, per
-tomographic pair and per angular bin. The machinery is the same in
-every project, so it lives here; the thin script keeps the survey
-data (binning, mask file, panel grid) and calls
-photoz_convention_figures with it.
+Two figure families live here.
 
-This module imports matplotlib, so the test shims never import it:
-only the figure scripts do, directly, after their own
-OMP_NUM_THREADS line.
+The photo-z convention figures: every project's
+tests/data_vector/generate_photoz_convention_figure.py evaluates the
+frozen cosmic-shear fiducial under the four runtime photo-z settings
+(cspline/Z_LOW default, linear, Steffen, Z_MID; see the core README's
+shared data-vector checks for what they mean) and plots the fractional
+data-vector differences against the default, per tomographic pair and
+per angular bin. The machinery is the same in every project, so it
+lives here; the thin script keeps the survey data (binning, mask file,
+panel grid) and calls photoz_convention_figures with it.
+
+The N-random-models figure: the N-random-models accuracy check
+(test_ax99_nmodels of every project's test_accuracy.py) draws N
+reproducible points across the prior and scores each with the pushed
+accuracy settings against its own default-settings vector.
+random_models_triangle draws each point's delta chi2 against the two
+quantities that set it, Omega_m and the clustering amplitude A_s b^2,
+plus the plane of the two, so the reader sees where in the prior the
+numerical error grows.
+
+This module imports matplotlib, so the test shims never import it at
+module level: the figure scripts import it after their own
+OMP_NUM_THREADS line, and the N-random-models check imports it inside
+its test method, after the models are evaluated.
 """
 
 import os
@@ -268,3 +280,227 @@ def photoz_convention_figures(u, out_dir, kind, ntomo, nlen,
           "interpolation vs cubic spline (frozen fiducial)",
           grid, x, x_label, y_label_1em4, real, panel_fontsize,
           scale=1.0e4, ylim=INTERP_YLIM)
+
+
+# ---- the N-random-models figure ---------------------------------------------
+
+# The floor of the delta chi2 axes and of the color scale: a
+# logarithmic axis has no place for zero, and two settings whose chi2
+# agree to 1e-6 are identical for every purpose of the 0.2 budget
+NMODELS_DELTA_FLOOR = 1.0e-6
+
+# The top of the delta chi2 color scale: the scale resolves the range
+# around the 0.2 limit, and every delta above 100 is far outside the
+# budget, so those points saturate at the top color instead of
+# stretching the scale over decades nothing distinguishes
+NMODELS_COLOR_CEILING = 100.0
+
+# Every project names its linear galaxy-bias parameters
+# <SURVEY>_B1_<bin> (LSST_B1_1, DESI_B1_3, ...); the tag finds them
+LINEAR_BIAS_TAG = "_B1_"
+
+
+def random_models_amplitude(point, fiducial):
+    """Return the largest clustering-amplitude ratio of one drawn point.
+
+    The galaxy power spectrum of lens bin i is proportional to
+    A_s b_i^2. A numerical error that is a fixed fraction of the signal
+    therefore grows by A_i = (A_s b_i^2) / (A_s b_i^2)_fid at a drawn
+    point, and its delta chi2 against a covariance held at the
+    fiducial grows by A_i^2. The figure plots the largest A_i of each
+    point: the lens bin whose error is amplified most.
+
+    Arguments:
+      point    = the drawn {parameter name: value} point.
+      fiducial = the frozen {parameter name: value} point, with the
+                 same names.
+
+    Returns:
+      the largest A_i as a float, or None when the point samples no
+      linear bias (a cosmic-shear configuration) or no As_1e9.
+    """
+    if "As_1e9" not in point:
+        return None
+    as_ratio = point["As_1e9"] / fiducial["As_1e9"]
+    largest = None
+    for name in point:
+        if LINEAR_BIAS_TAG not in name:
+            continue
+        bias_ratio = point[name] / fiducial[name]
+        amplitude = as_ratio * bias_ratio**2
+        if largest is None or amplitude > largest:
+            largest = amplitude
+    return largest
+
+
+def random_models_triangle(points, deltas, fiducial, path, limit,
+                           colorbarlabel, held=None):
+    """Draw the N-random-models delta chi2 as an Omega_m - amplitude triangle.
+
+    Two quantities set the numerical error of a random point. The
+    matter density Omega_m raises the shear signal and pushes the
+    matter power deeper into the nonlinear regime, where the relative
+    error itself grows. The clustering-amplitude ratio of
+    random_models_amplitude multiplies the galaxy power, so a fixed
+    relative error grows by its square against the fiducial
+    covariance. The two often move together, so the figure is a
+    triangle: the diagonal panels show delta chi2 against each
+    quantity (logarithmic delta chi2, the limit as a dashed line), and
+    the lower panel shows Omega_m against the amplitude ratio, which
+    tells whether a failing point at low amplitude sits at high
+    Omega_m. All x axes are linear. Every point is colored by its
+    delta chi2 on one logarithmic scale shared by the panels and the
+    color bar, and the largest deltas are drawn last, on top. A
+    configuration that samples no linear bias (cosmic shear) draws the
+    Omega_m panel only.
+
+    Models that held Omega_m, As and the biases at the fiducial (the
+    odd models of a run with a hold list) are drawn as black-edged
+    diamonds: they stack at Omega_m = fiducial and amplitude ratio 1,
+    and the height of the stack is the error the other parameters
+    cause.
+
+    Arguments:
+      points        = the drawn points, one {parameter name: value}
+                      dict per model, in model order; they must
+                      include omegam.
+      deltas        = the per-model delta chi2 floats, in the same
+                      order.
+      fiducial      = the frozen {parameter name: value} point.
+      path          = the PNG path to write.
+      limit         = the delta chi2 of the dashed line (the pass
+                      limit, or the 0.2 band of an advisory check).
+      colorbarlabel = the text of the color bar.
+      held          = None, or one bool per model: True draws the
+                      model as a held diamond.
+
+    Returns:
+      nothing; the PNG file is written and the figure closed.
+
+    Raises:
+      ValueError when the points and the deltas differ in number, when
+      a delta is not finite, or when the points do not sample omegam.
+    """
+    from matplotlib.colors import LogNorm
+    from matplotlib.lines import Line2D
+
+    if len(points) != len(deltas):
+        raise ValueError(
+            f"{len(points)} points but {len(deltas)} delta chi2 values: "
+            "pass one delta per drawn point, in model order")
+    delta_values = np.array(deltas, dtype=float)
+    if not np.all(np.isfinite(delta_values)):
+        raise ValueError(
+            f"non-finite delta chi2 among {deltas}: every model must "
+            "evaluate before the figure is drawn")
+    if "omegam" not in points[0]:
+        raise ValueError(
+            f"the points do not sample omegam (names {list(points[0])}): "
+            "the figure needs the drawn matter density")
+    # a delta chi2 is a chi2 against the point's own vector, so it is
+    # negative only by round-off; the floor puts zero on the log axes
+    delta_plot = np.maximum(np.abs(delta_values), NMODELS_DELTA_FLOOR)
+    omegam = np.array([point["omegam"] for point in points])
+    amplitudes = []
+    for point in points:
+        amplitudes.append(random_models_amplitude(point, fiducial))
+    has_amplitude = amplitudes[0] is not None
+    omegam_label = r"$\Omega_\mathrm{m}$"
+    amplitude_label = r"$A_\mathrm{s} b^2/(A_\mathrm{s} b^2)_\mathrm{fid}$"
+
+    delta_low = min(float(np.min(delta_plot)), limit) / 3.0
+    delta_high = max(float(np.max(delta_plot)), limit) * 3.0
+    # the scale stops at NMODELS_COLOR_CEILING: larger deltas saturate
+    color_high = NMODELS_COLOR_CEILING
+    color_low = min(float(np.min(delta_plot)), color_high / 10.0)
+    norm = LogNorm(vmin=color_low, vmax=color_high, clip=True)
+    if held is None:
+        held_mask = np.zeros(len(points), dtype=bool)
+    else:
+        held_mask = np.array(held, dtype=bool)
+    # each kind of model, drawn in its own call: (index array, marker,
+    # edge color, legend label). argsort lists a kind's models from the
+    # smallest delta to the largest, so the largest land on top.
+    kinds = []
+    for mask, marker, edge, label in (
+            (~held_mask, "o", "white", "drawn across the prior"),
+            (held_mask, "D", "black",
+             r"$\Omega_\mathrm{m}$, $A_\mathrm{s}$, $b$ at the fiducial")):
+        indices = np.nonzero(mask)[0]
+        if len(indices) == 0:
+            continue
+        indices = indices[np.argsort(delta_plot[indices])]
+        kinds.append((indices, marker, edge, label))
+
+    def scatter_kinds(ax, x_values, y_values):
+        """Draw every kind of model at (x, y); return the last mappable."""
+        mappable = None
+        for indices, marker, edge, label in kinds:
+            mappable = ax.scatter(x_values[indices], y_values[indices],
+                                  c=delta_plot[indices], cmap="viridis",
+                                  norm=norm, s=55, marker=marker,
+                                  edgecolors=edge, linewidths=0.6)
+        return mappable
+
+    def delta_panel(ax, x_values):
+        """One diagonal panel: delta chi2 against one quantity."""
+        mappable = scatter_kinds(ax, x_values, delta_plot)
+        ax.set_yscale("log")
+        ax.set_ylim(delta_low, delta_high)
+        ax.axhline(limit, color="0.5", linestyle="--", linewidth=1.0)
+        ax.grid(alpha=0.3)
+        return mappable
+
+    if not has_amplitude:
+        fig, ax = plt.subplots(figsize=(5.8, 4.6))
+        mappable = delta_panel(ax, omegam)
+        ax.set_xlabel(omegam_label, fontsize=13)
+        ax.set_ylabel(r"$\Delta\chi^2$", fontsize=13)
+        # extend="max" draws the triangle that marks the saturation
+        colorbar = fig.colorbar(mappable, ax=ax, pad=0.02, extend="max")
+        legend_axes = ax
+        legend_place = "upper left"
+    else:
+        amplitude = np.array(amplitudes)
+        fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(9.5, 9),
+                                 gridspec_kw={"wspace": 0.06,
+                                              "hspace": 0.06})
+        # top left: delta chi2 against Omega_m, sharing the x range of
+        # the plane below it
+        delta_panel(axes[0][0], omegam)
+        axes[0][0].set_ylabel(r"$\Delta\chi^2$", fontsize=13)
+        axes[0][0].tick_params(labelbottom=False)
+        # bottom left: the Omega_m - amplitude plane
+        mappable = scatter_kinds(axes[1][0], omegam, amplitude)
+        axes[1][0].set_xlabel(omegam_label, fontsize=13)
+        axes[1][0].set_ylabel(amplitude_label, fontsize=13)
+        axes[1][0].grid(alpha=0.3)
+        axes[0][0].set_xlim(axes[1][0].get_xlim())
+        # bottom right: delta chi2 against the amplitude; its delta
+        # axis moves to the right, the left edge belonging to the row
+        delta_panel(axes[1][1], amplitude)
+        axes[1][1].yaxis.tick_right()
+        axes[1][1].set_xlabel(amplitude_label, fontsize=13)
+        # the empty upper-right corner holds the color bar (figure
+        # coordinates: left, bottom, width, height)
+        axes[0][1].axis("off")
+        colorbar_axes = fig.add_axes([0.60, 0.58, 0.03, 0.30])
+        colorbar = fig.colorbar(mappable, cax=colorbar_axes,
+                                extend="max")
+        # the legend sits in the same empty corner, under the color bar
+        legend_axes = axes[0][1]
+        legend_place = "lower left"
+    colorbar.set_label(colorbarlabel, fontsize=12)
+    if len(kinds) > 1:
+        # the legend names the two kinds by their markers alone (gray,
+        # since the color is the delta chi2)
+        handles = []
+        for indices, marker, edge, label in kinds:
+            handles.append(Line2D([], [], linestyle="", marker=marker,
+                                  markersize=8, markerfacecolor="0.6",
+                                  markeredgecolor=edge, label=label))
+        legend_axes.legend(handles=handles, loc=legend_place,
+                           frameon=False, fontsize=10)
+    fig.savefig(path, dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    print(f"wrote {path}")

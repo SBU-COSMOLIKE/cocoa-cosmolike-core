@@ -346,7 +346,103 @@ def example_suite(u, name, example, label, numbers, tatt_numbers=None):
     return type(name, (unittest.TestCase,), namespace)
 
 
-def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None):
+def _nmodels_seed(project_seed):
+    """Return the seed base of one N-random-models run.
+
+    The project's hard-coded base (accuracy_suite's nmodels_seed, by
+    default RANDOM_MODEL_SEED = 137) applies unless the user sets
+    COCOA_ACCURACY_NMODELS_SEED for the run. Model m draws with
+    base + m, so the same base redraws the same points and the same
+    figure on any machine.
+
+    Arguments:
+      project_seed = the project's base, an int.
+
+    Returns:
+      the base for this run, an int.
+
+    Raises:
+      AssertionError when COCOA_ACCURACY_NMODELS_SEED is set but is
+      not an integer.
+    """
+    seed_text = os.environ.get("COCOA_ACCURACY_NMODELS_SEED", "")
+    if seed_text == "":
+        return project_seed
+    try:
+        return int(seed_text)
+    except ValueError:
+        raise AssertionError(
+            f"COCOA_ACCURACY_NMODELS_SEED={seed_text!r} is not an "
+            "integer: set it to the base seed, for example "
+            f"COCOA_ACCURACY_NMODELS_SEED={project_seed}, or unset it "
+            f"to use this project's base {project_seed}")
+
+
+def _nmodels_figure_dir():
+    """Return the folder the N-random-models figure is written into.
+
+    COCOA_ACCURACY_NMODELS_FIGURES names it. Unset, the figure goes
+    into the system temporary folder, so an ordinary test run changes
+    no project file. The check calls this before evaluating any model,
+    so a wrong folder fails in seconds, not after minutes of models.
+
+    Returns:
+      the folder path.
+
+    Raises:
+      AssertionError when the named folder does not exist.
+    """
+    import tempfile
+
+    figure_dir = os.environ.get("COCOA_ACCURACY_NMODELS_FIGURES", "")
+    if figure_dir == "":
+        return tempfile.gettempdir()
+    if not os.path.isdir(figure_dir):
+        raise AssertionError(
+            f"COCOA_ACCURACY_NMODELS_FIGURES={figure_dir!r} is not an "
+            "existing folder: create it, or unset the variable to write "
+            "the figure into the system temporary folder")
+    return figure_dir
+
+
+def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
+                    held=None):
+    """Draw the N-random-models figure of one example; return its path.
+
+    The file name carries the example and the seed base, so runs with
+    different seeds never overwrite each other and every figure names
+    how to redraw its points. matplotlib is imported here, inside the
+    call, so importing the suites never loads it.
+
+    Arguments:
+      u          = the project's cocoa_test_utils module.
+      example    = the key of u.EXAMPLES the models were drawn for.
+      points     = the drawn points, one {name: value} dict per model.
+      deltas     = the per-model delta chi2, in the same order.
+      figure_dir = the folder of _nmodels_figure_dir.
+      seed       = the seed base of the run.
+      limit      = the delta chi2 of the dashed line.
+      held       = None, or one bool per model: True for a model that
+                   kept the hold list at the frozen point.
+
+    Returns:
+      the PNG path.
+    """
+    import cocoa_testing_figures as figures
+
+    path = os.path.join(figure_dir,
+                        f"accuracy_nmodels_{example}_seed{seed}.png")
+    figures.random_models_triangle(
+        points=points, deltas=deltas,
+        fiducial=u.load_frozen_point(example), path=path, limit=limit,
+        held=held,
+        colorbarlabel=r"$\Delta\chi^2$ (pushed settings $-$ default)")
+    return path
+
+
+def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
+                   nmodels_seed=None, nmodels_limit=None, nmodels_box=None,
+                   nmodels_hold=None):
     """Build the accuracy-advisory class (A-checks, K-scan, N-models).
 
     Arguments:
@@ -364,11 +460,33 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None):
       knob_scan       = the EXAMPLES key the one-knob-at-a-time scan
                         evaluates (the method
                         test_a0_one_knob_at_a_time, reading the
-                        "<key>_nla" reference), or None for a project
-                        without the scan.
+                        "<key>_nla" reference), a tuple of keys for
+                        one scan per example (the first keeps that
+                        name, each further key adds
+                        test_a0_one_knob_at_a_time_<key>), or None
+                        for a project without the scan.
       nmodels_example = an (EXAMPLES key, display label) pair enabling
                         the opt-in N-random-models check
-                        test_ax99_nmodels, or None.
+                        test_ax99_nmodels, a tuple of such pairs for
+                        one check per example (the first keeps that
+                        name, each further key adds
+                        test_ax99_nmodels_<key>), or None.
+      nmodels_seed    = base of the per-model random seeds; None
+                        uses u.RANDOM_MODEL_SEED. A project that
+                        records its points passes the seed explicitly.
+      nmodels_limit   = None keeps the check advisory (finite deltas
+                        only); a number makes every model's
+                        |delta chi2| stay below it.
+      nmodels_box     = None, or {parameter name: (min, max)}: a
+                        narrower box the draw uses for that parameter
+                        instead of the frozen one (examples that
+                        tightened a prior after the freeze; see
+                        draw_uniform_point).
+      nmodels_hold    = None, or a tuple of parameter names and
+                        prefixes ending in "_": every odd model resets
+                        them to the frozen point, so half of the models
+                        measure what the other parameters do to the
+                        accuracy (random_model_accuracy's hold).
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -467,7 +585,12 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None):
         method = make_check(*row)
         setattr(TestAccuracy, method.__name__, method)
 
-    if knob_scan is not None:
+    # the K scans: one method per bound example; a single key (a str)
+    # is the one-scan case every project used before tuples existed
+    scans = ((knob_scan,) if isinstance(knob_scan, str)
+             else tuple(knob_scan or ()))
+
+    def make_scan(example):
         def test_a0_one_knob_at_a_time(self):
             """K scan: each accuracy knob alone (check A0).
 
@@ -479,91 +602,183 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None):
             others) signals an interface breakdown, not a numerics
             improvement.
             """
-            default_ref = self.reference[f"{knob_scan}_nla"]
+            default_ref = self.reference[f"{example}_nla"]
             print("", flush=True)
             # each entry is (label, likelihood overrides, camb
             # overrides); the two _ discard the overrides, only the
             # label is needed here (the worker looks the knob up
             # again by its label)
             for label, _, _ in u.ACCURACY_KNOBS:
-                chi2 = u.single_model_chi2(knob_scan, False,
+                chi2 = u.single_model_chi2(example, False,
                                            knob=label)
-                u.report_knob(label, chi2, default_ref)
+                # with several scans, each line names its example
+                tag = f"{example}: " if len(scans) > 1 else ""
+                u.report_knob(tag + label, chi2, default_ref)
+        return test_a0_one_knob_at_a_time
 
-        TestAccuracy.test_a0_one_knob_at_a_time = \
-            test_a0_one_knob_at_a_time
+    for k, example in enumerate(scans):
+        method = make_scan(example)
+        method.__name__ = ("test_a0_one_knob_at_a_time" if k == 0
+                           else f"test_a0_one_knob_at_a_time_{example}")
+        setattr(TestAccuracy, method.__name__, method)
 
-    if nmodels_example is not None:
-        nm_example, nm_label = nmodels_example
+    # one (example, label) pair is the single-check case every
+    # project used before tuples of pairs existed
+    if nmodels_example is None:
+        nmodels_pairs = ()
+    elif isinstance(nmodels_example[0], str):
+        nmodels_pairs = (tuple(nmodels_example),)
+    else:
+        nmodels_pairs = tuple(tuple(pair) for pair in nmodels_example)
+    nm_seed = u.RANDOM_MODEL_SEED if nmodels_seed is None else nmodels_seed
 
+    def make_nmodels(nm_example, nm_label):
         def test_ax99_nmodels(self):
-            """N-random-models check across the prior. Opt-in, advisory.
+                """N-random-models check across the prior. Opt-in.
 
-            The A-checks measure the numerical error of the default
-            settings at the one frozen fiducial point. This check
-            measures it at N reproducible random points across the
-            prior instead. For each point a synthetic data vector is
-            generated at that point with the default settings, so the
-            default chi2 against it is zero by construction and the
-            high-accuracy chi2 against it is the delta directly (the
-            mechanism lives in u.random_model_accuracy). Nothing
-            fails on a large delta; the deltas only have to be
-            finite.
+                The A-checks measure the numerical error of the default
+                settings at the one frozen fiducial point. This check
+                measures it at N reproducible random points across the
+                prior instead. For each point a synthetic data vector is
+                generated at that point with the default settings, so the
+                default chi2 against it is zero by construction and the
+                high-accuracy chi2 against it is the delta directly (the
+                mechanism lives in u.random_model_accuracy). The
+                deltas have to be finite; with nmodels_limit set, each
+                |delta| must also stay below that limit, otherwise the
+                check is advisory.
 
-            Opt-in because each model costs a default
-            build+evaluation plus a high-accuracy build+evaluation,
-            minutes per model. Enable it with the
-            COCOA_ACCURACY_NMODELS environment variable, for example
+                The points are reproducible: model m draws with the seed
+                base + m, the base being the project's nmodels_seed
+                unless COCOA_ACCURACY_NMODELS_SEED sets another. Before
+                the limit is applied, the check draws the Omega_m -
+                clustering-amplitude triangle of the points
+                (cocoa_testing_figures.random_models_triangle) into the
+                folder COCOA_ACCURACY_NMODELS_FIGURES names, or the
+                system temporary folder, and prints the file path.
 
-                COCOA_ACCURACY_NMODELS=10 python -m pytest \\
-                    <this project's test_accuracy.py> -k nmodels
+                Opt-in because each model costs a default
+                build+evaluation plus a high-accuracy build+evaluation,
+                minutes per model. Enable it with the
+                COCOA_ACCURACY_NMODELS environment variable, for example
 
-            or with --nmodels N when the file runs as a script. The
-            ax99 in the method name sorts this check after the
-            A-checks (unittest runs methods in name order), so the
-            cheap fiducial checks always report before the expensive
-            multi-model loop starts.
-            """
-            import math
-            # .get returns its second argument, "0", when the
-            # variable is unset, so an untouched environment means a
-            # clean skip
-            n_models_text = os.environ.get(
-                "COCOA_ACCURACY_NMODELS", "0")
-            # int() raises ValueError on non-numeric text; the except
-            # turns the stack trace into an instruction
-            try:
-                n_models = int(n_models_text)
-            except ValueError:
-                raise AssertionError(
-                    f"COCOA_ACCURACY_NMODELS={n_models_text!r} is "
-                    "not an integer; set it to the number of random "
-                    "models, for example COCOA_ACCURACY_NMODELS=10")
-            if n_models <= 0:
-                # the default: report how to enable the check and
-                # pass without building anything
-                print("\n  N-random-models check skipped (set "
-                      "COCOA_ACCURACY_NMODELS=<N>, or run this file "
-                      "with --nmodels <N>, to enable it).",
+                    COCOA_ACCURACY_NMODELS=10 python -m pytest \\
+                        <this project's test_accuracy.py> -k nmodels
+
+                or with --nmodels N when the file runs as a script. The
+                ax99 in the method name sorts this check after the
+                A-checks (unittest runs methods in name order), so the
+                cheap fiducial checks always report before the expensive
+                multi-model loop starts.
+                """
+                import math
+                # .get returns its second argument, "0", when the
+                # variable is unset, so an untouched environment means a
+                # clean skip
+                n_models_text = os.environ.get(
+                    "COCOA_ACCURACY_NMODELS", "0")
+                # int() raises ValueError on non-numeric text; the except
+                # turns the stack trace into an instruction
+                try:
+                    n_models = int(n_models_text)
+                except ValueError:
+                    raise AssertionError(
+                        f"COCOA_ACCURACY_NMODELS={n_models_text!r} is "
+                        "not an integer; set it to the number of random "
+                        "models, for example COCOA_ACCURACY_NMODELS=10")
+                if n_models <= 0:
+                    # the default: report how to enable the check and
+                    # pass without building anything
+                    print("\n  N-random-models check skipped (set "
+                          "COCOA_ACCURACY_NMODELS=<N>, or run this file "
+                          "with --nmodels <N>, to enable it).",
+                          flush=True)
+                    return
+                run_seed = _nmodels_seed(nm_seed)
+                # checked before the models run, which take minutes
+                figure_dir = _nmodels_figure_dir()
+                print(f"\n  N-random-models check: {n_models} models, "
+                      f"{nm_label}, seed base {run_seed}",
                       flush=True)
-                return
-            print(f"\n  N-random-models check: {n_models} models, "
-                  f"{nm_label}, seed base {u.RANDOM_MODEL_SEED}",
-                  flush=True)
-            deltas = u.random_model_accuracy(nm_example, n_models)
-            # enumerate pairs each delta with its position, counted
-            # from 0, so a broken model is named by number
-            for index, delta in enumerate(deltas):
-                # advisory: the size of the delta is a judgment
-                # call, but a non-finite one means the evaluation
-                # itself broke
-                self.assertTrue(
-                    math.isfinite(delta),
-                    msg=f"model {index}: non-finite delta chi2 "
-                        f"{delta!r}")
-            u.report_random_model_summary(deltas)
+                points = []
+                if nmodels_box is not None:
+                    for box_name in nmodels_box:
+                        box_low, box_high = nmodels_box[box_name]
+                        print(f"  box override: {box_name} drawn in "
+                              f"[{box_low}, {box_high}]", flush=True)
+                if nmodels_hold is not None:
+                    print("  odd models hold at the fiducial: "
+                          f"{', '.join(nmodels_hold)}", flush=True)
+                deltas = u.random_model_accuracy(nm_example, n_models,
+                                                 seed=run_seed,
+                                                 points_out=points,
+                                                 box_overrides=nmodels_box,
+                                                 hold=nmodels_hold)
+                # enumerate pairs each delta with its position, counted
+                # from 0, so a broken model is named by number
+                for index, delta in enumerate(deltas):
+                    # advisory: the size of the delta is a judgment
+                    # call, but a non-finite one means the evaluation
+                    # itself broke
+                    self.assertTrue(
+                        math.isfinite(delta),
+                        msg=f"model {index}: non-finite delta chi2 "
+                            f"{delta!r}")
+                u.report_random_model_summary(deltas)
+                # held[index] is True for a model that kept the hold list
+                # at the frozen point (the odd ones, when a list is set)
+                held = []
+                for index in range(len(deltas)):
+                    held.append(nmodels_hold is not None and index % 2 == 1)
+                if nmodels_hold is not None:
+                    drawn_deltas = []
+                    held_deltas = []
+                    for index in range(len(deltas)):
+                        if held[index]:
+                            held_deltas.append(deltas[index])
+                        else:
+                            drawn_deltas.append(deltas[index])
+                    print("  models drawn across the prior:", flush=True)
+                    u.report_random_model_summary(drawn_deltas)
+                    if len(held_deltas) > 0:
+                        print("  models holding "
+                              f"{', '.join(nmodels_hold)} at the fiducial:",
+                              flush=True)
+                        u.report_random_model_summary(held_deltas)
+                # drawn before the limit applies, so a failing run still
+                # shows where in the prior its deltas sit; an advisory
+                # check draws the 0.2 band of the reference tests
+                if nmodels_limit is not None:
+                    figure_limit = nmodels_limit
+                else:
+                    figure_limit = u.CHI2_TOLERANCE
+                figure_path = _nmodels_figure(
+                    u, example=nm_example, points=points, deltas=deltas,
+                    figure_dir=figure_dir, seed=run_seed,
+                    limit=figure_limit, held=held)
+                print(f"  N-random-models figure: {figure_path}",
+                      flush=True)
+                if nmodels_limit is not None:
+                    # the limit applies to every model; the message
+                    # names each model (and its seed) above it
+                    above = [(index, delta) for index, delta
+                             in enumerate(deltas)
+                             if abs(delta) >= nmodels_limit]
+                    self.assertFalse(
+                        above,
+                        msg="models with |delta chi2| >= "
+                            f"{nmodels_limit}: " + ", ".join(
+                                f"{index} (seed {run_seed + index}): "
+                                f"{delta:+.4f}"
+                                for index, delta in above))
 
-        TestAccuracy.test_ax99_nmodels = test_ax99_nmodels
+        return test_ax99_nmodels
+
+    for k, (nm_example, nm_label) in enumerate(nmodels_pairs):
+        method = make_nmodels(nm_example, nm_label)
+        method.__name__ = ("test_ax99_nmodels" if k == 0
+                           else f"test_ax99_nmodels_{nm_example}")
+        setattr(TestAccuracy, method.__name__, method)
 
     # rename the class last; type(name, ...) is not needed because
     # the class statement above already built it, so only the two
@@ -1687,8 +1902,10 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
 # b, "_A1_|_A2_" matches a name containing either text, and "_M[0-9]+$"
 # a name ending in _M plus digits. _ladder_sector_of returns the first
 # sector whose pattern matches, so the order matters and "other" (the
-# pattern "." matches any name) collects the rest. The bias and other
-# sectors move only in the scramble step.
+# pattern "." matches any name) collects the rest. "fog" holds the
+# finger-of-god velocity dispersions of spectroscopic samples. A sector
+# outside the suite's phases (by default bias, fog and other) moves only
+# in the scramble step.
 LADDER_SECTORS = (
     ("cosmo",
      re.compile(r"^(As_1e9|H0|ns|omegab|omegam|mnu|w|w0pwa)$")),
@@ -1697,10 +1914,12 @@ LADDER_SECTORS = (
     ("dz_lens", re.compile(r"_DZ_L")),
     ("m", re.compile(r"_M[0-9]+$")),
     ("bias", re.compile(r"_B1_|_B2_|_BMAG_")),
+    ("fog", re.compile(r"_SIGV_")),
     ("other", re.compile(r".")),
 )
 
-# Ladder phases (sector order of the forward walk) and the per-step
+# Ladder phases (the default sector order of the forward walk; a
+# project passes its own through cache_ladder_suite) and the per-step
 # offsets: parameter value = fiducial + step * delta, deterministic.
 # A key of LADDER_DELTAS is either an exact parameter name (a string)
 # or a compiled pattern matched against the names. The offsets are
@@ -1716,6 +1935,7 @@ LADDER_DELTAS = {
     "dz_lens": {re.compile(r"_DZ_L"): 0.001},
     "m": {re.compile(r"_M[0-9]+$"): 0.005},
     "bias": {re.compile(r"_B1_"): 0.05},
+    "fog": {re.compile(r"_SIGV_"): 5.0},  # km/s
 }
 # LADDER_NSTEP = steps per sector on the ladder; LADDER_SCRAMBLE_STEP
 # = the step count of every sector at the scramble point, beyond the
@@ -1771,7 +1991,8 @@ def _ladder_deltas_for(sector, names):
 
 
 def cache_ladder_suite(u, name, example="example2",
-                       required_sectors=("cosmo", "dz_source", "m")):
+                       required_sectors=("cosmo", "dz_source", "m"),
+                       phases=LADDER_PHASES):
     """Build the sector-wise cache-invalidation class (the ladder).
 
     cosmolike keeps the result of every expensive stage in memory and
@@ -1802,6 +2023,10 @@ def cache_ladder_suite(u, name, example="example2",
                 sector would pass every later check vacuously).
                 Projects that declare no source nuisance parameters
                 shrink this to the sectors they sample.
+      phases  = the sectors of the ladder, in forward order (the
+                mirrored walk reverses it); every other sector moves
+                only at the scramble point. A clustering-only project
+                walks ("cosmo", "bias", "fog").
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -1945,11 +2170,11 @@ def cache_ladder_suite(u, name, example="example2",
                 # lenses that are the source sample carry no separate
                 # DZ_L shifts, and a configuration may fix every IA
                 # amplitude
-                active = tuple(s for s in LADDER_PHASES
+                active = tuple(s for s in phases
                                if self.sector_deltas[s])
 
-                phases = (active if order == "forward"
-                          else tuple(reversed(active)))
+                walk = (active if order == "forward"
+                        else tuple(reversed(active)))
                 # every sector starts at step 0 (the fiducial point)
                 steps = {s: 0 for s in self.sector_deltas}
                 u.evaluate_chi2(model, self._point_at(fid, steps))
@@ -1959,7 +2184,7 @@ def cache_ladder_suite(u, name, example="example2",
                 prev = np.array(masked_vector())
                 mfac = self._mpairs(model.likelihood[lk_name], np)
 
-                for sector in phases:
+                for sector in walk:
                     for r in range(1, LADDER_NSTEP + 1):
                         m_prev = {
                             n: fid[n] + steps["m"] * d
