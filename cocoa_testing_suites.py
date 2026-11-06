@@ -1424,7 +1424,8 @@ DRIFT: {name}: {label}
 
 
 def photoz_conventions_suite(u, name, example="example1",
-                             interp_default=0, zmid_default=0):
+                             interp_default=0, zmid_default=0,
+                             zmid_floor=1.0e-2):
     """Build the runtime photo-z convention sweep class.
 
     The likelihood exposes two runtime knobs that control how the
@@ -1453,6 +1454,12 @@ def photoz_conventions_suite(u, name, example="example1",
                 the sample points). The frozen references carry the
                 project defaults, so the sweep's baseline must sit
                 there, not at a universal (0, 0).
+      zmid_floor = the dead-flag floor of the z-reading flip. The
+                flip shifts every distribution by half a histogram
+                cell, which moves chi2 by about 0.01-0.05 on narrow
+                bins but less on wide ones (about 1e-3 on Delta z =
+                0.2 bins); a dead flag gives exactly zero, so any
+                floor far above numerical noise (1e-8) detects it.
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -1480,7 +1487,7 @@ def photoz_conventions_suite(u, name, example="example1",
     # measured deltas, so they only catch a dead flag, never normal
     # numerical drift. The z-reading flip shifts every distribution
     # by dz/2, hence its larger floor.
-    floors = {tag: (1.0e-2 if tag in zmid_names.values() else 1.0e-8)
+    floors = {tag: (zmid_floor if tag in zmid_names.values() else 1.0e-8)
               for tag, _, _ in alternatives}
 
     class TestPhotozConventions(unittest.TestCase):
