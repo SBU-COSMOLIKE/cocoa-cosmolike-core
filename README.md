@@ -716,7 +716,11 @@ only that parameter's values. With a hold list (`nmodels_hold`), every
 odd model resets the listed parameters to the fiducial after its draw,
 so half of the models measure what the other parameters do to the
 accuracy; alternating keeps each model's kind independent of the
-number of models. The report
+number of models. With an amplitude cut (`nmodels_amplitude_cut`), a
+draw whose clustering-amplitude ratio
+$(A_s/A_{s,\rm fid})(b_i/b_{i,\rm fid})^2$ exceeds the cut in any bin
+is replaced by the next draw of the same generator, so the points
+sample the box restricted to the cut, still reproducibly. The report
 streams one block per model and ends with the min/median/max delta
 chi2. The check is advisory, so the deltas only have to be finite,
 unless the project sets a pass limit (`nmodels_limit` of

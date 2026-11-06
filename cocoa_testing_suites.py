@@ -406,7 +406,7 @@ def _nmodels_figure_dir():
 
 
 def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
-                    held=None):
+                    held=None, case=None):
     """Draw the N-random-models figure of one example; return its path.
 
     The file name carries the example and the seed base, so runs with
@@ -424,6 +424,10 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
       limit      = the delta chi2 of the dashed line.
       held       = None, or one bool per model: True for a model that
                    kept the hold list at the frozen point.
+      case       = None, or the check's label of the example (for
+                   instance "example4 (Delta z = 0.2, NLA)"); with the
+                   project name, the number of models and the seed base
+                   it titles the figure.
 
     Returns:
       the PNG path.
@@ -432,17 +436,23 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
 
     path = os.path.join(figure_dir,
                         f"accuracy_nmodels_{example}_seed{seed}.png")
+    # the project is the folder that holds the tests/ folder
+    project = os.path.basename(os.path.dirname(u.TESTS_DIR))
+    if case is None:
+        case = example
+    label = (f"{project}, {case.replace('Delta z', 'Δz')}: "
+             f"{len(points)} models, seed base {seed}")
     figures.random_models_triangle(
         points=points, deltas=deltas,
         fiducial=u.load_frozen_point(example), path=path, limit=limit,
-        held=held,
+        held=held, label=label,
         colorbarlabel=r"$\Delta\chi^2$ (pushed settings $-$ default)")
     return path
 
 
 def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                    nmodels_seed=None, nmodels_limit=None, nmodels_box=None,
-                   nmodels_hold=None):
+                   nmodels_hold=None, nmodels_amplitude_cut=None):
     """Build the accuracy-advisory class (A-checks, K-scan, N-models).
 
     Arguments:
@@ -487,6 +497,10 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                         them to the frozen point, so half of the models
                         measure what the other parameters do to the
                         accuracy (random_model_accuracy's hold).
+      nmodels_amplitude_cut = None, or the largest clustering-amplitude
+                        ratio (A_s/A_s,fid)(b_i/b_i,fid)^2 a draw may
+                        reach in any bin (random_model_accuracy's
+                        amplitude_cut).
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -706,6 +720,10 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                         box_low, box_high = nmodels_box[box_name]
                         print(f"  box override: {box_name} drawn in "
                               f"[{box_low}, {box_high}]", flush=True)
+                if nmodels_amplitude_cut is not None:
+                    print("  amplitude cut: (As/As_fid)(b_i/b_i,fid)^2 <= "
+                          f"{nmodels_amplitude_cut:g} in every bin",
+                          flush=True)
                 if nmodels_hold is not None:
                     print("  odd models hold at the fiducial: "
                           f"{', '.join(nmodels_hold)}", flush=True)
@@ -713,7 +731,8 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                                                  seed=run_seed,
                                                  points_out=points,
                                                  box_overrides=nmodels_box,
-                                                 hold=nmodels_hold)
+                                                 hold=nmodels_hold,
+                                                 amplitude_cut=nmodels_amplitude_cut)
                 # enumerate pairs each delta with its position, counted
                 # from 0, so a broken model is named by number
                 for index, delta in enumerate(deltas):
@@ -755,7 +774,7 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                 figure_path = _nmodels_figure(
                     u, example=nm_example, points=points, deltas=deltas,
                     figure_dir=figure_dir, seed=run_seed,
-                    limit=figure_limit, held=held)
+                    limit=figure_limit, held=held, case=nm_label)
                 print(f"  N-random-models figure: {figure_path}",
                       flush=True)
                 if nmodels_limit is not None:

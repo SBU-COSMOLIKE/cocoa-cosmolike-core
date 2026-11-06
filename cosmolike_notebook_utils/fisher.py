@@ -27,6 +27,14 @@ Contents:
   get_FoM             figure of merit of one parameter pair
   plot_Fisher         getdist triangle plot of Fisher contours,
                       optionally against MCMC chains
+  plot_Fisher_amplitude_cut
+                      the amplitude-bias prior box with the region
+                      A_s b_i^2/(A_s b_i^2)_fid > cut shaded and the
+                      Fisher 1 and 2 sigma contours about the fiducial
+  plot_Fisher_prior_walls
+                      Fisher 1 and 2 sigma contours against the walls of
+                      a flat prior (boxes and linear walls such as
+                      w0 + wa), the excluded region shaded
 """
 
 import itertools
@@ -402,3 +410,449 @@ def plot_Fisher(F, mu, F2=None, root=None, select=None, labels=None,
                     contour_lws=contour_lws,
                    legend_labels=chain_names)
     return g
+
+
+def _gaussian_contour(center, cov2, delta_chi2, n_points=240):
+    """Return the (x, y) points of one contour of a 2D Gaussian.
+
+    The contour of the Gaussian with mean `center` and covariance `cov2`
+    where (p - center)^T cov2^-1 (p - center) = delta_chi2. With
+    cov2 = L L^T (Cholesky), a point at angle t is
+    center + sqrt(delta_chi2) L (cos t, sin t).
+
+    Arguments:
+      center     = 1D array of the two means.
+      cov2       = 2x2 covariance matrix.
+      delta_chi2 = the contour level (2.30 for 68.3%, 6.18 for 95.4%).
+      n_points   = points along the contour.
+
+    Returns:
+      (x, y), two 1D arrays of length n_points.
+    """
+    chol = np.linalg.cholesky(cov2)
+    angle = np.linspace(0.0, 2.0*np.pi, n_points)
+    circle = np.sqrt(delta_chi2)*np.vstack([np.cos(angle), np.sin(angle)])
+    contour = chol @ circle
+    return center[0] + contour[0], center[1] + contour[1]
+
+
+def plot_Fisher_amplitude_cut(F, names, fiducial, amplitude, biases, boxes,
+                              labels=None, cut=8.0, chain_names=None,
+                              figsize=None, show=None):
+    """Draw the amplitude-bias prior box, an amplitude cut and Fisher contours.
+
+    The galaxy power of lens bin i is proportional to A_s b_i^2. A prior
+    box that lets A_s and b_i range freely reaches amplitude ratios
+    A_i = (A_s/A_s,fid)(b_i/b_i,fid)^2 far above 1, where a fixed
+    relative numerical error of the data vector costs a large delta
+    chi2 against the fiducial covariance. A cut A_i <= cut removes that
+    corner of the box. This triangle tells whether such a cut can move
+    an inference: it shades the excluded region gray and draws each
+    Fisher forecast's 1 and 2 sigma contours about the fiducial (68.3%
+    and 95.4% of a two-dimensional Gaussian, delta chi2 = 2.30 and
+    6.18). A cut far outside the 2 sigma contours removes only prior
+    volume the data already exclude.
+
+    The panels form a lower triangle over [amplitude] + biases:
+      - an amplitude - b_i panel shades bin i's own cut;
+      - a b_i - b_j panel shades the region either bin excludes at the
+        fiducial amplitude;
+      - a diagonal panel shades the part of the box excluded with the
+        other parameters at the fiducial, and draws each forecast's
+        marginal Gaussian (peak 1).
+    Each Fisher matrix is inverted once; the contours of a pair use the
+    2x2 block of that covariance, which marginalizes every other
+    parameter of the matrix (cosmology and nuisances alike). The Fisher
+    contours ignore the flat priors; the axes show the boxes.
+
+    Arguments:
+      F           = one Fisher matrix or a list of them (one contour set
+                    each).
+      names       = the parameter names of the rows of F: one list for
+                    every matrix, or a list of lists, one per matrix.
+      fiducial    = {name: value} of the amplitude and the biases (the
+                    contour centers).
+      amplitude   = the name of the amplitude parameter (As_1e9).
+      biases      = the names of the linear-bias parameters to show.
+      boxes       = {name: (min, max)} flat-prior boxes of the amplitude
+                    and the biases; they set the axis ranges.
+      labels      = {name: LaTeX label without $}, or None to show the
+                    names.
+      cut         = the largest allowed amplitude ratio A_i.
+      chain_names = legend labels, one per matrix, or None.
+      figsize     = (width, height) in inches, or None for 1.9-inch
+                    panels.
+      show        = 1 draws the figure; None returns (fig, axes).
+
+    Returns:
+      None when show is 1; (fig, axes) when show is None, axes the
+      (n, n) array of panels, n = 1 + len(biases).
+
+    Raises:
+      ValueError when F and names differ in number, when a shown
+      parameter is missing from a matrix's names, from fiducial or from
+      boxes, or when cut is not positive.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    # one matrix or a list of them; names follow the same shape
+    matrices = list(F) if isinstance(F, (list, tuple)) else [F]
+    if len(names) > 0 and isinstance(names[0], (list, tuple)):
+        name_lists = [list(n) for n in names]
+    else:
+        name_lists = []
+        for _ in matrices:
+            name_lists.append(list(names))
+    if len(name_lists) != len(matrices):
+        raise ValueError(
+            f"{len(matrices)} Fisher matrices but {len(name_lists)} name "
+            "lists: pass one list for all matrices or one per matrix")
+    shown = [amplitude] + list(biases)
+    for name in shown:
+        if name not in fiducial or name not in boxes:
+            raise ValueError(
+                f"{name!r} needs a fiducial value and a box: add it to "
+                "fiducial and to boxes")
+        for k in range(len(name_lists)):
+            if name not in name_lists[k]:
+                raise ValueError(
+                    f"{name!r} is not a parameter of Fisher matrix {k} "
+                    f"(names {name_lists[k]})")
+    if not cut > 0:
+        raise ValueError(f"cut = {cut}: the amplitude cut must be positive")
+    if labels is None:
+        labels = {}
+    if chain_names is None:
+        chain_names = []
+        for k in range(len(matrices)):
+            chain_names.append(f"Fisher {k + 1}")
+
+    # the marginalized covariance of the shown parameters, per matrix
+    covariances = []
+    for k in range(len(matrices)):
+        matrix = np.asarray(matrices[k], dtype=float)
+        covariance = np.linalg.inv(0.5*(matrix + matrix.T))
+        rows = []
+        for name in shown:
+            rows.append(name_lists[k].index(name))
+        covariances.append(covariance[np.ix_(rows, rows)])
+    center = np.array([fiducial[name] for name in shown])
+
+    def ratio(amplitude_value, bias_name, bias_value):
+        """A_i = (A_s/A_s,fid)(b_i/b_i,fid)^2 (arrays welcome)."""
+        return ((amplitude_value/fiducial[amplitude])
+                *(bias_value/fiducial[bias_name])**2)
+
+    def axis_label(name):
+        if name in labels:
+            return f"${labels[name]}$"
+        return name
+
+    colors = ["C0", "C3", "C2", "C1", "C4"]
+    gray = ListedColormap(["white", "0.80"])
+    n = len(shown)
+    if figsize is None:
+        figsize = (1.9*n + 0.6, 1.9*n)
+    fig, axes = plt.subplots(nrows=n, ncols=n, figsize=figsize,
+                             squeeze=False,
+                             gridspec_kw={"wspace": 0.06, "hspace": 0.06})
+    for row in range(n):
+        for col in range(n):
+            ax = axes[row][col]
+            if col > row:
+                ax.axis("off")
+                continue
+            x_name = shown[col]
+            y_name = shown[row]
+            x_grid = np.linspace(boxes[x_name][0], boxes[x_name][1], 300)
+            if col == row:
+                # the box, with the part excluded at the fiducial of the
+                # others shaded, and each forecast's marginal Gaussian
+                if x_name == amplitude:
+                    excluded = np.zeros(x_grid.shape, dtype=bool)
+                    for bias_name in biases:
+                        excluded |= ratio(x_grid, bias_name,
+                                          fiducial[bias_name]) > cut
+                else:
+                    excluded = ratio(fiducial[amplitude], x_name,
+                                     x_grid) > cut
+                ax.fill_between(x_grid, 0.0, 1.1, where=excluded,
+                                color="0.80", step="mid")
+                for k in range(len(covariances)):
+                    sigma = np.sqrt(covariances[k][col, col])
+                    gauss = np.exp(-0.5*((x_grid - center[col])/sigma)**2)
+                    ax.plot(x_grid, gauss, color=colors[k % len(colors)],
+                            lw=1.5)
+                ax.set_ylim(0.0, 1.1)
+                ax.set_yticks([])
+            else:
+                y_grid = np.linspace(boxes[y_name][0], boxes[y_name][1], 300)
+                x_mesh, y_mesh = np.meshgrid(x_grid, y_grid)
+                if x_name == amplitude:
+                    excluded = ratio(x_mesh, y_name, y_mesh) > cut
+                else:
+                    excluded = ((ratio(fiducial[amplitude], x_name, x_mesh)
+                                 > cut)
+                                | (ratio(fiducial[amplitude], y_name, y_mesh)
+                                   > cut))
+                ax.pcolormesh(x_mesh, y_mesh, excluded.astype(float),
+                              cmap=gray, vmin=0.0, vmax=1.0,
+                              shading="auto")
+                if np.any(excluded):
+                    ax.contour(x_mesh, y_mesh, excluded.astype(float),
+                               levels=[0.5], colors="k", linewidths=0.7)
+                pair = [col, row]
+                for k in range(len(covariances)):
+                    cov2 = covariances[k][np.ix_(pair, pair)]
+                    for level, style in ((2.30, "-"), (6.18, "--")):
+                        x_line, y_line = _gaussian_contour(center[pair],
+                                                           cov2, level)
+                        ax.plot(x_line, y_line,
+                                color=colors[k % len(colors)],
+                                linestyle=style, lw=1.3)
+                ax.plot(center[col], center[row], marker="*", color="k",
+                        ms=9, mec="white", mew=0.5)
+                ax.set_ylim(boxes[y_name])
+            ax.set_xlim(boxes[x_name])
+            ax.tick_params(labelsize=8)
+            # axis labels on the outer edges of the triangle only
+            if row == n - 1:
+                ax.set_xlabel(axis_label(x_name), fontsize=13)
+            else:
+                ax.tick_params(labelbottom=False)
+            if col == 0 and row > 0:
+                ax.set_ylabel(axis_label(y_name), fontsize=13)
+            elif col > 0 and col != row:
+                ax.tick_params(labelleft=False)
+
+    handles = []
+    for k in range(len(covariances)):
+        handles.append(Line2D([], [], color=colors[k % len(colors)], lw=1.8,
+                              label=chain_names[k]))
+    handles.append(Line2D([], [], color="0.3", lw=1.3, linestyle="-",
+                          label=r"$1\sigma$ (68.3%)"))
+    handles.append(Line2D([], [], color="0.3", lw=1.3, linestyle="--",
+                          label=r"$2\sigma$ (95.4%)"))
+    handles.append(Patch(facecolor="0.80", edgecolor="k", lw=0.7,
+                         label=(r"excluded: $A_\mathrm{s} b_i^2/"
+                                r"(A_\mathrm{s} b_i^2)_\mathrm{fid} > "
+                                f"{cut:g}$")))
+    handles.append(Line2D([], [], linestyle="", marker="*", color="k",
+                          ms=9, label="fiducial"))
+    # the empty upper-right triangle holds the legend
+    fig.legend(handles=handles, loc="upper right",
+               bbox_to_anchor=(0.93, 0.93), frameon=False, fontsize=11)
+    if show == 1:
+        plt.show()
+        return None
+    return fig, axes
+
+
+def plot_Fisher_prior_walls(F, names, fiducial, params, ranges, boxes=None,
+                            walls=None, labels=None, chain_names=None,
+                            figsize=None, show=None):
+    """Draw Fisher contours against the walls of a prior.
+
+    A flat prior is a set of walls: the box of each parameter and, for
+    combinations, linear walls such as lo <= w0 + wa <= hi. A wall can
+    only move an inference if the data allow points near it. This
+    triangle shades the region the walls exclude and draws each Fisher
+    forecast's 1 and 2 sigma contours about the fiducial (68.3% and
+    95.4% of a two-dimensional Gaussian, delta chi2 = 2.30 and 6.18),
+    every other parameter of the matrix marginalized. A wall far outside
+    the 2 sigma contours removes only prior volume the data exclude.
+
+    The panels form a lower triangle over params: a two-parameter panel
+    shades the points outside either parameter's box or outside a wall
+    that involves only those two parameters; a diagonal panel shades the
+    part of the axis outside the box and draws each forecast's marginal
+    Gaussian (peak 1).
+
+    Arguments:
+      F           = one Fisher matrix or a list of them (one contour set
+                    each).
+      names       = the parameter names of the rows of F: one list for
+                    every matrix, or a list of lists, one per matrix.
+      fiducial    = {name: value} of the shown parameters (the contour
+                    centers).
+      params      = the names of the parameters to show.
+      ranges      = {name: (min, max)} axis ranges of the shown
+                    parameters; wider than the boxes, so the walls show.
+      boxes       = {name: (min, max)} flat-prior boxes of shown
+                    parameters, or None; a parameter without a box has
+                    no wall of its own.
+      walls       = list of linear walls ({name: coefficient}, lo, hi):
+                    the prior keeps lo <= sum coefficient*value <= hi
+                    (None for an open side); a wall shades only panels
+                    whose two parameters are exactly its names.
+      labels      = {name: LaTeX label without $}, or None to show the
+                    names.
+      chain_names = legend labels, one per matrix, or None.
+      figsize     = (width, height) in inches, or None for 2.3-inch
+                    panels.
+      show        = 1 draws the figure; None returns (fig, axes).
+
+    Returns:
+      None when show is 1; (fig, axes) when show is None, axes the
+      (n, n) array of panels, n = len(params).
+
+    Raises:
+      ValueError when F and names differ in number, when a shown
+      parameter is missing from a matrix's names, from fiducial or from
+      ranges, or when a wall names a parameter that is not shown.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    matrices = list(F) if isinstance(F, (list, tuple)) else [F]
+    if len(names) > 0 and isinstance(names[0], (list, tuple)):
+        name_lists = [list(n) for n in names]
+    else:
+        name_lists = []
+        for _ in matrices:
+            name_lists.append(list(names))
+    if len(name_lists) != len(matrices):
+        raise ValueError(
+            f"{len(matrices)} Fisher matrices but {len(name_lists)} name "
+            "lists: pass one list for all matrices or one per matrix")
+    if boxes is None:
+        boxes = {}
+    if walls is None:
+        walls = []
+    if labels is None:
+        labels = {}
+    for name in params:
+        if name not in fiducial or name not in ranges:
+            raise ValueError(
+                f"{name!r} needs a fiducial value and an axis range: add "
+                "it to fiducial and to ranges")
+        for k in range(len(name_lists)):
+            if name not in name_lists[k]:
+                raise ValueError(
+                    f"{name!r} is not a parameter of Fisher matrix {k} "
+                    f"(names {name_lists[k]})")
+    for coefficients, _, _ in walls:
+        for name in coefficients:
+            if name not in params:
+                raise ValueError(
+                    f"the wall on {sorted(coefficients)} names {name!r}, "
+                    f"which is not shown (params {params})")
+    if chain_names is None:
+        chain_names = []
+        for k in range(len(matrices)):
+            chain_names.append(f"Fisher {k + 1}")
+
+    covariances = []
+    for k in range(len(matrices)):
+        matrix = np.asarray(matrices[k], dtype=float)
+        covariance = np.linalg.inv(0.5*(matrix + matrix.T))
+        rows = []
+        for name in params:
+            rows.append(name_lists[k].index(name))
+        covariances.append(covariance[np.ix_(rows, rows)])
+    center = np.array([fiducial[name] for name in params])
+
+    def outside_box(name, values):
+        """True where a value of `name` falls outside its box."""
+        if name not in boxes:
+            return np.zeros(np.shape(values), dtype=bool)
+        low, high = boxes[name]
+        return (values < low) | (values > high)
+
+    def axis_label(name):
+        if name in labels:
+            return f"${labels[name]}$"
+        return name
+
+    colors = ["C0", "C3", "C2", "C1", "C4"]
+    gray = ListedColormap(["white", "0.80"])
+    n = len(params)
+    if figsize is None:
+        figsize = (2.3*n + 0.8, 2.3*n)
+    fig, axes = plt.subplots(nrows=n, ncols=n, figsize=figsize,
+                             squeeze=False,
+                             gridspec_kw={"wspace": 0.06, "hspace": 0.06})
+    for row in range(n):
+        for col in range(n):
+            ax = axes[row][col]
+            if col > row:
+                ax.axis("off")
+                continue
+            x_name = params[col]
+            y_name = params[row]
+            x_grid = np.linspace(ranges[x_name][0], ranges[x_name][1], 400)
+            if col == row:
+                excluded = outside_box(x_name, x_grid)
+                ax.fill_between(x_grid, 0.0, 1.1, where=excluded,
+                                color="0.80", step="mid")
+                for k in range(len(covariances)):
+                    sigma = np.sqrt(covariances[k][col, col])
+                    gauss = np.exp(-0.5*((x_grid - center[col])/sigma)**2)
+                    ax.plot(x_grid, gauss, color=colors[k % len(colors)],
+                            lw=1.5)
+                ax.set_ylim(0.0, 1.1)
+                ax.set_yticks([])
+            else:
+                y_grid = np.linspace(ranges[y_name][0], ranges[y_name][1], 400)
+                x_mesh, y_mesh = np.meshgrid(x_grid, y_grid)
+                excluded = outside_box(x_name, x_mesh) | outside_box(y_name, y_mesh)
+                for coefficients, low, high in walls:
+                    if set(coefficients) != {x_name, y_name}:
+                        continue
+                    combination = (coefficients[x_name]*x_mesh
+                                   + coefficients[y_name]*y_mesh)
+                    if low is not None:
+                        excluded |= combination < low
+                    if high is not None:
+                        excluded |= combination > high
+                ax.pcolormesh(x_mesh, y_mesh, excluded.astype(float),
+                              cmap=gray, vmin=0.0, vmax=1.0, shading="auto")
+                if np.any(excluded):
+                    ax.contour(x_mesh, y_mesh, excluded.astype(float),
+                               levels=[0.5], colors="k", linewidths=0.7)
+                pair = [col, row]
+                for k in range(len(covariances)):
+                    cov2 = covariances[k][np.ix_(pair, pair)]
+                    for level, style in ((2.30, "-"), (6.18, "--")):
+                        x_line, y_line = _gaussian_contour(center[pair],
+                                                           cov2, level)
+                        ax.plot(x_line, y_line,
+                                color=colors[k % len(colors)],
+                                linestyle=style, lw=1.3)
+                ax.plot(center[col], center[row], marker="*", color="k",
+                        ms=9, mec="white", mew=0.5)
+                ax.set_ylim(ranges[y_name])
+            ax.set_xlim(ranges[x_name])
+            ax.tick_params(labelsize=8)
+            if row == n - 1:
+                ax.set_xlabel(axis_label(x_name), fontsize=13)
+            else:
+                ax.tick_params(labelbottom=False)
+            if col == 0 and row > 0:
+                ax.set_ylabel(axis_label(y_name), fontsize=13)
+            elif col > 0 and col != row:
+                ax.tick_params(labelleft=False)
+
+    handles = []
+    for k in range(len(covariances)):
+        handles.append(Line2D([], [], color=colors[k % len(colors)], lw=1.8,
+                              label=chain_names[k]))
+    handles.append(Line2D([], [], color="0.3", lw=1.3, linestyle="-",
+                          label=r"$1\sigma$ (68.3%)"))
+    handles.append(Line2D([], [], color="0.3", lw=1.3, linestyle="--",
+                          label=r"$2\sigma$ (95.4%)"))
+    handles.append(Patch(facecolor="0.80", edgecolor="k", lw=0.7,
+                         label="excluded by the prior"))
+    handles.append(Line2D([], [], linestyle="", marker="*", color="k",
+                          ms=9, label="fiducial"))
+    fig.legend(handles=handles, loc="upper right",
+               bbox_to_anchor=(0.93, 0.93), frameon=False, fontsize=11)
+    if show == 1:
+        plt.show()
+        return None
+    return fig, axes

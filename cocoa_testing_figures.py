@@ -295,10 +295,6 @@ NMODELS_DELTA_FLOOR = 1.0e-6
 # stretching the scale over decades nothing distinguishes
 NMODELS_COLOR_CEILING = 100.0
 
-# Every project names its linear galaxy-bias parameters
-# <SURVEY>_B1_<bin> (LSST_B1_1, DESI_B1_3, ...); the tag finds them
-LINEAR_BIAS_TAG = "_B1_"
-
 
 def random_models_amplitude(point, fiducial):
     """Return the largest clustering-amplitude ratio of one drawn point.
@@ -319,22 +315,14 @@ def random_models_amplitude(point, fiducial):
       the largest A_i as a float, or None when the point samples no
       linear bias (a cosmic-shear configuration) or no As_1e9.
     """
-    if "As_1e9" not in point:
-        return None
-    as_ratio = point["As_1e9"] / fiducial["As_1e9"]
-    largest = None
-    for name in point:
-        if LINEAR_BIAS_TAG not in name:
-            continue
-        bias_ratio = point[name] / fiducial[name]
-        amplitude = as_ratio * bias_ratio**2
-        if largest is None or amplitude > largest:
-            largest = amplitude
-    return largest
+    # the harness owns the definition, so the draw's cut and the
+    # figure's axis can never disagree
+    from cocoa_testing import largest_amplitude_ratio
+    return largest_amplitude_ratio(point, fiducial)
 
 
 def random_models_triangle(points, deltas, fiducial, path, limit,
-                           colorbarlabel, held=None):
+                           colorbarlabel, held=None, label=None):
     """Draw the N-random-models delta chi2 as an Omega_m - amplitude triangle.
 
     Two quantities set the numerical error of a random point. The
@@ -373,6 +361,9 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
       colorbarlabel = the text of the color bar.
       held          = None, or one bool per model: True draws the
                       model as a held diamond.
+      label         = None, or the text naming the case (project,
+                      example, number of models, seed base), drawn
+                      above the panels.
 
     Returns:
       nothing; the PNG file is written and the figure closed.
@@ -422,7 +413,7 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
     # edge color, legend label). argsort lists a kind's models from the
     # smallest delta to the largest, so the largest land on top.
     kinds = []
-    for mask, marker, edge, label in (
+    for mask, marker, edge, kind_label in (
             (~held_mask, "o", "white", "drawn across the prior"),
             (held_mask, "D", "black",
              r"$\Omega_\mathrm{m}$, $A_\mathrm{s}$, $b$ at the fiducial")):
@@ -430,12 +421,12 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
         if len(indices) == 0:
             continue
         indices = indices[np.argsort(delta_plot[indices])]
-        kinds.append((indices, marker, edge, label))
+        kinds.append((indices, marker, edge, kind_label))
 
     def scatter_kinds(ax, x_values, y_values):
         """Draw every kind of model at (x, y); return the last mappable."""
         mappable = None
-        for indices, marker, edge, label in kinds:
+        for indices, marker, edge, kind_label in kinds:
             mappable = ax.scatter(x_values[indices], y_values[indices],
                                   c=delta_plot[indices], cmap="viridis",
                                   norm=norm, s=55, marker=marker,
@@ -460,6 +451,7 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
         colorbar = fig.colorbar(mappable, ax=ax, pad=0.02, extend="max")
         legend_axes = ax
         legend_place = "upper left"
+        title_height = 0.98
     else:
         amplitude = np.array(amplitudes)
         fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(9.5, 9),
@@ -490,15 +482,19 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
         # the legend sits in the same empty corner, under the color bar
         legend_axes = axes[0][1]
         legend_place = "lower left"
+        # the default top of the panels is 0.88: the title sits just above
+        title_height = 0.93
     colorbar.set_label(colorbarlabel, fontsize=12)
+    if label is not None:
+        fig.suptitle(label, fontsize=13, y=title_height)
     if len(kinds) > 1:
         # the legend names the two kinds by their markers alone (gray,
         # since the color is the delta chi2)
         handles = []
-        for indices, marker, edge, label in kinds:
+        for indices, marker, edge, kind_label in kinds:
             handles.append(Line2D([], [], linestyle="", marker=marker,
                                   markersize=8, markerfacecolor="0.6",
-                                  markeredgecolor=edge, label=label))
+                                  markeredgecolor=edge, label=kind_label))
         legend_axes.legend(handles=handles, loc=legend_place,
                            frameon=False, fontsize=10)
     fig.savefig(path, dpi=110, bbox_inches="tight")

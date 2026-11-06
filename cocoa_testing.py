@@ -1340,6 +1340,49 @@ TEST {number}: {label}
     return delta
 
 
+# The most draws the amplitude cut of random_model_accuracy may spend
+# on one model before it stops: a box the cut leaves at least 0.1%
+# of needs far fewer, so reaching it means the cut excludes almost the
+# whole box (a cut below the fiducial ratio of 1, or a typo)
+NMODELS_MAX_DRAWS = 100000
+
+# Every project names its linear galaxy-bias parameters
+# <SURVEY>_B1_<bin> (LSST_B1_1, DESI_B1_3, ...), and its amplitude
+# As_1e9 (10^9 A_s)
+LINEAR_BIAS_TAG = "_B1_"
+AMPLITUDE_NAME = "As_1e9"
+
+
+def largest_amplitude_ratio(point, fiducial):
+    """Return the largest clustering-amplitude ratio of a point.
+
+    The galaxy power of lens bin i is proportional to A_s b_i^2, so a
+    point's amplitude relative to the fiducial is
+    A_i = (A_s/A_s,fid)(b_i/b_i,fid)^2. A numerical error that is a
+    fixed fraction of the signal grows by A_i, and its delta chi2
+    against the fiducial covariance by A_i^2.
+
+    Arguments:
+      point    = {parameter name: value}.
+      fiducial = the frozen {parameter name: value} point.
+
+    Returns:
+      the largest A_i over the linear biases (LINEAR_BIAS_TAG) as a
+      float, or None when the point samples no bias or no amplitude.
+    """
+    if AMPLITUDE_NAME not in point:
+        return None
+    as_ratio = point[AMPLITUDE_NAME]/fiducial[AMPLITUDE_NAME]
+    largest = None
+    for name in point:
+        if LINEAR_BIAS_TAG not in name:
+            continue
+        amplitude = as_ratio*(point[name]/fiducial[name])**2
+        if largest is None or amplitude > largest:
+            largest = amplitude
+    return largest
+
+
 def held_parameter(name, hold):
     """Return whether the N-random-models hold list covers one parameter.
 
@@ -2526,7 +2569,8 @@ class CocoaTestHarness:
 
     def random_model_accuracy(self, example, n_models,
                               seed=RANDOM_MODEL_SEED, points_out=None,
-                              box_overrides=None, hold=None):
+                              box_overrides=None, hold=None,
+                              amplitude_cut=None):
         """Return delta chi2 at N random prior points, each against its own vector.
 
         The accuracy checks measure the numerical error of the default
@@ -2595,6 +2639,13 @@ class CocoaTestHarness:
                      Alternating, rather than splitting the run in
                      halves, keeps each model's kind independent of
                      n_models.
+          amplitude_cut = None, or the largest clustering-amplitude
+                     ratio (largest_amplitude_ratio) a draw may have:
+                     a draw above it is replaced by the next draw of
+                     the same generator, so the points are a uniform
+                     sample of the box restricted to the cut, still
+                     reproducible from the seed. It must exceed 1 (the
+                     fiducial ratio).
 
         Returns:
           the list of per-model delta chi2 values (floats), in model
@@ -2652,6 +2703,16 @@ class CocoaTestHarness:
                         f"parameter of {example} "
                         f"({sorted(frozen_point)}): use an exact name, "
                         "or a prefix ending in '_'")
+        if amplitude_cut is not None:
+            if not amplitude_cut > 1.0:
+                raise ValueError(
+                    f"amplitude_cut = {amplitude_cut}: the cut must exceed "
+                    "1, the amplitude ratio of the fiducial")
+            if largest_amplitude_ratio(frozen_point, frozen_point) is None:
+                raise ValueError(
+                    f"amplitude_cut needs {AMPLITUDE_NAME} and linear "
+                    f"biases (*{LINEAR_BIAS_TAG}*) among the sampled "
+                    f"parameters of {example} ({sorted(frozen_point)})")
         deltas = []
         for m in range(n_models):
             rng = np.random.default_rng(seed + m)
@@ -2661,6 +2722,19 @@ class CocoaTestHarness:
             likelihood_block = info["likelihood"][cfg["likelihood"]]
             point = self.draw_uniform_point(info, example, rng,
                                             box_overrides=box_overrides)
+            if amplitude_cut is not None:
+                # redraw from the same generator until every bin is
+                # inside the cut: a uniform sample of the restricted box
+                draws = 1
+                while largest_amplitude_ratio(point, frozen_point) > amplitude_cut:
+                    if draws >= NMODELS_MAX_DRAWS:
+                        raise RuntimeError(
+                            f"model {m}: no draw inside amplitude_cut = "
+                            f"{amplitude_cut} in {draws} draws; the cut "
+                            "excludes almost the whole box")
+                    point = self.draw_uniform_point(
+                        info, example, rng, box_overrides=box_overrides)
+                    draws += 1
             if hold is not None and m % 2 == 1:
                 # an odd model keeps the held parameters at the frozen
                 # point: its delta chi2 then measures what the other

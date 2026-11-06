@@ -61,5 +61,6 @@ from .plot_datavectors import (plot_C_gg_tomo, plot_C_gs_tomo_limber,
                                plot_gammat_tomo_limber, plot_wtheta_tomo,
                                plot_xi)
 from .fisher import (add_gaussian_priors, get_Fisher, get_Fisher2,
-                     get_FoM, get_ddv, get_ddv_dkit, plot_Fisher)
+                     get_FoM, get_ddv, get_ddv_dkit, plot_Fisher,
+                     plot_Fisher_amplitude_cut, plot_Fisher_prior_walls)
 from .plot_response import plot_response_function
