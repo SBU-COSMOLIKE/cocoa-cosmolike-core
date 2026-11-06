@@ -541,6 +541,68 @@ def compute_references(u, stamp, chi2_format):
     write_json(u.REFERENCE_FILE, reference)
 
 
+def generate_nmodels_vectors(u, example):
+    """Compute and store the high-accuracy vectors of the N-models points.
+
+    The N-random-models check compares the default settings with the
+    pushed accuracy settings at NMODELS_COUNT fixed points of the
+    prior. The pushed half is the expensive one, so it is computed
+    here once: the points come from the project's draw settings
+    (cocoa_testing_suites.nmodels_draw), one high-accuracy model
+    evaluates them all, and frozen/nmodels_<example>.npz stores
+
+      names, values = the parameter names and the (models x names)
+                      point values, which the check redraws and
+                      compares;
+      held          = one bool per model, True for a held model;
+      vectors       = the (models x n) masked high-accuracy vectors;
+      config_hash   = the fingerprint of the high-accuracy
+                      configuration (nmodels_config_hash);
+      seed, draw    = the seed base and the draw settings, as text,
+                      for the reader of the file.
+
+    The file is written to a temporary name outside frozen/ and moved
+    in at the end, so a manifest written meanwhile (by a parallel
+    --nmodels run of another example) never pins a half-written file.
+
+    Arguments:
+      u       = the project's cocoa_test_utils module.
+      example = a key of u.NMODELS_EXAMPLES.
+
+    Returns:
+      nothing; frozen/nmodels_<example>.npz is written.
+    """
+    import numpy as np
+    import cocoa_testing_suites as suites
+
+    points, held = suites.nmodels_draw(u, example)
+    names = sorted(points[0])
+    values = np.zeros((len(points), len(names)))
+    for index in range(len(points)):
+        for column in range(len(names)):
+            values[index, column] = points[index][names[column]]
+    print(f"N-models {example}: {len(points)} points, seed base "
+          f"{u.RANDOM_MODEL_SEED}", flush=True)
+    vectors, _ = suites.nmodels_vectors(u, example, points,
+                                        high_accuracy=True)
+    draw = {"box": getattr(u, "NMODELS_BOX", None),
+            "hold": getattr(u, "NMODELS_HOLD", None),
+            "amplitude_cut": getattr(u, "NMODELS_AMPLITUDE_CUT", None)}
+    path = suites.nmodels_file(u, example)
+    temporary = os.path.join(u.TESTS_DIR, f".nmodels_{example}.npz.tmp")
+    # an open file object keeps numpy from appending ".npz" to the name
+    with open(temporary, "wb") as f:
+        np.savez(f, names=np.array(names), values=values,
+                 held=np.array(held), vectors=vectors,
+                 config_hash=np.array(u.nmodels_config_hash(example)),
+                 seed=np.array(u.RANDOM_MODEL_SEED),
+                 draw=np.array(json.dumps(draw, sort_keys=True)))
+    os.replace(temporary, path)
+    print(f"N-models {example}: stored {vectors.shape[0]} vectors of "
+          f"{vectors.shape[1]} entries in frozen/{os.path.basename(path)}",
+          flush=True)
+
+
 def _run_worker(script_file, args, what):
     """Spawn one worker subprocess on the project's own script.
 
@@ -584,6 +646,10 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
       --baryons
           add the per-method frozen baryon vectors and re-pin the
           manifest (projects with the baryonic-feedback suites);
+      --nmodels [example ...]
+          compute the stored high-accuracy vectors of the
+          N-random-models check for the listed NMODELS_EXAMPLES keys
+          (all of them when none is listed) and re-pin the manifest;
       any extra step's incremental flag
           run that step alone and re-pin the manifest;
       --overwrite
@@ -592,7 +658,10 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
           modules, the generated data vectors and mask descriptors,
           run the extra steps, evaluate the reference chi2 values,
           and hash everything into the manifest last, so it covers
-          every file written before.
+          every file written before. Stored N-models vectors survive
+          it: they are expensive, and the check's fingerprint
+          (nmodels_config_hash) asks for --nmodels whenever the
+          high-accuracy configuration they belong to has changed.
     Without any of them it prints the project's usage text and
     refuses.
 
@@ -649,6 +718,11 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
         label = sys.argv[sys.argv.index("--baryon-one") + 1]
         generate_baryon_datavector(u, label)
         return 0
+    if "--nmodels-one" in sys.argv:
+        u.require_cocoa_environment()
+        example = sys.argv[sys.argv.index("--nmodels-one") + 1]
+        generate_nmodels_vectors(u, example)
+        return 0
     for incremental_flag, worker_flag, needs_stamp, run in extra_steps:
         if worker_flag in sys.argv:
             u.require_cocoa_environment()
@@ -678,6 +752,35 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
                         f"baryon worker for {label!r}")
         write_manifest(u)
         return 0
+    if "--nmodels" in sys.argv:
+        # incremental: compute the stored high-accuracy vectors of the
+        # N-random-models check and re-pin the manifest; the examples
+        # listed after the flag, or every NMODELS_EXAMPLES key
+        u.require_cocoa_environment()
+        known = []
+        for example, _ in getattr(u, "NMODELS_EXAMPLES", ()):
+            known.append(example)
+        if not known:
+            print("This project defines no NMODELS_EXAMPLES "
+                  "(tests/cocoa_test_utils.py); nothing to compute.")
+            return 1
+        requested = []
+        for argument in sys.argv[sys.argv.index("--nmodels") + 1:]:
+            if argument.startswith("--"):
+                break
+            if argument not in known:
+                print(f"{argument!r} is not an N-models example of this "
+                      f"project ({known})")
+                return 1
+            requested.append(argument)
+        if not requested:
+            requested = known
+        u.verify_frozen()
+        for example in requested:
+            _run_worker(script_file, ["--nmodels-one", example],
+                        f"N-models worker for {example}")
+        write_manifest(u)
+        return 0
     for incremental_flag, worker_flag, needs_stamp, run in extra_steps:
         if incremental_flag in sys.argv:
             # incremental: run this one project step in an existing
@@ -703,9 +806,23 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
     # in the ISO form the frozen-module headers carry
     stamp = time.strftime(STAMP_FORMAT, time.gmtime())
 
+    # the stored N-models vectors take hours to compute and do not
+    # depend on anything the full freeze rewrites unless the
+    # high-accuracy configuration changes, which the check's
+    # fingerprint detects; they are read before frozen/ is removed and
+    # written back afterwards
+    kept_nmodels = {}
     if os.path.isdir(u.FROZEN_DIR):
+        for file_name in sorted(os.listdir(u.FROZEN_DIR)):
+            if file_name.startswith("nmodels_") and file_name.endswith(".npz"):
+                with open(os.path.join(u.FROZEN_DIR, file_name), "rb") as f:
+                    kept_nmodels[file_name] = f.read()
         shutil.rmtree(u.FROZEN_DIR)
     os.makedirs(u.FROZEN_DIR)
+    for file_name in kept_nmodels:
+        with open(os.path.join(u.FROZEN_DIR, file_name), "wb") as f:
+            f.write(kept_nmodels[file_name])
+        print(f"kept the stored N-models vectors {file_name}", flush=True)
 
     project_dir = os.path.dirname(u.TESTS_DIR)
     print("freezing ../data ...", flush=True)

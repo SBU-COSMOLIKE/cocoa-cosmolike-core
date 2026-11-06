@@ -346,36 +346,101 @@ def example_suite(u, name, example, label, numbers, tatt_numbers=None):
     return type(name, (unittest.TestCase,), namespace)
 
 
-def _nmodels_seed(project_seed):
-    """Return the seed base of one N-random-models run.
+def nmodels_file(u, example):
+    """Return the path of an example's stored N-random-models vectors.
 
-    The project's hard-coded base (accuracy_suite's nmodels_seed, by
-    default RANDOM_MODEL_SEED = 137) applies unless the user sets
-    COCOA_ACCURACY_NMODELS_SEED for the run. Model m draws with
-    base + m, so the same base redraws the same points and the same
-    figure on any machine.
+    generate_frozen_reference.py --nmodels writes the file; the
+    manifest pins it with the rest of frozen/.
 
     Arguments:
-      project_seed = the project's base, an int.
+      u       = the project's cocoa_test_utils module.
+      example = a key of u.EXAMPLES.
 
     Returns:
-      the base for this run, an int.
+      the path frozen/nmodels_<example>.npz.
+    """
+    return os.path.join(u.FROZEN_DIR, f"nmodels_{example}.npz")
+
+
+def nmodels_draw(u, example):
+    """Return the fixed N-random-models points of one example.
+
+    The draw settings live in the project's cocoa_test_utils
+    (NMODELS_BOX, NMODELS_HOLD, NMODELS_AMPLITUDE_CUT), the one place
+    that both the check and generate_frozen_reference.py --nmodels
+    read, so the two always draw the same points.
+
+    Arguments:
+      u       = the project's cocoa_test_utils module.
+      example = a key of u.EXAMPLES.
+
+    Returns:
+      (points, held) of u.nmodels_points.
+    """
+    return u.nmodels_points(
+        example, box_overrides=getattr(u, "NMODELS_BOX", None),
+        hold=getattr(u, "NMODELS_HOLD", None),
+        amplitude_cut=getattr(u, "NMODELS_AMPLITUDE_CUT", None))
+
+
+def nmodels_vectors(u, example, points, high_accuracy):
+    """Return the masked theory vector of every point, from one model.
+
+    One cobaya model is built for the whole list and each point costs
+    one evaluation. The compiled interface holds one model at a time,
+    so the default and the high-accuracy vectors come from two
+    separate calls, never from two live models.
+
+    Arguments:
+      u             = the project's cocoa_test_utils module.
+      example       = a key of u.EXAMPLES.
+      points        = the {sampled name: value} points.
+      high_accuracy = True builds the model with the project's pushed
+                      accuracy settings (load_frozen_info's
+                      high_accuracy), False with the frozen defaults.
+
+    Returns:
+      (vectors, inv_cov): a (len(points), n) float64 array of masked
+      theory vectors, and the (n, n) masked inverse covariance of the
+      frozen data set.
 
     Raises:
-      AssertionError when COCOA_ACCURACY_NMODELS_SEED is set but is
-      not an integer.
+      AssertionError when a point and the model disagree on the
+      sampled parameters (the likelihood or theory code changed its
+      parameters since the freeze).
     """
-    seed_text = os.environ.get("COCOA_ACCURACY_NMODELS_SEED", "")
-    if seed_text == "":
-        return project_seed
-    try:
-        return int(seed_text)
-    except ValueError:
-        raise AssertionError(
-            f"COCOA_ACCURACY_NMODELS_SEED={seed_text!r} is not an "
-            "integer: set it to the base seed, for example "
-            f"COCOA_ACCURACY_NMODELS_SEED={project_seed}, or unset it "
-            f"to use this project's base {project_seed}")
+    import time
+    import numpy as np
+
+    ci = _interface(u)
+    masked_vector = _masked_vector_fn(u, ci)
+    info = u.load_frozen_info(example, tatt=False, high_accuracy=high_accuracy)
+    if high_accuracy:
+        label = "high-accuracy"
+    else:
+        label = "default-settings"
+    print(f"  building the {label} model of {example} ...", flush=True)
+    start = time.time()
+    model = u.make_model(info)
+    print(f"  built in {time.time() - start:.0f} s", flush=True)
+    sampled = set(model.parameterization.sampled_params())
+    vectors = []
+    for index in range(len(points)):
+        point = points[index]
+        if sampled != set(point):
+            raise AssertionError(
+                "sampled-parameter set differs from the frozen point "
+                "(the likelihood/theory code changed its parameters):\n"
+                f"  new since freeze: {sorted(sampled - set(point))}\n"
+                f"  gone since freeze: {sorted(set(point) - sampled)}")
+        start = time.time()
+        u.evaluate_chi2(model, point)
+        vectors.append(np.array(masked_vector(), dtype="float64"))
+        print(f"  model {index + 1}/{len(points)}: {label} vector "
+              f"({time.time() - start:.1f} s)", flush=True)
+    inv_cov = np.array(ci.get_inv_cov_masked(), dtype="float64")
+    del model
+    return np.array(vectors), inv_cov
 
 
 def _nmodels_figure_dir():
@@ -409,10 +474,9 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
                     held=None, case=None):
     """Draw the N-random-models figure of one example; return its path.
 
-    The file name carries the example and the seed base, so runs with
-    different seeds never overwrite each other and every figure names
-    how to redraw its points. matplotlib is imported here, inside the
-    call, so importing the suites never loads it.
+    The file name carries the example and the seed base, so the figure
+    names how to redraw its points. matplotlib is imported here, inside
+    the call, so importing the suites never loads it.
 
     Arguments:
       u          = the project's cocoa_test_utils module.
@@ -420,7 +484,7 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
       points     = the drawn points, one {name: value} dict per model.
       deltas     = the per-model delta chi2, in the same order.
       figure_dir = the folder of _nmodels_figure_dir.
-      seed       = the seed base of the run.
+      seed       = the seed base of the points.
       limit      = the delta chi2 of the dashed line.
       held       = None, or one bool per model: True for a model that
                    kept the hold list at the frozen point.
@@ -450,9 +514,7 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
     return path
 
 
-def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
-                   nmodels_seed=None, nmodels_limit=None, nmodels_box=None,
-                   nmodels_hold=None, nmodels_amplitude_cut=None):
+def accuracy_suite(u, name, checks, knob_scan=None):
     """Build the accuracy-advisory class (A-checks, K-scan, N-models).
 
     Arguments:
@@ -475,32 +537,19 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                         name, each further key adds
                         test_a0_one_knob_at_a_time_<key>), or None
                         for a project without the scan.
-      nmodels_example = an (EXAMPLES key, display label) pair enabling
-                        the opt-in N-random-models check
-                        test_ax99_nmodels, a tuple of such pairs for
-                        one check per example (the first keeps that
-                        name, each further key adds
-                        test_ax99_nmodels_<key>), or None.
-      nmodels_seed    = base of the per-model random seeds; None
-                        uses u.RANDOM_MODEL_SEED. A project that
-                        records its points passes the seed explicitly.
-      nmodels_limit   = None keeps the check advisory (finite deltas
-                        only); a number makes every model's
-                        |delta chi2| stay below it.
-      nmodels_box     = None, or {parameter name: (min, max)}: a
-                        narrower box the draw uses for that parameter
-                        instead of the frozen one (examples that
-                        tightened a prior after the freeze; see
-                        draw_uniform_point).
-      nmodels_hold    = None, or a tuple of parameter names and
-                        prefixes ending in "_": every odd model resets
-                        them to the frozen point, so half of the models
-                        measure what the other parameters do to the
-                        accuracy (random_model_accuracy's hold).
-      nmodels_amplitude_cut = None, or the largest clustering-amplitude
-                        ratio (A_s/A_s,fid)(b_i/b_i,fid)^2 a draw may
-                        reach in any bin (random_model_accuracy's
-                        amplitude_cut).
+    The N-random-models check (test_ax99_nmodels, one per example) is
+    configured in the project's cocoa_test_utils, which
+    generate_frozen_reference.py --nmodels also reads:
+      NMODELS_EXAMPLES      = (EXAMPLES key, display label) pairs, or
+                              () for a project without the check; the
+                              first keeps the name test_ax99_nmodels,
+                              each further key adds
+                              test_ax99_nmodels_<key>.
+      NMODELS_LIMIT         = None keeps the check advisory (finite
+                              deltas only); a number makes every
+                              model's |delta chi2| stay below it.
+      NMODELS_BOX, NMODELS_HOLD, NMODELS_AMPLITUDE_CUT
+                            = the draw settings of nmodels_points.
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -637,102 +686,122 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
         setattr(TestAccuracy, method.__name__, method)
 
     # one (example, label) pair is the single-check case every
-    # project used before tuples of pairs existed
-    if nmodels_example is None:
-        nmodels_pairs = ()
-    elif isinstance(nmodels_example[0], str):
-        nmodels_pairs = (tuple(nmodels_example),)
-    else:
-        nmodels_pairs = tuple(tuple(pair) for pair in nmodels_example)
-    nm_seed = u.RANDOM_MODEL_SEED if nmodels_seed is None else nmodels_seed
+    nmodels_pairs = tuple(tuple(pair) for pair
+                          in getattr(u, "NMODELS_EXAMPLES", ()))
+    nmodels_limit = getattr(u, "NMODELS_LIMIT", None)
 
     def make_nmodels(nm_example, nm_label):
         def test_ax99_nmodels(self):
-                """N-random-models check across the prior. Opt-in.
+                """N-random-models check across the prior.
 
                 The A-checks measure the numerical error of the default
                 settings at the one frozen fiducial point. This check
-                measures it at N reproducible random points across the
-                prior instead. For each point a synthetic data vector is
-                generated at that point with the default settings, so the
-                default chi2 against it is zero by construction and the
-                high-accuracy chi2 against it is the delta directly (the
-                mechanism lives in u.random_model_accuracy). The
-                deltas have to be finite; with nmodels_limit set, each
-                |delta| must also stay below that limit, otherwise the
-                check is advisory.
+                measures it at NMODELS_COUNT fixed points across the
+                prior. For each point
 
-                The points are reproducible: model m draws with the seed
-                base + m, the base being the project's nmodels_seed
-                unless COCOA_ACCURACY_NMODELS_SEED sets another. Before
-                the limit is applied, the check draws the Omega_m -
-                clustering-amplitude triangle of the points
-                (cocoa_testing_figures.random_models_triangle) into the
-                folder COCOA_ACCURACY_NMODELS_FIGURES names, or the
-                system temporary folder, and prints the file path.
+                    delta chi2 = (v_high - v_default)^T C^-1 (v_high - v_default),
 
-                Opt-in because each model costs a default
-                build+evaluation plus a high-accuracy build+evaluation,
-                minutes per model. Enable it with the
-                COCOA_ACCURACY_NMODELS environment variable, for example
+                with v_high the stored vector at the pushed accuracy
+                settings (frozen/nmodels_<example>.npz, written once by
+                generate_frozen_reference.py --nmodels), v_default the
+                vector at the default settings, computed here, and C the
+                frozen covariance. Storing the expensive half keeps the
+                check to one model build and one evaluation per point.
 
-                    COCOA_ACCURACY_NMODELS=10 python -m pytest \\
-                        <this project's test_accuracy.py> -k nmodels
+                The points are fixed: model m draws with the seed
+                RANDOM_MODEL_SEED + m from the project's draw settings
+                (NMODELS_BOX, NMODELS_HOLD and NMODELS_AMPLITUDE_CUT in
+                cocoa_test_utils). The check redraws them and requires
+                the stored points and the fingerprint of the
+                high-accuracy configuration (nmodels_config_hash) to
+                match, so a changed prior, draw or configuration asks
+                for regenerated vectors instead of comparing the wrong
+                ones. Without a stored file the check is skipped with
+                that instruction.
 
-                or with --nmodels N when the file runs as a script. The
-                ax99 in the method name sorts this check after the
-                A-checks (unittest runs methods in name order), so the
-                cheap fiducial checks always report before the expensive
-                multi-model loop starts.
+                The deltas have to be finite; with NMODELS_LIMIT set,
+                each |delta| must also stay below it, otherwise the
+                check is advisory. Before the limit applies, the check
+                draws the Omega_m - clustering-amplitude triangle of the
+                points (cocoa_testing_figures.random_models_triangle)
+                into the folder COCOA_ACCURACY_NMODELS_FIGURES names, or
+                the system temporary folder. The ax99 in the method name
+                sorts this check after the A-checks (unittest runs
+                methods in name order).
                 """
                 import math
-                # .get returns its second argument, "0", when the
-                # variable is unset, so an untouched environment means a
-                # clean skip
-                n_models_text = os.environ.get(
-                    "COCOA_ACCURACY_NMODELS", "0")
-                # int() raises ValueError on non-numeric text; the except
-                # turns the stack trace into an instruction
-                try:
-                    n_models = int(n_models_text)
-                except ValueError:
-                    raise AssertionError(
-                        f"COCOA_ACCURACY_NMODELS={n_models_text!r} is "
-                        "not an integer; set it to the number of random "
-                        "models, for example COCOA_ACCURACY_NMODELS=10")
-                if n_models <= 0:
-                    # the default: report how to enable the check and
-                    # pass without building anything
-                    print("\n  N-random-models check skipped (set "
-                          "COCOA_ACCURACY_NMODELS=<N>, or run this file "
-                          "with --nmodels <N>, to enable it).",
-                          flush=True)
-                    return
-                run_seed = _nmodels_seed(nm_seed)
+                import numpy as np
+
+                path = nmodels_file(u, nm_example)
+                if not os.path.isfile(path):
+                    self.skipTest(
+                        f"no stored N-random-models vectors for "
+                        f"{nm_example} (frozen/{os.path.basename(path)}); "
+                        "generate them with generate_frozen_reference.py "
+                        "--nmodels")
                 # checked before the models run, which take minutes
                 figure_dir = _nmodels_figure_dir()
+                seed = u.RANDOM_MODEL_SEED
+                points, held = nmodels_draw(u, nm_example)
+                n_models = len(points)
                 print(f"\n  N-random-models check: {n_models} models, "
-                      f"{nm_label}, seed base {run_seed}",
-                      flush=True)
-                points = []
+                      f"{nm_label}, seed base {seed}", flush=True)
+                nmodels_box = getattr(u, "NMODELS_BOX", None)
+                nmodels_hold = getattr(u, "NMODELS_HOLD", None)
+                nmodels_cut = getattr(u, "NMODELS_AMPLITUDE_CUT", None)
                 if nmodels_box is not None:
                     for box_name in nmodels_box:
                         box_low, box_high = nmodels_box[box_name]
                         print(f"  box override: {box_name} drawn in "
                               f"[{box_low}, {box_high}]", flush=True)
-                if nmodels_amplitude_cut is not None:
+                if nmodels_cut is not None:
                     print("  amplitude cut: (A_s/A_s,fid)(b_i/b_i,fid)^2 <= "
-                          f"{nmodels_amplitude_cut:g} in every bin",
-                          flush=True)
+                          f"{nmodels_cut:g} in every bin", flush=True)
                 if nmodels_hold is not None:
                     print("  odd models hold at the fiducial: "
                           f"{', '.join(nmodels_hold)}", flush=True)
-                deltas = u.random_model_accuracy(nm_example, n_models,
-                                                 seed=run_seed,
-                                                 points_out=points,
-                                                 box_overrides=nmodels_box,
-                                                 hold=nmodels_hold,
-                                                 amplitude_cut=nmodels_amplitude_cut)
+
+                # the stored vectors must belong to these points and to
+                # today's high-accuracy configuration
+                stored = np.load(path, allow_pickle=False)
+                regenerate = ("regenerate the stored vectors with "
+                              "generate_frozen_reference.py --nmodels")
+                names = []
+                for name in stored["names"]:
+                    names.append(str(name))
+                self.assertEqual(
+                    names, sorted(points[0]),
+                    msg="the stored points have other parameters than "
+                        f"today's draw; {regenerate}")
+                values = np.zeros((n_models, len(names)))
+                for index in range(n_models):
+                    for column in range(len(names)):
+                        values[index, column] = points[index][names[column]]
+                self.assertTrue(
+                    np.array_equal(values, stored["values"]),
+                    msg="the stored points differ from today's draw (the "
+                        "prior, the draw settings or the fiducial "
+                        f"changed); {regenerate}")
+                self.assertEqual(
+                    str(stored["config_hash"]),
+                    u.nmodels_config_hash(nm_example),
+                    msg="the high-accuracy configuration changed since "
+                        f"the stored vectors were computed; {regenerate}")
+
+                default_vectors, inv_cov = nmodels_vectors(
+                    u, nm_example, points, high_accuracy=False)
+                high_vectors = stored["vectors"]
+                self.assertEqual(
+                    high_vectors.shape, default_vectors.shape,
+                    msg="the stored vectors have another length than "
+                        f"today's masked data vector; {regenerate}")
+                deltas = []
+                for index in range(n_models):
+                    difference = high_vectors[index] - default_vectors[index]
+                    delta = float(difference @ inv_cov @ difference)
+                    u.report_random_model(index, n_models, points[index],
+                                          delta)
+                    deltas.append(delta)
                 # enumerate pairs each delta with its position, counted
                 # from 0, so a broken model is named by number
                 for index, delta in enumerate(deltas):
@@ -744,15 +813,10 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                         msg=f"model {index}: non-finite delta chi2 "
                             f"{delta!r}")
                 u.report_random_model_summary(deltas)
-                # held[index] is True for a model that kept the hold list
-                # at the frozen point (the odd ones, when a list is set)
-                held = []
-                for index in range(len(deltas)):
-                    held.append(nmodels_hold is not None and index % 2 == 1)
                 if nmodels_hold is not None:
                     drawn_deltas = []
                     held_deltas = []
-                    for index in range(len(deltas)):
+                    for index in range(n_models):
                         if held[index]:
                             held_deltas.append(deltas[index])
                         else:
@@ -773,7 +837,7 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                     figure_limit = u.CHI2_TOLERANCE
                 figure_path = _nmodels_figure(
                     u, example=nm_example, points=points, deltas=deltas,
-                    figure_dir=figure_dir, seed=run_seed,
+                    figure_dir=figure_dir, seed=seed,
                     limit=figure_limit, held=held, case=nm_label)
                 print(f"  N-random-models figure: {figure_path}",
                       flush=True)
@@ -787,7 +851,7 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                         above,
                         msg="models with |delta chi2| >= "
                             f"{nmodels_limit}: " + ", ".join(
-                                f"{index} (seed {run_seed + index}): "
+                                f"{index} (seed {seed + index}): "
                                 f"{delta:+.4f}"
                                 for index, delta in above))
 

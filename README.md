@@ -525,7 +525,7 @@ who knows one suite knows them all:
 | `test_fastpt.py` | the frozen FAST-PT references and the [CFASTPT vs FAST-PT sweep](#dv_fastpt) |
 | `test_nonlinear.py` | the [Halofit vs EuclidEmulator2 checks](#dv_halofit_ee2) |
 | `test_ee2.py` | the [EE2 race check, plus the modification pin where the project carries it](#dv_ee2) |
-| `test_accuracy.py` | the advisory [accuracy scans](#dv_accuracy) and, where shipped, the opt-in [N-random-models check](#dv_nmodels) |
+| `test_accuracy.py` | the advisory [accuracy scans](#dv_accuracy) and, where shipped, the [N-random-models check](#dv_nmodels) |
 | `test_accuracy_baryons.py` | the [baryonic-feedback accuracy checks](#dv_baryons) BF0-BF7 |
 | `test_baryons.py` | the [baryonic-feedback drift tests](#dv_baryons) BD1-BD7 |
 | `test_photoz_conventions.py` | the [photo-z convention checks](#dv_photoz) |
@@ -698,36 +698,70 @@ rules, so a re-measured delta can differ from a dated record even with
 nothing else changed. Each project's dated measurements state what was
 measured then; re-measure before quoting them as current.
 
-### The N-random-models check (opt-in) <a name="dv_nmodels"></a>
+### The N-random-models check <a name="dv_nmodels"></a>
 
-This check repeats the accuracy measurement at N reproducible random
-points drawn across the prior: per point, draw, generate a synthetic
-data vector at that point with the default settings (the zero-baseline
-mechanism), and evaluate the high-accuracy chi2 against it. The draws
-are seeded, so every run draws exactly the same points and the numbers
-compare across reruns and machines: model $m$ uses the seed $137 + m$
-(`RANDOM_MODEL_SEED`), a project may set another base, and a user may
-set one for a run with `COCOA_ACCURACY_NMODELS_SEED`. The draw reads
-the prior boxes of the frozen configuration; a project whose examples
-tightened a box after the freeze passes the narrower box to the check
-(`nmodels_box` of `accuracy_suite`) instead of refreezing. The draw
-consumes the same random numbers either way, so an override changes
-only that parameter's values. With a hold list (`nmodels_hold`), every
-odd model resets the listed parameters to the fiducial after its draw,
-so half of the models measure what the other parameters do to the
-accuracy; alternating keeps each model's kind independent of the
-number of models. With an amplitude cut (`nmodels_amplitude_cut`), a
-draw whose clustering-amplitude ratio
+This check repeats the accuracy measurement at 50 reproducible random
+points drawn across the prior. Per point it compares the masked theory
+vector at the default settings, $`v_{\rm def}`$, with a stored vector
+at the pushed settings (every setting of the accuracy checks raised at
+once), $`v_{\rm high}`$, through the frozen covariance $C$:
+
+```math
+\Delta\chi^2 = (v_{\rm high} - v_{\rm def})^T C^{-1} (v_{\rm high} - v_{\rm def}),
+```
+
+the numerical error of the default settings at that point (the same
+quadratic form [the zero-baseline mechanism](#dv_zero_baseline)
+reports, computed directly from the two vectors). The draws are
+seeded, so every run draws exactly the same points and the numbers
+compare across reruns and machines: model $m$ uses the seed $137 + m$,
+and the count and the seed base are the same in every project.
+
+The draw settings live in each project's `tests/cocoa_test_utils.py`,
+read by the check and by the generator alike: `NMODELS_EXAMPLES` names
+the configurations checked, and `NMODELS_LIMIT` sets a pass limit on
+the deltas (`None` keeps the check advisory: the deltas only have to
+be finite). The draw reads the prior boxes of the frozen
+configuration; a project whose examples tightened a box after the
+freeze passes the narrower box to the check (`NMODELS_BOX`) instead of
+refreezing. The draw consumes the same random numbers either way, so
+an override changes only that parameter's values. With a hold list
+(`NMODELS_HOLD`), every odd model resets the listed parameters to the
+fiducial after its draw, so half of the models measure what the other
+parameters do to the accuracy; alternating keeps each model's kind
+independent of the number of models. With an amplitude cut
+(`NMODELS_AMPLITUDE_CUT`), a draw whose clustering-amplitude ratio
 $(A_s/A_{s,\rm fid})(b_i/b_{i,\rm fid})^2$ exceeds the cut in any bin
 is replaced by the next draw of the same generator, so the points
-sample the box restricted to the cut, still reproducibly. The report
-streams one block per model and ends with the min/median/max delta
-chi2. The check is advisory, so the deltas only have to be finite,
-unless the project sets a pass limit (`nmodels_limit` of
-`accuracy_suite`).
+sample the box restricted to the cut, still reproducibly.
 
-The check also draws each point's delta chi2 against the two
-quantities that set it, and prints the file path: the matter density
+The pushed-settings vectors are the expensive half (one model build at
+the pushed settings, then one evaluation per point), so they are
+computed once by
+
+    python ./projects/<project>/tests/generate_frozen_reference.py --nmodels
+
+and stored in `tests/frozen/nmodels_<example>.npz`, which the manifest
+pins with the rest of `frozen/`. The file holds the parameter names,
+the 50 points and their held flags, the 50 masked vectors, the seed,
+the draw settings, and a SHA-256 fingerprint of the pushed
+configuration (the likelihood and theory blocks, with path entries
+left out). The full refreeze (`--overwrite`) keeps existing
+`nmodels_*.npz` files rather than recomputing them; `--nmodels` is
+their only writer. The check itself costs one model build at the
+default settings and one evaluation per point. Before evaluating, it
+redraws the points and requires them to equal the stored ones exactly,
+and requires the fingerprint to match: a changed prior, draw setting,
+fiducial, pushed setting or likelihood default fails the check with
+the instruction to regenerate the stored vectors with
+`generate_frozen_reference.py --nmodels`. Without a stored file the
+check is skipped with the same instruction. To measure the accuracy
+around another fiducial or prior, change the frozen state or the draw
+settings and regenerate.
+
+The report streams one block per model and ends with the min/median/max
+delta chi2. The check also draws each point's delta chi2 against the
+two quantities that set it, and prints the file path: the matter density
 $\Omega_m$ (a higher $\Omega_m$ raises the shear signal and pushes the
 matter power deeper into the nonlinear regime, where the relative
 error itself grows) and, when the configuration samples linear galaxy
@@ -744,10 +778,7 @@ folder
 `COCOA_ACCURACY_NMODELS_FIGURES` names, or into the system temporary
 folder when the variable is unset, so an ordinary run changes no
 project file; its name carries the example and the seed base
-(`accuracy_nmodels_<example>_seed<base>.png`). Each model costs a default and a
-high-accuracy build-plus-evaluation, minutes per model, so the check
-is off by default: with `COCOA_ACCURACY_NMODELS` unset (or 0) it
-prints how to enable itself and passes.
+(`accuracy_nmodels_<example>_seed137.png`).
 
 ### Halo-model checks (opt-in) <a name="dv_halo_slow"></a>
 
