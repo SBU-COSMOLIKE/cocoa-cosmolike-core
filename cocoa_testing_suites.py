@@ -721,7 +721,7 @@ def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None,
                         print(f"  box override: {box_name} drawn in "
                               f"[{box_low}, {box_high}]", flush=True)
                 if nmodels_amplitude_cut is not None:
-                    print("  amplitude cut: (As/As_fid)(b_i/b_i,fid)^2 <= "
+                    print("  amplitude cut: (A_s/A_s,fid)(b_i/b_i,fid)^2 <= "
                           f"{nmodels_amplitude_cut:g} in every bin",
                           flush=True)
                 if nmodels_hold is not None:

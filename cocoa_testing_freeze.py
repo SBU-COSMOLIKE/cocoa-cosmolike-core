@@ -175,6 +175,11 @@ def freeze_example(u, example, stamp):
     # load_frozen_info switches a copy to TATT (IA_model 1) for the
     # TATT variants
     likelihood_block["IA_model"] = 0
+    # a project may pin likelihood options of every frozen reference
+    # (FROZEN_LIKELIHOOD_OVERRIDES in its cocoa_test_utils), for example
+    # a more cautious accuracy level than its examples ship with; getattr
+    # returns the empty default for projects that define none
+    likelihood_block.update(getattr(u, "FROZEN_LIKELIHOOD_OVERRIDES", {}))
     if cfg.get("emulator"):
         # the emulated BAO/SN network (emulbaosn) runs on the device
         # its example names; setting "cpu" here keeps the reference
