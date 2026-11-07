@@ -5491,7 +5491,9 @@ double C_gg_tomo_limber_nointerp(
 //   KB[6][nbin][nell][npts]  P_d1d2, P_d2d2 - 2 sigma4, P_d1s2,
 //                            P_d2s2 - 4/3 sigma4, P_s2s2 - 8/9 sigma4, P_d1p3
 //                            (one-loop bias only; zero outside the FPTbias
-//                            k range, as in the scalar integrand)
+//                            k range, as in the scalar integrand); with
+//                            table_dd a seventh slot, 1 inside that range
+//                            and 0 outside (the DD term's sigma4 constant)
 //
 // Cache invalidation:
 // none here - every input arrives precomputed; the
@@ -5511,7 +5513,10 @@ double C_gg_tomo_limber_nointerp(
 //   table_dd      - output [clustering_nbin][nell], the density-density
 //                   part of the full model alone: W_dd = W_gal*b1 against
 //                   P_delta plus the one-loop bias terms, no
-//                   magnification, no RSD (NULL: not computed)
+//                   magnification, no RSD (NULL: not computed); its
+//                   one-loop templates keep their low-k constants (no
+//                   sigma4 subtraction), to match the low-rank
+//                   factorization (C_gg_lowrank_decomp_work)
 //   table_dd_lin  - output [clustering_nbin][nell], the density-density
 //                   part of the linear term: W_dd against the separable
 //                   linear spectrum, b1 only (NULL: not computed)
@@ -5671,7 +5676,9 @@ static void C_gg_tomo_limber_work(
   double**** KB = NULL;
   if (1 == nonlinear_bias) {
     WO = (double***) malloc3d(4, nbin, npts_max);
-    KB = (double****) malloc4d(6, nbin, nell, npts_max);
+    // slot 6, with table_dd only: 1 where the FPT tables cover k, the
+    // range in which the DD term adds back the sigma4 constant
+    KB = (double****) malloc4d((NULL != table_dd) ? 7 : 6, nbin, nell, npts_max);
   }
 
   // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
@@ -5849,6 +5856,9 @@ static void C_gg_tomo_limber_work(
               interpol1d(FPTbias.tab[4], N, lb[0], lb[1], lb[2], lnk) - 8./9.*s4 : 0.0;
             KB[5][zl][i][p] = in ?
               interpol1d(FPTbias.tab[5], N, lb[0], lb[1], lb[2], lnk) : 0.0;
+            if (NULL != table_dd) {
+              KB[6][zl][i][p] = in ? 1.0 : 0.0;
+            }
           }
         }
       }
@@ -5948,8 +5958,17 @@ static void C_gg_tomo_limber_work(
           // keeps the density row W_gal*b1 alone (no magnification, no
           // RSD), while the one-loop terms stay - they are density
           // correlators, so they belong entirely to the DD part. Same
-          // mask, same node order, same operations: C_l(full) - C_l(DD)
-          // is then exactly the magnification and RSD rows.
+          // mask, same node order.
+          //
+          // One difference: this term uses the templates WITHOUT the
+          // sigma4 subtractions. Only the low-rank split asks for it,
+          // and it must match that split's factorization, which drops
+          // the subtractions so sqrt(P_g) exists (see
+          // C_gg_lowrank_decomp_work). Unsubtracted minus subtracted is
+          // the constant (sigma4/2) D^4 (b2 + 2 bs2/3)^2, added back
+          // where the FPT tables cover k (KB slot 6). C_l(full) - C_l(DD)
+          // is then the magnification and RSD rows plus the Limber
+          // projection of that constant, which is exact.
           const double* restrict growfac = cn->data[CN_GROWFAC];
           const double* restrict b2   = WO[0][zl];
           const double* restrict bs2  = WO[1][zl];
@@ -5961,15 +5980,18 @@ static void C_gg_tomo_limber_work(
           const double* restrict d2s2 = KB[3][zl][i];
           const double* restrict s2s2 = KB[4][zl][i];
           const double* restrict d1p3 = KB[5][zl][i];
+          const double* restrict inr  = KB[6][zl][i];
           #pragma omp simd reduction(+:sum)
           for (int p=0; p<npts; p++) {
             const double Wdd = WGAL[p]*b1[p];
             const double k = ell/fK[p];
             const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
+            const double c2 = b2[p] + (2.0/3.0)*bs2[p];
             const double oneloop = (WGAL[p]*WGAL[p])*
               (g4*(b1[p]*b2[p]*d1d2[p] + 0.25*b2[p]*b2[p]*d2d2[p] +
                    b1[p]*bs2[p]*d1s2[p] + 0.5*b2[p]*bs2[p]*d2s2[p] +
-                   0.25*bs2[p]*bs2[p]*s2s2[p] + b1[p]*b3[p]*d1p3[p]) +
+                   0.25*bs2[p]*bs2[p]*s2s2[p] + b1[p]*b3[p]*d1p3[p] +
+                   inr[p]*0.5*s4*c2*c2) +
                (2*b1[p]*bk[p]*k*k*PK[p]));
             sum += mask[p]*((Wdd*Wdd*PK[p] + oneloop)*dchida[p]/(fK[p]*fK[p]))*wt[p];
           }
@@ -10609,20 +10631,32 @@ void C_gs_tomo_ells(
 //
 // The tracer spectrum:
 //
-// P_g(k, z) is the complete one-loop galaxy power spectrum of the
-// Limber gg integrand - the same P_gg that C_gg_tomo_limber_work
-// sums, with the same per-bin biases and the FPT tables zeroed
-// outside their k range. The fill below mirrors that integrand term
-// by term; the formula lives there, not here.
+// P_g(k, z) is the one-loop galaxy power spectrum of the Limber gg
+// integrand - the same P_gg that C_gg_tomo_limber_work sums, with the
+// same per-bin biases and the FPT tables zeroed outside their k range
+// - minus one constant.
 //
-// One-loop terms can drive P_g negative at high k and large |b2|,
-// where sqrt(P_g) stops existing. The clamp
-// P_g = fmax(P_g, 1e-15 b1^2 Pdelta) keeps the matrix real while
-// staying far below any physical power.
+// The Limber integrand subtracts the low-k limits of the quadratic
+// templates (the sigma4 terms), so its loop sum vanishes as k -> 0. As
+// k -> infinity, where the templates decay, the same subtraction
+// leaves the constant
 //
-// The clamp count is log_debug'd per build. The subtracted Limber DD
-// term keeps the unclamped integrand, so clamping leaves a residual
-// only where P_g itself is negligible.
+//   P_inf = -(sigma4/2) D^4 (b2 + 2 bs2/3)^2  <= 0,
+//
+// D the growth factor. For BGS biases P_inf exceeds b1^2 P_delta
+// above k ~ 0.3 h/Mpc: P_g turns negative and sqrt(P_g) stops
+// existing.
+//
+// So the decomposition factorizes P_g - P_inf, the spectrum with the
+// unsubtracted templates, which stays positive. A constant power
+// projects exactly in Limber (Bessel orthogonality), so P_inf needs no
+// non-Limber term: the full Limber term carries it, and the DD term
+// the splice subtracts uses the unsubtracted templates too. C_l is
+// then the exact projection of the full one-loop model.
+//
+// The clamp P_g = fmax(P_g, 1e-15 b1^2 Pdelta) remains as a guard
+// (large negative b1 b2 crosses could still do it); its count is
+// log_debug'd per build.
 //
 // The grids:
 //
@@ -10798,13 +10832,13 @@ static void C_gg_lowrank_decomp_work(
       }
     }
   }
+  // the ln k grid of the FPT tables (no sigma4: this spectrum keeps
+  // the templates unsubtracted, see the header comment)
   double limbias[3] = {0.0, 0.0, 0.0};
-  double s4 = 0.0;
   if (1 == nonlinear_bias) {
     limbias[0] = log(FPTbias.krange[RANGE_MIN]);
     limbias[1] = log(FPTbias.krange[RANGE_MAX]);
     limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
-    s4 = FPTbias.sigma4;
   }
 
   // the uniform ln k grid, shared by every bin
@@ -10937,13 +10971,18 @@ static void C_gg_lowrank_decomp_work(
           lnk <= limbias[1]) {
         const double* lb = limbias;
         const int N = FPTbias.N;
-        // sigma4 subtractions: the same operator renormalization as the
-        // Limber gg integrand (the derivation lives there)
+        // The templates WITHOUT the sigma4 subtractions of the Limber gg
+        // integrand: this factorizes P_g - P_inf, where P_inf is the
+        // constant those subtractions add (see the header comment). The
+        // Limber DD term the splice subtracts uses the same unsubtracted
+        // templates, and the full Limber term keeps the subtracted ones,
+        // so P_inf reaches C_l through Limber, which is exact for a
+        // constant power.
         fpt[0] = interpol1d(FPTbias.tab[0], N, lb[0], lb[1], lb[2], lnk);
-        fpt[1] = interpol1d(FPTbias.tab[1], N, lb[0], lb[1], lb[2], lnk) - 2.*s4;
+        fpt[1] = interpol1d(FPTbias.tab[1], N, lb[0], lb[1], lb[2], lnk);
         fpt[2] = interpol1d(FPTbias.tab[2], N, lb[0], lb[1], lb[2], lnk);
-        fpt[3] = interpol1d(FPTbias.tab[3], N, lb[0], lb[1], lb[2], lnk) - 4./3.*s4;
-        fpt[4] = interpol1d(FPTbias.tab[4], N, lb[0], lb[1], lb[2], lnk) - 8./9.*s4;
+        fpt[3] = interpol1d(FPTbias.tab[3], N, lb[0], lb[1], lb[2], lnk);
+        fpt[4] = interpol1d(FPTbias.tab[4], N, lb[0], lb[1], lb[2], lnk);
         fpt[5] = interpol1d(FPTbias.tab[5], N, lb[0], lb[1], lb[2], lnk);
       }
       gsl_matrix* M = svd_matrix[bin];
@@ -13038,14 +13077,17 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //    this geometric mean. Any other DD form would leave a residual
 //    that never cancels.
 //
-//    Each bin's P_g carries the floor of the factorization,
-//    max(P_g, 1e-15 b1^2 P_delta): the square root needs a positive
-//    argument, and the factorization uses the same floor.
+//    Each bin's P_g here is the factorization's spectrum: the one-loop
+//    templates without their sigma4 subtractions, which keeps it
+//    positive (C_gg_lowrank_decomp_work explains why), with the same
+//    floor, max(P_g, 1e-15 b1^2 P_delta), as a guard.
 //
-//    The full output keeps the physical bilinear spectrum. The
-//    difference between the bilinear spectrum and the geometric mean
-//    is second order in the two bins' bias differences, and the
-//    Limber splice adds it back.
+//    The full output keeps the physical bilinear spectrum with the
+//    subtractions. The Limber splice adds the difference back: the
+//    bilinear-minus-geometric-mean residual, second order in the two
+//    bins' bias differences, and the white-noise constant of the
+//    subtractions, -(sigma4/2) D^4 (b2_i + 2 bs2_i/3)(b2_j + 2 bs2_j/3),
+//    which Limber projects exactly.
 //
 //    The linear-term outputs never carry one-loop terms, as in the
 //    auto. With linear-only galaxies, every output is the
@@ -13411,14 +13453,21 @@ static void C_gg_cross_tomo_limber_work(
           }
           if (NULL != table_dd) {
             // each bin's own P_g, term by term the spectrum the low-rank
-            // factorization builds, with its floor (step 5)
+            // factorization builds (step 5): the templates without the
+            // sigma4 subtractions, i.e. the subtracted sum plus
+            // (sigma4/2) D^4 (b2 + 2 bs2/3)^2 inside the FPT k range,
+            // with the factorization's floor as a guard
+            const double ci = b2i + (2.0/3.0)*bsi;
+            const double cj = b2j + (2.0/3.0)*bsj;
             const double loop_ii =
               g4*(b1i*b2i*d1d2 + 0.25*b2i*b2i*d2d2 + b1i*bsi*d1s2 +
-                  0.5*b2i*bsi*d2s2 + 0.25*bsi*bsi*s2s2 + b1i*b3i*d1p3) +
+                  0.5*b2i*bsi*d2s2 + 0.25*bsi*bsi*s2s2 + b1i*b3i*d1p3 +
+                  (in ? 0.5*s4*ci*ci : 0.0)) +
               2.0*b1i*bki*k*k*PK;
             const double loop_jj =
               g4*(b1j*b2j*d1d2 + 0.25*b2j*b2j*d2d2 + b1j*bsj*d1s2 +
-                  0.5*b2j*bsj*d2s2 + 0.25*bsj*bsj*s2s2 + b1j*b3j*d1p3) +
+                  0.5*b2j*bsj*d2s2 + 0.25*bsj*bsj*s2s2 + b1j*b3j*d1p3 +
+                  (in ? 0.5*s4*cj*cj : 0.0)) +
               2.0*b1j*bkj*k*k*PK;
             const double Pg_i = fmax(b1i*b1i*PK + loop_ii, 1.0e-15*b1i*b1i*PK);
             const double Pg_j = fmax(b1j*b1j*PK + loop_jj, 1.0e-15*b1j*b1j*PK);
