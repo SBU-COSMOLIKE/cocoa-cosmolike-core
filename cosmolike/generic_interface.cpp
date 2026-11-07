@@ -3809,6 +3809,108 @@ void set_nuisance_bias_fastpt(vector B1, vector B2, vector B_MAG, vector B3nl, v
 }
 
 // ---------------------------------------------------------------------------
+// Set the per-bin quadratic bias b2 = nuisance.gb[1][i] and the tidal
+// bias bs2 = nuisance.gb[2][i] as given, with no co-evolution tie.
+//
+// set_nuisance_nonlinear_bias derives bs2 from b1 through the
+// co-evolution relation bs2 = -(4/7)(b1 - 1), and zeroes it wherever b2
+// is zero. A model whose tidal bias departs from co-evolution, such as
+// one with a free offset per tracer sample, must pass bs2 itself. This
+// setter does exactly that.
+//
+// The one-loop terms switch on only when some bin has b2 != 0
+// (has_b2_galaxies in cosmo2D.c). A nonzero bs2 with b2 = 0 in every
+// bin would therefore be dropped without a trace, so that input is
+// fatal.
+//
+// Cache invalidation:
+// bumps nuisance.random_galaxy_bias when any b2 or bs2 changed;
+// unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set, both inputs of that size, no NaN
+// entries, and no bs2 without b2, else critical() + exit(1).
+//
+// Parameters:
+//   B2  - per-bin quadratic bias b2 (length clustering_nbin)
+//   BS2 - per-bin tidal bias bs2 (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void set_nuisance_nonlinear_bias_tidal(vector B2, vector BS2)
+{
+  static constexpr std::string_view fname =
+      "set_nuisance_nonlinear_bias_tidal"sv;
+  debug("{}: {}", fname, errbegins);
+  if (0 == redshift.clustering_nbin) [[unlikely]] {
+    critical(errorns2, fname, "clustering_Nbin", 0); exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(B2.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, B2.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(BS2.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, BS2.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  int any_b2 = 0;
+  int any_bs2 = 0;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (std::isnan(B2(i)) || std::isnan(BS2(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    if (!almost_equal(B2(i), 0.)) {
+      any_b2 = 1;
+    }
+    if (!almost_equal(BS2(i), 0.)) {
+      any_bs2 = 1;
+    }
+  }
+  if (1 == any_bs2 && 0 == any_b2) [[unlikely]] {
+    critical("{}: bs2 != 0 with b2 = 0 in every bin: the one-loop terms "
+             "would be off and bs2 ignored", fname);
+    exit(1);
+  }
+  int cache_update = 0;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (fdiff(nuisance.gb[1][i], B2(i)) || fdiff(nuisance.gb[2][i], BS2(i))) {
+      cache_update = 1;
+      nuisance.gb[1][i] = B2(i);
+      nuisance.gb[2][i] = BS2(i);
+    }
+  }
+  if (1 == cache_update || 1 == force_cache_update_test) {
+    nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
+// Sampler-facing bias update with a free tidal bias: as
+// set_nuisance_bias_fastpt, with bs2 passed in instead of derived from b1.
+// Each stage bumps nuisance.random_galaxy_bias only on change.
+//
+// Parameters:
+//   B1    - per-bin linear bias b1
+//   B2    - per-bin quadratic bias b2
+//   BS2   - per-bin tidal bias bs2
+//   B_MAG - per-bin magnification-bias amplitude
+//   B3nl  - per-bin third-order bias b3nl
+//   BK    - per-bin nonlocal bias bK
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void set_nuisance_bias_fastpt_tidal(vector B1, vector B2, vector BS2,
+                                    vector B_MAG, vector B3nl, vector BK)
+{
+  set_nuisance_linear_bias(B1);
+  set_nuisance_nonlinear_bias_tidal(B2, BS2);
+  set_nuisance_magnification_bias(B_MAG);
+  set_nuisance_nonlocal_bias(B3nl, BK);
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

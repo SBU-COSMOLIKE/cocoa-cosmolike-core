@@ -13015,8 +13015,41 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //    product, and must subtract it with the same nodes, the same mask
 //    and the same summation order (the C_gg_tomo_limber_work rule).
 //
-// 4. One-loop (b2-type) bias has no cross-pair implementation here:
-//    fatal when active, never silently dropped.
+// 4. One-loop bias (b2, the tidal bs2, b3 and the k^2 term bK) adds
+//    the pair's one-loop spectrum to the full output.
+//
+//    It is the auto's one-loop sum with each product of two biases
+//    shared between the bins. For example, b1 b2 P_d1d2 of the auto
+//    becomes (b1_i b2_j + b2_i b1_j)/2 P_d1d2, so a pair of a bin
+//    with itself would reproduce the auto exactly.
+//
+//    The loop terms are density correlators, so they multiply the
+//    density weights W_gal of both bins and never the RSD rows. Both
+//    bins' biases are read at the same node, because Limber evaluates
+//    both kernels at one comoving distance.
+//
+// 5. With one-loop bias, the DD output is not the full sum with the
+//    RSD rows dropped. It is W_gal_i W_gal_j sqrt(P_g,i P_g,j), where
+//    P_g,b is bin b's own one-loop galaxy spectrum.
+//
+//    The reason is the low-rank non-Limber pair term this output is
+//    subtracted from. That term multiplies the two bins'
+//    factorizations of sqrt(P_g), so at high l it tends to exactly
+//    this geometric mean. Any other DD form would leave a residual
+//    that never cancels.
+//
+//    Each bin's P_g carries the floor of the factorization,
+//    max(P_g, 1e-15 b1^2 P_delta): the square root needs a positive
+//    argument, and the factorization uses the same floor.
+//
+//    The full output keeps the physical bilinear spectrum. The
+//    difference between the bilinear spectrum and the geometric mean
+//    is second order in the two bins' bias differences, and the
+//    Limber splice adds it back.
+//
+//    The linear-term outputs never carry one-loop terms, as in the
+//    auto. With linear-only galaxies, every output is the
+//    pre-one-loop sum bit for bit.
 //
 // Computes, for every pair n = (i, j) of the installed list and every
 // multipole in lx,
@@ -13027,6 +13060,10 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //   mask_p = 0 where either bin's RSD kernel would reach beyond
 //            chi(limits.a_min), 1 elsewhere (the auto work's reach
 //            mask, applied per bin and combined)
+//
+// With one-loop bias, the full output adds W_gal_i W_gal_j times the
+// pair's one-loop spectrum to K_i K_j PK (step 4), and the DD output
+// is the geometric mean of step 5.
 //
 // Parameters:
 //   cn_all        - quadrature nodes per pair [gg_cross_npairs]
@@ -13058,9 +13095,11 @@ static void C_gg_cross_tomo_limber_work(
     log_fatal("gg cross pairs have no HOD implementation");
     exit(1);
   }
-  if (1 == has_b2_galaxies()) {
-    log_fatal("gg cross pairs have no one-loop bias implementation");
-    exit(1);
+  // the one-loop terms enter only the outputs of the full model (step 4
+  // and 5 above); a call that asks for the linear terms alone skips them
+  int nonlinear_bias = 0;
+  if (NULL != table || NULL != table_dd) {
+    nonlinear_bias = has_b2_galaxies();
   }
 
   // per-node arrays are padded to the largest node count over the pairs
@@ -13094,8 +13133,30 @@ static void C_gg_cross_tomo_limber_work(
       (void) a_chi(0.9);
       (void) W_RSD(100, 0.9, 0.95, 0);
     }
+    if (1 == nonlinear_bias) {
+      // the auto work's one-loop warm-up, so the FPT tables are current
+      // for this cosmology before the parallel reads below
+      (void) gb2(0.1, 0);
+      (void) gbs2(0.1, 0);
+      (void) gb3(0.1, 0);
+      (void) gbK(0.1, 0);
+      if (0 == nuisance.IA_code) {
+        get_FPT_bias();
+      }
+    }
   }
   const double chi_a_min = (1 == rsd) ? chi(limits.a_min) : 0.0;
+
+  // the ln k grid of the FPT tables and their white-noise constant
+  // sigma4, read exactly as the auto work reads them
+  double limbias[3] = {0.0, 0.0, 0.0};
+  double s4 = 0.0;
+  if (1 == nonlinear_bias) {
+    limbias[0] = log(FPTbias.krange[RANGE_MIN]);
+    limbias[1] = log(FPTbias.krange[RANGE_MAX]);
+    limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
+    s4 = FPTbias.sigma4;
+  }
 
   // -------------------------------------------------------------------------
   // Precomputed tables. One kernel row per pair side: side 0 holds
@@ -13106,12 +13167,21 @@ static void C_gg_cross_tomo_limber_work(
   // side-independent.
   //
   //   WB[2][side][pair][node]        W_gal, b1
+  //   WO[4][side][pair][node]        b2, bs2, b3, bK   (one-loop only)
   //   KG[side][pair][ell][node]      W_RSD (zero when rsd = 0)
   //   KP[pair][ell][node]            P_delta(k, a)
   //   KL[pair][ell][node]            separable linear spectrum
   //   MASKP[pair][ell][node]         the combined RSD reach mask
+  //
+  // The one-loop templates are not tabulated: stage 3 reads them once
+  // per (pair, multipole, node), the same count a table would cost,
+  // and the memory stays that of the linear model.
   // -------------------------------------------------------------------------
   double**** WB = (double****) malloc4d(2, 2, npairs, npts_max);
+  double**** WO = NULL;
+  if (1 == nonlinear_bias) {
+    WO = (double****) malloc4d(4, 2, npairs, npts_max);
+  }
   double**** KG = NULL;
   if (1 == rsd) {
     KG = (double****) malloc4d(2, npairs, nell, npts_max);
@@ -13156,6 +13226,12 @@ static void C_gg_cross_tomo_limber_work(
         for (int side=0; side<2; side++) {
           WB[0][side][n][p] = W_gal(a, bins[side], hoh0);
           WB[1][side][n][p] = gb1(z, bins[side]);
+          if (1 == nonlinear_bias) {
+            WO[0][side][n][p] = gb2(z, bins[side]);
+            WO[1][side][n][p] = gbs2(z, bins[side]);
+            WO[2][side][n][p] = gb3(z, bins[side]);
+            WO[3][side][n][p] = gbK(z, bins[side]);
+          }
         }
       }
     }
@@ -13213,13 +13289,15 @@ static void C_gg_cross_tomo_limber_work(
     // table, so no two threads ever write the same entry, and the sum
     // over the pair's quadrature nodes runs serially in node order -
     // the floating-point additions happen in the same order at any
-    // thread count (the determinism rule of the auto work). All the
-    // physics was tabulated by stages 1 and 2; this loop only reads
-    // those tables and accumulates.
+    // thread count (the determinism rule of the auto work). Stages 1
+    // and 2 tabulated the linear model; this loop reads those tables,
+    // looks up the one-loop templates when they are on, and
+    // accumulates.
     #pragma omp for collapse(2) schedule(static)
     for (int n=0; n<npairs; n++) {
       for (int i=0; i<nell; i++) {
         const cosmo_nodes* cn = &cn_all[n];
+        const double ell = lx[i] + 0.5; // Limber: k = (l + 1/2)/fK
         // the four requested integrals of this (pair, multipole); an
         // output passed as NULL is never accumulated or stored
         double sum    = 0.0; // full kernels     x nonlinear P_delta
@@ -13257,14 +13335,94 @@ static void C_gg_cross_tomo_limber_work(
           // non-Limber split subtracts these tables, so they must
           // come from exactly these nodes, this mask and this
           // summation order for its high-l cancellation to hold
+          if (0 == nonlinear_bias) {
+            if (NULL != table) {
+              sum    += wt*maskp*K_i*K_j*KP[n][i][p];
+            }
+            if (NULL != table_lin) {
+              sumlin += wt*maskp*K_i*K_j*KL[n][i][p];
+            }
+            if (NULL != table_dd) {
+              sumdd  += wt*maskp*dd_i*dd_j*KP[n][i][p];
+            }
+            if (NULL != table_dd_lin) {
+              sumddl += wt*maskp*dd_i*dd_j*KL[n][i][p];
+            }
+            continue;
+          }
+
+          // --- one-loop bias (steps 4 and 5 of the derivation) ---
+          // The six FPT templates at the Limber wavenumber, with the
+          // auto work's sigma4 subtractions (the derivation of those
+          // constants lives there). Outside the tables' k range a
+          // template is zero, as in the auto work.
+          const double PK  = KP[n][i][p];
+          const double k   = ell/fK;
+          const double lnk = log(k);
+          const int in = (lnk >= limbias[0] && lnk <= limbias[1]);
+          const int N  = FPTbias.N;
+          const double* lb = limbias;
+          const double d1d2 = in ?
+            interpol1d(FPTbias.tab[0], N, lb[0], lb[1], lb[2], lnk) : 0.0;
+          const double d2d2 = in ?
+            interpol1d(FPTbias.tab[1], N, lb[0], lb[1], lb[2], lnk) - 2.*s4 : 0.0;
+          const double d1s2 = in ?
+            interpol1d(FPTbias.tab[2], N, lb[0], lb[1], lb[2], lnk) : 0.0;
+          const double d2s2 = in ?
+            interpol1d(FPTbias.tab[3], N, lb[0], lb[1], lb[2], lnk) - 4./3.*s4 : 0.0;
+          const double s2s2 = in ?
+            interpol1d(FPTbias.tab[4], N, lb[0], lb[1], lb[2], lnk) - 8./9.*s4 : 0.0;
+          const double d1p3 = in ?
+            interpol1d(FPTbias.tab[5], N, lb[0], lb[1], lb[2], lnk) : 0.0;
+
+          // every loop term grows as D^4, D the growth factor at the node
+          const double gf = cn->data[CN_GROWFAC][p];
+          const double g4 = gf*gf*gf*gf;
+
+          // each side's biases: b1 (WB row 1), then b2, bs2, b3, bK
+          const double b1i = WB[1][0][n][p];
+          const double b1j = WB[1][1][n][p];
+          const double b2i = WO[0][0][n][p];
+          const double b2j = WO[0][1][n][p];
+          const double bsi = WO[1][0][n][p];
+          const double bsj = WO[1][1][n][p];
+          const double b3i = WO[2][0][n][p];
+          const double b3j = WO[2][1][n][p];
+          const double bki = WO[3][0][n][p];
+          const double bkj = WO[3][1][n][p];
+
+          // the density weights alone, which the loop terms multiply
+          const double wg_i = WB[0][0][n][p];
+          const double wg_j = WB[0][1][n][p];
+
           if (NULL != table) {
-            sum    += wt*maskp*K_i*K_j*KP[n][i][p];
+            // the pair's one-loop spectrum: each auto coefficient with
+            // its two biases shared between the bins (step 4)
+            const double loop_ij =
+              g4*(0.5*(b1i*b2j + b2i*b1j)*d1d2 + 0.25*b2i*b2j*d2d2 +
+                  0.5*(b1i*bsj + bsi*b1j)*d1s2 +
+                  0.25*(b2i*bsj + bsi*b2j)*d2s2 + 0.25*bsi*bsj*s2s2 +
+                  0.5*(b1i*b3j + b3i*b1j)*d1p3) +
+              (b1i*bkj + bki*b1j)*k*k*PK;
+            sum += wt*maskp*(K_i*K_j*PK + wg_i*wg_j*loop_ij);
           }
           if (NULL != table_lin) {
             sumlin += wt*maskp*K_i*K_j*KL[n][i][p];
           }
           if (NULL != table_dd) {
-            sumdd  += wt*maskp*dd_i*dd_j*KP[n][i][p];
+            // each bin's own P_g, term by term the spectrum the low-rank
+            // factorization builds, with its floor (step 5)
+            const double loop_ii =
+              g4*(b1i*b2i*d1d2 + 0.25*b2i*b2i*d2d2 + b1i*bsi*d1s2 +
+                  0.5*b2i*bsi*d2s2 + 0.25*bsi*bsi*s2s2 + b1i*b3i*d1p3) +
+              2.0*b1i*bki*k*k*PK;
+            const double loop_jj =
+              g4*(b1j*b2j*d1d2 + 0.25*b2j*b2j*d2d2 + b1j*bsj*d1s2 +
+                  0.5*b2j*bsj*d2s2 + 0.25*bsj*bsj*s2s2 + b1j*b3j*d1p3) +
+              2.0*b1j*bkj*k*k*PK;
+            const double Pg_i = fmax(b1i*b1i*PK + loop_ii, 1.0e-15*b1i*b1i*PK);
+            const double Pg_j = fmax(b1j*b1j*PK + loop_jj, 1.0e-15*b1j*b1j*PK);
+            sumdd += wt*maskp*wg_i*wg_j*sqrt(Pg_i*Pg_j);
           }
           if (NULL != table_dd_lin) {
             sumddl += wt*maskp*dd_i*dd_j*KL[n][i][p];
@@ -13287,6 +13445,9 @@ static void C_gg_cross_tomo_limber_work(
   }
 
   free((void*) WB);
+  if (NULL != WO) {
+    free((void*) WO);
+  }
   if (NULL != KG) {
     free((void*) KG);
   }

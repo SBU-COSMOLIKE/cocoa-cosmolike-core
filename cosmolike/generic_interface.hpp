@@ -894,6 +894,20 @@ void set_nuisance_nonlinear_bias(
     arma::Col<double> B2
   );
 
+void set_nuisance_nonlinear_bias_tidal(
+    arma::Col<double> B2,
+    arma::Col<double> BS2
+  );
+
+void set_nuisance_bias_fastpt_tidal(
+    arma::Col<double> B1,
+    arma::Col<double> B2,
+    arma::Col<double> BS2,
+    arma::Col<double> B_MAG,
+    arma::Col<double> B3nl,
+    arma::Col<double> BK
+  );
+
 void set_nuisance_shear_calib(
     arma::Col<double> M
   );
