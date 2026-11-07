@@ -463,6 +463,8 @@ void initial_setup()
   // the same process would otherwise inherit pairs between bins it
   // may not have.
   set_gg_cross_pairs(NULL, NULL, 0);
+  // and the k window of the UV-fraction scale cuts, which also lives there
+  unset_gg_kwindow();
 
   like.adopt_limber[LIMBER_GG] = 0;
   like.adopt_limber[LIMBER_GS] = 1;

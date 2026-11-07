@@ -143,6 +143,46 @@ void RF_C_ks_tomo_limber_work(
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: FOURIER C_gg (arXiv:2603.13031)
+// The split C_l = C_l^IR + C_l^UV, with C_l^IR computed from the 3D
+// power spectrum times a step keeping k <= kmax/D(z) (kmax in h/Mpc at
+// z = 0, D the linear growth factor with D(0) = 1); a band is kept
+// while |C_l^UV|/(|C_l^UV| + |C_l^IR|) < alpha
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+
+// The Fourier gg spectra of one evaluation (autos, then the cross pairs
+// when installed) along the data-vector path, with the k window on for
+// kmax > 0 (the IR part for keep_ir = 1, the UV part for keep_ir = 0)
+// or off for kmax <= 0 (the full spectra).
+void C_gg_kwindow_tomo_ells(
+    const double kmax,    // cut at z = 0 in h/Mpc; <= 0 = no window
+    const int keep_ir,    // 1 = IR part, 0 = UV part
+    const double* ells,   // band centers (length nell)
+    const int nell,       // number of band centers
+    double** out,         // output autos [clustering_Npowerspectra][nell]
+    double** outx         // output pairs [gg_cross_npairs][nell] (or NULL)
+  );
+
+// The UV-fraction scale cuts of every gg spectrum (s = autos, then
+// pairs: the data-vector order) on an ascending kmax grid: the full
+// spectra, their IR parts, the UV fractions and the number of bands
+// kept (a prefix in l, shortened where needed so the cut tightens as
+// kmax decreases).
+void gg_scale_cuts_tomo_ells_work(
+    const double* kmax,   // cuts at z = 0 in h/Mpc, ascending (nkmax)
+    const int nkmax,      // number of cuts
+    const double alpha,   // allowed UV fraction
+    const double* ells,   // band centers, ascending (nell)
+    const int nell,       // number of band centers
+    double** full,        // output [nspec][nell]
+    double*** ir,         // output [nkmax][nspec][nell]
+    double*** uvfrac,     // output [nkmax][nspec][nell]
+    int** nkeep           // output [nkmax][nspec]
+  );
+
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 #ifdef __cplusplus
 }

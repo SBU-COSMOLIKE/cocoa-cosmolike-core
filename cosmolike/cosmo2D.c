@@ -98,6 +98,70 @@ static int lowrank_DD_GG_nrank = 5;  // 1..16
 static int lowrank_DD_GG_lmax = 150; // 32..Ntable.LMAX
 
 // ---------------------------------------------------------------------------
+// The k window of the gg engines: off unless the scale-cut driver of
+// cosmo2D_scuts.c turns it on (set_gg_kwindow), so every data-vector
+// evaluation runs without it.
+//
+// The UV-fraction scale cut (arXiv:2603.13031) splits each C_l into
+// the part sourced by modes below a cut, k <= k_max/D(z), and the
+// rest: the IR and UV parts. D is the linear growth factor with
+// D(0) = 1, so the cut grows with redshift, following the nonlinear
+// scale. The split multiplies the 3D power spectrum by a step
+// function, so every gg engine applies the step where its integrand
+// meets P(k).
+//
+// Where the step goes, and which threshold it uses:
+//
+//   Limber sums      - at each line-of-sight node, that node's own
+//                      k_max/D(a)
+//   non-Limber sums  - in the final sum over the FFTLog wavenumbers,
+//                      one threshold per lens bin (per pair for the
+//                      crosses): k_max/D at the bin's mean redshift
+//
+// Why one threshold per bin there: by the final sum the radial integral
+// has already run, so the integrand no longer knows the redshift of its
+// modes. Across a thin bin D barely changes; across a wide bin the
+// Limber sums, which dominate there, keep the exact per-node step.
+//
+// Inside a non-Limber core, the Limber terms that cancel the FFTLog sum
+// at high l must see the same per-bin threshold as that sum (per_bin =
+// 1), or the cancellation fails. The Limber value at the band centers,
+// computed outside the cores, keeps the per-node threshold (per_bin =
+// 0).
+//
+// Fields:
+//   active  - 0 = no window, 1 = window on
+//   keep_ir - 1 = keep k <= K (the IR part), 0 = keep k > K (UV)
+//   kmax    - the cut at z = 0, in h/Mpc
+//   per_bin - Limber nodes: 0 = node threshold, 1 = bin (pair) one
+//   Kbin    - threshold of each lens bin, in h/Mpc
+//   Kpair   - threshold of each gg cross pair (npairs entries)
+//   nonce   - changes at every set and unset; keys the cross-pair stash
+// ---------------------------------------------------------------------------
+static struct {
+  int active;
+  int keep_ir;
+  double kmax;
+  int per_bin;
+  double Kbin[MAX_SIZE_ARRAYS];
+  double* Kpair;
+  int npairs;
+  uint64_t nonce;
+} gg_kwin = {0};
+
+// 1.0 when a mode passes the window, 0.0 when the step removes it.
+// The engines measure k in units of H0/c (k times c/H0); the thresholds
+// are in h/Mpc, and cosmology.coverH0 = c/H0 in Mpc/h converts them.
+static inline double gg_kwin_pass(
+    const double k,   // wavenumber times c/H0
+    const double K    // threshold in h/Mpc
+  )
+{
+  const int below = (k <= K*cosmology.coverH0);
+  return (below == gg_kwin.keep_ir) ? 1.0 : 0.0;
+}
+
+// ---------------------------------------------------------------------------
 // Runtime switch of include_HOD_GX (generic_interface.cpp
 // init_include_HOD_GX; the likelihoods read the yaml key of the same
 // name). The C_l^gg and C_l^gs interpolation tables key their caches on
@@ -5512,6 +5576,11 @@ static void C_gg_tomo_limber_work(
     log_fatal("HOD C_l^gg has no DD split: set nonlimber_lowrank_gg = 0");
     exit(1);
   }
+  // the HOD sums carry no node mask, so the k window cannot reach them
+  if (1 == hod && 1 == gg_kwin.active) {
+    log_fatal("the k window of the scale cuts needs include_HOD_GX = 0");
+    exit(1);
+  }
 
   const int nbin = redshift.clustering_nbin;
 
@@ -5742,6 +5811,15 @@ static void C_gg_tomo_limber_work(
               const double a_1 = a_chi(chi_1);
               KG[1][zl][i][p] = W_RSD(ell, a_0, a_1, zl);
             }
+          }
+          if (1 == gg_kwin.active) {
+            // the k window rides the node mask, which every non-HOD sum
+            // below multiplies: the node threshold k_max/D(a), or the
+            // bin's own inside a non-Limber core (see gg_kwin)
+            const double K = (1 == gg_kwin.per_bin) ?
+                             gg_kwin.Kbin[zl] :
+                             gg_kwin.kmax/cn->data[CN_GROWFAC][p];
+            KG[2][zl][i][p] *= gg_kwin_pass(k, K);
           }
           if (1 == nonlinear_bias) {
             const double lnk = log(k);
@@ -6239,6 +6317,12 @@ double C_gg_tomo_limber(
   static int nell;
   static int NSIZE;
   static double lim[3];
+  // the k window serves the Fourier scale cuts only; this cached
+  // real-space table must never store windowed spectra
+  if (1 == gg_kwin.active) {
+    log_fatal("%s: the k window is on (Fourier scale cuts only)", __func__);
+    exit(1);
+  }
 
   if (NULL == table || fdiff2(cache[3], Ntable.random)) {
     nell   = Ntable.N_ell[NODES_DENSE];
@@ -9388,7 +9472,9 @@ static double** C_cl_tomo_core(
   {
     double** tnl  = (double**) malloc2d(nbins, nlx);
     double** tlin = (double**) malloc2d(nbins, nlx);
+    gg_kwin.per_bin = 1; // the bin's step, as the FFTLog sum (gg_kwin)
     C_gg_tomo_limber_nl_lin_nointerp_ells(lx, nlx, nbins, tnl, tlin);
+    gg_kwin.per_bin = 0;
     for (int i=0; i<nbins; i++) {
       for (int m=0; m<nlx; m++) {
         const int l = (int) lx[m];
@@ -9572,6 +9658,9 @@ static double** C_cl_tomo_core(
                            bmag*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
           vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*
                           p_lin(k1cH0, apiv[i])*invgf2piv[i];
+          if (1 == gg_kwin.active) { // the bin's step (see gg_kwin)
+            vres[i][k][q] *= gg_kwin_pass(k1cH0, gg_kwin.Kbin[i]);
+          }
         }
       }
       #pragma omp parallel for
@@ -9608,6 +9697,12 @@ void C_cl_tomo(
     double tol
   )
 {
+  // the k window serves the Fourier scale cuts only; the real-space
+  // projection never runs under it
+  if (1 == gg_kwin.active) {
+    log_fatal("%s: the k window is on (Fourier scale cuts only)", __func__);
+    exit(1);
+  }
   const int LNL   = limits.LMAX_NOLIMBER;
   const int nbins = redshift.clustering_nbin;
   const int BLOCK = 16; // C_cl_tomo_core's per-block arrays
@@ -11809,8 +11904,10 @@ static double** C_cl_tomo_lowrank_core(
   }
   {
     double*** t4 = (double***) malloc3d(4, nbins, nlx);
+    gg_kwin.per_bin = 1; // the bin's step, as the FFTLog sum (gg_kwin)
     C_gg_tomo_limber_nl_lin_dd_nointerp_ells(lx, nlx, nbins,
                                              t4[0], t4[1], t4[2], t4[3]);
+    gg_kwin.per_bin = 0;
     for (int i=0; i<nbins; i++) {
       for (int m=0; m<nlx; m++) {
         const int l = (int) lx[m];
@@ -11849,8 +11946,10 @@ static double** C_cl_tomo_lowrank_core(
       cnx[n] = create_cosmo_nodes_lens_pair(pair_i[n], pair_j[n], w);
     }
     double*** t4x = (double***) malloc3d(4, npairs, nlx);
+    gg_kwin.per_bin = 1; // the pair's step, as the FFTLog sum (gg_kwin)
     C_gg_cross_tomo_limber_work(cnx, lx, nlx,
                                 t4x[0], t4x[1], t4x[2], t4x[3]);
+    gg_kwin.per_bin = 0;
     for (int n=0; n<npairs; n++) {
       for (int m=0; m<nlx; m++) {
         const int l = (int) lx[m];
@@ -12250,6 +12349,13 @@ static double** C_cl_tomo_lowrank_core(
           const double k1cH0 = ty[q]*real_coverH0;
           vr[q] = (vr[q] + gq[q]*gq[q])*(k1cH0*k1cH0*k1cH0);
         }
+        // the bin's step (see gg_kwin), in its own loop so the
+        // arithmetic loop above stays as it is without a window
+        if (1 == gg_kwin.active) {
+          for (int q=0; q<nchi; q++) {
+            vr[q] *= gg_kwin_pass(ty[q]*real_coverH0, gg_kwin.Kbin[i]);
+          }
+        }
       }
       // The four-term Limber combination: the FKEM pair corrects only
       // the rows the FFTLog term still carries (RSD, magnification),
@@ -12324,6 +12430,9 @@ static double** C_cl_tomo_lowrank_core(
             vrx[q] = ((F_i*F_j - F0_i*F0_j)*
                       p_lin(k1cH0, apivx[n])*invgf2x[n]
                       + gi[q]*gj[q])*(k1cH0*k1cH0*k1cH0);
+            if (1 == gg_kwin.active) { // the pair's step (see gg_kwin)
+              vrx[q] *= gg_kwin_pass(k1cH0, gg_kwin.Kpair[n]);
+            }
           }
           // Clx holds the non-Limber correction of the pair (the full
           // four-term C_l minus the Limber C_l, i.e. the FFT sum minus
@@ -12374,6 +12483,12 @@ void C_cl_tomo_lowrank(
     double tol
   )
 {
+  // the k window serves the Fourier scale cuts only; the real-space
+  // projection never runs under it
+  if (1 == gg_kwin.active) {
+    log_fatal("%s: the k window is on (Fourier scale cuts only)", __func__);
+    exit(1);
+  }
   const int LNL   = lowrank_DD_GG_lmax;
   // the setter checked lmax against Ntable.LMAX, but Ntable may have
   // been re-initialized since: the caller's Cl rows are Ntable.LMAX
@@ -12455,7 +12570,7 @@ void C_cl_tomo_lowrank(
 // The keys (nonces, sizes) plus the fresh flag prove the stash
 // belongs to this evaluation; any other call order is fatal.
 static double** ggx_stash = NULL;   // [npairs][nell] corrections
-static uint64_t ggx_stash_key[4];   // nonces, npairs, nell at fill time
+static uint64_t ggx_stash_key[5];   // nonces, npairs, nell, window at fill time
 static int ggx_stash_fresh = 0;     // 1 = filled and not yet consumed
 
 // Fill the stash from one core run's pair corrections Clx[n][l], given
@@ -12503,6 +12618,7 @@ static void ggx_stash_store(
   ggx_stash_key[1] = Ntable.random;
   ggx_stash_key[2] = (uint64_t) npairs;
   ggx_stash_key[3] = (uint64_t) nell;
+  ggx_stash_key[4] = gg_kwin.nonce; // a stash serves one window setting
   ggx_stash_fresh = 1;
 }
 
@@ -12698,6 +12814,72 @@ const int* get_gg_cross_bins_i(void)
 const int* get_gg_cross_bins_j(void)
 {
   return gg_cross_j;
+}
+
+// ---------------------------------------------------------------------------
+// Turn the k window of the gg engines on (see gg_kwin at the top of this
+// file). Each lens bin gets the threshold k_max/D at its mean redshift,
+// and each cross pair the one at the midpoint of its two means - the
+// redshifts the FKEM pivots use; the Limber nodes compute their own.
+//
+// The thresholds read the growth factor of the current cosmology, so
+// the call belongs right before the spectra it windows. Call outside
+// parallel regions; unset_gg_kwindow turns the window off again.
+//
+// Validation: kmax > 0 (h/Mpc), keep_ir 0 or 1, clustering_nbin within
+// MAX_SIZE_ARRAYS; violations are fatal.
+// ---------------------------------------------------------------------------
+void set_gg_kwindow(
+    const double kmax,   // the cut at z = 0, in h/Mpc
+    const int keep_ir    // 1 = keep k <= kmax/D(z), 0 = keep k > kmax/D(z)
+  )
+{
+  if (!(kmax > 0.0)) {
+    log_fatal("invalid k window kmax = %e (h/Mpc, must be > 0)", kmax);
+    exit(1);
+  }
+  if (keep_ir != 0 && keep_ir != 1) {
+    log_fatal("invalid k window keep_ir = %d (0 or 1)", keep_ir);
+    exit(1);
+  }
+  const int nbins = redshift.clustering_nbin;
+  if (nbins > MAX_SIZE_ARRAYS) {
+    log_fatal("clustering_nbin = %d > MAX_SIZE_ARRAYS = %d",
+              nbins, MAX_SIZE_ARRAYS);
+    exit(1);
+  }
+  for (int i=0; i<nbins; i++) {
+    gg_kwin.Kbin[i] = kmax/growfac(1.0/(1.0 + zmean(i)));
+  }
+  if (gg_kwin.Kpair != NULL) {
+    free(gg_kwin.Kpair);
+    gg_kwin.Kpair = NULL;
+  }
+  if (gg_cross_npairs > 0) {
+    gg_kwin.Kpair = (double*) malloc1d(gg_cross_npairs);
+    for (int n=0; n<gg_cross_npairs; n++) {
+      const double zmid = 0.5*(zmean(gg_cross_i[n]) + zmean(gg_cross_j[n]));
+      gg_kwin.Kpair[n] = kmax/growfac(1.0/(1.0 + zmid));
+    }
+  }
+  gg_kwin.npairs = gg_cross_npairs;
+  gg_kwin.kmax = kmax;
+  gg_kwin.keep_ir = keep_ir;
+  gg_kwin.per_bin = 0;
+  gg_kwin.active = 1;
+  gg_kwin.nonce++;
+}
+
+void unset_gg_kwindow(void)
+{
+  if (gg_kwin.Kpair != NULL) {
+    free(gg_kwin.Kpair);
+    gg_kwin.Kpair = NULL;
+  }
+  gg_kwin.npairs = 0;
+  gg_kwin.per_bin = 0;
+  gg_kwin.active = 0;
+  gg_kwin.nonce++;
 }
 
 // ---------------------------------------------------------------------------
@@ -13012,6 +13194,14 @@ static void C_gg_cross_tomo_limber_work(
               KG[0][n][i][p] = W_RSD(ell, a_0, a_1, gg_cross_i[n]);
               KG[1][n][i][p] = W_RSD(ell, a_0, a_1, gg_cross_j[n]);
             }
+          }
+          if (1 == gg_kwin.active) {
+            // the k window, as in the auto work function: the node
+            // threshold, or the pair's own inside a non-Limber core
+            const double K = (1 == gg_kwin.per_bin) ?
+                             gg_kwin.Kpair[n] :
+                             gg_kwin.kmax/cn->data[CN_GROWFAC][p];
+            maskp *= gg_kwin_pass(k, K);
           }
           MASKP[n][i][p] = maskp;
         }
@@ -13344,7 +13534,9 @@ static double** C_cl_tomo_fkem_pairs_core(
   {
     double** tnl  = (double**) malloc2d(nbins, nlx);
     double** tlin = (double**) malloc2d(nbins, nlx);
+    gg_kwin.per_bin = 1; // the bin's step, as the FFTLog sum (gg_kwin)
     C_gg_tomo_limber_nl_lin_nointerp_ells(lx, nlx, nbins, tnl, tlin);
+    gg_kwin.per_bin = 0;
     for (int i=0; i<nbins; i++) {
       for (int m=0; m<nlx; m++) {
         const int l = (int) lx[m];
@@ -13372,7 +13564,9 @@ static double** C_cl_tomo_fkem_pairs_core(
       cnx[n] = create_cosmo_nodes_lens_pair(gg_cross_i[n], gg_cross_j[n], w);
     }
     double** tlinx = (double**) malloc2d(npairs, nlx);
+    gg_kwin.per_bin = 1; // the pair's step, as the FFTLog sum (gg_kwin)
     C_gg_cross_tomo_limber_work(cnx, lx, nlx, NULL, tlinx, NULL, NULL);
+    gg_kwin.per_bin = 0;
     for (int n=0; n<npairs; n++) {
       for (int m=0; m<nlx; m++) {
         CLlinx[n][(int) lx[m]] = tlinx[n][m];
@@ -13554,6 +13748,9 @@ static double** C_cl_tomo_fkem_pairs_core(
                            bmag*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
           vres_pool[i][k - ks][q] = F*F*(k1cH0*k1cH0*k1cH0)*
                                     p_lin(k1cH0, apiv[i])*invgf2piv[i];
+          if (1 == gg_kwin.active) { // the bin's step (see gg_kwin)
+            vres_pool[i][k - ks][q] *= gg_kwin_pass(k1cH0, gg_kwin.Kbin[i]);
+          }
         }
       }
       #pragma omp parallel for
@@ -13586,6 +13783,9 @@ static double** C_cl_tomo_fkem_pairs_core(
               bmag_j*ell_prefactor*Fy[bj][2][k][q]/(tyq*tyq);
           vrx[q] = F_i*F_j*(k1cH0*k1cH0*k1cH0)*
                    p_lin(k1cH0, apivx[n])*invgf2x[n];
+          if (1 == gg_kwin.active) { // the pair's step (see gg_kwin)
+            vrx[q] *= gg_kwin_pass(k1cH0, gg_kwin.Kpair[n]);
+          }
         }
         const double tclx = simd_array_sum(vrx, nchi);
         Clx[n][k] = tclx * dlnk * 2. / M_PI - CLlinx[n][k];
@@ -13723,7 +13923,8 @@ void C_gg_cross_tomo_ells(
         fdiff2(ggx_stash_key[0], cosmology.random) ||
         fdiff2(ggx_stash_key[1], Ntable.random) ||
         ggx_stash_key[2] != (uint64_t) gg_cross_npairs ||
-        ggx_stash_key[3] != (uint64_t) nell) {
+        ggx_stash_key[3] != (uint64_t) nell ||
+        ggx_stash_key[4] != gg_kwin.nonce) {
       log_fatal("C_gg_cross_tomo_ells: no fresh cross corrections for "
                 "this evaluation - the auto gg block must be computed "
                 "first, in the same evaluation (the data-vector "

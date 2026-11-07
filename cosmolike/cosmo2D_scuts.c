@@ -2559,3 +2559,224 @@ void RF_w_ks_tomo_limber_work(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: FOURIER C_gg (arXiv:2603.13031)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cut of arXiv:2603.13031 (which follows DeRose
+// et al. 2025), a second criterion beside the response function of
+// Doux et al. (arXiv:2011.06469) above. The two must not be confused:
+// the response function integrates |dlnX/dlnk| at a fixed kmax, in
+// Limber only, while here the spectrum itself is split,
+//
+//   C_l = C_l^IR + C_l^UV,
+//
+// where C_l^IR is computed with the 3D power spectrum multiplied by a
+// step that keeps k <= kmax/D(z), and C_l^UV is the rest. D is the
+// linear growth factor, normalized to D(0) = 1, and kmax is quoted at
+// z = 0 in h/Mpc, so the cut grows with redshift as 1/D(z), following
+// the nonlinear scale.
+//
+// A band power is kept while its UV part is a small fraction alpha of
+// the signal,
+//
+//   |C_l^UV| / (|C_l^UV| + |C_l^IR|) < alpha,
+//
+// with alpha = 0.05 as the paper's baseline (0.01 as the tighter
+// choice).
+//
+// Because the split is a step on P(k), it does not depend on how the
+// projection is done: the k window of cosmo2D.c (gg_kwin) applies it
+// inside every gg engine - Limber, FKEM and the low-rank non-Limber
+// path - so a thin bin's radial modes, which Limber misses, count
+// toward its UV part.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The Fourier gg spectra of one evaluation - the autos and, when cross
+// pairs are installed, the pairs - with or without the k window. It
+// runs the same calls as the data-vector assembly (Limber with
+// adopt_limber_gg = 1, the non-Limber engine otherwise; the autos first,
+// because they hand the pairs their non-Limber corrections), so with
+// kmax <= 0 it returns the data vector's own spectra.
+//
+// Parameters:
+//   kmax    - the cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = the IR part (k <= kmax/D(z)), 0 = the UV part
+//   ells    - band centers (length nell)
+//   nell    - number of band centers
+//   out     - output autos [clustering_Npowerspectra][nell]
+//   outx    - output pairs [gg_cross_npairs][nell]; NULL without pairs
+// ---------------------------------------------------------------------------
+void C_gg_kwindow_tomo_ells(
+    const double kmax,
+    const int keep_ir,
+    const double* ells,
+    const int nell,
+    double** out,
+    double** outx
+  )
+{
+  const int NSIZE  = tomo.clustering_Npowerspectra;
+  const int npairs = get_gg_cross_npairs();
+  if (npairs > 0 && NULL == outx) {
+    log_fatal("C_gg_kwindow_tomo_ells: %d cross pairs and no output", npairs);
+    exit(1);
+  }
+  if (kmax > 0.0) {
+    set_gg_kwindow(kmax, keep_ir);
+  }
+  if (1 == like.adopt_limber[LIMBER_GG]) {
+    C_gg_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
+  }
+  else {
+    C_gg_tomo_ells(ells, nell, NSIZE, out);
+  }
+  if (npairs > 0) {
+    C_gg_cross_tomo_ells(ells, nell, outx);
+  }
+  unset_gg_kwindow();
+}
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cuts of every Fourier gg spectrum on a grid
+// of kmax (the criterion of arXiv:2603.13031, derived above): per band
+// power the fraction of signal from modes above the cut kmax/D(z),
+//
+//   uvfrac = |C_l^UV| / (|C_l^UV| + |C_l^IR|),
+//
+// and the bands each kmax keeps, uvfrac < alpha.
+//
+// Spectra are numbered s = 0 .. NSIZE - 1 for the autos and NSIZE + n
+// for cross pair n: the order of the gg and gg-cross blocks of the data
+// vector, so row s of the outputs lines up with spectrum s there.
+//
+// Per spectrum and kmax, the band powers kept are a prefix in l: every
+// band up to (not including) the first one whose UV fraction reaches
+// alpha. A later band that dips back below alpha stays cut, as the
+// paper enforces for its angular bins.
+//
+// The cut must also tighten when kmax decreases. A ratio of |C_l^UV|
+// can be non-monotonic in kmax where a spectrum changes sign (the
+// cross pairs, the RSD terms), so each prefix is shortened to the one
+// of the next larger kmax whenever it is longer: the conservative fix.
+//
+// Cost: one evaluation of the gg engines for the full spectra plus one
+// per kmax (each windowed evaluation reruns the engine). UV = full - IR
+// is exact, the window being a partition of the power spectrum.
+//
+// Validation: nkmax > 0 with kmax > 0 strictly ascending, 0 < alpha
+// < 1, ells strictly ascending; violations are fatal.
+//
+// Parameters:
+//   kmax   - the cuts at z = 0 in h/Mpc, ascending (length nkmax)
+//   nkmax  - number of cuts
+//   alpha  - the UV fraction allowed (0.05 in the paper's baseline)
+//   ells   - band centers, ascending (length nell)
+//   nell   - number of band centers
+//   full   - output [NSIZE + npairs][nell], the full spectra
+//   ir     - output [nkmax][NSIZE + npairs][nell], the IR parts
+//   uvfrac - output [nkmax][NSIZE + npairs][nell], the UV fractions
+//   nkeep  - output [nkmax][NSIZE + npairs], bands kept (a prefix)
+// ---------------------------------------------------------------------------
+void gg_scale_cuts_tomo_ells_work(
+    const double* kmax,
+    const int nkmax,
+    const double alpha,
+    const double* ells,
+    const int nell,
+    double** full,
+    double*** ir,
+    double*** uvfrac,
+    int** nkeep
+  )
+{
+  if (nkmax < 1) {
+    log_fatal("gg_scale_cuts_tomo_ells_work: no kmax");
+    exit(1);
+  }
+  for (int m=0; m<nkmax; m++) {
+    if (!(kmax[m] > 0.0) ||
+        (m > 0 &&
+         !(kmax[m] > kmax[m-1]))) {
+      log_fatal("gg_scale_cuts_tomo_ells_work: kmax must be positive "
+                "and strictly ascending (kmax[%d] = %e)", m, kmax[m]);
+      exit(1);
+    }
+  }
+  if (!(alpha > 0.0 && alpha < 1.0)) {
+    log_fatal("gg_scale_cuts_tomo_ells_work: alpha = %e not in (0, 1)",
+              alpha);
+    exit(1);
+  }
+  for (int i=1; i<nell; i++) {
+    if (!(ells[i] > ells[i-1])) {
+      log_fatal("gg_scale_cuts_tomo_ells_work: band centers must be "
+                "strictly ascending");
+      exit(1);
+    }
+  }
+  const int NSIZE  = tomo.clustering_Npowerspectra;
+  const int npairs = get_gg_cross_npairs();
+  const int NSPEC  = NSIZE + npairs;
+
+  // the autos and pairs of one evaluation, filled by the driver, then
+  // copied into the stacked rows of the outputs
+  double** ca = (double**) malloc2d(NSIZE, nell);
+  double** cx = (npairs > 0) ? (double**) malloc2d(npairs, nell) : NULL;
+
+  C_gg_kwindow_tomo_ells(-1.0, 1, ells, nell, ca, cx);
+  for (int s=0; s<NSPEC; s++) {
+    for (int i=0; i<nell; i++) {
+      full[s][i] = (s < NSIZE) ? ca[s][i] : cx[s - NSIZE][i];
+    }
+  }
+  for (int m=0; m<nkmax; m++) {
+    C_gg_kwindow_tomo_ells(kmax[m], 1, ells, nell, ca, cx);
+    for (int s=0; s<NSPEC; s++) {
+      for (int i=0; i<nell; i++) {
+        const double cir = (s < NSIZE) ? ca[s][i] : cx[s - NSIZE][i];
+        const double cuv = full[s][i] - cir;
+        const double den = fabs(cuv) + fabs(cir);
+        ir[m][s][i] = cir;
+        // a band with no signal at all has nothing to contaminate
+        uvfrac[m][s][i] = (den > 0.0) ? fabs(cuv)/den : 0.0;
+      }
+    }
+  }
+  free(ca);
+  if (cx != NULL) {
+    free(cx);
+  }
+
+  // the prefix of each spectrum, then the conservative monotonic fix
+  // from the largest kmax down
+  for (int m=0; m<nkmax; m++) {
+    for (int s=0; s<NSPEC; s++) {
+      int n = 0;
+      while (n < nell && uvfrac[m][s][n] < alpha) {
+        n++;
+      }
+      nkeep[m][s] = n;
+    }
+  }
+  for (int m=nkmax-2; m>=0; m--) {
+    for (int s=0; s<NSPEC; s++) {
+      if (nkeep[m][s] > nkeep[m+1][s]) {
+        nkeep[m][s] = nkeep[m+1][s];
+      }
+    }
+  }
+}

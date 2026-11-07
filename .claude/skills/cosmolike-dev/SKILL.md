@@ -35,6 +35,15 @@ wrapper, a notebook cell, a likelihood method, a test, a script — read
 repositories and holds the conventions of the data-vector plotting
 functions.
 
+Before changing the k window of the gg engines (`gg_kwin` in
+`cosmo2D.c`) or the Fourier scale-cut driver and wrappers
+(`cosmo2D_scuts.c`, `cosmo2D_scuts_wrapper.cpp`), read
+`references/scale_cuts_uv_fraction.md`: the UV-fraction IR/UV split of C_l^gg,
+where each engine applies the step, the per-bin thresholds and the
+high-l cancellation they protect, the cache and stash guards, the
+rejected pre-transform prototype, and the measured validation and
+remaining limits.
+
 Before changing or explaining the growth factor (growfac, f_growth, the
 G_growth table the likelihoods build), the IA amplitudes (1/D, 1/D^2), the
 one-loop D^4 factors or sigma(M, z) = D sigma(M, 0), read

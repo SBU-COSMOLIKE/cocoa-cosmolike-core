@@ -246,7 +246,7 @@ positions. Their weights and inclusion depend on the observable and model.
 | [pt_cfastpt.c](pt_cfastpt.c), [header](pt_cfastpt.h) | Build perturbative galaxy-bias and intrinsic-alignment tables through the [C FAST-PT engine](../cfastpt/). Upsample its results for repeated interpolation. |
 | [halo.c](halo.c), [header](halo.h) | Calculate halo abundance, bias, concentration, density profiles, halo occupation and the corresponding galaxy–matter, galaxy–galaxy and halo-alignment terms. |
 | [baryons.c](baryons.c), [header](baryons.h) | Load and interpolate baryonic power-ratio tables used to modify the matter spectrum. |
-| [cosmo2D_scuts.c](cosmo2D_scuts.c), [header](cosmo2D_scuts.h) | Measure how spatial wavenumbers contribute to shear and CMB-lensing–shear observables, for physical-scale-cut diagnostics. |
+| [cosmo2D_scuts.c](cosmo2D_scuts.c), [header](cosmo2D_scuts.h) | Physical-scale-cut diagnostics: measure how spatial wavenumbers contribute to shear and CMB-lensing–shear observables (the response function), and split the Fourier galaxy-clustering spectra into parts below and above a redshift-dependent wavenumber cut (the IR/UV split). [Both criteria](#physical-scale-cuts) are explained below. |
 
 **Intrinsic alignment** is a correlation of galaxy shapes with their local
 environment, in addition to gravitational lensing. The nonlinear alignment
@@ -267,6 +267,76 @@ the cold-dark-matter-plus-baryon field, called **cb**, including its
 mass variance. Total-matter variance is also available for diagnostics.
 The [neutrino and halo guide](../README.md#neutrinos) explains the field
 choices, profile-mass convention and concentration prescription.
+
+## Physical scale cuts
+
+On small spatial scales (large wavenumber $`k`$), nonlinear clustering,
+baryonic feedback and galaxy-bias modeling make the predicted spectra
+uncertain. A physical scale cut asks of each data point: how much of its
+signal comes from wavenumbers above a chosen cut $`k_{\rm max}`$?
+`cosmo2D_scuts.c` implements two criteria that answer this question.
+
+The **response function** of
+[Doux et al.](https://arxiv.org/abs/2011.06469) (eq. 17) serves the
+shear and CMB-lensing–shear observables. For an observable $`X`$ — one
+multipole of $`C_\ell^{\gamma\gamma}`$ or $`C_\ell^{\kappa\gamma}`$, or
+one angular bin of $`\xi_\pm`$ or $`w_{\kappa\gamma}`$ — it measures the
+fraction of the total logarithmic response contributed by modes below
+the cut:
+
+```math
+\mathrm{RF}(k_{\rm max})=
+\frac{\displaystyle\int^{\ln k_{\rm max}}
+\left|\frac{d\ln X}{d\ln k}\right| d\ln k}
+{\displaystyle\int
+\left|\frac{d\ln X}{d\ln k}\right| d\ln k}.
+```
+
+A data point is kept when $`\mathrm{RF}\geq\alpha`$ (0.95 in that
+paper), so at most the fraction $`1-\alpha`$ of its response comes from
+beyond the cut. The derivative is tabulated through the Limber relation
+$`k=(\ell+1/2)/f_K`$, and the same $`k_{\rm max}`$ applies at every
+redshift.
+
+The **UV-fraction scale cut** of
+[arXiv:2603.13031](https://arxiv.org/abs/2603.13031) (following
+DeRose et al. 2025) serves the Fourier galaxy-clustering spectra
+$`C_\ell^{gg}`$, including the cross-bin pairs. Each spectrum is split
+into the part sourced by trusted modes and the rest,
+
+```math
+C_\ell = C_\ell^{\rm IR} + C_\ell^{\rm UV},
+```
+
+where $`C_\ell^{\rm IR}`$ is computed with the three-dimensional power
+spectrum multiplied by a step that keeps $`k\leq k_{\rm max}/D(z)`$, and
+$`C_\ell^{\rm UV}`$ is the remainder. Here $`D(z)`$ is the linear growth
+factor, normalized to $`D(0)=1`$, and $`k_{\rm max}`$ is quoted at
+$`z=0`$ in $`h/\mathrm{Mpc}`$. The cut loosens with redshift as
+$`1/D(z)`$ because fluctuations were smaller at earlier times, so
+nonlinearity sets in at larger $`k`$. A band power is kept while its
+untrusted fraction stays below a threshold $`\alpha`$:
+
+```math
+\frac{\left|C_\ell^{\rm UV}\right|}
+{\left|C_\ell^{\rm UV}\right|+\left|C_\ell^{\rm IR}\right|}<\alpha,
+```
+
+with $`\alpha=0.05`$ as the baseline choice.
+
+Because the split is a step on the power spectrum itself, rather than a
+construction on the Limber mode label, every projection can apply it:
+the Limber integrals window each line-of-sight node, and the non-Limber
+engines window their FFTLog wavenumbers after the radial transforms.
+This matters for thin lens bins. Their clustering signal retains power
+from radial modes along the line of sight — modes the Limber
+approximation drops — and the split counts the small-scale part of
+those modes toward $`C_\ell^{\rm UV}`$ too. For the same
+$`k_{\rm max}`$, the non-Limber cut is therefore stricter than the
+Limber one. The `cosmo2D_scuts_wrapper.cpp` exports expose both
+criteria to notebooks: response-function tables for the shear
+observables, and the full/IR spectra, UV fractions and kept-band masks
+for clustering.
 
 ## Shared numerical support
 
@@ -328,7 +398,7 @@ calculations. Their purpose is to support notebook experimentation.
 | --- | --- |
 | [cosmo2D_wrapper.cpp](cosmo2D_wrapper.cpp), [header](cosmo2D_wrapper.hpp) | Angular spectra, real-space correlations, bin centers and tomographic pair maps. |
 | [halo_wrapper.cpp](halo_wrapper.cpp), [header](halo_wrapper.hpp) | Halo abundance, bias, concentration, profiles and halo-occupation statistics, with scalar and array queries. |
-| [cosmo2D_scuts_wrapper.cpp](cosmo2D_scuts_wrapper.cpp), [header](cosmo2D_scuts_wrapper.hpp) | Wavenumber-response and cumulative scale-cut diagnostics. |
+| [cosmo2D_scuts_wrapper.cpp](cosmo2D_scuts_wrapper.cpp), [header](cosmo2D_scuts_wrapper.hpp) | [Scale-cut diagnostics](#physical-scale-cuts): wavenumber-response tables of the shear and CMB-lensing–shear observables, and the IR/UV split of the galaxy-clustering spectra with its UV fractions and kept-band masks. |
 | [cosmo2D_wrapper_cluster.cpp](cosmo2D_wrapper_cluster.cpp), [header](cosmo2D_wrapper_cluster.hpp) | Cluster counts, spectra, correlations and cluster-lensing outputs before or after the likelihood's transformation. |
 | [halo_wrapper_cluster.cpp](halo_wrapper_cluster.cpp), [header](halo_wrapper_cluster.hpp) | Richness-selection probabilities, selected abundance/bias, halo profiles and cluster radial weights. |
 

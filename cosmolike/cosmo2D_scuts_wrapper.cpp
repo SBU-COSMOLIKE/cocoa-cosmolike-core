@@ -1287,6 +1287,184 @@ py::array_t<double,py::array::f_style> RF_C_ks_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: FOURIER C_gg (arXiv:2603.13031)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The Fourier gg spectra at the data-vector band centers (like.ell)
+// with the k window of the UV-fraction scale cuts (arXiv:2603.13031):
+// the IR part (keep_ir = 1, modes k <= kmax/D(z)) or the UV part
+// (keep_ir = 0), or the full spectra for kmax <= 0. Engine:
+// C_gg_kwindow_tomo_ells (cosmo2D_scuts.c). The two parts add up to
+// the full spectra; this is the diagnostic that checks it.
+//
+// Parameters:
+//   kmax    - cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = IR part, 0 = UV part; anything else aborts
+//
+// Returns:
+//   (autos, pairs) tuple of numpy arrays, shapes
+//   (clustering_Npowerspectra, nell) and (gg_cross_npairs, nell)
+// ---------------------------------------------------------------------------
+py::tuple C_gg_kwindow_tomo_cpp(
+    const double kmax,   // cut at z = 0 in h/Mpc (<= 0: no window)
+    const int keep_ir    // 1 = IR part, 0 = UV part
+  )
+{
+  if (keep_ir != 0 && keep_ir != 1) {
+    spdlog::critical("{}: keep_ir = {} (0 or 1)",
+                     "C_gg_kwindow_tomo_cpp", keep_ir);
+    exit(1);
+  }
+  const int nell = like.Ncl;
+  if (nell < 1 || NULL == like.ell) {
+    spdlog::critical("{}: no Fourier band centers (init_binning_fourier"
+                     "_ells)", "C_gg_kwindow_tomo_cpp");
+    exit(1);
+  }
+  const int nautos = tomo.clustering_Npowerspectra;
+  const int npairs = get_gg_cross_npairs();
+  double** ca = (double**) malloc2d(nautos, nell);
+  double** cx = (npairs > 0) ? (double**) malloc2d(npairs, nell) : NULL;
+  C_gg_kwindow_tomo_ells(kmax, keep_ir, like.ell, nell, ca, cx);
+  matrix A(nautos, nell);
+  matrix X(npairs, nell);
+  for (int i=0; i<nell; i++) {
+    for (int s=0; s<nautos; s++) {
+      A(s, i) = ca[s][i];
+    }
+    for (int n=0; n<npairs; n++) {
+      X(n, i) = cx[n][i];
+    }
+  }
+  free(ca);
+  if (cx != NULL) {
+    free(cx);
+  }
+  return py::make_tuple(carma::mat_to_arr(A), carma::mat_to_arr(X));
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cuts (arXiv:2603.13031) of the Fourier gg
+// spectra at the data-vector band centers (like.ell): per band power
+// the fraction |C_l^UV|/(|C_l^UV| + |C_l^IR|) of signal above the cut
+// kmax/D(z), and the bands kept below alpha, for the cosmology and
+// nuisances of the model's last evaluation. The engine is
+// gg_scale_cuts_tomo_ells_work (cosmo2D_scuts.c, where the criterion
+// is explained); this wrapper validates, allocates and converts.
+//
+// Spectrum rows s: the autos 0 .. clustering_Npowerspectra - 1, then
+// the cross pairs in the order of the gg-cross block. Row s, column i
+// is therefore entry nell*s + i counted from the first entry of the gg
+// block of the data vector (the gg-cross block follows the gg block).
+//
+// Parameters:
+//   kmax  - cuts at z = 0 in h/Mpc, strictly ascending; an empty array
+//           aborts (spdlog::critical + exit), the engine checks the rest
+//   alpha - allowed UV fraction, in (0, 1)
+//
+// Returns:
+//   dict of numpy arrays:
+//     kmax        (nk,)                the cuts, as passed
+//     alpha       float
+//     ell         (nell,)              the band centers
+//     nautos      int                  rows 0 .. nautos - 1 are autos
+//     lmax        (nspec, nk)          center of the last band kept
+//                                      (0 when no band survives)
+//     mask        (nspec, nell, nk)    1 = band kept, 0 = cut
+//     uv_fraction (nspec, nell, nk)    |C^UV|/(|C^UV| + |C^IR|)
+//     full        (nspec, nell)        the full spectra
+//     ir          (nspec, nell, nk)    the IR parts
+// ---------------------------------------------------------------------------
+py::dict gg_scale_cuts_tomo_cpp(
+    const arma::Col<double> kmax,   // cuts at z = 0 in h/Mpc
+    const double alpha              // allowed UV fraction
+  )
+{
+  const int nk = static_cast<int>(kmax.n_elem);
+  if (nk < 1) {
+    spdlog::critical("{}: empty kmax array", "gg_scale_cuts_tomo_cpp");
+    exit(1);
+  }
+  const int nell = like.Ncl;
+  if (nell < 1 || NULL == like.ell) {
+    spdlog::critical("{}: no Fourier band centers (init_binning_fourier"
+                     "_ells)", "gg_scale_cuts_tomo_cpp");
+    exit(1);
+  }
+  const int nautos = tomo.clustering_Npowerspectra;
+  const int nspec  = nautos + get_gg_cross_npairs();
+
+  double* kv = (double*) malloc1d(nk);
+  for (int m=0; m<nk; m++) {
+    kv[m] = kmax(m);
+  }
+  double** full    = (double**) malloc2d(nspec, nell);
+  double*** ir     = (double***) malloc3d(nk, nspec, nell);
+  double*** uvfrac = (double***) malloc3d(nk, nspec, nell);
+  int** nkeep      = (int**) malloc2d_int(nk, nspec);
+
+  gg_scale_cuts_tomo_ells_work(kv, nk, alpha, like.ell, nell,
+                               full, ir, uvfrac, nkeep);
+
+  vector ell(nell);
+  for (int i=0; i<nell; i++) {
+    ell(i) = like.ell[i];
+  }
+  matrix F(nspec, nell);
+  matrix L(nspec, nk);
+  cube IR(nspec, nell, nk);
+  cube UV(nspec, nell, nk);
+  cube M(nspec, nell, nk);
+  for (int s=0; s<nspec; s++) {
+    for (int i=0; i<nell; i++) {
+      F(s, i) = full[s][i];
+    }
+  }
+  for (int m=0; m<nk; m++) {
+    for (int s=0; s<nspec; s++) {
+      L(s, m) = (nkeep[m][s] > 0) ? like.ell[nkeep[m][s] - 1] : 0.0;
+      for (int i=0; i<nell; i++) {
+        IR(s, i, m) = ir[m][s][i];
+        UV(s, i, m) = uvfrac[m][s][i];
+        M(s, i, m)  = (i < nkeep[m][s]) ? 1.0 : 0.0;
+      }
+    }
+  }
+  free(kv);
+  free(full);
+  free(ir);
+  free(uvfrac);
+  free(nkeep);
+
+  vector K = kmax;
+  py::dict out;
+  out["kmax"]        = carma::col_to_arr(K);
+  out["alpha"]       = alpha;
+  out["ell"]         = carma::col_to_arr(ell);
+  out["nautos"]      = nautos;
+  out["lmax"]        = carma::mat_to_arr(L);
+  out["mask"]        = carma::cube_to_arr(M);
+  out["uv_fraction"] = carma::cube_to_arr(UV);
+  out["full"]        = carma::mat_to_arr(F);
+  out["ir"]          = carma::cube_to_arr(IR);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 } // end namespace cosmolike_interface
 

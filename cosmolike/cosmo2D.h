@@ -110,6 +110,16 @@ const int* get_gg_cross_bins_j(void);
 void C_gg_cross_tomo_ells(const double* ells, const int nell,
                           double** out);
 
+// k window of the gg engines (gg_kwin in cosmo2D.c): every Fourier gg
+// engine multiplies the 3D power spectrum by a step at kmax/D(z) (kmax
+// in h/Mpc, D the linear growth factor with D(0) = 1), keeping
+// k <= kmax/D(z) (keep_ir = 1) or k > kmax/D(z) (keep_ir = 0). The
+// UV-fraction scale cuts of cosmo2D_scuts.c (arXiv:2603.13031) set it
+// around one evaluation; unset_gg_kwindow restores the production state
+void set_gg_kwindow(const double kmax, const int keep_ir);
+
+void unset_gg_kwindow(void);
+
 double C_ks_tomo_limber(const double l, const int ni);
 
 double C_gk_tomo_limber(const double l, const int ni);

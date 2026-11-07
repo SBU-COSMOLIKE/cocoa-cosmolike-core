@@ -128,5 +128,25 @@ py::array_t<double,py::array::f_style> RF_C_ks_tomo_limber_cpp(
 
 // -----------------------------------------------------------------------------
 
+// the Fourier gg spectra (autos, pairs) at the data-vector band centers
+// with the k window of the UV-fraction scale cuts (arXiv:2603.13031):
+// IR (keep_ir = 1) or UV part at kmax (h/Mpc at z = 0), the full
+// spectra for kmax <= 0
+py::tuple C_gg_kwindow_tomo_cpp(
+    const double kmax,
+    const int keep_ir
+  );
+
+// UV-fraction scale cuts (arXiv:2603.13031) of the Fourier gg spectra
+// (autos, then cross pairs) at the data-vector band centers, on an
+// ascending kmax grid (h/Mpc at z = 0): dict of lmax, mask, UV
+// fractions and spectra
+py::dict gg_scale_cuts_tomo_cpp(
+    const arma::Col<double> kmax,
+    const double alpha
+  );
+
+// -----------------------------------------------------------------------------
+
 }  // namespace cosmolike_interface
 #endif // HEADER GUARD
