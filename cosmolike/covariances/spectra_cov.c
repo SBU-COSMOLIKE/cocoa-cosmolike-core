@@ -19,6 +19,9 @@
 //                           (Limber) or on uniform ln(chi) samples (FFTLog)
 //   4. limber_spectra_cov - every field-pair Limber spectrum on one common
 //                           radial rule
+//   5. oneloop_bias_spectra_cov
+//                         - the one-loop galaxy-bias terms (b2, bs2) added
+//                           to every spectrum with a lens field
 //
 // Units follow the core: distances in c/H0, wavenumbers in (c/H0)^-1,
 // power in (c/H0)^3 and radial windows in (c/H0)^-1, so the spectra are
@@ -35,6 +38,7 @@
 #include "cosmolike/bias.h"
 #include "cosmolike/cosmo3D.h"
 #include "cosmolike/IA.h"
+#include "cosmolike/pt_cfastpt.h"
 #include "cosmolike/radial_weights.h"
 #include "cosmolike/redshift_spline.h"
 #include "cosmolike/structs.h"
@@ -683,6 +687,8 @@ static double** lensing_efficiency_cov(
 //
 //   lens:    window[0] = b1(z) n_l(z) H/H0                  galaxy density
 //            window[1] = b_mag (3/2) Omega_m (f_K/a) g_l    magnification
+//            window[3] = b2(z) n_l(z) H/H0                  quadratic bias
+//            window[4] = bs2(z) n_l(z) H/H0                 tidal bias
 //   source:  window[0] = n_s(z) H/H0                        source density
 //            window[1] = (3/2) Omega_m (f_K/a) g_s          lensing W_kappa
 //            window[2] = -C1(z) n_s(z) H/H0                 signed NLA
@@ -694,6 +700,13 @@ static double** lensing_efficiency_cov(
 // the window, a positive amplitude gives a negative GI correlation.
 // Source window[2] stays zero unless include_ia is 1; lens window[2] is
 // always zero.
+//
+// b2 and bs2 are the core's quadratic and tidal galaxy biases (gb2, gbs2
+// of bias.c), in the normalization of the galaxy overdensity
+// delta_g = b1 delta + (b2/2) delta^2 + (bs2/2) s^2, with s^2 the square
+// of the tidal field. Windows 3 and 4 are zero when those biases are zero,
+// and only oneloop_bias_spectra_cov reads them: every other consumer of
+// the snapshot keeps the linear-bias model of window[0].
 //
 // Parameters:
 //   radial     - snapshot with nnode, nlens, nsource, geometry[0] and
@@ -738,6 +751,8 @@ static void fill_radial_cov(
     if (field < radial->nlens) {
       (void) W_gal(a_first, field, hubble_first);
       (void) gb1(1.0/a_first-1.0, field);
+      (void) gb2(1.0/a_first-1.0, field);
+      (void) gbs2(1.0/a_first-1.0, field);
       (void) gbmag(0.0, field);
     } else {
       const int source = field-radial->nlens;
@@ -825,11 +840,15 @@ static void fill_radial_cov(
       if (field < radial->nlens) {
         // Galaxy density b1 n_l H/H0 and magnification b_mag W_mag have
         // different ell factors; keep their radial windows separate until
-        // the spectrum stage.
-        radial->window[0][field][node] = gb1(z, field)
-                                       *W_gal(a, field, hubble);
+        // the spectrum stage. The quadratic and tidal bias densities
+        // b2 n_l H/H0 and bs2 n_l H/H0 share the same n_l H/H0; they
+        // multiply one-loop templates instead of the matter power.
+        const double density = W_gal(a, field, hubble);
+        radial->window[0][field][node] = gb1(z, field)*density;
         radial->window[1][field][node] = gbmag(z, field)
                                        *prefactor*g;
+        radial->window[3][field][node] = gb2(z, field)*density;
+        radial->window[4][field][node] = gbs2(z, field)*density;
       } else {
         // Store the source density n_s H/H0 (the radial weight of the TATT
         // terms in ia_cov.c, also exported for audits), the lensing window
@@ -884,8 +903,9 @@ static void fill_radial_cov(
 // of inverse distance. This builder supplies the linear/NLA part of IA;
 // higher-order TATT correlations are added separately by ia_cov.c. They
 // are quadratic in the tidal and density fields, so a single deterministic
-// field window cannot represent them. This function deliberately uses
-// linear galaxy bias.
+// field window cannot represent them. The galaxy windows here are linear
+// in the matter density; the one-loop galaxy-bias terms are added
+// separately by oneloop_bias_spectra_cov, from the bias windows 3 and 4.
 //
 // Parameters and ownership:
 //   npanel, a_edges - common integration intervals, strictly inside (0,1)
@@ -979,13 +999,14 @@ struct radial_cov* radial_inputs_cov(
   radial->nsource = redshift.shear_nbin;
   const int nfield = radial->nlens + radial->nsource;
 
-  // geometry[4][node]: a, chi, f_K and dchi weight. window[3][field][node]:
-  // density, lensing/magnification and signed intrinsic alignment. Roles a
-  // field does not use (lens window[2], and source window[2] without IA)
-  // stay zero.
+  // geometry[4][node]: a, chi, f_K and dchi weight. window[5][field][node]:
+  // density, lensing/magnification, signed intrinsic alignment, and the
+  // quadratic- and tidal-bias densities (spectra_cov.h). Roles a field does
+  // not use (lens window[2], source window[2] without IA, source windows 3
+  // and 4) stay zero.
   radial->geometry = (double**) malloc2d(4, radial->nnode);
-  radial->window = (double***) malloc3d(3, nfield, radial->nnode);
-  zero3d(radial->window, 3, nfield, radial->nnode);
+  radial->window = (double***) malloc3d(5, nfield, radial->nnode);
+  zero3d(radial->window, 5, nfield, radial->nnode);
 
   // --- 2. MAP THE GAUSS-LEGENDRE RULE ONTO EVERY PANEL ---
 
@@ -1078,7 +1099,7 @@ struct radial_cov* radial_logchi_cov(
   (void) a_chi(chi_min);
 
   // Same grouped layout as radial_inputs_cov: geometry[4][node] and
-  // window[3][field][node], with unused roles left at zero.
+  // window[5][field][node], with unused roles left at zero.
   struct radial_cov* radial = malloc(sizeof(*radial));
   if (radial == NULL) {
     log_fatal("radial_logchi_cov: workspace allocation failed");
@@ -1089,8 +1110,8 @@ struct radial_cov* radial_logchi_cov(
   radial->nsource = redshift.shear_nbin;
   const int nfield = radial->nlens+radial->nsource;
   radial->geometry = (double**) malloc2d(4, nchi);
-  radial->window = (double***) malloc3d(3, nfield, nchi);
-  zero3d(radial->window, 3, nfield, nchi);
+  radial->window = (double***) malloc3d(5, nfield, nchi);
+  zero3d(radial->window, 5, nfield, nchi);
 
   // Logarithmic step between neighbouring samples.
   const double step = log(chi_max/chi_min)/(nchi-1);
@@ -1465,4 +1486,459 @@ void limber_spectra_cov(
   free(window);
   free(power);
   free(pairs);
+}
+
+
+
+// ============================================================================
+// [SECTION] ONE-LOOP GALAXY BIAS IN THE LENS SPECTRA
+// ============================================================================
+
+
+// ---------------------------------------------------------------------------
+// Add the one-loop galaxy-bias terms to every spectrum with a lens field.
+//
+// PHYSICAL MODEL
+// Beyond linear order a galaxy sample responds to the matter density
+// delta through more than its linear bias b1. The real-space expansion of
+// the data vector (cosmo2D.c), in the normalization of Saito et al.,
+// arXiv:1405.1447, is
+//
+//   delta_g = b1 delta + (b2/2) delta^2 + (bs2/2) s^2.
+//
+// b2 is the quadratic bias, bs2 the tidal bias, and s^2 = s_ij s_ij is the
+// square of the trace-free tidal field, s_ij = (k_i k_j/k^2 - delta_ij/3)
+// delta in Fourier space. The third-order bias b3 and the k^2 counterterm
+// bK are not included here; the function stops if either is nonzero.
+//
+// Two such fields correlate through b1 b1 P, already in the spectra of
+// limber_spectra_cov, and through one-loop correlators of the operators.
+// FAST-PT computes those at a = 1 from the linear power (McEwen et al.,
+// arXiv:1603.04826):
+//
+//   P_d1d2 = <delta delta^2>,      P_d2d2 = <delta^2 delta^2>,
+//   P_d1s2 = <delta s^2>,          P_d2s2 = <delta^2 s^2>,
+//   P_s2s2 = <s^2 s^2>.
+//
+// Each correlator contains two linear spectra, so at scale factor a it is
+// D(a)^4 times the a = 1 table; D is the linear growth with D(1) = 1. The
+// three quadratic correlators tend to constants as k -> 0. The core
+// subtracts those limits, 2 sigma4, (4/3) sigma4 and (8/9) sigma4 with
+// sigma4 = P_d2d2(k_min)/2, so that the bias operators add no constant,
+// shot-noise-like power on large scales (cosmo2D.c explains the limits).
+//
+// Collecting the coefficients of delta_g, the one-loop part of the cross
+// power of galaxy bins i and j is
+//
+//   P_ij^loop = D^4 [ (1/2)(b1_i b2_j + b2_i b1_j) P_d1d2
+//                     + (1/4) b2_i b2_j P_d2d2
+//                     + (1/2)(b1_i bs2_j + bs2_i b1_j) P_d1s2
+//                     + (1/4)(b2_i bs2_j + bs2_i b2_j) P_d2s2
+//                     + (1/4) bs2_i bs2_j P_s2s2 ],
+//
+// the spectrum of the data vector's gg cross pairs
+// (C_gg_cross_tomo_limber_work); i = j gives its auto spectrum. A galaxy
+// bin and the matter density correlate through
+//
+//   P_im^loop = D^4 [ (1/2) b2_i P_d1d2 + (1/2) bs2_i P_d1s2 ],
+//
+// the one-loop galaxy term of the data vector's galaxy-shear integrand.
+//
+// LIMBER PROJECTION
+// Write the lens windows of the snapshot as u1 = b1 n_l H/H0 (window 0),
+// u2 = b2 n_l H/H0 (window 3) and u3 = bs2 n_l H/H0 (window 4), with n_l
+// the lens redshift distribution and H/H0 = dz/dchi. At one radial node
+// the gg one-loop integrand is then the quadratic form u_i^T Q u_j, with
+// the symmetric matrix
+//
+//   Q = w |    0        P_d1d2/2   P_d1s2/2 |
+//         | P_d1d2/2    P_d2d2/4   P_d2s2/4 |,    w = D^4 dchi/f_K^2,
+//         | P_d1s2/2    P_d2s2/4   P_s2s2/4 |
+//
+// whose rows and columns are the three operators delta, delta^2 and s^2,
+// all read at the Limber wavenumber k = (ell+1/2)/f_K. The (1,1) entry is
+// zero because b1 b1 P is already in the input spectra. Summed over the
+// radial nodes p,
+//
+//   lens-lens:    dC_ij = sum_p u_i^T Q u_j,
+//   lens-source:  dC_ij = shear(ell) sum_p (Q_12 u2_i + Q_13 u3_i) S_j,
+//
+// where S_j = W_kappa - C1 n_s H/H0 (windows 1 + 2) is the complete source
+// window and shear(ell) = sqrt((ell-1) ell (ell+1) (ell+2))/(ell+1/2)^2
+// the spin-2 factor of limber_spectra_cov. The loop terms are correlators
+// of the density, so they never multiply the magnification or RSD parts
+// of a lens field, as in the data vector. Source-source spectra are
+// unchanged.
+//
+// NUMERICAL CHOICES
+// The five templates are the core C-FAST-PT tables of get_FPT_bias
+// (pt_cfastpt.c), which the data vector reads: the same table, the same
+// linear reader in ln k (interpol1d), the same sigma4 subtractions and
+// zero outside the table's k range. get_FPT_bias builds the tables for
+// the current cosmology, or reuses them while the cosmology and settings
+// are unchanged. Like the TATT reader of ia_cov.c, this function does not
+// test nuisance.IA_code: a table installed from Python is replaced by the
+// C-FAST-PT one.
+//
+// Step 2 below tabulates the five independent entries of Q, including w,
+// at every (ell, node). Step 4 integrates each pair; one OpenMP iteration
+// is one complete (ell, pair) output, and its two SIMD lanes hold two
+// adjacent radial nodes of that same sum.
+//
+// Parameters:
+//   radial  - snapshot from radial_inputs_cov (Gauss-Legendre nodes)
+//   nell    - number of multipoles, at least 1
+//   ell     - multipoles >= 1, the grid limber_spectra_cov used
+//   spectra - [npair][nell] rows of limber_spectra_cov (linear = 0) on the
+//             same snapshot, i-major order; the terms are added in place
+//
+// Call serially: the FAST-PT tables are prepared before the OpenMP loops,
+// and every output belongs to one worker, with no cross-thread sum. SSC
+// and cNG never read these terms.
+// ---------------------------------------------------------------------------
+void oneloop_bias_spectra_cov(
+    const struct radial_cov* radial, // common rule and bias windows
+    const int nell,                 // multipole samples
+    const double* ell,              // multipoles >= 1
+    double* const* spectra          // Limber input, one-loop output
+  )
+{
+  // Reject an empty multipole grid before any allocation.
+  if (nell < 1) {
+    log_fatal("oneloop_bias_spectra_cov needs at least one multipole");
+    exit(1);
+  }
+
+  // nnode radial nodes; nfield fields, lenses first; npair unordered pairs
+  // (A,B) with A <= B, the rows of spectra.
+  const int nlens = radial->nlens;
+  const int nsource = radial->nsource;
+  const int nfield = nlens+nsource;
+  const int npair = nfield*(nfield+1)/2;
+  const int nnode = radial->nnode;
+
+  // --- 1. CHECK THE BIAS MODEL AND PREPARE THE C-FAST-PT TABLES ---
+
+  // Only b1, b2 and bs2 have terms here. A nonzero third-order bias b3 or
+  // k^2 counterterm bK at any node of any lens bin would otherwise be
+  // dropped without notice, so it stops the calculation. gb3 and gbK
+  // (bias.c) keep no lazy state.
+  for (int field=0; field<nlens; field++) {
+    for (int node=0; node<nnode; node++) {
+      const double z = 1.0/radial->geometry[0][node]-1.0;
+      const double b3 = gb3(z, field);
+      const double bk = gbK(z, field);
+      if (b3 != 0.0
+          || bk != 0.0) {
+        log_fatal("oneloop_bias_spectra_cov models b2 and bs2 only; lens "
+                  "bin %d has b3 = %g and bK = %g", field, b3, bk);
+        exit(1);
+      }
+    }
+  }
+
+  // get_FPT_bias computes the one-loop tables from p_lin(k, a=1) with the
+  // core C-FAST-PT, or reuses them while the cosmology and settings are
+  // unchanged. It owns static FFTLog state and runs its own OpenMP loops,
+  // so it is called here, on the calling thread, before workers read
+  // FPTbias.tab.
+  get_FPT_bias();
+
+  // The tables sample ln k uniformly: FPTbias.N samples from ln k_min,
+  // with lnk_max one step beyond the last sample. lnk_step is the spacing
+  // interpol1d needs, defined exactly as in cosmo2D.c.
+  const double lnk_min = log(FPTbias.krange[RANGE_MIN]);
+  const double lnk_max = log(FPTbias.krange[RANGE_MAX]);
+  const double lnk_step = (lnk_max-lnk_min)/FPTbias.N;
+  const int ntable = FPTbias.N;
+  const double sigma4 = FPTbias.sigma4;
+
+  // weight[node] = w = D^4 dchi/f_K^2, the growth of a one-loop template
+  // times the Limber measure; source_window[source][node] = S_j, the
+  // complete source window W_kappa - C1 n_s H/H0 before its ell factor.
+  // Neither depends on the multipole.
+  double* weight = (double*) malloc1d(nnode);
+  double** source_window = (double**) malloc2d(nsource, nnode);
+
+  // One iteration is one radial node; it writes only that node's entries.
+  // growfac(a) is D(a) with D(1) = 1, the growth the data vector applies
+  // to the same tables, and it keeps no static state.
+  #pragma omp parallel for schedule(static)
+  for (int node=0; node<nnode; node++) {
+    const double growth = growfac(radial->geometry[0][node]);
+    const double growth4 = growth*growth*growth*growth;
+    const double distance = radial->geometry[2][node];
+    weight[node] = growth4*radial->geometry[3][node]/(distance*distance);
+
+    for (int source=0; source<nsource; source++) {
+      source_window[source][node] = radial->window[1][nlens+source][node]
+                                  +radial->window[2][nlens+source][node];
+    }
+  }
+
+  // --- 2. THE OPERATOR MATRIX Q AT EVERY MULTIPOLE AND NODE ---
+
+  // operator_power[index][role][node] holds the five independent entries
+  // of Q, w included, in (c/H0)^2: (c/H0)^3 from the power times
+  // (c/H0)^-1 from w. Two windows in (c/H0)^-1 then make each spectrum
+  // term dimensionless.
+  //   role 0 = Q_12 = w P_d1d2/2      role 1 = Q_22 = w P_d2d2/4
+  //   role 2 = Q_13 = w P_d1s2/2      role 3 = Q_23 = w P_d2s2/4
+  //   role 4 = Q_33 = w P_s2s2/4
+  // Radial nodes are innermost, so step 4 reads two adjacent nodes with
+  // one vector load.
+  double*** operator_power = (double***) malloc3d(nell, 5, nnode);
+
+  // One iteration is one multipole: it interpolates the five tables at
+  // the Limber wavenumber of every node and writes only that multipole's
+  // rows. interpol1d (basics.c) is a pure function of the shared table.
+  #pragma omp parallel for schedule(static)
+  for (int index=0; index<nell; index++) {
+    for (int node=0; node<nnode; node++) {
+      const double lnk = log((ell[index]+0.5)/radial->geometry[2][node]);
+
+      // Outside the table's k range every one-loop template is zero, as
+      // in cosmo2D.c; nothing is extrapolated.
+      double d1d2 = 0.0;
+      double d2d2 = 0.0;
+      double d1s2 = 0.0;
+      double d2s2 = 0.0;
+      double s2s2 = 0.0;
+      if (lnk >= lnk_min
+          && lnk <= lnk_max) {
+        // Rows 0..4 of FPTbias.tab: P_d1d2, P_d2d2, P_d1s2, P_d2s2 and
+        // P_s2s2 at a = 1, with the core's low-k subtractions of the three
+        // quadratic correlators (the same expressions as cosmo2D.c).
+        d1d2 = interpol1d(FPTbias.tab[0], ntable, lnk_min, lnk_max,
+                          lnk_step, lnk);
+        d2d2 = interpol1d(FPTbias.tab[1], ntable, lnk_min, lnk_max,
+                          lnk_step, lnk) - 2.*sigma4;
+        d1s2 = interpol1d(FPTbias.tab[2], ntable, lnk_min, lnk_max,
+                          lnk_step, lnk);
+        d2s2 = interpol1d(FPTbias.tab[3], ntable, lnk_min, lnk_max,
+                          lnk_step, lnk) - 4./3.*sigma4;
+        s2s2 = interpol1d(FPTbias.tab[4], ntable, lnk_min, lnk_max,
+                          lnk_step, lnk) - 8./9.*sigma4;
+      }
+
+      // The factors 1/2 and 1/4 are the operator normalizations of
+      // delta_g: one quadratic operator meets b1 delta with weight 1/2,
+      // two quadratic operators meet with weight (1/2)(1/2) = 1/4.
+      const double w = weight[node];
+      operator_power[index][0][node] = 0.5*w*d1d2;
+      operator_power[index][1][node] = 0.25*w*d2d2;
+      operator_power[index][2][node] = 0.5*w*d1s2;
+      operator_power[index][3][node] = 0.25*w*d2s2;
+      operator_power[index][4][node] = 0.25*w*s2s2;
+    }
+  }
+
+  // --- 3. LIST THE OUTPUT ROWS THAT CONTAIN A LENS FIELD ---
+
+  // rows[0][n], rows[1][n] and rows[2][n] are the output row and the two
+  // field indices (first <= second) of the n-th such pair, in the i-major
+  // order of limber_spectra_cov: (0,0),(0,1),...,(0,nfield-1),(1,1),...
+  // The first field of every listed pair is a lens; source-source rows
+  // receive no one-loop term and are not listed.
+  const int nloop = nlens*(nlens+1)/2+nlens*nsource;
+  int** rows = (int**) malloc2d_int(3, nloop);
+  int pair = 0;
+  int listed = 0;
+
+  for (int first=0; first<nfield; first++) {
+    for (int second=first; second<nfield; second++) {
+      if (first < nlens) {
+        rows[0][listed] = pair;
+        rows[1][listed] = first;
+        rows[2][listed] = second;
+        listed++;
+      }
+      pair++;
+    }
+  }
+
+  if (pair != npair
+      || listed != nloop) {
+    log_fatal("oneloop_bias_spectra_cov: pair bookkeeping failed");
+    exit(1);
+  }
+
+  // --- 4. INTEGRATE EVERY LENS PAIR ON THE COMMON RADIAL RULE ---
+
+  // A Limber spectrum adds the integrand of each shared radial shell, so
+  // the one-loop increment of a pair is a sum over nodes of the bilinear
+  // form of the header. collapse(2) lets OpenMP divide the combined
+  // (ell, pair) iterations among workers; one iteration is one multipole
+  // and one pair, a complete output that only this worker writes. The two
+  // SIMD lanes hold two adjacent radial nodes of that one sum: lane 0 adds
+  // the even nodes 0, 2, 4, ... and lane 1 the odd nodes 1, 3, 5, ...; the
+  // two partial sums are added at the end. That order is fixed by nnode,
+  // so the result does not depend on the thread count.
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int index=0; index<nell; index++) {
+    for (int loop=0; loop<nloop; loop++) {
+      const int row = rows[0][loop];
+      const int first = rows[1][loop];
+      const int second = rows[2][loop];
+
+      // The five entries of Q at this multipole, one value per node.
+      // restrict promises that no store in this loop changes these rows.
+      const double* restrict q12 = operator_power[index][0];
+      const double* restrict q22 = operator_power[index][1];
+      const double* restrict q13 = operator_power[index][2];
+      const double* restrict q23 = operator_power[index][3];
+      const double* restrict q33 = operator_power[index][4];
+
+      // The first field is a lens: its operator windows u1, u2, u3 are
+      // the density windows of b1 delta, b2 delta^2 and bs2 s^2.
+      const double* restrict u1_i = radial->window[0][first];
+      const double* restrict u2_i = radial->window[3][first];
+      const double* restrict u3_i = radial->window[4][first];
+
+      // vtotal = [sum over even nodes, sum over odd nodes] = [0, 0]
+      // (setzero sets both lanes to 0.0).
+      v2d vtotal = simde_mm_setzero_pd();
+      double total = 0.0;
+      int node = 0;
+
+      if (second < nlens) {
+        // --- lens-lens: dC_ij = sum_p u_i^T Q u_j ---
+        const double* restrict u1_j = radial->window[0][second];
+        const double* restrict u2_j = radial->window[3][second];
+        const double* restrict u3_j = radial->window[4][second];
+
+        // scalar: at each node p, first the vector v = Q u_j, the response
+        // of the three operators of bin i to bin j, then u_i . v:
+        //   v1 = fma(q12[p], u2_j[p], q13[p]*u3_j[p]);
+        //   v2 = fma(q12[p], u1_j[p], fma(q22[p], u2_j[p], q23[p]*u3_j[p]));
+        //   v3 = fma(q13[p], u1_j[p], fma(q23[p], u2_j[p], q33[p]*u3_j[p]));
+        //   total = fma(u3_i[p], v3, fma(u2_i[p], v2,
+        //               fma(u1_i[p], v1, total)));
+        // v1 has no Q_11 term: b1 b1 P is already in the input spectrum.
+        // Lanes 0 and 1 below are the nodes p and p+1 of this same pair.
+        for (; node+1<nnode; node+=2) {
+          // loadu reads entries [node] and [node+1] of a row into lanes 0
+          // and 1; the address needs no vector alignment. These six loads
+          // give the operator windows of bin j and then of bin i.
+          const v2d vu1j = simde_mm_loadu_pd(u1_j+node);
+          const v2d vu2j = simde_mm_loadu_pd(u2_j+node);
+          const v2d vu3j = simde_mm_loadu_pd(u3_j+node);
+          const v2d vu1i = simde_mm_loadu_pd(u1_i+node);
+          const v2d vu2i = simde_mm_loadu_pd(u2_i+node);
+          const v2d vu3i = simde_mm_loadu_pd(u3_i+node);
+
+          // loadu again: the five entries of Q at the same two nodes.
+          const v2d vq12 = simde_mm_loadu_pd(q12+node);
+          const v2d vq22 = simde_mm_loadu_pd(q22+node);
+          const v2d vq13 = simde_mm_loadu_pd(q13+node);
+          const v2d vq23 = simde_mm_loadu_pd(q23+node);
+          const v2d vq33 = simde_mm_loadu_pd(q33+node);
+
+          // scalar: v1 = fma(q12, u2_j, q13*u3_j). mul gives q13*u3_j in
+          // each lane, rounded once; fmadd then adds q12*u2_j with one
+          // rounding where the processor has a fused instruction.
+          v2d vv1 = simde_mm_mul_pd(vq13, vu3j);
+          vv1 = simde_mm_fmadd_pd(vq12, vu2j, vv1);
+
+          // scalar: v2 = fma(q12, u1_j, fma(q22, u2_j, q23*u3_j)). mul
+          // starts from q23*u3_j; the first fmadd adds q22*u2_j and the
+          // second q12*u1_j, lane by lane.
+          v2d vv2 = simde_mm_mul_pd(vq23, vu3j);
+          vv2 = simde_mm_fmadd_pd(vq22, vu2j, vv2);
+          vv2 = simde_mm_fmadd_pd(vq12, vu1j, vv2);
+
+          // scalar: v3 = fma(q13, u1_j, fma(q23, u2_j, q33*u3_j)), in the
+          // same three steps as v2.
+          v2d vv3 = simde_mm_mul_pd(vq33, vu3j);
+          vv3 = simde_mm_fmadd_pd(vq23, vu2j, vv3);
+          vv3 = simde_mm_fmadd_pd(vq13, vu1j, vv3);
+
+          // scalar: total = fma(u1_i, v1, total), then the same for u2_i v2
+          // and u3_i v3. Each fmadd adds one operator's contribution to
+          // the lane's own partial sum; lanes never mix.
+          vtotal = simde_mm_fmadd_pd(vu1i, vv1, vtotal);
+          vtotal = simde_mm_fmadd_pd(vu2i, vv2, vtotal);
+          vtotal = simde_mm_fmadd_pd(vu3i, vv3, vtotal);
+        }
+
+        // An odd node count leaves one node: the scalar form of the same
+        // steps, added after the two lane sums below.
+        for (; node<nnode; node++) {
+          const double v1 = fma(q12[node], u2_j[node], q13[node]*u3_j[node]);
+          const double v2 = fma(q12[node], u1_j[node],
+                                fma(q22[node], u2_j[node],
+                                    q23[node]*u3_j[node]));
+          const double v3 = fma(q13[node], u1_j[node],
+                                fma(q23[node], u2_j[node],
+                                    q33[node]*u3_j[node]));
+          total = fma(u3_i[node], v3,
+                      fma(u2_i[node], v2, fma(u1_i[node], v1, total)));
+        }
+      } else {
+        // --- lens-source: dC_ij = shear(ell) sum_p (Q_12 u2_i
+        //                                  + Q_13 u3_i) S_j ---
+        const double* restrict window_j = source_window[second-nlens];
+
+        // scalar: at each node p,
+        //   total = fma(fma(q12[p], u2_i[p], q13[p]*u3_i[p]),
+        //               window_j[p], total);
+        // the one-loop galaxy-matter power of bin i times the source
+        // window. Lanes 0 and 1 are the nodes p and p+1 of this pair.
+        for (; node+1<nnode; node+=2) {
+          // loadu reads entries [node] and [node+1] into lanes 0 and 1:
+          // the two bias windows of the lens, the two entries of Q that
+          // couple delta^2 and s^2 to the matter, and the source window.
+          const v2d vu2i = simde_mm_loadu_pd(u2_i+node);
+          const v2d vu3i = simde_mm_loadu_pd(u3_i+node);
+          const v2d vq12 = simde_mm_loadu_pd(q12+node);
+          const v2d vq13 = simde_mm_loadu_pd(q13+node);
+          const v2d vsource = simde_mm_loadu_pd(window_j+node);
+
+          // scalar: m = fma(q12, u2_i, q13*u3_i), the lens one-loop
+          // matter cross power with its weight w. mul rounds q13*u3_i
+          // once per lane; fmadd adds q12*u2_i.
+          v2d vmatter = simde_mm_mul_pd(vq13, vu3i);
+          vmatter = simde_mm_fmadd_pd(vq12, vu2i, vmatter);
+
+          // scalar: total = fma(m, window_j, total): fmadd adds this
+          // node's product to the lane's own partial sum.
+          vtotal = simde_mm_fmadd_pd(vmatter, vsource, vtotal);
+        }
+
+        // The scalar remainder of an odd node count, as above.
+        for (; node<nnode; node++) {
+          const double matter = fma(q12[node], u2_i[node],
+                                    q13[node]*u3_i[node]);
+          total = fma(matter, window_j[node], total);
+        }
+      }
+
+      double lanes[2];
+
+      // lanes[0..1] = [even-node sum, odd-node sum]: storeu writes lane 0
+      // to lanes[0] and lane 1 to lanes[1]. This ordinary stack array
+      // needs no vector alignment.
+      simde_mm_storeu_pd(lanes, vtotal);
+
+      // The complete radial sum: the even-node lane, then the odd-node
+      // lane, then the scalar remainder (zero for an even node count).
+      double increment = (lanes[0]+lanes[1])+total;
+
+      // A source leg carries the spin-2 factor of limber_spectra_cov;
+      // l >= 1 keeps the square root real.
+      if (second >= nlens) {
+        const double l = ell[index];
+        const double ell_shift = l+0.5;
+        increment *= sqrt((l-1.0)*l*(l+1.0)*(l+2.0))
+                     /(ell_shift*ell_shift);
+      }
+      spectra[row][index] += increment;
+    }
+  }
+
+  // Release the scratch: one free per grouped array.
+  free(rows);
+  free(operator_power);
+  free(source_window);
+  free(weight);
 }

@@ -5,11 +5,13 @@ measurement bins. This module installs that forecast through the ordinary
 project setters and binds those inputs to the shared Gaussian (G),
 super-sample (SSC) and connected non-Gaussian (cNG) calculation.
 It imports no project interface and reads no supplied likelihood covariance.
-The forecast uses massless neutrinos and linear bias, with zero
-magnification, photo-z shifts and shear calibration. Gaussian IA and
-non-Limber choices are explicit; SSC/cNG always use the zero-IA Limber
-model. CMB and cluster fields need separate models; increasing the
-galaxy-bin count is insufficient.
+The forecast uses massless neutrinos and linear bias b1, with zero
+magnification, photo-z shifts and shear calibration. Optional per-bin
+quadratic and tidal biases (bias2, bias_s2) add the one-loop galaxy-bias
+terms to the Gaussian spectra. Gaussian IA and non-Limber choices are
+explicit; SSC/cNG always use the linear-bias, zero-IA Limber model.
+CMB and cluster fields need separate models; increasing the galaxy-bin
+count is insufficient.
 """
 
 import json
@@ -20,7 +22,10 @@ import numpy as np
 from ..camb_cosmology import get_camb_cosmology
 from .geometry import noise_powers
 from .power import refine_power_tables
-from .survey import observable_rows, realspace_covariance, fourier_covariance
+from .survey import (
+    observable_rows, realspace_covariance, fourier_covariance,
+    has_oneloop_bias,
+)
 
 
 def gaussian_model(gaussian, nsource):
@@ -138,8 +143,12 @@ def initialize_forecast(interface, settings, project):
             lens_density_arcmin2/source_density_arcmin2 give one density
             per bin, in objects per arcmin^2; sigma_e_component gives one
             per-component shape dispersion per source bin;
-            bias contains one linear bias per lens bin; photoz_interpolation
-            and photoz_zmid select the project's redshift-file convention.
+            bias contains one linear bias per lens bin; the optional bias2
+            and bias_s2 contain one quadratic and one tidal bias per lens
+            bin (default zero, linear bias), in the normalization
+            delta_g = b1 delta + (b2/2) delta^2 + (bs2/2) s^2 of the core;
+            photoz_interpolation and photoz_zmid select the project's
+            redshift-file convention.
             power_refinement, core_accuracyboost and integration_accuracy
             set the power tables and core accuracy; gaussian is the
             optional Gaussian IA model (see gaussian_model).
@@ -157,8 +166,11 @@ def initialize_forecast(interface, settings, project):
         RuntimeError when the build lacks covariance support;
         FileNotFoundError for a missing redshift file; ValueError for
         missing bins, a bias count that differs from the lens count,
-        nonzero mnu, or invalid densities or dispersions. These checks run
-        before the interface state changes.
+        nonfinite bias2/bias_s2 entries, a nonzero bias_s2 with bias2 zero
+        in every bin, nonzero mnu, or invalid densities or dispersions;
+        RuntimeError when one-loop bias is requested from an interface
+        without set_nuisance_bias_tidal. These checks run before the
+        interface state changes.
     """
     # --- 1. INPUT CHECKS: THE INTERFACE IS NOT TOUCHED UNTIL ALL PASS ---
 
@@ -189,6 +201,29 @@ def initialize_forecast(interface, settings, project):
     nsource = len(settings["source_density_arcmin2"])
     if nlens < 1 or nsource < 1 or len(settings["bias"]) != nlens:
         raise ValueError("forecast needs lens/source bins and one bias per lens")
+
+    # Optional one-loop galaxy bias: one quadratic (bias2) and one tidal
+    # (bias_s2) bias per lens bin; an absent key means zero in every bin.
+    # The data vector switches its one-loop terms on through b2, and the
+    # core setter stops the process for a tidal bias with b2 = 0 in every
+    # bin; that input is rejected here first, with an exception.
+    higher = {}
+    for name in ("bias2", "bias_s2"):
+        values = np.asarray(settings.get(name, np.zeros(nlens)), dtype=float)
+        if values.shape != (nlens,) or not np.all(np.isfinite(values)):
+            raise ValueError(f"{name} needs one finite value per lens bin "
+                             f"({nlens}); got shape {values.shape}: supply "
+                             f"{nlens} finite numbers or omit the key")
+        higher[name] = values
+    oneloop = has_oneloop_bias(settings)
+    if oneloop and np.all(higher["bias2"] == 0.0):
+        raise ValueError("bias_s2 is nonzero while bias2 is zero in every "
+                         "lens bin; the core one-loop terms need a nonzero "
+                         "b2: set bias2, or set bias_s2 to zero")
+    if oneloop and not hasattr(interface, "set_nuisance_bias_tidal"):
+        raise RuntimeError("one-loop covariance bias needs the interface's "
+                           "set_nuisance_bias_tidal binding; add it to the "
+                           "project interface.cpp and recompile")
     cosmology = settings["cosmology"]
     if cosmology["mnu"] != 0.0:
         raise ValueError("the full halo forecast currently requires mnu=0")
@@ -272,11 +307,22 @@ def initialize_forecast(interface, settings, project):
     # through, so wide-bin projects never saw it).
     lens_zero = np.zeros(nlens)
     source_zero = np.zeros(nsource)
-    interface.set_nuisance_bias(
-        B1=np.ascontiguousarray(settings["bias"], dtype=float),
-        B2=lens_zero, B_MAG=lens_zero,
-        B3nl=lens_zero, BK=lens_zero,
-    )
+    if oneloop:
+        # One-loop bias: the tidal setter stores b2 and bs2 as given,
+        # where set_nuisance_bias would derive bs2 from b1; b3 and bK stay
+        # zero, the terms the covariance does not model.
+        interface.set_nuisance_bias_tidal(
+            B1=np.ascontiguousarray(settings["bias"], dtype=float),
+            B2=np.ascontiguousarray(higher["bias2"]),
+            BS2=np.ascontiguousarray(higher["bias_s2"]),
+            B_MAG=lens_zero, B3nl=lens_zero, BK=lens_zero,
+        )
+    else:
+        interface.set_nuisance_bias(
+            B1=np.ascontiguousarray(settings["bias"], dtype=float),
+            B2=lens_zero, B_MAG=lens_zero,
+            B3nl=lens_zero, BK=lens_zero,
+        )
     set_gaussian_model(interface=interface, settings=settings)
     interface.set_nuisance_shear_photoz(bias=source_zero)
 

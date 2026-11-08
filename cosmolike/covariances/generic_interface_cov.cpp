@@ -54,7 +54,8 @@ void bind_covariance(py::module_& module)
           const bool linear,
           const int nonlimber_lmax,
           const int nonlimber_nchi,
-          const double nonlimber_chi_min) {
+          const double nonlimber_chi_min,
+          const bool include_oneloop) {
         const arma::Col<double> ell_input =
             notebook_input_cov<arma::Col<double>>(ell, 1);
         const arma::Col<double> a_edges_input =
@@ -62,7 +63,8 @@ void bind_covariance(py::module_& module)
         return covariance_limber_spectra_cpp(
             ell_input,
             a_edges_input, nquad, nwindow, include_ia, include_rsd, linear,
-            nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min);
+            nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min,
+            include_oneloop);
       },
       R"doc(Build all lens/source spectra, optionally correcting Gaussian gg/gs.
 
@@ -81,6 +83,9 @@ Arguments:
     nonlimber_chi_min: positive near distance in c/H0, default 1e-6.
         The far edge is a_edges[0]. Refine support and resolution separately.
         Non-Limber currently requires massless neutrinos and no RSD.
+    include_oneloop: add the Limber one-loop galaxy-bias terms (b2, bs2;
+        b3 and bK must be zero) to every pair with a lens field. Requires
+        linear=False. The non-Limber correction stays linear.
 
 Returns a dict of owned arrays:
     spectra [nell,nfield,nfield], dimensionless E, core C_ell convention;
@@ -89,8 +94,11 @@ Returns a dict of owned arrays:
     windows [3,nfield,nnode]: density, lensing, signed NLA contributions;
     nlens, nsource: field counts. Lenses precede sources in nfield.
 Distances use c/H0 and windows its inverse. Spectra contain no noise,
-mask or pair exclusions. Bias is linear. The radial panels and node count
-belong to covariance and do not modify the data-vector accuracy settings.
+mask or pair exclusions. Bias is linear unless include_oneloop is true:
+then every pair with a lens field adds the one-loop b2 and bs2 terms of
+the core bias state, from the core C-FAST-PT tables. The radial panels
+and node count belong to covariance and do not modify the data-vector
+accuracy settings.
 The non-Limber correction adds exact separable linear minus its matched
 Limber approximation. Both use D(a)^2*P(k,1). Nonlinear residuals remain
 Limber. covariance_spectra is the preferred name; covariance_limber_spectra
@@ -105,7 +113,8 @@ is retained for existing callers. This function does not compute SSC/cNG.
       py::arg("linear") = false,
       py::arg("nonlimber_lmax") = 0,
       py::arg("nonlimber_nchi") = 4097,
-      py::arg("nonlimber_chi_min") = 1.e-6);
+      py::arg("nonlimber_chi_min") = 1.e-6,
+      py::arg("include_oneloop") = false);
   module.attr("covariance_spectra") = module.attr("covariance_limber_spectra");
 }
 }

@@ -9,9 +9,10 @@ and short modes in SSC/cNG use Limber. The Gaussian galaxy-galaxy and
 galaxy-shear spectra can include non-Limber radial mode coupling.
 
 All cross-bin blocks are retained. The survey assembly requires massless
-neutrinos and zero magnification; it uses linear galaxy bias and no RSD.
-Gaussian IA is selectable; SSC/cNG always use zero IA and Limber spectra,
-including the mean signal of the SSC survey-mean subtraction.
+neutrinos and zero magnification. Gaussian IA, lens RSD and the one-loop
+galaxy bias (settings bias2 and bias_s2) are selectable; SSC/cNG always
+use linear bias, zero IA and Limber spectra, including the mean signal of
+the SSC survey-mean subtraction.
 It returns a forecast, not a replacement for a project's supplied matrix.
 Numerical refinement and Fisher convergence remain separate checks.
 """
@@ -23,6 +24,23 @@ import numpy as np
 from .gaussian import observed_spectra, limber_spectra
 from .geometry import angular_rule, cap_mask
 from .accuracy import non_gaussian_multipoles
+
+
+def has_oneloop_bias(settings):
+    """Return whether the settings request one-loop galaxy bias.
+
+    Arguments:
+        settings = resolved mapping; its optional bias2 and bias_s2 hold one
+            quadratic and one tidal bias per lens bin.
+    Returns:
+        True when any entry of bias2 or bias_s2 is nonzero. Absent keys
+        mean zero, the linear-bias model of earlier settings.
+    """
+    for name in ("bias2", "bias_s2"):
+        values = np.asarray(settings.get(name, 0.0), dtype=float)
+        if np.any(values != 0.0):
+            return True
+    return False
 
 
 def observable_rows(nlens, nsource, excluded_gammat=()):
@@ -454,6 +472,9 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
                 without it the Gaussian spectra are zero-IA Limber;
             nonlimber_lmax, nonlimber_nchi = non-Limber cutoff and
                 log-distance samples, read only when gaussian nonlimber is true;
+            bias2, bias_s2 = optional per-lens-bin quadratic and tidal biases
+                (default zero); nonzero values add their one-loop terms to
+                the Gaussian spectra and the returned signal, never to SSC/cNG;
             band_first, band_last = Fourier bands, see fourier_covariance.
         rows = int32 [nobservable,3] from observable_rows(...).
         noise = float [nlens+nsource] white powers from noise_powers(...).
@@ -467,7 +488,8 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         stages_s elapsed times. Here ndata=nobservable*nbin; distances
         have units c/H0. The function writes no files and repairs no modes.
         signal is the measured mean from the Gaussian spectra, including
-        IA, non-Limber and (real space) TATT B-mode terms when selected.
+        IA, one-loop bias, non-Limber and (real space) TATT B-mode terms
+        when selected.
         ssc_normalization_signal [nobservable,nbin] is the zero-IA Limber
         mean that the SSC survey-mean subtraction uses.
 
@@ -569,23 +591,36 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     model = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
     # model.get: older saved settings predate the rsd choice and mean False
     rsd = model.get("rsd", False)
-    if model["ia"] != "none" or rsd:
+    # One-loop galaxy bias in the Gaussian spectra: on when any lens bin has
+    # a nonzero quadratic or tidal bias (initialize_forecast installed them
+    # in the core). The C code adds the Limber one-loop terms to every
+    # spectrum with a lens field; the SSC snapshot above keeps linear bias.
+    oneloop = has_oneloop_bias(settings)
+    if model["ia"] != "none" or rsd or oneloop:
         snapshot = limber_spectra(
             interface=interface, ell=ell, a_edges=settings["a_edges"],
             nquad=settings["radial_nquad"], nwindow=settings["nwindow"],
             include_ia=model["ia"] != "none", include_rsd=rsd, linear=False,
+            include_oneloop=oneloop,
         )
     if model["nonlimber"]:
         # Recompute multipoles through the cutoff with the non-Limber
         # correction (exact minus Limber, linear power) on galaxy-galaxy
         # and galaxy-shear pairs; shear-shear and higher ell stay Limber.
+        # The correction stays linear, so one-loop terms enter through
+        # their Limber projection only. The keyword is passed only when
+        # requested, as in limber_spectra.
         cutoff = min(settings["nonlimber_lmax"], ell_max)
         selected = ell <= cutoff
+        options = {}
+        if oneloop:
+            options["include_oneloop"] = True
         low = interface.covariance_spectra(
             ell=ell[selected], a_edges=np.ascontiguousarray(settings["a_edges"]),
             nquad=settings["radial_nquad"], nwindow=settings["nwindow"],
             include_ia=model["ia"] != "none", include_rsd=rsd, linear=False,
             nonlimber_lmax=cutoff, nonlimber_nchi=settings["nonlimber_nchi"],
+            **options,
         )
         # Without IA, Gaussian and SSC share one array: copy it before the
         # in-place update so the SSC mean signal stays Limber.

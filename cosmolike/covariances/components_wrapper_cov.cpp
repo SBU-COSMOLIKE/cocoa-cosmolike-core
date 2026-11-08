@@ -74,10 +74,12 @@ namespace cosmolike_interface {
 // scale factor (radial_inputs_cov, limber_spectra_cov). include_rsd adds
 // one common RSD window to each lens wherever it appears. include_ia adds
 // the signed NLA window or, for TATT, its further E terms and B spectra
-// (tatt_spectra_cov). nonlimber_lmax > 0 adds the exact-minus-matched
-// separable linear spectra to every row containing a lens field, at
-// integer ell in [2,nonlimber_lmax] (apply_nonlimber_cov). The fields are
-// the lens samples followed by the source samples.
+// (tatt_spectra_cov). include_oneloop adds the one-loop galaxy-bias terms
+// of the core's b2 and bs2 to every pair with a lens field
+// (oneloop_bias_spectra_cov). nonlimber_lmax > 0 adds the
+// exact-minus-matched separable linear spectra to every row containing a
+// lens field, at integer ell in [2,nonlimber_lmax] (apply_nonlimber_cov).
+// The fields are the lens samples followed by the source samples.
 //
 // RETURNED DICT
 //   spectra    arma::Cube [nell,nfield,nfield], dimensionless E spectra
@@ -111,7 +113,8 @@ py::dict covariance_limber_spectra_cpp(
     const bool linear,     // 1: linear p_lin(k,a); 0: run-mode Pdelta(k,a)
     const int nonlimber_lmax, // gg/gs correction through this ell; 0 disables
     const int nonlimber_nchi, // logarithmic radial samples, 2^n+1
-    const double nonlimber_chi_min // positive near distance in c/H0
+    const double nonlimber_chi_min, // positive near distance in c/H0
+    const bool include_oneloop // add the one-loop b2 and bs2 terms
   )
 {
   // Check the inputs before any allocation or C call. A C fatal check
@@ -238,6 +241,15 @@ py::dict covariance_limber_spectra_cpp(
     exit(1);
   }
 
+  // The one-loop bias terms complete the nonlinear galaxy spectrum; added
+  // to linear power they would describe no consistent field.
+  if (include_oneloop
+      && linear) {
+    critical("{}: include_oneloop requires linear = false",
+      "covariance_limber_spectra_cpp");
+    exit(1);
+  }
+
   // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
 
   const int nfield = redshift.clustering_nbin+redshift.shear_nbin;
@@ -265,6 +277,13 @@ py::dict covariance_limber_spectra_cpp(
   // (0,0),(0,1),...,(1,1),... of the field indices.
   limber_spectra_cov(radial.get(), nell, ell.memptr(), linear, include_rsd,
                      triangular);
+
+  // One-loop galaxy bias: add the b2 and bs2 terms of the core bias state
+  // to every row with a lens field, in place, before the non-Limber step
+  // below changes the linear part of those rows.
+  if (include_oneloop) {
+    oneloop_bias_spectra_cov(radial.get(), nell, ell.memptr(), triangular);
+  }
 
   // TATT: add the E-mode terms beyond NLA to triangular in place, and fill
   // the B modes from zero. Parity gives B only to source-source pairs;

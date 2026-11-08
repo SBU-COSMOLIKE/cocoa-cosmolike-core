@@ -9,13 +9,23 @@ extern "C" {
 // and the dchi quadrature weights are in c/H0; every window is in
 // (c/H0)^-1. Field order is lenses, then sources. No data-vector exclusion
 // or scale cut is applied to these fields. Window roles a field does not
-// use stay zero: lens window[2] always, source window[2] without IA.
+// use stay zero: lens window[2] always, source window[2] without IA, and
+// source window[3] and window[4] always.
+//
+// The five window roles, with n_l H/H0 the lens density per unit distance:
+//   0  density: b1 n_l H/H0 (lens), n_s H/H0 (source)
+//   1  lensing: b_mag W_mag (lens), W_kappa (source)
+//   2  signed NLA: -C1 n_s H/H0 (source only)
+//   3  quadratic-bias density b2 n_l H/H0 (lens only)
+//   4  tidal-bias density bs2 n_l H/H0 (lens only)
+// Roles 3 and 4 feed only oneloop_bias_spectra_cov; the interfaces export
+// roles 0 to 2.
 struct radial_cov {
   int nnode;            // number of common radial samples (nodes)
   int nlens;            // number of lens fields
   int nsource;          // number of source fields
   double** geometry;   // [4][node]: a, chi, f_K, positive dchi weight
-  double*** window;    // [3][field][node]: density, lensing/magnification, NLA
+  double*** window;    // [5][field][node]: the five roles listed above
 };
 
 // Construct a snapshot from the current core cosmology and nuisance state.
@@ -114,6 +124,22 @@ void limber_spectra_cov(
     const int linear,               // 0=Pdelta, 1=p_lin(k,a), 2=D^2 p_lin(k,1)
     const int include_rsd,          // same lens RSD field for every pair
     double* const* spectra          // output [nfield*(nfield+1)/2][nell]
+  );
+
+// Add the one-loop galaxy-bias terms (quadratic bias b2 and tidal bias bs2)
+// to the Limber spectra of every pair with a lens field, in place. spectra
+// holds the rows of limber_spectra_cov on the same snapshot (linear = 0),
+// in the same i-major order. The loop templates are the core C-FAST-PT
+// tables of get_FPT_bias (pt_cfastpt.c), read at k = (ell+1/2)/f_K with
+// the data vector's normalization and D(a)^4 growth. Lens-lens rows gain
+// the two bins' bilinear one-loop spectrum, lens-source rows the one-loop
+// galaxy-matter term on the source's complete Limber window. Requires
+// b3 = 0 and bK = 0 in every lens bin. Call serially, outside OpenMP.
+void oneloop_bias_spectra_cov(
+    const struct radial_cov* radial, // immutable snapshot
+    const int nell,                 // number of supplied ell nodes
+    const double* ell,              // finite multipoles >= 1
+    double* const* spectra          // in/out [nfield*(nfield+1)/2][nell]
   );
 
 #ifdef __cplusplus

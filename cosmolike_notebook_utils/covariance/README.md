@@ -248,7 +248,11 @@ conventions explicitly; see their Python `help(...)` documentation.
 The supported model uses massless neutrinos, linear galaxy bias, zero
 magnification/RSD and a spherical-cap footprint. Gaussian spectra have
 the [non-Limber and IA choices](#gaussian_physics)
-described below; SSC/cNG retain zero IA and Limber projection.
+described below; SSC/cNG retain zero IA and Limber projection. Optional
+per-lens-bin `bias2` and `bias_s2` settings (quadratic and tidal bias,
+default zero) add the Limber one-loop galaxy-bias terms of the core
+C-FAST-PT to the Gaussian spectra and the mean signal only; SSC/cNG keep
+linear bias.
 
 SSC uses the isotropic fractional halo response transferred
 to the chosen nonlinear matter power, with galaxy survey-mean subtraction.

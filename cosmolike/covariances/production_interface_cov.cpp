@@ -35,7 +35,10 @@ namespace cosmolike_interface {
 //
 // evaluated here on one common Gauss-Legendre rule over the supplied
 // scale-factor panels. The fields are the lens samples followed by the
-// source samples of the initialized redshift setup.
+// source samples of the initialized redshift setup. include_oneloop adds
+// the one-loop galaxy-bias terms of the core's b2 and bs2 to every pair
+// with a lens field (oneloop_bias_spectra_cov); without it the galaxy
+// windows carry the linear bias b1 alone.
 //
 // ARRAYS CROSSING THE BOUNDARY
 // Inputs, borrowed C-contiguous float64 (noconvert rejects a copy):
@@ -61,17 +64,21 @@ namespace cosmolike_interface {
 // or >= 2, nchi=2^n+1 >= 65 and finite chi_min > 0. With lmax > 0 the
 // ell in [2,lmax] must be integers, with no RSD and massless neutrinos.
 // TATT spectra (include_ia with the TATT model) also require no RSD.
+// include_oneloop requires the nonlinear power (linear false): the loop
+// terms belong to the nonlinear galaxy spectrum.
 // Flat geometry is not checked here: radial_inputs_cov stops the process
 // for a non-flat cosmology.
 //
 // C WORK AND THREADS
 // radial_inputs_cov samples the windows, limber_spectra_cov integrates
-// all field pairs, tatt_spectra_cov adds the TATT terms beyond NLA, and
+// all field pairs, oneloop_bias_spectra_cov adds the one-loop galaxy-bias
+// terms, tatt_spectra_cov adds the TATT terms beyond NLA, and
 // apply_nonlimber_cov replaces the linear Limber part of gg/gs spectra.
 // Each routine prepares its lazy core tables on the calling thread before
 // its own OpenMP loops: radial_inputs_cov the distance, window and NLA
-// readers, limber_spectra_cov the power and RSD tables, tatt_spectra_cov
-// FAST-PT, apply_nonlimber_cov its logarithmic snapshot and power reader.
+// readers, limber_spectra_cov the power and RSD tables,
+// oneloop_bias_spectra_cov and tatt_spectra_cov FAST-PT, and
+// apply_nonlimber_cov its logarithmic snapshot and power reader.
 // Call this binding outside any OpenMP region, as Python does. The C++
 // conversion itself calls no BLAS routine.
 //
@@ -94,7 +101,8 @@ static py::dict covariance_limber_spectra(
     const bool linear,     // 1: linear p_lin(k,a); 0: run-mode Pdelta(k,a)
     const int nonlimber_lmax, // gg/gs correction through this ell; 0 disables
     const int nonlimber_nchi, // logarithmic radial samples, 2^n+1
-    const double nonlimber_chi_min // positive near distance in c/H0
+    const double nonlimber_chi_min, // positive near distance in c/H0
+    const bool include_oneloop // add the one-loop b2 and bs2 terms
   )
 {
   // Check the inputs and initialized state before any allocation or C
@@ -216,6 +224,15 @@ static py::dict covariance_limber_spectra(
     exit(1);
   }
 
+  // The one-loop bias terms complete the nonlinear galaxy spectrum; added
+  // to linear power they would describe no consistent field.
+  if (include_oneloop
+      && linear) {
+    critical("{}: include_oneloop requires linear = false",
+      "covariance_limber_spectra");
+    exit(1);
+  }
+
   // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
 
   const int nfield = redshift.clustering_nbin+redshift.shear_nbin;
@@ -247,6 +264,13 @@ static py::dict covariance_limber_spectra(
 
   limber_spectra_cov(radial.get(), nell, ell.data(), linear, include_rsd,
                      rows.data());
+
+  // One-loop galaxy bias: add the b2 and bs2 terms of the core bias state
+  // to every row with a lens field, in place, before the non-Limber step
+  // below changes the linear part of those rows.
+  if (include_oneloop) {
+    oneloop_bias_spectra_cov(radial.get(), nell, ell.data(), rows.data());
+  }
 
   // TATT: add the E-mode terms beyond NLA to rows in place, and fill the
   // B modes from zero. Parity gives B only to source-source pairs; other
@@ -377,6 +401,9 @@ Arguments:
     nonlimber_chi_min: positive near distance in c/H0, default 1e-6.
         The far edge is a_edges[0]. Refine support and resolution separately.
         Non-Limber currently requires massless neutrinos and no RSD.
+    include_oneloop: add the Limber one-loop galaxy-bias terms (b2, bs2;
+        b3 and bK must be zero) to every pair with a lens field. Requires
+        linear=False. The non-Limber correction stays linear.
 
 Returns a dict of owned arrays:
     spectra [nell,nfield,nfield], dimensionless E, core C_ell convention;
@@ -385,8 +412,11 @@ Returns a dict of owned arrays:
     windows [3,nfield,nnode]: density, lensing, signed NLA contributions;
     nlens, nsource: field counts. Lenses precede sources in nfield.
 Distances use c/H0 and windows its inverse. Spectra contain no noise,
-mask or pair exclusions. Bias is linear. The radial panels and node count
-belong to covariance and do not modify the data-vector accuracy settings.
+mask or pair exclusions. Bias is linear unless include_oneloop is true:
+then every pair with a lens field adds the one-loop b2 and bs2 terms of
+the core bias state, from the core C-FAST-PT tables. The radial panels
+and node count belong to covariance and do not modify the data-vector
+accuracy settings.
 The non-Limber correction adds exact separable linear minus its matched
 Limber approximation. Both use D(a)^2*P(k,1). Nonlinear residuals remain
 Limber. covariance_spectra is the preferred name; covariance_limber_spectra
@@ -401,7 +431,8 @@ is retained for existing callers. This function does not compute SSC/cNG.
       py::arg("linear") = false,
       py::arg("nonlimber_lmax") = 0,
       py::arg("nonlimber_nchi") = 4097,
-      py::arg("nonlimber_chi_min") = 1.e-6);
+      py::arg("nonlimber_chi_min") = 1.e-6,
+      py::arg("include_oneloop") = false);
   module.attr("covariance_spectra") = module.attr("covariance_limber_spectra");
 }
 }

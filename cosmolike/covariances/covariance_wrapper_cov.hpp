@@ -32,7 +32,8 @@ namespace cosmolike_interface {
 // ---------------------------------------------------------------------------
 
 // All lens/source field-pair spectra on one radial rule (radial_inputs_cov,
-// limber_spectra_cov, tatt_spectra_cov, apply_nonlimber_cov). Dict:
+// limber_spectra_cov, oneloop_bias_spectra_cov when include_oneloop,
+// tatt_spectra_cov, apply_nonlimber_cov). Dict:
 // spectra arma::Cube [nell,nfield,nfield] in the core C_ell convention;
 // b_spectra with the same axes for TATT B, else None; geometry arma::Mat
 // [4,nnode] (a, chi, f_K, dchi weight); windows arma::Cube
@@ -48,7 +49,8 @@ pybind11::dict covariance_limber_spectra_cpp(
     const bool linear,     // 1: linear p_lin(k,a); 0: run-mode Pdelta(k,a)
     const int nonlimber_lmax, // gg/gs correction through this ell; 0 disables
     const int nonlimber_nchi, // logarithmic radial samples, 2^n+1
-    const double nonlimber_chi_min // positive near distance in c/H0
+    const double nonlimber_chi_min, // positive near distance in c/H0
+    const bool include_oneloop // add the one-loop b2 and bs2 terms
   );
 
 // GSL Gauss-Legendre rule on [-1,1]: arma::Mat [2,nquad], nodes in row 0

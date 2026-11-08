@@ -18,7 +18,8 @@ from .geometry import cap_mask
 
 
 def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
-                   include_rsd=False, linear=False, batch_size=512):
+                   include_rsd=False, linear=False, batch_size=512,
+                   include_oneloop=False):
     """Compute every field cross spectrum with bounded multipole scratch.
 
     Arguments:
@@ -30,6 +31,9 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
         include_rsd = include the galaxy RSD window.
         linear = use linear rather than the configured nonlinear power.
         batch_size = positive multipole count per C call; storage only.
+        include_oneloop = add the one-loop galaxy-bias terms of the core's
+            b2 and bs2 (Limber, C-FAST-PT templates) to every spectrum with
+            a lens field; requires linear=False. False keeps linear bias.
     Returns:
         The C snapshot layout: spectra [nell,nfield,nfield], geometry
         [4,nradial], windows [3,nfield,nradial], nlens and nsource. Arrays
@@ -55,6 +59,13 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
     edges = np.ascontiguousarray(a_edges, dtype=float)
     snapshot = None
 
+    # The keyword is passed only when the one-loop terms are requested, so
+    # a project library compiled before the option existed still serves
+    # the linear-bias calls. **options adds no argument when it is empty.
+    options = {}
+    if include_oneloop:
+        options["include_oneloop"] = True
+
     # Each call keeps the full radial rule and every internal field pair.
     # Only the independent multipole axis is divided. Keep one copy of the
     # common geometry; concatenate the spectra in their original order.
@@ -63,7 +74,7 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
         block = interface.covariance_limber_spectra(
             ell=modes[first:last], a_edges=edges, nquad=nquad,
             nwindow=nwindow, include_ia=include_ia, include_rsd=include_rsd,
-            linear=linear,
+            linear=linear, **options,
         )
 
         # The first batch reveals the field count; the full-length tables

@@ -55,9 +55,10 @@ of an uncertainty before adding the terms.
 
 **Current scope:** these files provide numerical components. The shared
 Python `covariance/survey.py` assembles full real/Fourier G+SSC+cNG forecasts
-for massless neutrinos, linear galaxy bias, zero magnification/RSD and a
-spherical-cap footprint. Gaussian spectra can include non-Limber gg/gs and
-NLA/TATT. SSC/cNG retain their zero-IA Limber model. Survey cutoff,
+for massless neutrinos, linear galaxy bias, zero magnification and a
+spherical-cap footprint. Gaussian spectra can include lens RSD, non-Limber
+gg/gs, NLA/TATT and the one-loop galaxy bias (quadratic and tidal).
+SSC/cNG retain their linear-bias, zero-IA Limber model. Survey cutoff,
 interpolation and Fisher convergence require separate assessment.
 Covariance integration choices stay separate from the data-vector calculation.
 
@@ -71,7 +72,7 @@ Function comments explain equations, units and array contents.
 | [ia_cov.c](ia_cov.c), [header](ia_cov.h) | All-pairs TATT E corrections and B-mode spectra using the core FAST-PT tables. |
 | [nonlimber_cov.c](nonlimber_cov.c), [header](nonlimber_cov.h) | All-pairs separable-linear spectra and their matched Limber subtraction for Gaussian gg/gs corrections. |
 | [fftlog_cov.c](fftlog_cov.c), [header](fftlog_cov.h) | Reusable spherical-Bessel transforms for density and lensing radial functions. |
-| [spectra_cov.c](spectra_cov.c), [header](spectra_cov.h) | Radial geometry, galaxy and lensing windows, and all lens/source Limber cross spectra. |
+| [spectra_cov.c](spectra_cov.c), [header](spectra_cov.h) | Radial geometry, galaxy and lensing windows, all lens/source Limber cross spectra, and their one-loop galaxy-bias terms. |
 | [gaussian_cov.c](gaussian_cov.c), [header](gaussian_cov.h) | Gaussian pairings, projection of their covariance, and analytic pair noise. |
 | [assembly_cov.c](assembly_cov.c), [header](assembly_cov.h) | Shared Gaussian matrix assembly and connected radial projections, including block scheduling. |
 | [halo_cov.c](halo_cov.c), [header](halo_cov.h) | Mass integrals of halo profiles, abundance and bias. |
@@ -359,15 +360,68 @@ describe the projected fields and their weights in Section 2.1.
 The implementation samples all fields on the same radial quadrature,
 meaning the same distances and integration weights. It supports linear
 galaxy bias, magnification, optional redshift-space distortions and
-optional nonlinear alignment (NLA) of source shapes. These are the
-implemented field choices; higher-order bias and alignment models require
-additional terms. The spectra contain signal only. Noise is added later.
+optional nonlinear alignment (NLA) of source shapes. Higher-order
+alignment (TATT, below) and the one-loop galaxy bias (next subsection) are
+added as separate terms. The spectra contain signal only. Noise is added
+later.
 
 Bias relates galaxy density fluctuations to matter fluctuations.
 Magnification changes the observed counts through lensing; peculiar
 velocities cause redshift-space distortions by changing observed
 redshifts. Intrinsic alignment describes coherent galaxy shapes caused
 by their environment, in addition to the distortion caused by lensing.
+
+### One-loop galaxy bias in the Gaussian spectra: `spectra_cov.c`
+
+Beyond linear order a galaxy overdensity also responds to the square of
+the matter density and to the tidal field. The expansion used by the data
+vector, in the normalization of
+[Saito et al.](https://arxiv.org/abs/1405.1447), is
+
+```math
+\delta_g=b_1\delta+\frac{b_2}{2}\delta^2+\frac{b_{s^2}}{2}s^2 .
+```
+
+Here $`b_2`$ is the quadratic bias, $`b_{s^2}`$ the tidal bias, and
+$`s^2=s_{ij}s_{ij}`$ the square of the trace-free tidal field
+$`s_{ij}=(k_ik_j/k^2-\delta_{ij}/3)\,\delta`$. The power spectrum of two
+galaxy bins $`i,j`$ then gains one-loop correlators of these operators,
+such as $`P_{\delta\,\delta^2}=\langle\delta\,\delta^2\rangle`$. Each
+contains two linear spectra, so it grows as $`D^4`$, with $`D`$ the linear
+growth normalized to one today:
+
+```math
+P^{\rm loop}_{ij}=D^4\Big[
+\tfrac12(b_{1i}b_{2j}+b_{2i}b_{1j})P_{\delta\delta^2}
++\tfrac14 b_{2i}b_{2j}P_{\delta^2\delta^2}
++\tfrac12(b_{1i}b_{s^2j}+b_{s^2i}b_{1j})P_{\delta s^2}
++\tfrac14(b_{2i}b_{s^2j}+b_{s^2i}b_{2j})P_{\delta^2s^2}
++\tfrac14 b_{s^2i}b_{s^2j}P_{s^2s^2}\Big].
+```
+
+A galaxy bin and the matter density correlate through
+$`D^4[\tfrac12 b_2P_{\delta\delta^2}+\tfrac12 b_{s^2}P_{\delta s^2}]`$,
+which enters the galaxy–shear spectra.
+
+`oneloop_bias_spectra_cov` adds the Limber projection of these terms to
+every galaxy–galaxy and galaxy–shear spectrum, including pairs absent from
+the data vector. The templates are the core C-FAST-PT tables
+(`get_FPT_bias` in `pt_cfastpt.c`;
+[McEwen et al.](https://arxiv.org/abs/1603.04826)), read with the data
+vector's linear interpolation in $`\ln k`$, its subtraction of the
+constant low-$`k`$ limits of the quadratic correlators and its $`D^4`$
+growth. The covariance and the data vector therefore share one galaxy
+model. The terms multiply the density windows only, never magnification
+or RSD, and shear–shear spectra are unchanged. The third-order bias and
+the $`k^2`$ counterterm are not modeled; the code stops if either is
+nonzero.
+
+These terms are Limber only: the non-Limber correction of
+`nonlimber_cov.c` remains linear, so the one-loop part carries the Limber
+error at the lowest multipoles of narrow bins. SSC and cNG keep their
+linear-bias halo-model galaxies. The shared Python adds the terms when the
+settings contain nonzero per-bin `bias2` and `bias_s2`; the spectrum
+bindings take `include_oneloop=True`.
 
 ### Why covariance needs additional cross spectra: `gaussian_cov.c`
 
