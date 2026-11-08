@@ -41,6 +41,8 @@ double gbmag(const double z, const int ni);
 
 double gbK(const double z, const int ni);
 
+double galpha2(const int ni); // redshift-space counterterm alpha_2
+
 #ifdef __cplusplus
 }
 #endif

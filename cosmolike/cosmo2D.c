@@ -413,6 +413,68 @@ static int has_b2_galaxies(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Check whether any lens bin has a nonzero redshift-space counterterm
+// alpha_2 (galpha2 in bias.c, which states the DESI DR1 convention:
+// the term adds (b1 + f mu^2) f alpha_2 mu^2 k^2 P_lin to the
+// redshift-space galaxy power).
+//
+// The projection reuses the two transfers the Kaiser term already
+// builds for lens bin i. With W_i the radial kernel of the bin, D the
+// growth factor, f the growth rate and j_l the spherical Bessel
+// function,
+//
+//   Delta1_i(k) = INT dchi W_i D [b1 j_l(k chi) - f j_l''(k chi)],
+//   R_i(k)      = - INT dchi W_i D f j_l''(k chi).
+//
+// Delta1 is the whole linear redshift-space kernel of the bin, and R
+// its RSD part alone: each factor mu^2 of the flat-sky spectrum
+// becomes a -j_l'' in the exact projection.
+//
+// The counterterm field of bin i then has the transfer
+// (alpha_2,i/2) k^2 R_i, and its cross with the linear field of bin j
+// adds
+//
+//   C_l^ij += (2/pi) INT dk k^2 [k^2 P_lin(k)]
+//             * [(alpha_2,j/2) Delta1_i R_j + (alpha_2,i/2) R_i Delta1_j],
+//
+// so an auto spectrum gains alpha_2 k^2 Delta1 R under the integral.
+// The term is linear in alpha_2. Magnification is not part of Delta1:
+// the counterterm belongs to the galaxy field, not to the lensing of
+// its foreground.
+//
+// No new transform is needed. In the FFTLog sums, Delta1 is the
+// density row plus the RSD row (Fy slots 0 and 1) and R the RSD row.
+// In the Limber sums the same roles go to the kernels W_gal b1 + W_RSD
+// and W_RSD, the Limber treatment of the Kaiser term.
+//
+// The FKEM split treats the term like every other row. The FFTLog sum
+// uses the separable linear spectrum; the Limber full model uses the
+// linear spectrum P_lin(k, a) itself; the linear Limber term uses the
+// separable one again, so the split still cancels at high l.
+//
+// The term multiplies the RSD row, so it exists only where that row
+// does. With HOD galaxies (no RSD row), or the RSD gate off, a nonzero
+// alpha_2 would vanish without a trace: that combination is fatal.
+//
+// Returns:
+//   1 if at least one bin has alpha_2 != 0, 0 otherwise
+// ---------------------------------------------------------------------------
+static int has_alpha2_galaxies(void) {
+  int res = 0;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (0.0 != nuisance.gb[6][i]) {
+      res = 1;
+    }
+  }
+  if (1 == res && (0 == include_RSD_GG || 1 == include_HOD_GX)) {
+    log_fatal("alpha_2 != 0 needs the RSD row of the galaxy kernel "
+              "(include_RSD_GG = 1 and include_HOD_GX = 0)");
+    exit(1);
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
 // SIMD type aliases for readability.
 //
 // All SIMD code goes through SIMDe (SIMD Everywhere), which provides
@@ -5457,7 +5519,7 @@ double C_gg_tomo_limber_nointerp(
 // Computes, for every lens bin and every multipole in lx,
 //
 //   C_l = SUM_p wt_p * mask_p * [ (WGAL*b1 + WMAG*ep*bmag + WRSD)^2 * PK
-//                                 + oneloop ] * (dchi/da) / fK^2
+//                                 + oneloop + ct ] * (dchi/da) / fK^2
 //
 // over the Gauss-Legendre nodes p of the bin (cn_all[bin], cn_all[bin].npts
 // of them; the count may differ between bins), with
@@ -5470,6 +5532,10 @@ double C_gg_tomo_limber_nointerp(
 //   oneloop = WGAL^2 * [ D^4 (b1 b2 P_d1d2 + b2^2/4 P_d2d2 + b1 bs2 P_d1s2
 //             + b2 bs2/2 P_d2s2 + bs2^2/4 P_s2s2 + b1 b3 P_d1p3)
 //             + 2 b1 bK k^2 PK ]   (one-loop bias on, use_linear_ps = 0)
+//   ct      = alpha_2 k^2 (WGAL*b1 + WRSD) * WRSD * PL, the redshift-space
+//             counterterm (has_alpha2_galaxies; alpha_2 != 0 only), with
+//             PL = P_lin(k, a) in table and the separable linear spectrum
+//             in table_lin; the DD outputs never carry it
 //   mask_p  = 0 where the RSD kernel would reach beyond chi(limits.a_min)
 //             (chi_1 > chi(a_min)), 1 elsewhere.
 // The scalar C_gg_tomo_limber_linpsopt_nointerp reads one entry of one
@@ -5486,8 +5552,9 @@ double C_gg_tomo_limber_nointerp(
 // them):
 //   WB[4][nbin][npts]        W_gal, W_mag, b1, bmag
 //   WO[4][nbin][npts]        b2, bs2, b3, bK            (one-loop bias only)
-//   KG[4][nbin][nell][npts]  P_delta, W_RSD, mask, separable P_lin
-//                            (slot 3 only with table_lin)
+//   KG[5][nbin][nell][npts]  P_delta, W_RSD, mask, separable P_lin
+//                            (slot 3 only with table_lin), P_lin(k, a)
+//                            (slot 4 only with the counterterm on)
 //   KB[6][nbin][nell][npts]  P_d1d2, P_d2d2 - 2 sigma4, P_d1s2,
 //                            P_d2s2 - 4/3 sigma4, P_s2s2 - 8/9 sigma4, P_d1p3
 //                            (one-loop bias only; zero outside the FPTbias
@@ -5607,6 +5674,12 @@ static void C_gg_tomo_limber_work(
   if (1 == include_RSD_GG && 0 == hod) {
     rsd = 1;
   }
+  // the redshift-space counterterm enters the full model and the linear
+  // term, never the DD outputs (has_alpha2_galaxies)
+  int alpha2 = 0;
+  if (NULL != table || NULL != table_lin) {
+    alpha2 = has_alpha2_galaxies();
+  }
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
@@ -5620,7 +5693,7 @@ static void C_gg_tomo_limber_work(
     (void) W_gal(a, 0, hoh0);
     (void) W_mag(a, fK, 0);
     (void) Pdelta(ell/fK, a);
-    if (NULL != table_lin || NULL != table_dd_lin) {
+    if (NULL != table_lin || NULL != table_dd_lin || 1 == alpha2) {
       (void) p_lin(ell/fK, a);
     }
     (void) gb1(0.1, 0);
@@ -5662,10 +5735,13 @@ static void C_gg_tomo_limber_work(
   // -----------------------------------------------------------------------
   double*** WB  = (double***) malloc3d(4, nbin, npts_max);
   // KG[3], the separable linear spectrum, exists only when a linear-term
-  // output asked for it
-  double**** KG = (double****) malloc4d(
-      (NULL != table_lin || NULL != table_dd_lin) ? 4 : 3,
-      nbin, nell, npts_max);
+  // output asked for it; KG[4], the linear spectrum P_lin(k, a) of the
+  // counterterm in the full model, only when alpha_2 is on
+  int nKG = (NULL != table_lin || NULL != table_dd_lin) ? 4 : 3;
+  if (1 == alpha2) {
+    nKG = 5;
+  }
+  double**** KG = (double****) malloc4d(nKG, nbin, nell, npts_max);
   // HOD spectra at the nodes: KH[0] = p_gg(k, a, zl, zl),
   // KH[1] = p_gm(k, a, zl)
   double**** KH = NULL;
@@ -5765,6 +5841,14 @@ static void C_gg_tomo_limber_work(
           p_lin_at_a(apivw[zl], kn, nell, pn);
           for (int i=0; i<nell; i++) {
             KG[3][zl][i][p] = gf*gf*invgf2w[zl]*pn[i];
+          }
+        }
+        if (1 == alpha2 && NULL != table) {
+          // the counterterm multiplies the linear spectrum at the node's
+          // own scale factor, P_lin(k, a), in the full model
+          p_lin_at_a(cn->data[CN_A][p], kn, nell, pn);
+          for (int i=0; i<nell; i++) {
+            KG[4][zl][i][p] = pn[i];
           }
         }
       }
@@ -6012,6 +6096,24 @@ static void C_gg_tomo_limber_work(
             const double Wdd = WGAL[p]*b1[p];
             sum += mask[p]*((Wdd*Wdd*PK[p])*dchida[p]/(fK[p]*fK[p]))*wt[p];
           }
+        }
+        // The redshift-space counterterm of the full model (o = 0) and
+        // of the linear term (o = 1), see has_alpha2_galaxies: the
+        // linear kernel W_gal*b1 + W_RSD times the RSD kernel, against
+        // k^2 P_lin, with the bin's alpha_2 applied to the finished sum.
+        // A separate sum, so the terms above keep their exact order.
+        if (1 == alpha2 && o < 2) {
+          const double* restrict PL =
+              (0 == o) ? KG[4][zl][i] : KG[3][zl][i];
+          double sum_ct = 0.0;
+          #pragma omp simd reduction(+:sum_ct)
+          for (int p=0; p<npts; p++) {
+            const double k = ell/fK[p];
+            const double delta1 = WGAL[p]*b1[p] + WRSD[p];
+            const double ct = k*k*delta1*WRSD[p]*PL[p];
+            sum_ct += mask[p]*(ct*dchida[p]/(fK[p]*fK[p]))*wt[p];
+          }
+          sum += galpha2(zl)*sum_ct;
         }
         out[zl][i] = sum;
       }
@@ -9334,6 +9436,8 @@ void cfftlog_ells_p2(
 //        F = Fy_density + Fy_RSD + bmag * l*(l+1) * Fy_mag / y^2
 //      and integrate:
 //        Cl_fftlog = (2/pi) * dlnk * sum_q[ F^2 * (k*c/H0)^3 * P_lin(k) ]
+//      With a nonzero redshift-space counterterm alpha_2, F^2 gains
+//      alpha_2 k^2 (Fy_density + Fy_RSD) Fy_RSD (has_alpha2_galaxies).
 //   6. Combine: Cl = Cl_fftlog + Cl_limber(P_NL) - Cl_limber(P_lin)
 //   7. Convergence: after each block, check |Cl_nolimber/Cl_limber - 1| < tol
 //      at the block's last multipole. Once converged, fill the remaining
@@ -9518,6 +9622,13 @@ static double** C_cl_tomo_core(
   // with (C_gg_tomo_limber_linpsopt_nointerp_ells: include_RSD_GG and no
   // HOD); an RSD row the Limber terms lack would not cancel at high l
   const int rsd = (1 == include_RSD_GG && 0 == include_HOD_GX) ? 1 : 0;
+  // the redshift-space counterterm and each bin's alpha_2
+  // (has_alpha2_galaxies)
+  const int alpha2 = has_alpha2_galaxies();
+  double alpha2_bin[nbins];
+  for (int i=0; i<nbins; i++) {
+    alpha2_bin[i] = (1 == alpha2) ? galpha2(i) : 0.0;
+  }
 
   #pragma omp parallel for schedule(static)
   for (int j=0; j<nchi; j++) {
@@ -9678,8 +9789,17 @@ static double** C_cl_tomo_core(
           const double bmag = gbmag(0.,i);
           const double F = Fy[i][0][k][q] + Fy[i][1][k][q] + 
                            bmag*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
-          vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*
-                          p_lin(k1cH0, apiv[i])*invgf2piv[i];
+          const double plin = p_lin(k1cH0, apiv[i]);
+          vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*plin*invgf2piv[i];
+          if (1 == alpha2) {
+            // the counterterm (has_alpha2_galaxies): alpha_2 k^2 times
+            // the linear transfer Delta1 (density + RSD rows) times the
+            // RSD row R, on the same separable spectrum
+            const double R = Fy[i][1][k][q];
+            const double delta1 = Fy[i][0][k][q] + R;
+            const double ct = alpha2_bin[i]*k1cH0*k1cH0*delta1*R;
+            vres[i][k][q] += ct*(k1cH0*k1cH0*k1cH0)*plin*invgf2piv[i];
+          }
           if (1 == gg_kwin.active) { // the bin's step (see gg_kwin)
             vres[i][k][q] *= gg_kwin_pass(k1cH0, gg_kwin.Kbin[i]);
           }
@@ -11598,6 +11718,10 @@ void cfftlog_ells_p2_lowrank(
 // be wrong physics. And the magnification kernel is broad - exactly
 // where Limber is accurate.
 //
+// The redshift-space counterterm alpha_2 (has_alpha2_galaxies) is a
+// linear-theory term built from the density and RSD rows, so it
+// keeps FKEM too: pass 1 adds it, and the pair pass its pair form.
+//
 // At high l, term 1 tends to CLlin - CLdd_lin and term 2 to CLdd_nl,
 // so Cl -> CLnl up to the rank truncation: the twin's convergence
 // test and Limber splice work unchanged.
@@ -12032,6 +12156,13 @@ static double** C_cl_tomo_lowrank_core(
   // as in C_cl_tomo_core (an RSD row the Limber terms lack would not
   // cancel at high l). HOD is refused above.
   const int rsd = (1 == include_RSD_GG) ? 1 : 0;
+  // the redshift-space counterterm and each bin's alpha_2
+  // (has_alpha2_galaxies); it rides the FKEM rows, as the RSD terms do
+  const int alpha2 = has_alpha2_galaxies();
+  double alpha2_bin[nbins];
+  for (int i=0; i<nbins; i++) {
+    alpha2_bin[i] = (1 == alpha2) ? galpha2(i) : 0.0;
+  }
 
   // The FFTLog inputs: every radial kernel sampled on the log-spaced
   // chi grid. One iteration owns one chi node j, so the background
@@ -12341,8 +12472,16 @@ static double** C_cl_tomo_lowrank_core(
           const double F = Fy[i][0][k][q] + Fy[i][1][k][q] +
                            bmag*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
           const double F0 = Fy[i][0][k][q];
-          vres[i][k][q] = (F*F - F0*F0)*
-                          p_lin(k1cH0, apiv[i])*invgf2piv[i];
+          const double plin = p_lin(k1cH0, apiv[i]);
+          vres[i][k][q] = (F*F - F0*F0)*plin*invgf2piv[i];
+          if (1 == alpha2) {
+            // the counterterm (has_alpha2_galaxies): alpha_2 k^2 times
+            // the linear transfer Delta1 = F0 + R times the RSD row R,
+            // on the separable spectrum (pass 2 multiplies in k^3)
+            const double R = Fy[i][1][k][q];
+            const double ct = alpha2_bin[i]*k1cH0*k1cH0*(F0 + R)*R;
+            vres[i][k][q] += ct*plin*invgf2piv[i];
+          }
         }
       }
       // Pass 2 - the low-rank DD, then the common k^3. Per multipole:
@@ -12466,9 +12605,20 @@ static double** C_cl_tomo_lowrank_core(
                 bmag_j*ell_prefactor*Fy[bj][2][k][q]/(tyq*tyq);
             const double F0_i = Fy[bi][0][k][q];
             const double F0_j = Fy[bj][0][k][q];
-            vrx[q] = ((F_i*F_j - F0_i*F0_j)*
-                      p_lin(k1cH0, apivx[n])*invgf2x[n]
+            const double plin = p_lin(k1cH0, apivx[n]);
+            vrx[q] = ((F_i*F_j - F0_i*F0_j)*plin*invgf2x[n]
                       + gi[q]*gj[q])*(k1cH0*k1cH0*k1cH0);
+            if (1 == alpha2) {
+              // the counterterm of the pair (has_alpha2_galaxies): each
+              // bin's RSD row R against the other's linear transfer
+              // Delta1 = F0 + R, half from each side
+              const double R_i = Fy[bi][1][k][q];
+              const double R_j = Fy[bj][1][k][q];
+              const double ct = 0.5*k1cH0*k1cH0*
+                  (alpha2_bin[bj]*(F0_i + R_i)*R_j +
+                   alpha2_bin[bi]*R_i*(F0_j + R_j));
+              vrx[q] += ct*plin*invgf2x[n]*(k1cH0*k1cH0*k1cH0);
+            }
             if (1 == gg_kwin.active) { // the pair's step (see gg_kwin)
               vrx[q] *= gg_kwin_pass(k1cH0, gg_kwin.Kpair[n]);
             }
@@ -13107,6 +13257,14 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 // pair's one-loop spectrum to K_i K_j PK (step 4), and the DD output
 // is the geometric mean of step 5.
 //
+// With a nonzero redshift-space counterterm (has_alpha2_galaxies), the
+// full and linear outputs add
+//
+//   (k^2/2) [alpha_2,j K_i W_RSD,j + alpha_2,i W_RSD,i K_j] * PL,
+//
+// with PL = P_lin(k, a) in the full output and the separable linear
+// spectrum in the linear one; the DD outputs never carry it.
+//
 // Parameters:
 //   cn_all        - quadrature nodes per pair [gg_cross_npairs]
 //   lx            - multipole values (length nell)
@@ -13154,6 +13312,13 @@ static void C_gg_cross_tomo_limber_work(
 
   const int rsd = (1 == include_RSD_GG) ? 1 : 0;
 
+  // the redshift-space counterterm enters the full model and the linear
+  // term, never the DD outputs (has_alpha2_galaxies)
+  int alpha2 = 0;
+  if (NULL != table || NULL != table_lin) {
+    alpha2 = has_alpha2_galaxies();
+  }
+
   // -------------------------------------------------------------------------
   // Warm up every lazily initialized table single-threaded, before the
   // parallel regions below touch them (the auto work's prelude).
@@ -13166,7 +13331,7 @@ static void C_gg_cross_tomo_limber_work(
     const double ell  = lx[0] + 0.5;
     (void) W_gal(a, gg_cross_i[0], hoh0);
     (void) Pdelta(ell/fK, a);
-    if (NULL != table_lin || NULL != table_dd_lin) {
+    if (NULL != table_lin || NULL != table_dd_lin || 1 == alpha2) {
       (void) p_lin(ell/fK, a);
     }
     (void) gb1(0.1, 0);
@@ -13213,6 +13378,9 @@ static void C_gg_cross_tomo_limber_work(
   //   KG[side][pair][ell][node]      W_RSD (zero when rsd = 0)
   //   KP[pair][ell][node]            P_delta(k, a)
   //   KL[pair][ell][node]            separable linear spectrum
+  //   KPL[pair][ell][node]           P_lin(k, a), the counterterm's
+  //                                  spectrum in the full model
+  //                                  (alpha_2 on only)
   //   MASKP[pair][ell][node]         the combined RSD reach mask
   //
   // The one-loop templates are not tabulated: stage 3 reads them once
@@ -13232,6 +13400,10 @@ static void C_gg_cross_tomo_limber_work(
   double*** KL = NULL;
   if (NULL != table_lin || NULL != table_dd_lin) {
     KL = (double***) malloc3d(npairs, nell, npts_max);
+  }
+  double*** KPL = NULL;
+  if (1 == alpha2 && NULL != table) {
+    KPL = (double***) malloc3d(npairs, nell, npts_max);
   }
   double*** MASKP = (double***) malloc3d(npairs, nell, npts_max);
 
@@ -13299,6 +13471,9 @@ static void C_gg_cross_tomo_limber_work(
             const double gf = cn->data[CN_GROWFAC][p];
             KL[n][i][p] = gf*gf*invgf2w[n]*p_lin(k, apivw[n]);
           }
+          if (NULL != KPL) {
+            KPL[n][i][p] = p_lin(k, a);
+          }
           double maskp = 1.0;
           if (1 == rsd) {
             const double chi_0 = fK;
@@ -13346,6 +13521,13 @@ static void C_gg_cross_tomo_limber_work(
         double sumlin = 0.0; // full kernels     x separable linear P
         double sumdd  = 0.0; // density kernels  x nonlinear P_delta
         double sumddl = 0.0; // density kernels  x separable linear P
+        // the counterterm of the full model (x P_lin(k, a)) and of the
+        // linear term (x the separable P_lin), in sums of their own so
+        // the four above keep their exact order
+        double sumct    = 0.0;
+        double sumctlin = 0.0;
+        const double alpha2_i = (1 == alpha2) ? galpha2(gg_cross_i[n]) : 0.0;
+        const double alpha2_j = (1 == alpha2) ? galpha2(gg_cross_j[n]) : 0.0;
         for (int p=0; p<cn->npts; p++) {
           // the Limber measure at this node: the Gauss-Legendre weight
           // (already scaled to its panel by the node builder) times
@@ -13372,6 +13554,20 @@ static void C_gg_cross_tomo_limber_work(
           // such kernel, a pair multiplies two different ones
           const double K_i = dd_i + rsd_i;
           const double K_j = dd_j + rsd_j;
+          // the redshift-space counterterm (has_alpha2_galaxies): each
+          // bin's RSD kernel against the other bin's linear kernel
+          // K = W_gal*b1 + W_RSD, half from each side, times k^2
+          if (1 == alpha2) {
+            const double k  = ell/fK;
+            const double ct = 0.5*k*k*(alpha2_j*K_i*rsd_j +
+                                       alpha2_i*rsd_i*K_j);
+            if (NULL != table) {
+              sumct    += wt*maskp*ct*KPL[n][i][p];
+            }
+            if (NULL != table_lin) {
+              sumctlin += wt*maskp*ct*KL[n][i][p];
+            }
+          }
           // full or density-only kernels, against the nonlinear
           // spectrum (KP) or the separable linear model (KL): the
           // non-Limber split subtracts these tables, so they must
@@ -13477,6 +13673,10 @@ static void C_gg_cross_tomo_limber_work(
             sumddl += wt*maskp*dd_i*dd_j*KL[n][i][p];
           }
         }
+        if (1 == alpha2) {
+          sum    += sumct;
+          sumlin += sumctlin;
+        }
         if (NULL != table) {
           table[n][i] = sum;
         }
@@ -13503,6 +13703,9 @@ static void C_gg_cross_tomo_limber_work(
   free((void*) KP);
   if (NULL != KL) {
     free((void*) KL);
+  }
+  if (NULL != KPL) {
+    free((void*) KPL);
   }
   free((void*) MASKP);
 }
@@ -13799,6 +14002,13 @@ static double** C_cl_tomo_fkem_pairs_core(
     zhi[i] = 1./amin_lens(i) - 1.;
   }
   const int rsd = (1 == include_RSD_GG && 0 == include_HOD_GX) ? 1 : 0;
+  // the redshift-space counterterm and each bin's alpha_2
+  // (has_alpha2_galaxies)
+  const int alpha2 = has_alpha2_galaxies();
+  double alpha2_bin[nbins];
+  for (int i=0; i<nbins; i++) {
+    alpha2_bin[i] = (1 == alpha2) ? galpha2(i) : 0.0;
+  }
 
   #pragma omp parallel for schedule(static)
   for (int j=0; j<nchi; j++) {
@@ -13956,8 +14166,17 @@ static double** C_cl_tomo_fkem_pairs_core(
           const double bmag = gbmag(0.,i);
           const double F = Fy[i][0][k][q] + Fy[i][1][k][q] +
                            bmag*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
+          const double plin = p_lin(k1cH0, apiv[i]);
           vres_pool[i][k - ks][q] = F*F*(k1cH0*k1cH0*k1cH0)*
-                                    p_lin(k1cH0, apiv[i])*invgf2piv[i];
+                                    plin*invgf2piv[i];
+          if (1 == alpha2) {
+            // the counterterm, as in C_cl_tomo_core
+            const double R = Fy[i][1][k][q];
+            const double delta1 = Fy[i][0][k][q] + R;
+            const double ct = alpha2_bin[i]*k1cH0*k1cH0*delta1*R;
+            vres_pool[i][k - ks][q] += ct*(k1cH0*k1cH0*k1cH0)*
+                                       plin*invgf2piv[i];
+          }
           if (1 == gg_kwin.active) { // the bin's step (see gg_kwin)
             vres_pool[i][k - ks][q] *= gg_kwin_pass(k1cH0, gg_kwin.Kbin[i]);
           }
@@ -13991,8 +14210,18 @@ static double** C_cl_tomo_fkem_pairs_core(
               bmag_i*ell_prefactor*Fy[bi][2][k][q]/(tyq*tyq);
           const double F_j = Fy[bj][0][k][q] + Fy[bj][1][k][q] +
               bmag_j*ell_prefactor*Fy[bj][2][k][q]/(tyq*tyq);
-          vrx[q] = F_i*F_j*(k1cH0*k1cH0*k1cH0)*
-                   p_lin(k1cH0, apivx[n])*invgf2x[n];
+          const double plin = p_lin(k1cH0, apivx[n]);
+          vrx[q] = F_i*F_j*(k1cH0*k1cH0*k1cH0)*plin*invgf2x[n];
+          if (1 == alpha2) {
+            // the counterterm of the pair, as in the low-rank pair pass
+            const double R_i = Fy[bi][1][k][q];
+            const double R_j = Fy[bj][1][k][q];
+            const double delta1_i = Fy[bi][0][k][q] + R_i;
+            const double delta1_j = Fy[bj][0][k][q] + R_j;
+            const double ct = 0.5*k1cH0*k1cH0*
+                (alpha2_bin[bj]*delta1_i*R_j + alpha2_bin[bi]*R_i*delta1_j);
+            vrx[q] += ct*(k1cH0*k1cH0*k1cH0)*plin*invgf2x[n];
+          }
           if (1 == gg_kwin.active) { // the pair's step (see gg_kwin)
             vrx[q] *= gg_kwin_pass(k1cH0, gg_kwin.Kpair[n]);
           }

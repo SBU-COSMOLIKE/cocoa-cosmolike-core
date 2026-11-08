@@ -908,6 +908,11 @@ void set_nuisance_bias_fastpt_tidal(
     arma::Col<double> BK
   );
 
+// per-bin redshift-space counterterm alpha_2, in h^-2 Mpc^2
+void set_nuisance_bias_alpha2(
+    arma::Col<double> A2
+  );
+
 void set_nuisance_shear_calib(
     arma::Col<double> M
   );

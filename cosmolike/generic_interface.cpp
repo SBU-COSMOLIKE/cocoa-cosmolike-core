@@ -3911,6 +3911,60 @@ void set_nuisance_bias_fastpt_tidal(vector B1, vector B2, vector BS2,
 }
 
 // ---------------------------------------------------------------------------
+// Set the per-bin redshift-space counterterm alpha_2 = nuisance.gb[6][i]
+// (galpha2 in bias.c states the DESI DR1 convention; cosmo2D.c projects
+// the term).
+//
+// Units: the input is in h^-2 Mpc^2, the unit of 1/k^2 with k in h/Mpc.
+// The C code measures k in units of H0/c, so the stored value is
+// alpha_2/(c/H0)^2, with c/H0 = cosmology.coverH0 in Mpc/h.
+//
+// alpha_2 = 0 in every bin switches the term off: the spectra are then
+// bitwise those of a build without it.
+//
+// Cache invalidation:
+// bumps nuisance.random_galaxy_bias when any value changed (fdiff);
+// unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set, the input of that size, no NaN
+// entries, else critical() + exit(1).
+//
+// Parameters:
+//   A2 - per-bin alpha_2 in h^-2 Mpc^2 (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void set_nuisance_bias_alpha2(vector A2)
+{
+  static constexpr std::string_view fname = "set_nuisance_bias_alpha2"sv;
+  debug("{}: {}", fname, errbegins);
+  if (0 == redshift.clustering_nbin) [[unlikely]] {
+    critical(errorns2, fname, "clustering_Nbin", 0); exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(A2.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, A2.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  const double coverH0_squared = cosmology.coverH0*cosmology.coverH0;
+  int cache_update = 0;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (std::isnan(A2(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    const double alpha2 = A2(i)/coverH0_squared;
+    if (fdiff(nuisance.gb[6][i], alpha2)) {
+      cache_update = 1;
+      nuisance.gb[6][i] = alpha2;
+    }
+  }
+  if (1 == cache_update || 1 == force_cache_update_test) {
+    nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
