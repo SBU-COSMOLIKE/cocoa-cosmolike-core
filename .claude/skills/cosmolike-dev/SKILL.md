@@ -460,6 +460,22 @@ Then establish a stable high-resolution numerical reference and use Fisher
 FoM/errors to select practical settings. A chain is not needed for the
 initial local Fisher test; check several cosmologies before generalizing.
 
+**Fisher derivatives for publication.** Fisher derivatives use five-point
+stencils; a term linear in its amplitude uses an exact template. Two
+accuracy tiers stay separate. Exploration runs may use fast settings;
+final figures and quoted numbers use settings converged in a dedicated
+study in the project's `tests/studies/`, above the MCMC settings that
+pass |Delta chi2| < 0.2 and including CAMB's accuracy and k sampling.
+Convergence is judged on FoMs, marginalized errors and bias responses
+under refinement of the step, the non-Limber grid and every accuracy
+control; runtime is not a criterion. Numerical noise in a derivative
+column adds spurious information and biases the FoM high: in
+lssty1xdesi (2026-11-08) the MCMC settings moved a thin-bin
+FoM(w0, wa) by 57% at k_max = 0.075 h/Mpc while the fiducial vector
+moved by only Delta chi2 = 0.015. DerivKit (Cocoa's `DERIVKIT_*` keys,
+`get_ddv_dkit` in `cosmolike_notebook_utils/fisher.py`) cross-checks
+the stencil.
+
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
 read `references/docker-reference.md`. It contains 
