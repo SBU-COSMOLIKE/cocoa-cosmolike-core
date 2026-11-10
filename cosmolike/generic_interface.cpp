@@ -4738,9 +4738,10 @@ void IP::set_data(std::string datavector_filename)
 // inverse by exactly alpha only when kk has no cross-covariance with
 // the other probes.
 //
-// Stages after assembly: eigenvalue scan (any negative eigenvalue is
-// critical() + exit(1)), arma::inv, an inverse residual check in
-// correlation units, re-masking of the inverse (masked
+// Stages after assembly: a Cholesky test of the correlation matrix (a
+// matrix that is not positive definite is critical() + exit(1)), the
+// inverse by solve(R, I), an inverse residual check in correlation
+// units, re-masking of the inverse (masked
 // rows/columns zeroed, diagonal included, so they cannot leak into chi2),
 // then compaction of covariance and inverse into the ndata_sqzd_ square
 // matrices. Sets is_inv_cov_set_.
@@ -4874,20 +4875,28 @@ void IP::set_inv_cov(std::string cov_filename)
     }
   }
 
-  // The positivity check also runs on the correlation matrix: raw
-  // eigenvalues carry round-off of order 1e-16 times the largest
-  // eigenvalue, which crosses zero exactly when the scales are mixed.
+  // The positivity check also runs on the correlation matrix: on the raw
+  // covariance, round-off of order 1e-16 times its largest scale can make
+  // a positive-definite matrix look indefinite when the scales are mixed.
+  //
+  // The check is a Cholesky factorization R = L L^T, with L lower
+  // triangular. The factorization divides by a sequence of pivots, and
+  // every pivot is positive exactly when R is positive definite, so a
+  // successful factorization proves positivity and a failed one stops the
+  // run. Only this yes/no answer is needed: a full eigenvalue
+  // decomposition would give the same answer at several times the cost.
+  // L itself is not used, and it is as large as R, so it is released at
+  // once. The inverse below still comes from solve(R, I).
   const vector sigma = arma::sqrt(this->cov_masked_.diag());
   const matrix sigma_pair = sigma*sigma.t();
   const matrix corr = this->cov_masked_/sigma_pair;
-  const vector eigvals = arma::eig_sym(corr);
-  for(int i=0; i<this->ndata_; i++) {
-    if (!(eigvals(i) > 0.0)) [[unlikely]] {
-      critical("{}: masked correlation matrix not positive definite "
-        "(eigenvalue {} = {})", fname, i, eigvals(i));
-      exit(1);
-    }
+  matrix chol_factor;
+  if (!arma::chol(chol_factor, corr, "lower")) [[unlikely]] {
+    critical("{}: masked correlation matrix not positive definite",
+      fname);
+    exit(1);
   }
+  chol_factor.reset();
 
   // Solve R X = I: each column of X is the solution for one unit
   // vector on the right-hand side, so X is R^-1. A wrong inverse would

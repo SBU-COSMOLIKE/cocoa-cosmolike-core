@@ -1649,11 +1649,11 @@ static matrix read_npy_packed_upper_cov(const std::string& file_name, const int 
 //
 // Stages after assembly (see the class header for why the squeezed
 // matrix is the one inverted):
-//   squeeze to the unmasked entries -> positive diagonal check -> eig_sym
-//   check of the correlation matrix (every eigenvalue > 0) -> invert it by
-//   solve(R, I) and check the residual R R^-1 - I -> rescale by the
-//   standard deviations -> expand the inverse to the full layout (zero rows
-//   and columns at masked entries).
+//   squeeze to the unmasked entries -> positive diagonal check -> Cholesky
+//   test of the correlation matrix (it succeeds only if the matrix is
+//   positive definite) -> invert it by solve(R, I) and check the residual
+//   R R^-1 - I -> rescale by the standard deviations -> expand the inverse
+//   to the full layout (zero rows and columns at masked entries).
 // ---------------------------------------------------------------------------
 void IPCluster::set_inv_cov(std::string cov_filename)
 {
@@ -1765,16 +1765,21 @@ void IPCluster::set_inv_cov(std::string cov_filename)
   // eigenvalues down to -1e-12 next to lambda_max = 7.6e3). The test and
   // the inversion run on the correlation matrix R = D^-1/2 C D^-1/2
   // (scale invariant, unit diagonal), and C^-1 = D^-1/2 R^-1 D^-1/2.
+  //
+  // The positivity test is a Cholesky factorization R = L L^T, with L lower
+  // triangular: every pivot it divides by is positive exactly when R is
+  // positive definite, so success proves positivity and failure stops the
+  // run. It gives the yes/no answer of an eigenvalue scan at a fraction of
+  // the cost. L itself is not used and is released at once; the inverse
+  // below still comes from solve(R, I).
   const vector inv_sigma = 1.0/arma::sqrt(this->cov_masked_sqzd_.diag());
   const matrix corr = this->cov_masked_sqzd_ % (inv_sigma*inv_sigma.t());
-  const vector eigvals = arma::eig_sym(corr);
-  for (int a=0; a<this->ndata_sqzd_; a++) {
-    if (!(eigvals(a) > 0.0)) [[unlikely]] {
-      critical("{}: masked correlation matrix not positive definite "
-        "(eigenvalue {} = {})", fname, a, eigvals(a));
-      exit(1);
-    }
+  matrix chol_factor;
+  if (!arma::chol(chol_factor, corr, "lower")) [[unlikely]] {
+    critical("{}: masked correlation matrix not positive definite", fname);
+    exit(1);
   }
+  chol_factor.reset();
   // Solve R X = I: each column of X is the solution for one unit vector
   // on the right-hand side, so X is R^-1. Keep OpenBLAS at one thread
   // for both the solve and the product checking R X = I. A wrong inverse
