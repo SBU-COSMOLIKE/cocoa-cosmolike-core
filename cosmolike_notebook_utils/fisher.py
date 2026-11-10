@@ -97,11 +97,16 @@ def get_ddv_dkit(dv, index=0, CV=None, AccuracyBoost=1.0,
                  min_samples=7, fallback_mode="poly_at_floor"):
     """Differentiate the data vector along one parameter with derivkit.
 
-    derivkit fits polynomials through adaptively chosen sample
-    points and differentiates the fit: numerical noise in the data
-    vector averages out over the fitted points instead of entering
-    the derivative at full strength, as it does through the fixed
-    step of a finite-difference stencil.
+    derivkit fits a polynomial of degree equal to the derivative
+    order (a straight line for a first derivative) through
+    adaptively chosen sample points and differentiates the fit:
+    numerical noise in the data vector averages out over the fitted
+    points instead of entering the derivative at full strength, as
+    it does through the fixed step of a finite-difference stencil.
+    Its inverse-distance weights pin the line to the center sample,
+    so the slope is the mean of the symmetric central differences;
+    points are pruned only when a relative residual exceeds the 5%
+    fit tolerance, which never happens on data vectors.
 
     Arguments:
       dv    = the data-vector function (see get_ddv).
