@@ -4738,13 +4738,13 @@ void IP::set_data(std::string datavector_filename)
 // inverse by exactly alpha only when kk has no cross-covariance with
 // the other probes.
 //
-// Stages after assembly: a Cholesky test of the correlation matrix (a
-// matrix that is not positive definite is critical() + exit(1)), the
-// inverse by solve(R, I), an inverse residual check in correlation
-// units, re-masking of the inverse (masked
-// rows/columns zeroed, diagonal included, so they cannot leak into chi2),
-// then compaction of covariance and inverse into the ndata_sqzd_ square
-// matrices. Sets is_inv_cov_set_.
+// Stages after assembly: compaction of the covariance into the
+// ndata_sqzd_ square matrix of the kept entries, a Cholesky test of its
+// correlation matrix (a matrix that is not positive definite is
+// critical() + exit(1)), the inverse by solve(R, I), an inverse residual
+// check in correlation units, then expansion of the inverse to full
+// length with every masked row and column zero (diagonal included, so a
+// masked entry cannot leak into chi2). Sets is_inv_cov_set_.
 //
 // Parameters:
 //   cov_filename - covariance file in one of the accepted column layouts
@@ -4845,6 +4845,35 @@ void IP::set_inv_cov(std::string cov_filename)
     }
   }
 
+  // --- squeeze: the covariance of the kept entries ---
+  // A masked entry keeps only its variance (its off-diagonal terms were
+  // zeroed above), so the masked matrix splits into two independent
+  // blocks: the kept entries, and a diagonal of masked variances. Its
+  // inverse splits the same way, and the masked part of the inverse is
+  // zero in any case, since a masked entry never enters chi2.
+  //
+  // So only the kept block is inverted. With a fraction f of the entries
+  // kept, that costs f^3 of a full inversion (f = 0.6 makes it about 4.5
+  // times cheaper). IPCluster::set_inv_cov inverts the same block.
+  #pragma omp parallel for collapse(2) schedule(static)
+  for(int i=0; i<this->ndata_; i++)
+  {
+    for(int j=0; j<this->ndata_; j++)
+    {
+      if((this->mask_(i)>0.99) && (this->mask_(j)>0.99)) {
+        if(this->get_index_sqzd(i) < 0) [[unlikely]] {
+          critical("{}: {} mask operation", fname, errleii); exit(1);
+        }
+        if(this->get_index_sqzd(j) < 0) [[unlikely]] {
+          critical("{}: {} mask operation", fname, errleii); exit(1);
+        }
+        const int idxa = this->get_index_sqzd(i);
+        const int idxb = this->get_index_sqzd(j);
+        this->cov_masked_sqzd_(idxa,idxb) = this->cov_masked_(i,j);
+      }
+    }
+  }
+
   // Ask OpenBLAS for one thread (a pthreads build keeps it; an OpenMP
   // build follows omp_get_max_threads() at its next call, see
   // set_blas_single_threaded), then hold the dense algebra itself on one
@@ -4867,10 +4896,10 @@ void IP::set_inv_cov(std::string cov_filename)
   set_blas_single_threaded();
   {
   [[maybe_unused]] const ScopedSerialAlgebra serial_algebra;
-  for (int i=0; i<this->ndata_; i++) {
-    if (!(this->cov_masked_(i,i) > 0.0)) [[unlikely]] {
-      critical("{}: non-positive variance {} at entry {}",
-        fname, this->cov_masked_(i,i), i);
+  for (int a=0; a<this->ndata_sqzd_; a++) {
+    if (!(this->cov_masked_sqzd_(a,a) > 0.0)) [[unlikely]] {
+      critical("{}: non-positive variance {} at kept (squeezed) entry {}",
+        fname, this->cov_masked_sqzd_(a,a), a);
       exit(1);
     }
   }
@@ -4887,9 +4916,9 @@ void IP::set_inv_cov(std::string cov_filename)
   // decomposition would give the same answer at several times the cost.
   // L itself is not used, and it is as large as R, so it is released at
   // once. The inverse below still comes from solve(R, I).
-  const vector sigma = arma::sqrt(this->cov_masked_.diag());
+  const vector sigma = arma::sqrt(this->cov_masked_sqzd_.diag());
   const matrix sigma_pair = sigma*sigma.t();
-  const matrix corr = this->cov_masked_/sigma_pair;
+  const matrix corr = this->cov_masked_sqzd_/sigma_pair;
   matrix chol_factor;
   if (!arma::chol(chol_factor, corr, "lower")) [[unlikely]] {
     critical("{}: masked correlation matrix not positive definite",
@@ -4901,7 +4930,8 @@ void IP::set_inv_cov(std::string cov_filename)
   // Solve R X = I: each column of X is the solution for one unit
   // vector on the right-hand side, so X is R^-1. A wrong inverse would
   // change every chi2; stop here if the residual exceeds tolerance.
-  const matrix ident = arma::eye<matrix>(this->ndata_, this->ndata_);
+  const matrix ident =
+      arma::eye<matrix>(this->ndata_sqzd_, this->ndata_sqzd_);
   matrix inv_corr;
   if (!arma::solve(inv_corr, corr, ident)) [[unlikely]] {
     critical("{}: inversion of the masked correlation matrix failed",
@@ -4914,37 +4944,35 @@ void IP::set_inv_cov(std::string cov_filename)
       "(max |R R^-1 - I| = {})", fname, residual);
     exit(1);
   }
-  this->inv_cov_masked_ = inv_corr/sigma_pair;
+  this->inv_cov_masked_sqzd_ = inv_corr/sigma_pair;
   }
 
-  // apply mask again to make sure numerical errors in matrix inversion don't 
-  // cause problems. Also, set diagonal elements corresponding to datavector
-  // elements outside mask to 0, so that they don't contribute to chi2
+  // solve(R, I) is symmetric only to round-off. Copying the lower
+  // triangle into the upper one makes (a,b) and (b,a) the same double.
+  // Iteration a writes the above-diagonal part of column a and reads
+  // the below-diagonal part of row a, so no entry is both read and
+  // written and the iterations run in parallel safely.
   #pragma omp parallel for schedule(static)
-  for (int i=0; i<this->ndata_; i++) {
-    this->inv_cov_masked_(i,i) *= this->get_mask(i)*this->get_mask(i);
-    for (int j=0; j<i; j++) {
-      this->inv_cov_masked_(i,j) *= this->get_mask(i)*this->get_mask(j);
-      this->inv_cov_masked_(j,i) = this->inv_cov_masked_(i,j);
+  for (int a=0; a<this->ndata_sqzd_; a++) {
+    for (int b=0; b<a; b++) {
+      this->inv_cov_masked_sqzd_(b,a) = this->inv_cov_masked_sqzd_(a,b);
     }
-  };
-  
+  }
+
+  // --- expand: the full-length inverse ---
+  // The kept rows and columns come from the squeezed inverse; every
+  // masked row and column, diagonal included, stays zero, so a masked
+  // entry cannot leak into chi2.
+  this->inv_cov_masked_.zeros(this->ndata_, this->ndata_);
   #pragma omp parallel for collapse(2) schedule(static)
   for(int i=0; i<this->ndata_; i++)
   {
     for(int j=0; j<this->ndata_; j++)
     {
       if((this->mask_(i)>0.99) && (this->mask_(j)>0.99)) {
-        if(this->get_index_sqzd(i) < 0) [[unlikely]] {
-          critical("{}: {} mask operation", fname, errleii); exit(1);
-        }
-        if(this->get_index_sqzd(j) < 0) [[unlikely]] {
-          critical("{}: {} mask operation", fname, errleii); exit(1);
-        }
         const int idxa = this->get_index_sqzd(i);
         const int idxb = this->get_index_sqzd(j);
-        this->cov_masked_sqzd_(idxa,idxb) = this->cov_masked_(i,j);
-        this->inv_cov_masked_sqzd_(idxa,idxb) = this->inv_cov_masked_(i,j);
+        this->inv_cov_masked_(i,j) = this->inv_cov_masked_sqzd_(idxa,idxb);
       }
     }
   }
