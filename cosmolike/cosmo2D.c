@@ -13093,9 +13093,25 @@ void unset_gg_kwindow(void)
 // This is the same panel reasoning create_cosmo_nodes_lens applies to
 // the magnification foreground.
 //
-// Magnification is not supported for pairs (the thin-bin projects run
-// bmag = 0); a nonzero bmag on either bin is fatal rather than silently
-// mis-integrated.
+// Magnification. The edges above are the padded n(z) supports
+// (amax_lens_nz, the near edge a bin has without magnification), so
+// the panels of the density terms never depend on b_mag.
+//
+// Two of the magnification terms already live on these panels: each
+// bin's density against the other bin's magnification kernel W_mag is
+// cut off by the density factor, so it sits on that bin's own n(z)
+// support. Only magnification x magnification reaches further: both
+// W_mag cover the whole foreground in front of the nearer bin.
+//
+// So when both bins have b_mag != 0, one more panel covers that
+// foreground: from the near edge of the nearer bin's support to
+// amax_lens, which for a magnified bin is the source-sample edge.
+// When either bin has b_mag = 0 the term vanishes, and no panel is
+// added.
+//
+// With b_mag = 0 on both bins the edges equal amax_lens(ni) and
+// amax_lens(nj) double for double (the comment of amax_lens_nz), so
+// the nodes are bitwise those of the build without magnification.
 //
 // Thread safety: call outside parallel regions (lazy chi/growth init).
 //
@@ -13112,15 +13128,9 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
     const gsl_integration_glfixed_table* w  // rule per panel
   )
 {
-  if (gbmag(0.0, ni) != 0 || gbmag(0.0, nj) != 0) {
-    log_fatal("gg cross pair (%d, %d): magnification is not supported "
-              "on cross spectra (set bmag = 0)", ni, nj);
-    exit(1);
-  }
-
   // --- 1. the panel edges: every distinct support bound, sorted ---
-  double edge[4] = {amin_lens(ni), amax_lens(ni),
-                    amin_lens(nj), amax_lens(nj)};
+  double edge[4] = {amin_lens(ni), amax_lens_nz(ni),
+                    amin_lens(nj), amax_lens_nz(nj)};
   for (int pass=0; pass<3; pass++) {       // tiny fixed-size sort
     for (int m=0; m<3-pass; m++) {
       if (edge[m] > edge[m+1]) {
@@ -13132,12 +13142,27 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
   }
 
   int npanel = 0;
-  double panel_lower[3];
-  double panel_upper[3];
+  double panel_lower[4];                   // up to 3 support panels plus
+  double panel_upper[4];                   // the foreground panel below
   for (int m=0; m<3; m++) {
     if (edge[m+1] > edge[m]) {             // skip zero-width panels
       panel_lower[npanel] = edge[m];
       panel_upper[npanel] = edge[m+1];
+      npanel++;
+    }
+  }
+
+  // the foreground panel of the magnification x magnification term:
+  // edge[3] is the support edge nearest the observer (largest a), and
+  // amax_lens of a magnified bin is the source-sample edge in front of it
+  const int both_magnified = (gbmag(0.0, ni) != 0 && gbmag(0.0, nj) != 0);
+  if (both_magnified) {
+    const double a_front = amax_lens(ni);  // = amax_lens(nj) here
+    // a source sample starting behind every support edge leaves no
+    // foreground, and no panel is added
+    if (a_front > edge[3]) {
+      panel_lower[npanel] = edge[3];
+      panel_upper[npanel] = a_front;
       npanel++;
     }
   }
@@ -13186,10 +13211,27 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //      C_l^(ij) = integral da (dchi/da) / fK^2
 //                 * K_i(l, a) * K_j(l, a) * P(k, a),
 //      k = (l + 1/2)/fK,
-//      K_b(l, a) = W_gal(a, b)*b1_b(z) + W_RSD(l + 1/2, a; b).
+//      K_b(l, a) = W_gal(a, b)*b1_b(z) + W_RSD(l + 1/2, a; b)
+//                  + W_mag(a, b)*ep_l*b_mag,b.
 //
 //    For the auto spectrum (i = j) this square is what
 //    C_gg_tomo_limber_work sums; here the two factors differ.
+//
+//    The last row is lensing magnification: lensing by the matter in
+//    front of bin b changes its observed counts by b_mag,b times the
+//    convergence, and W_mag is the convergence kernel of bin b's
+//    galaxies. ep_l = l(l+1)/(l+1/2)^2 is the exact multipole factor of
+//    the convergence, the same factor the auto work applies.
+//
+//    The product K_i K_j then holds every pair of rows. The largest
+//    magnification term is the density of the nearer bin against the
+//    magnification of the farther one: the two density kernels need
+//    not overlap at all, because the farther bin's W_mag covers the
+//    whole foreground.
+//
+//    With b_mag = 0 on every bin of the pair list the magnification
+//    row is never formed (the flag mag below), and every output is
+//    the build without it, bit for bit.
 //
 // 2. The linear-term output replaces P(k, a) by the separable model
 //    (D(a)/D(a_piv))^2 P_lin(k, a_piv), the same growth factor on
@@ -13263,7 +13305,9 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //   (k^2/2) [alpha_2,j K_i W_RSD,j + alpha_2,i W_RSD,i K_j] * PL,
 //
 // with PL = P_lin(k, a) in the full output and the separable linear
-// spectrum in the linear one; the DD outputs never carry it.
+// spectrum in the linear one; the DD outputs never carry it. Here K is
+// the linear kernel W_gal*b1 + W_RSD without the magnification row, as
+// in the auto work and in the FFTLog counterterm (F0 + R).
 //
 // Parameters:
 //   cn_all        - quadrature nodes per pair [gg_cross_npairs]
@@ -13319,6 +13363,19 @@ static void C_gg_cross_tomo_limber_work(
     alpha2 = has_alpha2_galaxies();
   }
 
+  // the magnification row is formed when any bin of the pair list has
+  // b_mag != 0; it then exists for every pair (a bin with b_mag = 0
+  // contributes a zero row), and only the full and linear outputs
+  // carry it - the DD outputs are the density rows alone
+  int mag = 0;
+  if (NULL != table || NULL != table_lin) {
+    for (int n=0; n<npairs; n++) {
+      if (gbmag(0.0, gg_cross_i[n]) != 0 || gbmag(0.0, gg_cross_j[n]) != 0) {
+        mag = 1;
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Warm up every lazily initialized table single-threaded, before the
   // parallel regions below touch them (the auto work's prelude).
@@ -13335,6 +13392,13 @@ static void C_gg_cross_tomo_limber_work(
       (void) p_lin(ell/fK, a);
     }
     (void) gb1(0.1, 0);
+    if (1 == mag) {
+      // g_lens builds the efficiency table of every lens bin on its
+      // first call, so one call here keeps that build out of the
+      // parallel region
+      (void) W_mag(a, fK, gg_cross_i[0]);
+      (void) gbmag(0.1, 0);
+    }
     if (1 == rsd) {
       (void) chi(limits.a_min);
       (void) a_chi(0.9);
@@ -13373,7 +13437,8 @@ static void C_gg_cross_tomo_limber_work(
   // power spectrum and the separable linear spectrum are
   // side-independent.
   //
-  //   WB[2][side][pair][node]        W_gal, b1
+  //   WB[2 or 4][side][pair][node]   W_gal, b1; with the magnification
+  //                                  row also W_mag, b_mag (rows 2, 3)
   //   WO[4][side][pair][node]        b2, bs2, b3, bK   (one-loop only)
   //   KG[side][pair][ell][node]      W_RSD (zero when rsd = 0)
   //   KP[pair][ell][node]            P_delta(k, a)
@@ -13387,7 +13452,8 @@ static void C_gg_cross_tomo_limber_work(
   // per (pair, multipole, node), the same count a table would cost,
   // and the memory stays that of the linear model.
   // -------------------------------------------------------------------------
-  double**** WB = (double****) malloc4d(2, 2, npairs, npts_max);
+  double**** WB = (double****) malloc4d((1 == mag) ? 4 : 2, 2, npairs,
+                                        npts_max);
   double**** WO = NULL;
   if (1 == nonlinear_bias) {
     WO = (double****) malloc4d(4, 2, npairs, npts_max);
@@ -13440,6 +13506,10 @@ static void C_gg_cross_tomo_limber_work(
         for (int side=0; side<2; side++) {
           WB[0][side][n][p] = W_gal(a, bins[side], hoh0);
           WB[1][side][n][p] = gb1(z, bins[side]);
+          if (1 == mag) {
+            WB[2][side][n][p] = W_mag(a, cn->data[CN_FK][p], bins[side]);
+            WB[3][side][n][p] = gbmag(z, bins[side]);
+          }
           if (1 == nonlinear_bias) {
             WO[0][side][n][p] = gb2(z, bins[side]);
             WO[1][side][n][p] = gbs2(z, bins[side]);
@@ -13515,6 +13585,10 @@ static void C_gg_cross_tomo_limber_work(
       for (int i=0; i<nell; i++) {
         const cosmo_nodes* cn = &cn_all[n];
         const double ell = lx[i] + 0.5; // Limber: k = (l + 1/2)/fK
+        // the multipole factor of the convergence, l(l+1)/(l+1/2)^2:
+        // the angular Laplacian's l(l+1) over the Limber (l+1/2)^2,
+        // built per ell as the auto work's callers build it
+        const double ep = lx[i]*(lx[i] + 1.)/(ell*ell);
         // the four requested integrals of this (pair, multipole); an
         // output passed as NULL is never accumulated or stored
         double sum    = 0.0; // full kernels     x nonlinear P_delta
@@ -13554,6 +13628,14 @@ static void C_gg_cross_tomo_limber_work(
           // such kernel, a pair multiplies two different ones
           const double K_i = dd_i + rsd_i;
           const double K_j = dd_j + rsd_j;
+          // each side's magnification row W_mag*ep*b_mag (WB rows 2 and
+          // 3), added to its kernel for the full and linear sums only.
+          // With mag = 0 the kernels stay K_i, K_j as they were, so the
+          // sums below are the build without magnification bit for bit.
+          const double KM_i = (1 == mag) ?
+            K_i + WB[2][0][n][p]*ep*WB[3][0][n][p] : K_i;
+          const double KM_j = (1 == mag) ?
+            K_j + WB[2][1][n][p]*ep*WB[3][1][n][p] : K_j;
           // the redshift-space counterterm (has_alpha2_galaxies): each
           // bin's RSD kernel against the other bin's linear kernel
           // K = W_gal*b1 + W_RSD, half from each side, times k^2
@@ -13575,10 +13657,10 @@ static void C_gg_cross_tomo_limber_work(
           // summation order for its high-l cancellation to hold
           if (0 == nonlinear_bias) {
             if (NULL != table) {
-              sum    += wt*maskp*K_i*K_j*KP[n][i][p];
+              sum    += wt*maskp*KM_i*KM_j*KP[n][i][p];
             }
             if (NULL != table_lin) {
-              sumlin += wt*maskp*K_i*K_j*KL[n][i][p];
+              sumlin += wt*maskp*KM_i*KM_j*KL[n][i][p];
             }
             if (NULL != table_dd) {
               sumdd  += wt*maskp*dd_i*dd_j*KP[n][i][p];
@@ -13642,10 +13724,14 @@ static void C_gg_cross_tomo_limber_work(
                   0.25*(b2i*bsj + bsi*b2j)*d2s2 + 0.25*bsi*bsj*s2s2 +
                   0.5*(b1i*b3j + b3i*b1j)*d1p3) +
               (b1i*bkj + bki*b1j)*k*k*PK;
-            sum += wt*maskp*(K_i*K_j*PK + wg_i*wg_j*loop_ij);
+            // magnification enters through KM_i KM_j P_delta alone: the
+            // loop terms are density correlators, so crossing them with
+            // the lensing row would be beyond one loop (the auto work's
+            // tree-level magnification convention)
+            sum += wt*maskp*(KM_i*KM_j*PK + wg_i*wg_j*loop_ij);
           }
           if (NULL != table_lin) {
-            sumlin += wt*maskp*K_i*K_j*KL[n][i][p];
+            sumlin += wt*maskp*KM_i*KM_j*KL[n][i][p];
           }
           if (NULL != table_dd) {
             // each bin's own P_g, term by term the spectrum the low-rank
