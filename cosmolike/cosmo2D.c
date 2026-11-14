@@ -11773,6 +11773,8 @@ void cfftlog_ells_p2_lowrank(
 // ---------------------------------------------------------------------------
 // the cross-pair quadrature and Limber batch live in the cross-bin
 // section further down this file; the core above them needs both
+static const gsl_integration_glfixed_table* gg_pair_glrule(void);
+
 static cosmo_nodes create_cosmo_nodes_lens_pair(
     const int ni,                           // first lens bin
     const int nj,                           // second lens bin
@@ -12102,13 +12104,9 @@ static double** C_cl_tomo_lowrank_core(
   // combination stops cancelling at high l (the same consistency rule
   // the auto terms obey per bin).
   if (npairs > 0) {
-    const size_t nsize_integration = 128 + 64*Ntable.high_def_integration;
-    gsl_integration_glfixed_table* w =
-        gsl_integration_glfixed_table_alloc(nsize_integration);
-    if (NULL == w) {
-      log_fatal("GSL rule allocation failed");
-      exit(1);
-    }
+    // the pair panels' Gauss-Legendre rule (gg_pair_glrule: cached,
+    // owned there, never freed here)
+    const gsl_integration_glfixed_table* w = gg_pair_glrule();
     cosmo_nodes* cnx = (cosmo_nodes*) malloc(sizeof(cosmo_nodes)*npairs);
     if (NULL == cnx) {
       log_fatal("array allocation failed");
@@ -12136,7 +12134,6 @@ static double** C_cl_tomo_lowrank_core(
       free_cosmo_nodes(&cnx[n]);
     }
     free(cnx);
-    gsl_integration_glfixed_table_free(w);
   }
 
   // The decomposition of sqrt(P_g) per lens bin: after the Limber
@@ -13083,6 +13080,43 @@ void unset_gg_kwindow(void)
   gg_kwin.nonce++;
 }
 
+// The Gauss-Legendre rule of every pair panel, shared by the three pair
+// integrals: the pair Limber batch, its FKEM twin and the low-rank core.
+//
+// The auto batches double their rule with each level of
+// integration_accuracy (128, 256, 512, ...). The pair rule grows by 64
+// nodes per level instead (128, 192, 256, ...). A pair's line of sight
+// is already cut into panels at the edges of the two n(z) supports
+// (create_cosmo_nodes_lens_pair), so each rule integrates one short,
+// smooth stretch, and the narrow overlap of two thin bins has a panel of
+// its own rather than needing more nodes.
+//
+// A unit test of the pair quadrature sweeps this ladder against a
+// converged reference on thin- and wide-bin layouts; the default level
+// keeps the pair spectra far inside the accuracy an MCMC needs, and a
+// Fisher run raises integration_accuracy.
+//
+// As in every other ladder, only the magnitude of the level is read.
+// The rule is rebuilt when Ntable.random changes (init_accuracy_boost
+// bumps it whenever an accuracy knob moves, integration_accuracy
+// included). The lazy static rebuild is not synchronized, so call this
+// outside parallel regions, like the other cached rules of this file;
+// the caller must not free the returned table.
+static const gsl_integration_glfixed_table* gg_pair_glrule(void)
+{
+  static gsl_integration_glfixed_table* w = NULL;
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
+    const int hdi = abs(Ntable.high_def_integration);
+    // capped at 8192 nodes like every other ladder (reached at level 126)
+    const size_t nsize_integration = (hdi < 126) ? 128 + 64*hdi : 8192;
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(nsize_integration);
+    cache[0] = Ntable.random;
+  }
+  return w;
+}
+
 // ---------------------------------------------------------------------------
 // Gauss-Legendre nodes of the pair (ni, nj) Limber integrals.
 //
@@ -13832,13 +13866,9 @@ static void C_gg_cross_tomo_limber_nointerp_ells(
   )
 {
   const int npairs = gg_cross_npairs;
-  const size_t nsize_integration = 128 + 64*Ntable.high_def_integration;
-  gsl_integration_glfixed_table* w =
-      gsl_integration_glfixed_table_alloc(nsize_integration);
-  if (NULL == w) {
-    log_fatal("GSL rule allocation failed");
-    exit(1);
-  }
+  // the pair panels' Gauss-Legendre rule (gg_pair_glrule: cached,
+  // owned there, never freed here)
+  const gsl_integration_glfixed_table* w = gg_pair_glrule();
 
   cosmo_nodes* cn_all =
       (cosmo_nodes*) malloc(sizeof(cosmo_nodes)*npairs);
@@ -13858,7 +13888,6 @@ static void C_gg_cross_tomo_limber_nointerp_ells(
     free_cosmo_nodes(&cn_all[n]);
   }
   free(cn_all);
-  gsl_integration_glfixed_table_free(w);
 }
 
 // ============================================================================
@@ -14065,13 +14094,9 @@ static double** C_cl_tomo_fkem_pairs_core(
     free((void*) tlin);
   }
   {
-    const size_t nsize_integration = 128 + 64*Ntable.high_def_integration;
-    gsl_integration_glfixed_table* w =
-        gsl_integration_glfixed_table_alloc(nsize_integration);
-    if (NULL == w) {
-      log_fatal("GSL rule allocation failed");
-      exit(1);
-    }
+    // the pair panels' Gauss-Legendre rule (gg_pair_glrule: cached,
+    // owned there, never freed here)
+    const gsl_integration_glfixed_table* w = gg_pair_glrule();
     cosmo_nodes* cnx = (cosmo_nodes*) malloc(sizeof(cosmo_nodes)*npairs);
     if (NULL == cnx) {
       log_fatal("array allocation failed");
@@ -14094,7 +14119,6 @@ static double** C_cl_tomo_fkem_pairs_core(
       free_cosmo_nodes(&cnx[n]);
     }
     free(cnx);
-    gsl_integration_glfixed_table_free(w);
   }
 
   // The radial kernels of C_cl_tomo_core (its header defines the three
