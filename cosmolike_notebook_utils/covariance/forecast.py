@@ -46,19 +46,20 @@ def gaussian_model(gaussian, nsource):
             Limber.
         nsource = number of source bins.
     Returns:
-        A new mapping with nonlimber, ia and explicit per-bin amplitude
-        lists A1, A2 and B_TA. The supplied mapping is not modified.
+        A new mapping with nonlimber, rsd, ia and explicit per-bin
+        amplitude lists A1, A2 and B_TA. The supplied mapping is not
+        modified.
     Raises:
         ValueError for an unknown key, a non-boolean nonlimber or rsd,
         another IA model, nonfinite amplitudes or a wrong amplitude
         count, nonzero amplitudes with ia=none, or nonzero A2/B_TA with
         NLA.
     """
-    # --- 1. THE SUPPLIED MAPPING: ONLY THE FIVE KNOWN KEYS ---
+    # --- 1. THE SUPPLIED MAPPING: ONLY THE SIX KNOWN KEYS ---
 
     # dict(gaussian) copies the caller's mapping, so nothing below writes
     # into it; gaussian=None selects every default. set(choices)-allowed is
-    # the set of supplied keys outside the five allowed ones, so a misspelled
+    # the set of supplied keys outside the six allowed ones, so a misspelled
     # key such as nonLimber or a1 raises instead of being ignored.
     choices = {} if gaussian is None else dict(gaussian)
     allowed = {"nonlimber", "rsd", "ia", "A1", "A2", "B_TA"}
@@ -66,11 +67,12 @@ def gaussian_model(gaussian, nsource):
     if unknown:
         raise ValueError(f"unknown Gaussian model choices: {sorted(unknown)}")
 
-    # --- 2. THE TWO SWITCHES: NON-LIMBER SPECTRA AND THE IA MODEL ---
+    # --- 2. THE THREE SWITCHES: NON-LIMBER, LENS RSD AND THE IA MODEL ---
 
     # choices.get(key, default) returns the default when the key is absent:
-    # non-Limber spectra on, no IA. isinstance(nonlimber, bool) accepts only
-    # True and False, so an integer such as nonlimber: 1 in a YAML file raises.
+    # non-Limber spectra on, no RSD, no IA. isinstance(nonlimber, bool) accepts
+    # only True and False, so an integer such as nonlimber: 1 in a YAML file
+    # raises.
     nonlimber = choices.get("nonlimber", True)
     rsd = choices.get("rsd", False)
     model = choices.get("ia", "none")

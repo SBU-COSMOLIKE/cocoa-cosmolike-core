@@ -342,7 +342,7 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
     configuration that samples no linear bias (cosmic shear) draws the
     Omega_m panel only.
 
-    Models that held Omega_m, As and the biases at the fiducial (the
+    Models that held Omega_m, A_s and the biases at the fiducial (the
     odd models of a run with a hold list) are drawn as black-edged
     diamonds: they stack at Omega_m = fiducial and amplitude ratio 1,
     and the height of the stack is the error the other parameters

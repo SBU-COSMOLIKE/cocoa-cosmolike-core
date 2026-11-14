@@ -1,4 +1,4 @@
-# Eq. 11 scale cuts of the Fourier C_gg: the IR/UV split
+# UV-fraction scale cuts of the Fourier C_gg: the IR/UV split
 
 Design and validation record of the physical scale cuts of
 arXiv:2603.13031 (following DeRose et al. 2025) for the Fourier

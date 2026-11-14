@@ -60,8 +60,8 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
     snapshot = None
 
     # The keyword is passed only when the one-loop terms are requested, so
-    # a project library compiled before the option existed still serves
-    # the linear-bias calls. **options adds no argument when it is empty.
+    # a project library whose covariance binding lacks the keyword still
+    # serves linear-bias calls. **options adds no argument when it is empty.
     options = {}
     if include_oneloop:
         options["include_oneloop"] = True

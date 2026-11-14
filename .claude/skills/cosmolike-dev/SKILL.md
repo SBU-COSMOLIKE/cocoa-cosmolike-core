@@ -44,6 +44,18 @@ high-l cancellation they protect, the cache and stash guards, the
 rejected pre-transform prototype, and the measured validation and
 remaining limits.
 
+Before changing the thin-bin galaxy-clustering machinery of
+`cosmo2D.c` — the low-rank non-Limber gg engine (the per-bin SVD of
+sqrt(P_g), `C_cl_tomo_lowrank`), the gg cross-bin pairs (the pair
+list, the pair Limber batch with one-loop bias, alpha_2 and
+magnification, the FKEM pair twin), the correction stash between the
+Fourier entry points, or their setters and bindings
+(`init_lowrank_nonlimber_gg`, `init_gg_cross_pairs`,
+`init_lmax_nonlimber`) — read
+`references/lowrank_gg_cross_pairs.md`: the method, the DD-output
+contract the splice depends on, the block memory design, the caches,
+nonces and resets, the thread-safety rules, and the remaining limits.
+
 Before changing or explaining the growth factor (growfac, f_growth, the
 G_growth table the likelihoods build), the IA amplitudes (1/D, 1/D^2), the
 one-loop D^4 factors or sigma(M, z) = D sigma(M, 0), read

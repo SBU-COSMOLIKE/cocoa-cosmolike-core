@@ -129,7 +129,7 @@ a quantity, then read its function comment for assumptions and units.
 | [cosmo3D.c](cosmo3D.c), [header](cosmo3D.h) | Read linear/nonlinear power, cb power, distances and growth. Build the FFTLog mass-variance tables and their logarithmic mass slopes. |
 | [redshift_spline.c](redshift_spline.c), [header](redshift_spline.h) | Interpolate lens/source redshift distributions, apply photo-z changes, integrate lensing efficiencies and map the retained redshift-bin pairs. |
 | [radial_weights.c](radial_weights.c), [header](radial_weights.h) | Form the density, source, lensing, magnification and redshift-space-distortion weights used in angular projections. |
-| [cosmo2D.c](cosmo2D.c), [header](cosmo2D.h) | Integrate angular spectra, implement galaxy non-Limber corrections and transform spectra into real-space bin averages. It also contains the CMB-lensing spectra and beam/pixel factors. |
+| [cosmo2D.c](cosmo2D.c), [header](cosmo2D.h) | Integrate angular spectra, implement galaxy non-Limber corrections and transform spectra into real-space bin averages. It also contains the CMB-lensing spectra, beam/pixel factors and the [thin-bin clustering extensions](#thin_bins): cross-bin galaxy pair spectra and the low-rank non-Limber engine. |
 
 Each likelihood YAML can select the source/lens histogram reconstruction
 with `photoz_histogram_akima`:
@@ -241,7 +241,7 @@ positions. Their weights and inclusion depend on the observable and model.
 
 | Source and header | Responsibility |
 | --- | --- |
-| [bias.c](bias.c), [header](bias.h) | Evaluate galaxy-bias coefficients and their redshift dependence. These specify how the galaxy field responds to the underlying matter field. |
+| [bias.c](bias.c), [header](bias.h) | Evaluate galaxy-bias coefficients and their redshift dependence, including the redshift-space counterterm $`\alpha_2`$ of the [thin-bin extensions](#thin_bins). These specify how the galaxy field responds to the underlying matter field. |
 | [IA.c](IA.c), [header](IA.h) | Evaluate intrinsic-alignment amplitudes and their bin or redshift dependence. The angular calculation combines these amplitudes with the required spectra. |
 | [pt_cfastpt.c](pt_cfastpt.c), [header](pt_cfastpt.h) | Build perturbative galaxy-bias and intrinsic-alignment tables through the [C FAST-PT engine](../cfastpt/). Upsample its results for repeated interpolation. |
 | [halo.c](halo.c), [header](halo.h) | Calculate halo abundance, bias, concentration, density profiles, halo occupation and the corresponding galaxy–matter, galaxy–galaxy and halo-alignment terms. |
@@ -338,6 +338,78 @@ criteria to notebooks: response-function tables for the shear
 observables, and the full/IR spectra, UV fractions and kept-band masks
 for clustering.
 
+## Galaxy clustering with thin lens bins <a name="thin_bins"></a>
+
+A spectroscopic lens sample can be split into many narrow redshift bins.
+Two features of the angular calculation exist for that regime, and both
+are off unless a project turns them on: a project that leaves them off
+computes exactly the prediction it computed before they existed.
+
+**Cross-bin pair spectra.** A photometric 3x2pt data vector keeps only
+the clustering auto spectra $`C_\ell^{g_ig_i}`$, because broad bins far
+apart in redshift share almost no structure. Thin bins do: adjacent
+bins overlap through their redshift tails, and bins of two different
+tracer samples can sit at the same redshift. The measured data vector
+then also contains cross-bin spectra $`C_\ell^{g_ig_j}`$ with
+$`i\neq j`$. A project installs its measured pair list through
+`init_gg_cross_pairs`, in the order of its data files, and the pair
+spectra become one block of the prediction. The pairs carry the same
+galaxy model as the autos: linear bias $`b_1`$, the one-loop quadratic
+and tidal biases $`b_2`$ and $`b_{s^2}`$ (in the normalization
+$`\delta_g=b_1\delta+\tfrac{b_2}{2}\delta^2+\tfrac{b_{s^2}}{2}s^2`$ of
+[Saito et al.](https://arxiv.org/abs/1405.1447)), magnification,
+redshift-space distortions and the counterterm below.
+
+**The redshift-space counterterm** $`\alpha_2`$ absorbs small-scale
+velocity physics that the linear redshift-space mapping misses, one
+value per lens bin. The observed overdensity gains a term quadratic in
+wavenumber,
+
+```math
+\delta_{g}=\left(b_1+f\mu^2\right)\delta
++\tfrac12\,f\,\mu^2\,\alpha_2\,k^2\,\delta ,
+```
+
+with $`f`$ the linear growth rate and $`\mu`$ the cosine between the
+wavevector and the line of sight, so the galaxy power spectrum adds
+$`(b_1+f\mu^2)\,f\,\alpha_2\,\mu^2 k^2 P_{\rm lin}`$. `bias.c` stores
+$`\alpha_2`$ per bin (in $`(\mathrm{Mpc}/h)^2`$ at the interface), and
+the angular projections carry the term wherever the redshift-space
+rows exist.
+
+**Non-Limber engines for thin bins.** The standard non-Limber split of
+[Fang et al.](https://arxiv.org/abs/1911.11947) (FKEM) projects a
+separable linear spectrum exactly and hands everything nonlinear to a
+Limber term. The Limber error shrinks with the width of the radial
+kernel, so for very thin bins that hand-off stays inaccurate well past
+the default switching multipole of 150. Two provisions address this:
+
+- The switching multipole is settable per likelihood (`lmax_nonlimber`),
+  and the FKEM path computes the installed cross pairs in the same
+  transform run as the autos.
+- The **low-rank engine** (likelihood keys `nonlimber_lowrank_gg`,
+  `nonlimber_lowrank_rank`, `nonlimber_lowrank_lmax`) removes the
+  Limber hand-off from the density–density term entirely. A singular
+  value decomposition writes the square root of the full one-loop
+  galaxy spectrum as a short sum of separable terms,
+
+  ```math
+  \sqrt{P_g(k,z)}\simeq\sum_{r=1}^{n_{\rm rank}}T_r(k)\,Z_r(z),
+  ```
+
+  each of which one FFTLog transform can project, and the spectrum at
+  two different redshifts is approximated by the geometric mean
+  $`P_g(k;z_1,z_2)\simeq\sqrt{P_g(k,z_1)\,P_g(k,z_2)}`$. The geometric
+  mean is exact at equal times; at unequal times it assumes the two
+  tracer fields are fully correlated, which is the method's physical
+  approximation and the reason it is off by default. Redshift-space
+  distortions and magnification keep the FKEM treatment: the velocity
+  field does not grow like the one-loop density, and the broad
+  magnification kernel is where Limber is accurate.
+
+Both engines refuse halo-occupation galaxies: the thin-bin machinery
+models perturbative galaxies only.
+
 ## Shared numerical support
 
 | Source and header | Responsibility |
@@ -350,6 +422,14 @@ Use the interface setters to change cosmology and nuisance parameters.
 Those setters update the state used to decide which cached calculations
 must be rebuilt. Changing a structure directly can leave a previously
 computed table associated with the wrong inputs.
+
+The fixed per-bin arrays of these structures hold `MAX_SIZE_ARRAYS`
+entries (20 by default, defined in [structs.h](structs.h)). A project
+whose tomography needs more bins — for example a spectroscopic sample
+split into many thin bins — raises the constant at compile time from
+its own `MakefileCosmolike` (`COMMON_FLAGS += -DMAX_SIZE_ARRAYS=80`).
+Each project compiles its own copy of these sources, so the setting
+never affects another project.
 
 # C++ production interfaces <a name="interfaces"></a>
 
@@ -687,7 +767,10 @@ new-array execution strategy explained above.
 It reads the same IA amplitudes and dense FAST-PT tables as the data-vector
 sector, but integrates every field cross pair on covariance-owned radial
 grids. The shared C Gaussian assembler handles the B-mode signs and noise.
-No additional cross-bin function is added to the data-vector C files.
+Covariance needs add no cross-bin function to the data-vector C files;
+the [gg cross-bin pair spectra](#thin_bins) of thin-bin analyses are
+part of the measured data vector, with their own covariance
+requirements, not a covariance-only calculation.
 
 Both production interfaces and Armadillo notebook wrappers call these C
 routines. Project YAMLs select Gaussian non-Limber and IA independently

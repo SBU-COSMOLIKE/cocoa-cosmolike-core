@@ -74,9 +74,12 @@ typedef simde__m128d v2d;
 //
 // The routine supports flat geometry, zero massive neutrinos, density,
 // magnification, linear/NLA alignment and, with include_rsd, the lens
-// redshift-distortion transfer (the j_l'' kernel). It returns ss as a
-// diagnostic too; callers choosing gg/gs corrections may leave their
-// shear-shear model Limber. SSC and cNG never call this routine.
+// redshift-distortion transfer (the j_l'' kernel): the linear term
+// f mu^2 delta of the redshift-space density alone, with no counterpart
+// of the core's alpha_2 counterterm (galpha2, bias.c).
+// It returns ss as a diagnostic too; callers choosing gg/gs corrections
+// may leave their shear-shear model Limber. SSC and cNG never call this
+// routine.
 //
 // Parameters:
 //   radial     - quadrature snapshot from radial_inputs_cov; supplies the
@@ -144,8 +147,9 @@ void nonlimber_spectra_cov(
   // with distortions - one distortion input per lens, appended after
   // the spin inputs; npair unordered field pairs, crosses included.
   const int nfield = radial->nlens+radial->nsource;
-  const int nspin = radial->nlens+nfield;
-  const int ncomponent = nspin+(include_rsd ? radial->nlens : 0);
+  const int nbase = radial->nlens+nfield; // density plus spin rows; any
+                                          // distortion rows come after
+  const int ncomponent = nbase+(include_rsd ? radial->nlens : 0);
   const int npair = nfield*(nfield+1)/2;
 
   // matched[p][l-2]: the Limber projection at l = 2..lmax of the same
@@ -160,7 +164,7 @@ void nonlimber_spectra_cov(
   // The same windows at chi_i = chi_min*exp(i*dlnchi), i = 0..nchi-1, up
   // to chi(amin); dlnchi is the step radial_logchi_cov used for them.
   // inputs[component][node] receives chi*W*D and powers[component] the
-  // kernel power, 0 (density) or 2 (spin).
+  // kernel selector: 0 (density), 2 (spin) or 3 (distortion).
   struct radial_cov* logarithmic = radial_logchi_cov(
       amin, chi_min, nchi, nwindow, include_ia);
   const double dlnchi = log(chi(amin)/chi_min)/intervals;
@@ -174,8 +178,11 @@ void nonlimber_spectra_cov(
   // call is a safeguard rather than a required initialization.
   (void) p_lin(1.0, 1.0);
   if (include_rsd) {
-    // The distortion inputs read these lazily built tables inside the
-    // parallel fill below; the first touch must be serial.
+    // The distortion fill below calls W_gal inside its parallel loop.
+    // W_gal's photo-z reader builds a lazy table on first use, so touch
+    // it once serially; radial_logchi_cov has already read it at every
+    // node, which makes this another safeguard, like p_lin above.
+    // growfac_all and hoverh0 keep no static state (cosmo3D.c).
     (void) growfac_all(0.9);
     (void) hoverh0(0.9);
     (void) W_gal(0.9, 0, hoverh0(0.9));
@@ -186,15 +193,16 @@ void nonlimber_spectra_cov(
   // source. Multiplying by chi converts dchi to FFTLog's dlnchi measure.
   // D(a) carries the time dependence of the separable field, so the k
   // integral later needs only the a=1 power. Component c < nlens is the
-  // density of lens c; component nlens+f is the spin input of field f.
-  // One iteration fills one component's radial input; components are
-  // independent.
+  // density of lens c; component nlens+f is the spin input of field f;
+  // with distortions, component nbase+c is the distortion input of
+  // lens c. One iteration fills one component's radial input;
+  // components are independent.
   #pragma omp parallel for schedule(static)
   for (int component=0; component<ncomponent; component++) {
     const int density = component < radial->nlens;
-    const int distortion = component >= nspin;
+    const int distortion = component >= nbase;
     const int field = density ? component
-        : (distortion ? component-nspin : component-radial->nlens);
+        : (distortion ? component-nbase : component-radial->nlens);
     powers[component] = density ? 0 : (distortion ? 3 : 2);
     for (int node=0; node<nchi; node++) {
       const double a = logarithmic->geometry[0][node];
@@ -334,12 +342,13 @@ void nonlimber_spectra_cov(
 
         // With distortions, a lens field also receives its j_l''
         // transfer, at unit weight: that kernel already carries every
-        // angular factor. Distortion rows sit after the spin rows
-        // (index nspin+field > nfield), so they are never overwritten
-        // before this read. Without distortions the statement is the
-        // two-part sum it always was.
+        // angular factor. This loop overwrites only rows 0..nfield-1,
+        // and every distortion row index nbase+field is at least
+        // nbase = nlens+nfield, so the row read here is still intact.
+        // Without distortions the statement is the two-part sum it
+        // always was.
         if (include_rsd && field < radial->nlens) {
-          const double* velocity = transfer[index][nspin+field];
+          const double* velocity = transfer[index][nbase+field];
           for (int node=0; node<nk; node++) {
             output[node] = output[node]+factor*spin[node]+velocity[node];
           }

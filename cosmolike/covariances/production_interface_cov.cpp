@@ -62,8 +62,9 @@ namespace cosmolike_interface {
 // linear-power tables set (nonlinear too unless linear); at least one
 // lens and one source bin; IA model NLA or TATT when include_ia; lmax 0
 // or >= 2, nchi=2^n+1 >= 65 and finite chi_min > 0. With lmax > 0 the
-// ell in [2,lmax] must be integers, with no RSD and massless neutrinos.
-// TATT spectra (include_ia with the TATT model) also require no RSD.
+// ell in [2,lmax] must be integers, with massless neutrinos; include_rsd
+// is supported there (the lens distortion transfer is corrected too).
+// TATT spectra (include_ia with the TATT model) require no RSD.
 // include_oneloop requires the nonlinear power (linear false): the loop
 // terms belong to the nonlinear galaxy spectrum.
 // Flat geometry is not checked here: radial_inputs_cov stops the process
@@ -113,7 +114,8 @@ static py::dict covariance_limber_spectra(
       || a_edges.ndim() != 1
       || a_edges.size() < 2) {
     critical("{}: covariance_limber_spectra needs 1D ell "
-      "and a_edges arrays, with at least one multipole and two scale-factor edges", "covariance_limber_spectra");
+      "and a_edges arrays, with at least one multipole and two "
+      "scale-factor edges", "covariance_limber_spectra");
     exit(1);
   }
   if (nwindow < 2) {
@@ -316,8 +318,10 @@ static py::dict covariance_limber_spectra(
         *spectra.mutable_data(node, first, second) = rows[pair][node];
         *spectra.mutable_data(node, second, first) = rows[pair][node];
         if (b_triangular != nullptr) {
-          *b_spectra.mutable_data(node, first, second) = b_triangular[pair][node];
-          *b_spectra.mutable_data(node, second, first) = b_triangular[pair][node];
+          *b_spectra.mutable_data(node, first, second) =
+              b_triangular[pair][node];
+          *b_spectra.mutable_data(node, second, first) =
+              b_triangular[pair][node];
         }
       }
       pair++;
@@ -393,14 +397,18 @@ Arguments:
     nquad: nodes per panel from 64,96,128,256,512,1024,2048,4096,8192.
     nwindow: uniform-a nodes for covariance-owned lensing efficiencies.
     include_ia: include the configured NLA or TATT Gaussian spectra.
-    include_rsd: use the same lens RSD window in every spectrum.
+    include_rsd: use the same lens RSD window in every spectrum: the
+        linear redshift-space (Kaiser) term, in which infall toward
+        overdensities shifts observed redshifts. The core's alpha_2 k^2
+        counterterm (galpha2, bias.c) is not part of these spectra.
     linear: use linear total-matter P instead of the current Pdelta mode.
     nonlimber_lmax: 0 keeps Limber; >=2 corrects all gg/gs pairs through
         that integer multipole. Shear-shear remains Limber.
     nonlimber_nchi: 2^n+1 log-distance samples, default 4097.
     nonlimber_chi_min: positive near distance in c/H0, default 1e-6.
         The far edge is a_edges[0]. Refine support and resolution separately.
-        Non-Limber currently requires massless neutrinos and no RSD.
+        Non-Limber currently requires massless neutrinos; with
+        include_rsd it also corrects the lens distortion transfer.
     include_oneloop: add the Limber one-loop galaxy-bias terms (b2, bs2;
         b3 and bK must be zero) to every pair with a lens field. Requires
         linear=False. The non-Limber correction stays linear.

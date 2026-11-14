@@ -253,7 +253,7 @@ alter SSC/cNG.
 
 The Gaussian contractions can use non-Limber clustering and galaxy–shear
 spectra, including crossed pairs absent from the measured data vector.
-`covariance_spectra(..., nonlimber_lmax=1000, include_rsd=False)` requests
+`covariance_spectra(..., nonlimber_lmax=1000)` requests
 this correction through the stated multipole; zero retains Limber.
 Both the production interface and the notebook wrapper call the same C
 calculation. Shear–shear spectra remain Limber.
@@ -266,8 +266,13 @@ power-spectrum anchor and set of catalog windows. This is the hybrid
 prescription of [Fang et al.](https://arxiv.org/abs/1911.11947).
 
 Density, magnification and the signed linear-alignment source contribution
-are retained. This entry requires flat geometry, massless neutrinos and
-zero RSD. The log-distance resolution, near boundary and multipole cutoff
+are retained. With `include_rsd=True`, each lens field also receives the
+exact redshift-space-distortion transfer: the plane-parallel velocity
+term projects through the second derivative of the spherical Bessel
+function, $`j_\ell''`$, instead of $`j_\ell`$, and the matched Limber
+subtraction carries the same distortion window, so the hybrid split
+stays consistent. This entry requires flat geometry and massless
+neutrinos. The log-distance resolution, near boundary and multipole cutoff
 need survey-specific refinement tests; the example cutoff above is not a
 convergence certificate. SSC and cNG retain their separate approximations.
 

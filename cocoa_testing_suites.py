@@ -80,16 +80,16 @@ def _masked_vector_fn(u, ci):
     of bounds when the loaded dataset holds Fourier band powers, so
     the Fourier twin must be read instead.
 
-    Arguments:
-      u  = the project's cocoa_test_utils module.
-      ci = the imported interface module.
-
     A Fourier project may append a gg-cross block after the three
     probe blocks; the plain Fourier getter leaves those entries
     zero, so the extended getter is the vector the likelihood
     scores. The choice is made at call time, because the cross-pair
     list is installed by the first model build, after this function
     is bound.
+
+    Arguments:
+      u  = the project's cocoa_test_utils module.
+      ci = the imported interface module.
 
     Returns:
       a zero-argument callable returning the masked theory vector.
@@ -439,6 +439,9 @@ def nmodels_vectors(u, example, points, high_accuracy):
         print(f"  model {index + 1}/{len(points)}: {label} vector "
               f"({time.time() - start:.1f} s)", flush=True)
     inv_cov = np.array(ci.get_inv_cov_masked(), dtype="float64")
+    # drop the reference before returning: the compiled interface
+    # holds one configuration at a time, and the caller may build the
+    # next model right after this call
     del model
     return np.array(vectors), inv_cov
 
@@ -504,6 +507,7 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
     project = os.path.basename(os.path.dirname(u.TESTS_DIR))
     if case is None:
         case = example
+    # test labels stay ASCII; the figure title may use the symbol
     label = (f"{project}, {case.replace('Delta z', 'Δz')}: "
              f"{len(points)} models, seed base {seed}")
     figures.random_models_triangle(
@@ -537,6 +541,7 @@ def accuracy_suite(u, name, checks, knob_scan=None):
                         name, each further key adds
                         test_a0_one_knob_at_a_time_<key>), or None
                         for a project without the scan.
+
     The N-random-models check (test_ax99_nmodels, one per example) is
     configured in the project's cocoa_test_utils, which
     generate_frozen_reference.py --nmodels also reads:
@@ -648,8 +653,10 @@ def accuracy_suite(u, name, checks, knob_scan=None):
         method = make_check(*row)
         setattr(TestAccuracy, method.__name__, method)
 
-    # the K scans: one method per bound example; a single key (a str)
-    # is the one-scan case every project used before tuples existed
+    # the K scans: one method per bound example. A single key (a str)
+    # builds the one scan most projects bind; a tuple builds one scan
+    # per listed example, and None builds none (tuple(None or ()) is
+    # the empty tuple).
     scans = ((knob_scan,) if isinstance(knob_scan, str)
              else tuple(knob_scan or ()))
 
@@ -685,175 +692,178 @@ def accuracy_suite(u, name, checks, knob_scan=None):
                            else f"test_a0_one_knob_at_a_time_{example}")
         setattr(TestAccuracy, method.__name__, method)
 
-    # one (example, label) pair is the single-check case every
+    # NMODELS_EXAMPLES is a tuple of (example key, display label)
+    # pairs; the generator copies each pair into a plain tuple, and a
+    # project without the constant yields no pairs and no check
     nmodels_pairs = tuple(tuple(pair) for pair
                           in getattr(u, "NMODELS_EXAMPLES", ()))
     nmodels_limit = getattr(u, "NMODELS_LIMIT", None)
 
     def make_nmodels(nm_example, nm_label):
         def test_ax99_nmodels(self):
-                """N-random-models check across the prior.
+            """N-random-models check across the prior.
 
-                The A-checks measure the numerical error of the default
-                settings at the one frozen fiducial point. This check
-                measures it at NMODELS_COUNT fixed points across the
-                prior. For each point
+            The A-checks measure the numerical error of the default
+            settings at the one frozen fiducial point. This check
+            measures it at NMODELS_COUNT fixed points across the
+            prior. For each point
 
-                    delta chi2 = (v_high - v_default)^T C^-1 (v_high - v_default),
+                delta chi2 = (v_high - v_default)^T C^-1 (v_high - v_default),
 
-                with v_high the stored vector at the pushed accuracy
-                settings (frozen/nmodels_<example>.npz, written once by
-                generate_frozen_reference.py --nmodels), v_default the
-                vector at the default settings, computed here, and C the
-                frozen covariance. Storing the expensive half keeps the
-                check to one model build and one evaluation per point.
+            with v_high the stored vector at the pushed accuracy
+            settings (frozen/nmodels_<example>.npz, written once by
+            generate_frozen_reference.py --nmodels), v_default the
+            vector at the default settings, computed here, and C the
+            frozen covariance. Storing the expensive half keeps the
+            check to one model build and one evaluation per point.
 
-                The points are fixed: model m draws with the seed
-                RANDOM_MODEL_SEED + m from the project's draw settings
-                (NMODELS_BOX, NMODELS_HOLD and NMODELS_AMPLITUDE_CUT in
-                cocoa_test_utils). The check redraws them and requires
-                the stored points and the fingerprint of the
-                high-accuracy configuration (nmodels_config_hash) to
-                match, so a changed prior, draw or configuration asks
-                for regenerated vectors instead of comparing the wrong
-                ones. Without a stored file the check is skipped with
-                that instruction.
+            The points are fixed: model m draws with the seed
+            RANDOM_MODEL_SEED + m from the project's draw settings
+            (NMODELS_BOX, NMODELS_HOLD and NMODELS_AMPLITUDE_CUT in
+            cocoa_test_utils). The check redraws them and requires
+            the stored points and the fingerprint of the
+            high-accuracy configuration (nmodels_config_hash) to
+            match, so a changed prior, draw or configuration asks
+            for regenerated vectors instead of comparing the wrong
+            ones. Without a stored file the check is skipped with
+            that instruction.
 
-                The deltas have to be finite; with NMODELS_LIMIT set,
-                each |delta| must also stay below it, otherwise the
-                check is advisory. Before the limit applies, the check
-                draws the Omega_m - clustering-amplitude triangle of the
-                points (cocoa_testing_figures.random_models_triangle)
-                into the folder COCOA_ACCURACY_NMODELS_FIGURES names, or
-                the system temporary folder. The ax99 in the method name
-                sorts this check after the A-checks (unittest runs
-                methods in name order).
-                """
-                import math
-                import numpy as np
+            The deltas have to be finite. With NMODELS_LIMIT set,
+            each |delta| must also stay below it; with the limit
+            None the check is advisory. Before the limit applies, the check
+            draws the Omega_m - clustering-amplitude triangle of the
+            points (cocoa_testing_figures.random_models_triangle)
+            into the folder COCOA_ACCURACY_NMODELS_FIGURES names, or
+            the system temporary folder. The ax99 in the method name
+            sorts this check after the A-checks (unittest runs
+            methods in name order).
+            """
+            import math
+            import numpy as np
 
-                path = nmodels_file(u, nm_example)
-                if not os.path.isfile(path):
-                    self.skipTest(
-                        f"no stored N-random-models vectors for "
-                        f"{nm_example} (frozen/{os.path.basename(path)}); "
-                        "generate them with generate_frozen_reference.py "
-                        "--nmodels")
-                # checked before the models run, which take minutes
-                figure_dir = _nmodels_figure_dir()
-                seed = u.RANDOM_MODEL_SEED
-                points, held = nmodels_draw(u, nm_example)
-                n_models = len(points)
-                print(f"\n  N-random-models check: {n_models} models, "
-                      f"{nm_label}, seed base {seed}", flush=True)
-                nmodels_box = getattr(u, "NMODELS_BOX", None)
-                nmodels_hold = getattr(u, "NMODELS_HOLD", None)
-                nmodels_cut = getattr(u, "NMODELS_AMPLITUDE_CUT", None)
-                if nmodels_box is not None:
-                    for box_name in nmodels_box:
-                        box_low, box_high = nmodels_box[box_name]
-                        print(f"  box override: {box_name} drawn in "
-                              f"[{box_low}, {box_high}]", flush=True)
-                if nmodels_cut is not None:
-                    print("  amplitude cut: (A_s/A_s,fid)(b_i/b_i,fid)^2 <= "
-                          f"{nmodels_cut:g} in every bin", flush=True)
-                if nmodels_hold is not None:
-                    print("  odd models hold at the fiducial: "
-                          f"{', '.join(nmodels_hold)}", flush=True)
+            path = nmodels_file(u, nm_example)
+            if not os.path.isfile(path):
+                self.skipTest(
+                    f"no stored N-random-models vectors for "
+                    f"{nm_example} (frozen/{os.path.basename(path)}); "
+                    "generate them with generate_frozen_reference.py "
+                    "--nmodels")
+            # checked before the models run, which take minutes
+            figure_dir = _nmodels_figure_dir()
+            seed = u.RANDOM_MODEL_SEED
+            points, held = nmodels_draw(u, nm_example)
+            n_models = len(points)
+            print(f"\n  N-random-models check: {n_models} models, "
+                  f"{nm_label}, seed base {seed}", flush=True)
+            nmodels_box = getattr(u, "NMODELS_BOX", None)
+            nmodels_hold = getattr(u, "NMODELS_HOLD", None)
+            nmodels_cut = getattr(u, "NMODELS_AMPLITUDE_CUT", None)
+            if nmodels_box is not None:
+                for box_name in nmodels_box:
+                    box_low, box_high = nmodels_box[box_name]
+                    print(f"  box override: {box_name} drawn in "
+                          f"[{box_low}, {box_high}]", flush=True)
+            if nmodels_cut is not None:
+                print("  amplitude cut: (A_s/A_s,fid)(b_i/b_i,fid)^2 <= "
+                      f"{nmodels_cut:g} in every bin", flush=True)
+            if nmodels_hold is not None:
+                print("  odd models hold at the fiducial: "
+                      f"{', '.join(nmodels_hold)}", flush=True)
 
-                # the stored vectors must belong to these points and to
-                # today's high-accuracy configuration
-                stored = np.load(path, allow_pickle=False)
-                regenerate = ("regenerate the stored vectors with "
-                              "generate_frozen_reference.py --nmodels")
-                names = []
-                for name in stored["names"]:
-                    names.append(str(name))
-                self.assertEqual(
-                    names, sorted(points[0]),
-                    msg="the stored points have other parameters than "
-                        f"today's draw; {regenerate}")
-                values = np.zeros((n_models, len(names)))
-                for index in range(n_models):
-                    for column in range(len(names)):
-                        values[index, column] = points[index][names[column]]
+            # the stored vectors must belong to these points and to
+            # today's high-accuracy configuration
+            stored = np.load(path, allow_pickle=False)
+            regenerate = ("regenerate the stored vectors with "
+                          "generate_frozen_reference.py --nmodels")
+            names = []
+            for name in stored["names"]:
+                names.append(str(name))
+            self.assertEqual(
+                names, sorted(points[0]),
+                msg="the stored points have other parameters than "
+                    f"today's draw; {regenerate}")
+            values = np.zeros((n_models, len(names)))
+            for index in range(n_models):
+                for column in range(len(names)):
+                    values[index, column] = points[index][names[column]]
+            self.assertTrue(
+                np.array_equal(values, stored["values"]),
+                msg="the stored points differ from today's draw (the "
+                    "prior, the draw settings or the fiducial "
+                    f"changed); {regenerate}")
+            self.assertEqual(
+                str(stored["config_hash"]),
+                u.nmodels_config_hash(nm_example),
+                msg="the high-accuracy configuration changed since "
+                    f"the stored vectors were computed; {regenerate}")
+
+            default_vectors, inv_cov = nmodels_vectors(
+                u, nm_example, points, high_accuracy=False)
+            high_vectors = stored["vectors"]
+            self.assertEqual(
+                high_vectors.shape, default_vectors.shape,
+                msg="the stored vectors have another length than "
+                    f"today's masked data vector; {regenerate}")
+            deltas = []
+            for index in range(n_models):
+                difference = high_vectors[index] - default_vectors[index]
+                delta = float(difference @ inv_cov @ difference)
+                u.report_random_model(index, n_models, points[index],
+                                      delta)
+                deltas.append(delta)
+            # enumerate pairs each delta with its position, counted
+            # from 0, so a broken model is named by number
+            for index, delta in enumerate(deltas):
+                # advisory: the size of the delta is a judgment
+                # call, but a non-finite one means the evaluation
+                # itself broke
                 self.assertTrue(
-                    np.array_equal(values, stored["values"]),
-                    msg="the stored points differ from today's draw (the "
-                        "prior, the draw settings or the fiducial "
-                        f"changed); {regenerate}")
-                self.assertEqual(
-                    str(stored["config_hash"]),
-                    u.nmodels_config_hash(nm_example),
-                    msg="the high-accuracy configuration changed since "
-                        f"the stored vectors were computed; {regenerate}")
-
-                default_vectors, inv_cov = nmodels_vectors(
-                    u, nm_example, points, high_accuracy=False)
-                high_vectors = stored["vectors"]
-                self.assertEqual(
-                    high_vectors.shape, default_vectors.shape,
-                    msg="the stored vectors have another length than "
-                        f"today's masked data vector; {regenerate}")
-                deltas = []
+                    math.isfinite(delta),
+                    msg=f"model {index}: non-finite delta chi2 "
+                        f"{delta!r}")
+            u.report_random_model_summary(deltas)
+            if nmodels_hold is not None:
+                drawn_deltas = []
+                held_deltas = []
                 for index in range(n_models):
-                    difference = high_vectors[index] - default_vectors[index]
-                    delta = float(difference @ inv_cov @ difference)
-                    u.report_random_model(index, n_models, points[index],
-                                          delta)
-                    deltas.append(delta)
-                # enumerate pairs each delta with its position, counted
-                # from 0, so a broken model is named by number
-                for index, delta in enumerate(deltas):
-                    # advisory: the size of the delta is a judgment
-                    # call, but a non-finite one means the evaluation
-                    # itself broke
-                    self.assertTrue(
-                        math.isfinite(delta),
-                        msg=f"model {index}: non-finite delta chi2 "
-                            f"{delta!r}")
-                u.report_random_model_summary(deltas)
-                if nmodels_hold is not None:
-                    drawn_deltas = []
-                    held_deltas = []
-                    for index in range(n_models):
-                        if held[index]:
-                            held_deltas.append(deltas[index])
-                        else:
-                            drawn_deltas.append(deltas[index])
-                    print("  models drawn across the prior:", flush=True)
-                    u.report_random_model_summary(drawn_deltas)
-                    if len(held_deltas) > 0:
-                        print("  models holding "
-                              f"{', '.join(nmodels_hold)} at the fiducial:",
-                              flush=True)
-                        u.report_random_model_summary(held_deltas)
-                # drawn before the limit applies, so a failing run still
-                # shows where in the prior its deltas sit; an advisory
-                # check draws the 0.2 band of the reference tests
-                if nmodels_limit is not None:
-                    figure_limit = nmodels_limit
-                else:
-                    figure_limit = u.CHI2_TOLERANCE
-                figure_path = _nmodels_figure(
-                    u, example=nm_example, points=points, deltas=deltas,
-                    figure_dir=figure_dir, seed=seed,
-                    limit=figure_limit, held=held, case=nm_label)
-                print(f"  N-random-models figure: {figure_path}",
-                      flush=True)
-                if nmodels_limit is not None:
-                    # the limit applies to every model; the message
-                    # names each model (and its seed) above it
-                    above = [(index, delta) for index, delta
-                             in enumerate(deltas)
-                             if abs(delta) >= nmodels_limit]
-                    self.assertFalse(
-                        above,
-                        msg="models with |delta chi2| >= "
-                            f"{nmodels_limit}: " + ", ".join(
-                                f"{index} (seed {seed + index}): "
-                                f"{delta:+.4f}"
-                                for index, delta in above))
+                    if held[index]:
+                        held_deltas.append(deltas[index])
+                    else:
+                        drawn_deltas.append(deltas[index])
+                print("  models drawn across the prior:", flush=True)
+                u.report_random_model_summary(drawn_deltas)
+                if len(held_deltas) > 0:
+                    print("  models holding "
+                          f"{', '.join(nmodels_hold)} at the fiducial:",
+                          flush=True)
+                    u.report_random_model_summary(held_deltas)
+            # drawn before the limit applies, so a failing run still
+            # shows where in the prior its deltas sit; an advisory
+            # check draws the 0.2 band of the reference tests
+            if nmodels_limit is not None:
+                figure_limit = nmodels_limit
+            else:
+                figure_limit = u.CHI2_TOLERANCE
+            figure_path = _nmodels_figure(
+                u, example=nm_example, points=points, deltas=deltas,
+                figure_dir=figure_dir, seed=seed,
+                limit=figure_limit, held=held, case=nm_label)
+            print(f"  N-random-models figure: {figure_path}",
+                  flush=True)
+            if nmodels_limit is not None:
+                # the comprehension collects the (index, delta) pair
+                # of every model at or over the limit, so the failure
+                # message names each offending model and its seed
+                above = [(index, delta) for index, delta
+                         in enumerate(deltas)
+                         if abs(delta) >= nmodels_limit]
+                self.assertFalse(
+                    above,
+                    msg="models with |delta chi2| >= "
+                        f"{nmodels_limit}: " + ", ".join(
+                            f"{index} (seed {seed + index}): "
+                            f"{delta:+.4f}"
+                            for index, delta in above))
 
         return test_ax99_nmodels
 
@@ -1432,8 +1442,8 @@ def photoz_conventions_suite(u, name, example="example1",
     n(z) table files are turned into the smooth distributions the
     Limber integrals consume: photoz_interpolation_type (the stage-1
     interpolant) and photoz_zmid_convention (how the z column of the
-    n(z) file is read). The class evaluates the frozen cosmic-shear
-    fiducial under the five settings of its sweep in one process, measures
+    n(z) file is read). The class evaluates the frozen fiducial of the
+    bound example under the five settings of its sweep in one process, measures
     each alternative's delta chi2 = delta^T C^-1 delta against the
     default vector, and asserts the dead-flag floors, the frozen
     reference, and the bitwise round trip back to the default.
@@ -1482,11 +1492,11 @@ def photoz_conventions_suite(u, name, example="example1",
                 *alternatives,
                 ("default again (round trip)", interp_default,
                  zmid_default))
-    # The alternatives must be seen (a stale n(z) cache would give
-    # exactly zero); the floors are orders of magnitude below the
-    # measured deltas, so they only catch a dead flag, never normal
-    # numerical drift. The z-reading flip shifts every distribution
-    # by dz/2, hence its larger floor.
+    # The alternatives must be seen (an n(z) cache that failed to
+    # rebuild would give exactly zero); the floors are orders of
+    # magnitude below the measured deltas, so they only catch a dead
+    # flag, never normal numerical drift. The z-reading flip shifts
+    # every distribution by dz/2, hence its larger floor.
     floors = {tag: (zmid_floor if tag in zmid_names.values() else 1.0e-8)
               for tag, _, _ in alternatives}
 
@@ -1827,7 +1837,8 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
       4. the delta chi2 matches the project's measured value to the
          relative band;
       5. the default engine reproduces the frozen reference chi2
-         (last, so a stale snapshot cannot hide checks 1-4).
+         (last, so an out-of-date frozen snapshot cannot hide
+         checks 1-4).
 
     It also reports each engine's steady-state runtime (one second
     evaluation per model; informational, never asserted).
@@ -1890,8 +1901,7 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
                       flush=True)
                 info = u.load_frozen_info(example, tatt=False)
                 lk_name = u.EXAMPLES[example]["likelihood"]
-                info["likelihood"][lk_name]["nonlimber_lowrank_gg"] = \
-                    flag
+                info["likelihood"][lk_name]["nonlimber_lowrank_gg"] = flag
                 # the same overrides in every build, so the engine
                 # flag is the only difference between them
                 for key, value in (overrides or {}).items():
@@ -1904,8 +1914,7 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
                 steady[tag] = time.perf_counter() - start
                 print(f"    chi2 = {chi2s[tag]:.6f}  (steady-state "
                       f"evaluation {steady[tag]:.2f} s)", flush=True)
-                vectors[tag] = \
-                    np.array(masked_vector())
+                vectors[tag] = np.array(masked_vector())
                 if icov is None:
                     # all settings share one data set (mask,
                     # covariance), so the first build's masked
@@ -1914,8 +1923,8 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
                     if _native_space(u, ci) == "real":
                         sizes = ci.compute_data_vector_3x2pt_real_sizes()
                     else:
-                        sizes = \
-                            ci.compute_data_vector_3x2pt_fourier_sizes()
+                        sizes = (
+                            ci.compute_data_vector_3x2pt_fourier_sizes())
                     # an appended gg-cross block is clustering too
                     ggx = _ggx_len(ci)
 
@@ -1964,8 +1973,8 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
                 f"engine delta chi2 = {dchi2:.6e} differs from the "
                 f"measured {measured:.6e} by more than {rtol:.0%}")
 
-            # last, so that a stale frozen snapshot does not hide the
-            # four checks above
+            # last, so that an out-of-date frozen snapshot does not
+            # hide the four checks above
             self.assertLess(
                 abs(chi2s[settings[0][0]]
                     - self.reference[reference_key]),

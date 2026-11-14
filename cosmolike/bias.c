@@ -211,11 +211,11 @@ double gbK(const double z, const int ni)
 
 // ---------------------------------------------------------------------------
 // The redshift-space counterterm alpha_2 of clustering bin ni, in the
-// convention of the DESI DR1 full-shape analysis (Maus et al. 2024,
-// arXiv:2404.07312).
+// convention of the full-shape analysis of Maus et al. 2024
+// (arXiv:2404.07312).
 //
-// DESI adds a counterterm field to the linear galaxy density in
-// redshift space. Its alpha_2 part is
+// That analysis adds a counterterm field to the linear galaxy density
+// in redshift space. Its alpha_2 part is
 //
 //   delta_CT = (1/2) f mu^2 alpha_2 k^2 delta_L,
 //
@@ -225,8 +225,8 @@ double gbK(const double z, const int ni)
 //
 //   P_CT = (b1 + f mu^2) f alpha_2 mu^2 k^2 P_lin(k, z).
 //
-// This is the convention in which DESI's prior width on alpha_2 is
-// quoted. cosmo2D.c projects the term (has_alpha2_galaxies there).
+// Published prior widths on alpha_2 are quoted in this convention.
+// cosmo2D.c projects the term (has_alpha2_galaxies there).
 //
 // alpha_2 is one number per bin, with no redshift dependence inside the
 // bin. It is stored in units of (c/H0)^2, the unit of 1/k^2 in this code;

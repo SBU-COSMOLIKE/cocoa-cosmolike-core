@@ -1188,7 +1188,7 @@ void init_include_halo_IA(const int include_halo_IA)
 }
 
 // ---------------------------------------------------------------------------
-// Switch the non-Limber w(theta) galaxy clustering to the experimental
+// Switch the non-Limber w(theta) galaxy clustering to the
 // low-rank density-density method, writing cosmo2D.c's use_lowrank_DD_GG
 // and its two knobs through set_lowrank_DD_GG: flag 0 = the FKEM split
 // (the default, bit-identical to the code without the feature), 1 = the
@@ -1590,8 +1590,8 @@ void init_binning_fourier(
 // log-spaced: writes like.Ncl = the list's length, like.lrange as the
 // integer envelope of the first and last center, like.lmax_shear, and
 // reallocates like.ell with the given centers verbatim. A survey that
-// bins linearly with (2l+1)-weighted centers (lssty1xdesi's DESI
-// spectroscopic bandpowers: Delta l = 10 with centers 19.9, 29.8, ...)
+// bins linearly with (2l+1)-weighted centers (for example Delta l = 10
+// bands with centers 19.9, 29.8, ...)
 // hands them in here, so a covariance built per band elsewhere applies
 // band by band with no remapping. Everything downstream (the templated
 // Fourier data vectors, the *_ells functions of cosmo2D.c) reads
@@ -3912,8 +3912,8 @@ void set_nuisance_bias_fastpt_tidal(vector B1, vector B2, vector BS2,
 
 // ---------------------------------------------------------------------------
 // Set the per-bin redshift-space counterterm alpha_2 = nuisance.gb[6][i]
-// (galpha2 in bias.c states the DESI DR1 convention; cosmo2D.c projects
-// the term).
+// (galpha2 in bias.c states the convention, that of Maus et al. 2024,
+// arXiv:2404.07312; cosmo2D.c projects the term).
 //
 // Units: the input is in h^-2 Mpc^2, the unit of 1/k^2 with k in h/Mpc.
 // The C code measures k in units of H0/c, so the stored value is

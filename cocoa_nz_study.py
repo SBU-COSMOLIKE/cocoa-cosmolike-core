@@ -1,7 +1,9 @@
 """Run an opt-in study of n(z) interpretation and numerical refinement.
 
-The physical inputs come from the project's stored NLA point (the
-example argument, the donor family's 3x2pt entry by default).
+The physical inputs come from the project's stored NLA point of the
+example argument ("example2", the 3x2pt entry of most projects, by
+default; a project whose EXAMPLES table names its flagship
+combination differently passes that key).
 Only accuracyboost and integration_accuracy are taken from today's likelihood
 YAML for the default arm. The refined arms compare the original midpoint
 curve with fixed 3/5/7-point histogram preparation followed by Akima.
@@ -34,6 +36,8 @@ def calculate(harness, native, project, output, part, boost=5.0, level=7,
         output: Destination directory, outside the stored test inputs.
         part: 'defaults' evaluates original only; 'refined' evaluates four curves.
         boost, level: Refined interpolation and integration settings.
+        example: Key of the harness EXAMPLES table whose stored NLA
+            point and likelihood supply the physical inputs.
 
     Returns:
         The measurement dictionary. The adjacent NPZ holds model vectors;

@@ -688,7 +688,7 @@ void init_include_halo_IA(
     const int include_halo_IA
   );
 
-// experimental low-rank non-Limber gg (cosmo2D.c set_lowrank_DD_GG):
+// low-rank non-Limber gg (cosmo2D.c set_lowrank_DD_GG):
 // flag 0 = FKEM (default, bit-identical), 1 = low-rank DD; nrank = SVD
 // ranks kept per lens bin (1..16); lmax = the path's own non-Limber cap
 void init_lowrank_nonlimber_gg(

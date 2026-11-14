@@ -82,9 +82,9 @@ void set_include_halo_IA(const int flag);
 
 int get_include_halo_IA(void);
 
-// runtime switch and knobs of the experimental low-rank non-Limber
+// runtime switch and knobs of the low-rank non-Limber
 // galaxy clustering (cosmo2D.c use_lowrank_DD_GG and friends): flag 0
-// keeps today's FKEM path bit-identical; nrank = SVD ranks kept per
+// keeps the FKEM path bit-identical; nrank = SVD ranks kept per
 // lens bin (1..16); lmax = the low-rank path's own non-Limber cap
 // (32..Ntable.LMAX), independent of limits.LMAX_NOLIMBER
 void set_lowrank_DD_GG(const int flag, const int nrank, const int lmax);
@@ -308,8 +308,8 @@ void C_gg_tomo_limber_nl_lin_dd_nointerp_ells(
     const int NSIZE,         // number of gg power spectra (= clustering_nbin)
     double** out,            // output [NSIZE][nell], full model (or NULL)
     double** out_lin,        // output [NSIZE][nell], linear term (or NULL)
-    double** out_dd,         // output [NSIZE][nell], DD part of the full model (or NULL)
-    double** out_dd_lin      // output [NSIZE][nell], DD part of the linear term (or NULL)
+    double** out_dd,         // [NSIZE][nell], DD of the full model (or NULL)
+    double** out_dd_lin      // [NSIZE][nell], DD of the linear term (or NULL)
   );
 
 void C_gg_tomo_limber_nointerp_ells(
@@ -412,7 +412,7 @@ void C_cl_tomo(
     double tol
   );
 
-// The experimental low-rank counterpart of C_cl_tomo (cosmo2D.c
+// The low-rank counterpart of C_cl_tomo (cosmo2D.c
 // use_lowrank_DD_GG = 1): the density-density term carries the full
 // one-loop P_g through a per-bin SVD factorization of sqrt(P_g), one
 // FFTLog row per kept rank, with no Limber hand-off below the path's

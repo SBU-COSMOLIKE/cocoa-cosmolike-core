@@ -17,7 +17,7 @@ extern "C" {
 // COMPILE time from its own MakefileCosmolike, e.g.
 //   COMMON_FLAGS += -DMAX_SIZE_ARRAYS=80
 // (each project compiles its own copy of the core, so the setting never
-// leaks across projects; lssty1xdesi carries 76 spectroscopic DESI bins).
+// leaks across projects; a thin-bin spectroscopic sample can need ~80).
 // It is a compile-time constant, not a runtime knob: these arrays are
 // embedded in global structs by value, and sizing them dynamically would
 // touch every struct consumer in the core.

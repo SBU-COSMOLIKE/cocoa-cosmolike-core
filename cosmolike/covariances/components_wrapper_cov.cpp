@@ -124,7 +124,8 @@ py::dict covariance_limber_spectra_cpp(
   if (ell.n_elem < 1
       || a_edges.n_elem < 2) {
     critical("{}: covariance_limber_spectra needs 1D ell "
-      "and a_edges arrays, with at least one multipole and two scale-factor edges", "covariance_limber_spectra_cpp");
+      "and a_edges arrays, with at least one multipole and two "
+      "scale-factor edges", "covariance_limber_spectra_cpp");
     exit(1);
   }
   if (nwindow < 2) {
@@ -292,7 +293,8 @@ py::dict covariance_limber_spectra_cpp(
   if (include_ia
       && nuisance.IA_MODEL == IA_MODEL_TATT) {
     b_triangular = (double**) malloc2d(npair, nell);
-    tatt_spectra_cov(radial.get(), nell, ell.memptr(), triangular, b_triangular);
+    tatt_spectra_cov(radial.get(), nell, ell.memptr(), triangular,
+                     b_triangular);
   }
 
   // Non-Limber: add exact-minus-matched separable linear spectra to every

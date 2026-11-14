@@ -106,7 +106,8 @@ def get_ddv_dkit(dv, index=0, CV=None, AccuracyBoost=1.0,
     Its inverse-distance weights pin the line to the center sample,
     so the slope is the mean of the symmetric central differences;
     points are pruned only when a relative residual exceeds the 5%
-    fit tolerance, which never happens on data vectors.
+    fit tolerance, far above the residuals smooth data vectors
+    produce.
 
     Arguments:
       dv    = the data-vector function (see get_ddv).

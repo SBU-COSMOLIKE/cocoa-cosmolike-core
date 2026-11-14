@@ -168,13 +168,13 @@ comments define their inputs, units and equations.
 | [cosmo3D.c](cosmolike/cosmo3D.c) | Supplied power spectra, distances and growth; FFTLog mass variances and their mass derivatives. |
 | [redshift_spline.c](cosmolike/redshift_spline.c) | Lens/source redshift distributions, photo-z changes and allowed tomographic pairs. |
 | [radial_weights.c](cosmolike/radial_weights.c) | Galaxy-density and lensing weights along the line of sight. |
-| [cosmo2D.c](cosmolike/cosmo2D.c) | Angular spectra, Limber and non-Limber projections, full-sky real-space transforms and angular-bin averages. |
-| [bias.c](cosmolike/bias.c) | Galaxy-bias parameters and redshift dependence. |
+| [cosmo2D.c](cosmolike/cosmo2D.c) | Angular spectra, Limber and non-Limber projections, full-sky real-space transforms and angular-bin averages. Includes the [thin-bin clustering extensions](cosmolike/README.md#thin_bins): cross-bin galaxy pair spectra and the low-rank non-Limber clustering engine. |
+| [bias.c](cosmolike/bias.c) | Galaxy-bias parameters and redshift dependence, including the redshift-space counterterm $`\alpha_2`$. |
 | [IA.c](cosmolike/IA.c) | Intrinsic-alignment amplitudes and their redshift parameterizations. |
 | [pt_cfastpt.c](cosmolike/pt_cfastpt.c) | Perturbation-theory and intrinsic-alignment tables built with the shared C FAST-PT engine. |
 | [halo.c](cosmolike/halo.c) | Halo abundance, bias, concentration, profiles, galaxy occupation and halo-model intrinsic alignment. |
 | [baryons.c](cosmolike/baryons.c) | Baryonic modifications of the matter power spectrum. |
-| [cosmo2D_scuts.c](cosmolike/cosmo2D_scuts.c) | Responses to physical wavenumber, used to diagnose which scales contribute to a data-vector point. |
+| [cosmo2D_scuts.c](cosmolike/cosmo2D_scuts.c) | Responses to physical wavenumber and the IR/UV split of the clustering spectra, used to diagnose which scales contribute to a data-vector point ([the two criteria](cosmolike/README.md#physical-scale-cuts)). |
 | [tinker_emulator.c](cosmolike/tinker_emulator.c) | Legacy mass-function and halo-bias emulator code; excluded from the current project builds. |
 | [basics.c](cosmolike/basics.c) | Integration, interpolation, allocation and numerical utilities. |
 | [structs.c](cosmolike/structs.c), [structs.h](cosmolike/structs.h) | Shared cosmological, survey, nuisance and numerical state. |
@@ -832,7 +832,7 @@ evaluates the frozen fiducial under the default, each alternative,
 and the default again in one process, measuring every alternative
 against the default with delta chi2 = delta^T C^-1 delta under the
 masked inverse covariance. The assertions are a dead-flag floor on
-each alternative (a stale n(z) cache would give exactly zero), the
+each alternative (an out-of-date n(z) cache would give exactly zero), the
 frozen-reference check on the default, and a bit-identical round trip
 back to the default. The n(z) reconstruction switch has its own
 [shared study](cosmolike_notebook_utils/README.md#nz_study) and a
@@ -843,11 +843,12 @@ routine cache round-trip test
 
 The likelihood yaml keys `adopt_limber_gs` and `adopt_limber_gg`
 choose how the galaxy-galaxy lensing and galaxy clustering spectra are
-computed: `0` takes the multipoles below 150 from the exact
-projection, computed with the split of Fang, Krause, Eifler &
-MacCrann (arXiv:1911.11947) - an FFTLog integral of the linear power
-spectrum plus, in Limber, what linear theory misses - and `1` uses
-the Limber approximation at every multipole. Each test evaluates the
+computed: `0` takes the multipoles below the non-Limber cap (150 by
+default; likelihoods that bind the key `lmax_nonlimber` can raise it)
+from the exact projection, computed with the split of Fang, Krause,
+Eifler & MacCrann (arXiv:1911.11947) - an FFTLog integral of the
+linear power spectrum plus, in Limber, what linear theory misses -
+and `1` uses the Limber approximation at every multipole. Each test evaluates the
 frozen 3x2pt fiducial with the default, the other setting, and the
 default again in one process and reports
 delta chi2 = delta^T C^-1 delta of the non-Limber minus the Limber
@@ -862,8 +863,9 @@ clustering auto spectra; each project records its measured deltas.
 ### The sector-ladder cache check <a name="dv_cache_ladder"></a>
 
 cosmolike caches every expensive stage behind its own key, and a
-partial-invalidation bug - one sector's update path leaving a stale
-static another sector consumes - produces wrong data vectors only in
+partial-invalidation bug - one sector's update path leaving behind an
+out-of-date static another sector consumes - produces wrong data
+vectors only in
 MIXED update sequences, which the per-point checks never exercise.
 The test walks a deterministic ladder in one process (cosmology-only
 steps, then IA-only, source-photo-z, lens-photo-z and

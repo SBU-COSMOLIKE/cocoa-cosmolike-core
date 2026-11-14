@@ -1707,8 +1707,9 @@ void oneloop_bias_spectra_cov(
       if (lnk >= lnk_min
           && lnk <= lnk_max) {
         // Rows 0..4 of FPTbias.tab: P_d1d2, P_d2d2, P_d1s2, P_d2s2 and
-        // P_s2s2 at a = 1, with the core's low-k subtractions of the three
-        // quadratic correlators (the same expressions as cosmo2D.c).
+        // P_s2s2 at a = 1. The raw tables carry the k -> 0 constants;
+        // the subtractions below remove them, the same expressions the
+        // gg integrand of cosmo2D.c applies to the same rows.
         d1d2 = interpol1d(FPTbias.tab[0], ntable, lnk_min, lnk_max,
                           lnk_step, lnk);
         d2d2 = interpol1d(FPTbias.tab[1], ntable, lnk_min, lnk_max,

@@ -168,11 +168,11 @@ def _snapshot(harness, native, model, point, likelihood_name):
             getter = native.compute_data_vector_fourier_masked
             if hasattr(native,
                        "compute_data_vector_fourier_with_gg_cross_sizes"):
-                sizes = \
-                    native.compute_data_vector_fourier_with_gg_cross_sizes()
+                sizes = (
+                    native.compute_data_vector_fourier_with_gg_cross_sizes())
                 if int(sizes[3]) > 0:
-                    getter = \
-                        native.compute_data_vector_fourier_gg_cross_masked
+                    getter = (
+                        native.compute_data_vector_fourier_gg_cross_masked)
         vector = np.array(getter(), copy=True)
         inverse = np.array(native.get_inv_cov_masked(), copy=True)
     if not np.all(np.isfinite(vector)) or not np.all(np.isfinite(inverse)):

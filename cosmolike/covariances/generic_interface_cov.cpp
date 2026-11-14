@@ -75,14 +75,18 @@ Arguments:
     nquad: nodes per panel from 64,96,128,256,512,1024,2048,4096,8192.
     nwindow: uniform-a nodes for covariance-owned lensing efficiencies.
     include_ia: include the configured NLA or TATT Gaussian spectra.
-    include_rsd: use the same lens RSD window in every spectrum.
+    include_rsd: use the same lens RSD window in every spectrum: the
+        linear redshift-space (Kaiser) term, in which infall toward
+        overdensities shifts observed redshifts. The core's alpha_2 k^2
+        counterterm (galpha2, bias.c) is not part of these spectra.
     linear: use linear total-matter P instead of the current Pdelta mode.
     nonlimber_lmax: 0 keeps Limber; >=2 corrects all gg/gs pairs through
         that integer multipole. Shear-shear remains Limber.
     nonlimber_nchi: 2^n+1 log-distance samples, default 4097.
     nonlimber_chi_min: positive near distance in c/H0, default 1e-6.
         The far edge is a_edges[0]. Refine support and resolution separately.
-        Non-Limber currently requires massless neutrinos and no RSD.
+        Non-Limber currently requires massless neutrinos; with
+        include_rsd it also corrects the lens distortion transfer.
     include_oneloop: add the Limber one-loop galaxy-bias terms (b2, bs2;
         b3 and bK must be zero) to every pair with a lens field. Requires
         linear=False. The non-Limber correction stays linear.

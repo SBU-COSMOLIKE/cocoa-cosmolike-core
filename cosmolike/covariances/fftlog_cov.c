@@ -60,9 +60,9 @@ struct fftlog_workspace_cov {
 // We use bias nu=1: Fourier transform f(chi)/chi, so each mode of f is
 // chi^(1+i eta), then restore the removed power through the Mellin kernel
 // and 1/k (fftlog_execute_cov). The Mellin integrals converge for
-// -l < Re(s) < 2 (density) and 2-l < Re(s) < 4 (lensing, j_l(t)/t^2,
-// which also carries the redshift-distortion kernel j_l'');
-// Re(s) = nu = 1 lies inside both for every l >= 2.
+// -l < Re(s) < 2 (density, j_l), 2-l < Re(s) < 4 (lensing, j_l(t)/t^2)
+// and 2-l < Re(s) < 2 (redshift distortions, j_l'', whose tail falls
+// only as 1/t); Re(s) = nu = 1 lies inside all three for every l >= 2.
 // This is the single-Bessel construction of Fang et al. (1911.11947).
 //
 // Array layout: real[m] = f(chi_m)/chi_m, with
@@ -89,7 +89,8 @@ struct fftlog_workspace_cov {
 //   nchi, chi_min, dlnchi - physical samples chi_min*exp(i*dlnchi)
 //   padding, nfft         - zero guard below chi_min; padded FFT length
 //   extra                 - reciprocal samples read beyond each end
-//   nfield, inverse_power - number of inputs; kernel power 0 or 2 each
+//   nfield, inverse_power - number of inputs; kernel selector 0, 2 or
+//                           3 each (fftlog_cov.h)
 //   radial                - [field][nchi] values f = chi*W, copied
 // Returns a heap-owned workspace; release it with fftlog_free_cov.
 // -----------------------------------------------------------------------

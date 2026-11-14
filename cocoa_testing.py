@@ -1345,9 +1345,10 @@ TEST {number}: {label}
 
 
 # The most draws the amplitude cut of nmodels_points may spend
-# on one model before it stops: a box the cut leaves at least 0.1%
-# of needs far fewer, so reaching it means the cut excludes almost the
-# whole box (a cut below the fiducial ratio of 1, or a typo)
+# on one model before it stops: a box of which the cut keeps at
+# least 0.1% needs far fewer, so reaching this ceiling means the cut
+# excludes almost the whole box (a cut below the fiducial ratio of 1,
+# or a typo)
 NMODELS_MAX_DRAWS = 100000
 
 # Every project names its linear galaxy-bias parameters
@@ -1390,8 +1391,8 @@ def largest_amplitude_ratio(point, fiducial):
 def held_parameter(name, hold):
     """Return whether the N-random-models hold list covers one parameter.
 
-    An entry ending in "_" is a name prefix (LSST_B1_ covers LSST_B1_1
-    to LSST_B1_5); any other entry is an exact name.
+    An entry ending in "_" is a name prefix (<SURVEY>_B1_ covers every
+    <SURVEY>_B1_<bin>); any other entry is an exact name.
 
     Arguments:
       name = a sampled parameter name.
