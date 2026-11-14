@@ -1994,6 +1994,301 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
     return TestLowrank
 
 
+# ---- the pair-quadrature accuracy checks ------------------------------------
+
+# The cross-pair Gauss-Legendre rule (gg_pair_glrule in cosmo2D.c) has
+# 128 + 64*abs(level) nodes per panel, where level is the likelihood
+# key integration_accuracy. These tolerances judge the pair block (the
+# appended gg-cross entries of the data vector) against a converged
+# reference.
+#
+# The default level is an MCMC setting, so it must pass the reference
+# rule of every frozen test, |delta chi2| < CHI2_TOLERANCE (0.2). A
+# Fisher run raises integration_accuracy; at the project's Fisher level
+# the pair block must sit 200 times deeper, and no kept band power (one
+# entry of the pair block) may move by more than 1% of its error bar, so
+# the Fisher derivatives (differences of nearby vectors) see a
+# quadrature error far below any physics.
+PAIR_QUADRATURE_FISHER_DCHI2 = 1.0e-3
+PAIR_QUADRATURE_FISHER_BAND = 1.0e-2
+# The reference must agree with a rule twice as fine to this level, far
+# below every other tolerance here, so that the errors measured against
+# it are the tested level's own (measured 2026-11-14: at most 1e-9 on
+# the four DESI layouts).
+PAIR_QUADRATURE_REFERENCE_DCHI2 = 1.0e-8
+# Above this delta chi2 the pair-block error falls as nodes are added;
+# below it the error oscillates from one rule to the next (the nodes
+# move across the integrands' sharp features), so two levels are
+# compared only when one of them is above it.
+PAIR_QUADRATURE_FLOOR = 1.0e-6
+# Set this environment variable to 1 to run the full ladder sweep
+# (test_pair_quadrature_ladder), which builds eight models per layout;
+# the routine check builds four.
+PAIR_QUADRATURE_DEEP_FLAG = "COCOA_PAIR_QUADRATURE_DEEP"
+
+
+def _pair_block_scores(delta, icov, sigma, pair, used):
+    """The delta chi2 of a vector difference, whole and pair block alone.
+
+    Arguments:
+      delta = theory-vector difference (tested level minus reference),
+              the masked layout of the likelihood.
+      icov  = the masked inverse covariance (zero rows and columns on
+              masked entries).
+      sigma = the square root of the covariance diagonal, per entry.
+      pair  = boolean mask of the appended gg-cross entries.
+      used  = boolean mask of the entries the likelihood keeps.
+
+    Returns:
+      (dchi2 of the whole vector, dchi2 of the pair entries alone, the
+      largest |delta|/sigma over the kept pair entries, the dchi2 of
+      every entry outside the pair block).
+    """
+    import numpy as np
+    in_pairs = np.where(pair, delta, 0.0)
+    outside = np.where(pair, 0.0, delta)
+    kept = pair & used & (sigma > 0.0)
+    band = float(np.max(np.abs(delta[kept])/sigma[kept])) if np.any(kept) else 0.0
+    return (float(delta @ icov @ delta), float(in_pairs @ icov @ in_pairs),
+            band, float(outside @ icov @ outside))
+
+
+def pair_quadrature_suite(u, name, example, fisher_level=1,
+                          reference_level=30, check_level=62,
+                          deep_levels=(2, 3, 6, 14)):
+    """Build the pair-quadrature accuracy class of one layout.
+
+    The class evaluates the frozen fiducial of `example` at several
+    values of the likelihood key integration_accuracy, in one process,
+    and compares the appended gg-cross block (the cross-bin pair
+    spectra) with the same block at `reference_level`.
+
+    test_pair_quadrature (always runs; four models) asserts:
+      1. the level reaches the pair rule: the pair block at level 0
+         differs from the reference;
+      2. the sign of the level is ignored: level -1 reproduces level 1
+         bit for bit, pair block and every other entry;
+      3. the default level passes the MCMC rule against the reference,
+         |delta chi2| < CHI2_TOLERANCE, for the whole vector and for
+         the pair block;
+      4. the next level is no worse than the default: its pair-block
+         delta chi2 is at most the default's, unless both sit below
+         PAIR_QUADRATURE_FLOOR (both converged);
+      5. the Fisher level meets the Fisher tolerances: pair-block
+         delta chi2 below PAIR_QUADRATURE_FISHER_DCHI2 and every kept
+         pair band within PAIR_QUADRATURE_FISHER_BAND of its error.
+
+    test_pair_quadrature_ladder (runs when the environment variable
+    COCOA_PAIR_QUADRATURE_DEEP is 1; eight models) adds:
+      6. the reference is converged: it agrees with `check_level` to
+         PAIR_QUADRATURE_REFERENCE_DCHI2 in the pair block;
+      7. every level of the sweep passes the MCMC rule, and every level
+         from the Fisher level up meets the Fisher tolerances;
+      8. above the floor, every finer level is no worse than the
+         default.
+    It prints the whole table and, when the environment variable
+    COCOA_PAIR_QUADRATURE_RESULTS names a folder, writes it there as
+    pair_quadrature_<example>.json.
+
+    Arguments:
+      u               = the project's cocoa_test_utils module.
+      name            = the class name to build (the caller assigns
+                        the class to this same module-level name).
+      example         = the key of u.EXAMPLES; its frozen dataset must
+                        install a gg-cross pair list.
+      fisher_level    = the integration_accuracy the project's Fisher
+                        runs use.
+      reference_level = the level of the reference vector.
+      check_level     = the finer level that shows the reference is
+                        converged (deep tier).
+      deep_levels     = the further levels of the deep sweep.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestPairQuadrature(unittest.TestCase):
+        """The cross-pair Gauss-Legendre ladder on one frozen layout."""
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR and verify the frozen state."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+
+        def _vectors(self, levels):
+            """Evaluate the frozen fiducial at every level, in order.
+
+            Arguments:
+              levels = the integration_accuracy values to evaluate.
+
+            Returns:
+              (dict level -> masked theory vector, the masked inverse
+              covariance, sigma per entry, the pair-block mask, the
+              kept-entry mask).
+            """
+            import numpy as np
+            ci = _interface(u)
+            masked_vector = _masked_vector_fn(u, ci)
+            lk_name = u.EXAMPLES[example]["likelihood"]
+            vectors = {}
+            icov = sigma = pair = used = None
+            for level in levels:
+                print(f"  building model ({example}, NLA, "
+                      f"integration_accuracy = {level}) ...", flush=True)
+                info = u.load_frozen_info(example, tatt=False)
+                info["likelihood"][lk_name]["integration_accuracy"] = level
+                model = u.make_model(info)
+                point = u.build_point(model, example, tatt=False)
+                u.evaluate_chi2(model, point)
+                vectors[level] = np.array(masked_vector())
+                if icov is None:
+                    icov = np.array(ci.get_inv_cov_masked())
+                    sigma = np.sqrt(np.clip(np.diag(
+                        np.array(ci.get_cov_masked())), 0.0, None))
+                    sizes = ci.compute_data_vector_3x2pt_fourier_sizes()
+                    ggx = _ggx_len(ci)
+                    if ggx == 0:
+                        raise ValueError(
+                            f"{example}: the frozen dataset installs no "
+                            "gg-cross pair list, so there is no pair "
+                            "block to test")
+                    start = int(sizes[0]) + int(sizes[1]) + int(sizes[2])
+                    pair = np.zeros(len(vectors[level]), dtype=bool)
+                    pair[start:start + ggx] = True
+                    used = icov.diagonal() > 0.0
+            return vectors, icov, sigma, pair, used
+
+        def _report(self, vectors, icov, sigma, pair, used, levels):
+            """Score every level against the reference and print the table.
+
+            Returns:
+              dict level -> (dchi2 whole, dchi2 pair block, max band
+              |delta|/sigma, dchi2 outside the pair block).
+            """
+            ref = vectors[reference_level]
+            scores = {}
+            print(f"\n  pair-quadrature report ({example}, reference "
+                  f"level {reference_level} = "
+                  f"{128 + 64*abs(reference_level)} nodes per panel):")
+            print("    level  nodes  dchi2 whole   dchi2 pairs   "
+                  "max |dd|/sigma  dchi2 outside")
+            for level in levels:
+                if level == reference_level:
+                    continue
+                score = _pair_block_scores(vectors[level] - ref, icov,
+                                           sigma, pair, used)
+                scores[level] = score
+                print(f"    {level:5d}  {128 + 64*abs(level):5d}  "
+                      f"{score[0]:.3e}     {score[1]:.3e}     "
+                      f"{score[2]:.3e}       {score[3]:.3e}")
+            return scores
+
+        def _assert_fisher(self, scores, level):
+            """Assert the Fisher tolerances at one level."""
+            self.assertLess(
+                scores[level][1], PAIR_QUADRATURE_FISHER_DCHI2,
+                f"{example}: level {level} leaves pair-block delta chi2 "
+                f"= {scores[level][1]:.3e}, above the Fisher tolerance "
+                f"{PAIR_QUADRATURE_FISHER_DCHI2:.1e}; a Fisher run needs "
+                "a higher integration_accuracy")
+            self.assertLess(
+                scores[level][2], PAIR_QUADRATURE_FISHER_BAND,
+                f"{example}: level {level} moves a pair band by "
+                f"{scores[level][2]:.3e} of its error, above "
+                f"{PAIR_QUADRATURE_FISHER_BAND:.0e}")
+
+        def test_pair_quadrature(self):
+            """Default, next and Fisher levels against the reference (checks 1-5)."""
+            import numpy as np
+            levels = sorted({0, 1, fisher_level}) + [-1, reference_level]
+            vectors, icov, sigma, pair, used = self._vectors(levels)
+            scores = self._report(vectors, icov, sigma, pair, used,
+                                  [level for level in levels if level != -1])
+
+            self.assertFalse(
+                np.array_equal(vectors[0][pair], vectors[reference_level][pair]),
+                f"{example}: the pair block is identical at levels 0 and "
+                f"{reference_level}: integration_accuracy does not reach "
+                "the pair rule")
+            self.assertTrue(
+                np.array_equal(vectors[-1], vectors[1]),
+                f"{example}: integration_accuracy = -1 does not reproduce "
+                "level 1; the pair rule must read only abs(level)")
+            self.assertLess(
+                abs(scores[0][0]), u.CHI2_TOLERANCE,
+                f"{example}: the default level misses the MCMC rule on the "
+                f"whole vector: delta chi2 = {scores[0][0]:.3e}")
+            self.assertLess(
+                abs(scores[0][1]), u.CHI2_TOLERANCE,
+                f"{example}: the default level misses the MCMC rule on the "
+                f"pair block: delta chi2 = {scores[0][1]:.3e}")
+            if max(scores[0][1], scores[1][1]) > PAIR_QUADRATURE_FLOOR:
+                self.assertLessEqual(
+                    scores[1][1], scores[0][1],
+                    f"{example}: level 1 ({scores[1][1]:.3e}) is worse "
+                    f"than level 0 ({scores[0][1]:.3e}) in the pair block")
+            self._assert_fisher(scores, fisher_level)
+
+        @unittest.skipUnless(
+            os.environ.get(PAIR_QUADRATURE_DEEP_FLAG) == "1",
+            f"set {PAIR_QUADRATURE_DEEP_FLAG}=1 for the full ladder sweep")
+        def test_pair_quadrature_ladder(self):
+            """The full ladder sweep (checks 6-8)."""
+            import json
+            levels = (sorted({0, 1, fisher_level, *deep_levels})
+                      + [reference_level, check_level])
+            vectors, icov, sigma, pair, used = self._vectors(levels)
+            scores = self._report(vectors, icov, sigma, pair, used, levels)
+
+            self.assertLess(
+                scores[check_level][1], PAIR_QUADRATURE_REFERENCE_DCHI2,
+                f"{example}: the reference (level {reference_level}) and "
+                f"level {check_level} differ by pair-block delta chi2 = "
+                f"{scores[check_level][1]:.3e}; the reference is not "
+                "converged")
+            sweep = [level for level in levels
+                     if level not in (reference_level, check_level)]
+            for level in sweep:
+                self.assertLess(
+                    abs(scores[level][0]), u.CHI2_TOLERANCE,
+                    f"{example}: level {level} misses the MCMC rule: "
+                    f"delta chi2 = {scores[level][0]:.3e}")
+                if level >= fisher_level:
+                    self._assert_fisher(scores, level)
+            for fine in sweep:
+                if fine <= 0:
+                    continue
+                if max(scores[0][1], scores[fine][1]) > PAIR_QUADRATURE_FLOOR:
+                    self.assertLessEqual(
+                        scores[fine][1], scores[0][1],
+                        f"{example}: level {fine} ({scores[fine][1]:.3e}) "
+                        f"is worse than the default level 0 "
+                        f"({scores[0][1]:.3e}) in the pair block")
+
+            folder = os.environ.get("COCOA_PAIR_QUADRATURE_RESULTS")
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+                path = os.path.join(folder, f"pair_quadrature_{example}.json")
+                with open(path, "w") as handle:
+                    json.dump({
+                        "example": example,
+                        "reference_level": reference_level,
+                        "check_level": check_level,
+                        "nodes_per_panel": {str(level): 128 + 64*abs(level)
+                                            for level in levels},
+                        "columns": ["dchi2_whole", "dchi2_pairs",
+                                    "max_band_over_sigma", "dchi2_outside"],
+                        "scores": {str(level): list(score)
+                                   for level, score in scores.items()},
+                    }, handle, indent=1)
+                print(f"  wrote {path}")
+
+    TestPairQuadrature.__name__ = name
+    TestPairQuadrature.__qualname__ = name
+    return TestPairQuadrature
+
+
 # ---- the sector-ladder cache checks -----------------------------------------
 
 # Sector membership by sampled-parameter name. re.compile builds a
