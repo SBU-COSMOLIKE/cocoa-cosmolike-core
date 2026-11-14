@@ -411,6 +411,10 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 //                       -> the w_gg_tomo non-Limber dispatch (cosmo2D.c)
 // ---------------------------------------------------------------------------
 
+// Clears the accuracy-boost baselines (defined next to them, below);
+// declared here because initial_setup calls it before they appear.
+static void reset_boost_baselines(void);
+
 // ---------------------------------------------------------------------------
 // Reset every Cosmolike global struct to a defined startup state.
 //
@@ -455,6 +459,11 @@ void initial_setup()
   reset_cosmology_struct();
   reset_tomo_struct();
   reset_Ntable_struct();
+  // Forget the accuracy-boost baselines of any previous setup: the next
+  // boost call re-captures them from the defaults just restored (or from
+  // a dedicated setter that runs before it), so this build's boost never
+  // scales another build's values.
+  reset_boost_baselines();
   reset_like_struct();
   reset_cmb_struct();
 
@@ -516,10 +525,10 @@ void init_ntable_lmax(const int lmax) {
 // quadrature at every node): the A/B switch for validation. Galaxy
 // clustering never uses it (BAO wiggles; see C_gg_tomo_limber).
 //
+// init_accuracy_boost (the catch-all) also scales this knob, from a
+// baseline captured at its first call after initial_setup; calling
+// this setter afterwards overwrites the boosted value.
 //
-// init_accuracy_boost (the catch-all) also scales this knob from its
-// first-boost-call baseline; calling this setter afterwards
-// overwrites the boosted value.
 // Cache invalidation:
 // bumps Ntable.random so every table rebuilds.
 //
@@ -559,10 +568,10 @@ void init_ntable_ell_internal(const int nell_internal) {
 // fixed quadrature imposed (max |dRF| 5.9e-3, medians ~1e-6) at
 // twice the refill speed. 0 = exact: the A/B switch.
 //
+// init_accuracy_boost (the catch-all) also scales this knob, from a
+// baseline captured at its first call after initial_setup; calling
+// this setter afterwards overwrites the boosted value.
 //
-// init_accuracy_boost (the catch-all) also scales this knob from its
-// first-boost-call baseline; calling this setter afterwards
-// overwrites the boosted value.
 // Cache invalidation:
 // bumps Ntable.random so every table rebuilds.
 //
@@ -600,9 +609,9 @@ void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal) {
 // Ntable.random bump below still forces a rebuild). The setter only
 // validates and stores it.
 //
-// init_accuracy_boost (the catch-all) also scales this knob from its
-// first-boost-call baseline; calling this setter afterwards
-// overwrites the boosted value.
+// init_accuracy_boost (the catch-all) also scales this knob, from a
+// baseline captured at its first call after initial_setup; calling
+// this setter afterwards overwrites the boosted value.
 //
 // Cache invalidation:
 // bumps Ntable.random so every table rebuilds.
@@ -885,10 +894,10 @@ void init_photoz_conventions(
 //
 // Validation: internal_boost > 0, else critical() + exit(1).
 //
+// init_accuracy_boost (the catch-all) also scales this knob, from a
+// baseline captured at its first call after initial_setup; calling
+// this setter afterwards overwrites the boosted value.
 //
-// init_accuracy_boost (the catch-all) also scales this knob from its
-// first-boost-call baseline; calling this setter afterwards
-// overwrites the boosted value.
 // Parameters:
 //   internal_boost - internal-grid fraction of the output grid (> 0)
 //
@@ -920,7 +929,8 @@ void init_fpt_internal_boost(const double internal_boost)
 // The unboosted NL_Nchi and the last global accuracy boost, shared by
 // init_accuracy_boost and init_nonlimber_accuracy_boost so that the same
 // rule holds whichever of the two runs last (the baseline is captured
-// once, by the first of them to run, before either has scaled NL_Nchi).
+// once per setup, by the first of them to run after initial_setup,
+// before either has scaled NL_Nchi).
 //
 // The non-Limber chi grid is endpoint-inclusive in log chi (cosmo2D.c:
 // dlnchi = log(chi_max/chi_min)/(NL_Nchi - 1)), so only interval
@@ -936,6 +946,33 @@ void init_fpt_internal_boost(const double internal_boost)
 // ---------------------------------------------------------------------------
 static int nl_nchi_base = 0;
 static double nl_accuracy_boost = 1.0;
+
+// The baselines init_accuracy_boost multiplies by the boost: boost_base
+// holds the unboosted table sizes, fpt_boost_base the unboosted
+// C-FAST-PT internal grid fraction (Ntable.FPT_internal_accuracy_boost).
+// Its first call after initial_setup captures them, and later calls in
+// the same setup reuse them, so calling the boost twice never boosts an
+// already boosted size.
+//
+// They last one setup, not the whole process: reset_boost_baselines,
+// called from initial_setup, clears them together with the shared
+// non-Limber baseline above. A second likelihood built in the same
+// process then scales its own values, including a value a dedicated
+// setter such as init_fpt_internal_boost wrote before the boost call;
+// baselines kept for the whole process would silently hand it the first
+// build's values instead.
+static int boost_base[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS];
+static double fpt_boost_base = 0.0;
+
+static void reset_boost_baselines(void)
+{
+  for (int i=0; i<MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS; i++) {
+    boost_base[i] = 0;
+  }
+  fpt_boost_base = 0.0;
+  nl_nchi_base = 0;
+  nl_accuracy_boost = 1.0;
+}
 
 static void set_nl_nchi(void)
 {
@@ -1243,8 +1280,10 @@ void init_lowrank_nonlimber_gg(const int flag, const int nrank,
 // Scale every Cosmolike sampling knob with one accuracy boost (the
 // catch-all: a single call shifts them all).
 //
-// The first call snapshots the incoming values of the knobs below in
-// a static cache; every call rescales from those baselines, so
+// The first call after initial_setup snapshots the incoming values of
+// the knobs below in the file-scope baselines (boost_base,
+// fpt_boost_base; initial_setup clears them, so every setup captures its
+// own). Later calls in the same setup rescale from those baselines, so
 // repeated calls do not compound:
 //
 //   Ntable.N_a                     -> (baseline - 1) * m + 1, m =
@@ -1269,10 +1308,13 @@ void init_lowrank_nonlimber_gg(const int flag, const int nrank,
 //
 // The internal coarse grids scale together with their dense tables,
 // so the coarse/dense ratios are boost-invariant, and a knob whose
-// baseline is 0 (disabled) stays 0 under any boost. The dedicated setters (init_ntable_ell_internal,
+// baseline is 0 (disabled) stays 0 under any boost.
+//
+// The dedicated setters (init_ntable_ell_internal,
 // init_ntable_dcx_dlnk_nlnk_internal, init_fpt_internal_boost) remain
-// for individual overrides: called before the first boost call they
-// define the baseline, called after they overwrite the boosted value.
+// for individual overrides: called before the setup's first boost call
+// they define the baseline, called after they overwrite the boosted
+// value.
 //
 // Also writes Ntable.FPTboost (int(boost - 1) for boost > 1, else 0;
 // enlarges the FAST-PT grids in pt_cfastpt.c) and
@@ -1295,8 +1337,6 @@ void init_accuracy_boost(
   )
 {
   static constexpr std::string_view fname = "init_accuracy_boost"sv;
-  static int cache[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS]; // standard: static vars init to zero
-  static double fptcache = 0.0; // FPT_internal_accuracy_boost baseline
   debug("{}: {}", fname, errbegins);
 
   // N_a: the a grid of the lensing-efficiency tables (g_tomo and its
@@ -1310,21 +1350,21 @@ void init_accuracy_boost(
   // jumped between +0.28 and -0.17 from boost 2 to 5 with no trend, for
   // data-vector changes of delta^T C^-1 delta <= 1e-4.
   // Boost <= 1 (the emulator path asks for 0.35) keeps ceil(baseline*boost).
-  if (0 == cache[0]) cache[0] = Ntable.N_a;
+  if (0 == boost_base[0]) boost_base[0] = Ntable.N_a;
   if (accuracy_boost > 1.0) {
     const int m = static_cast<int>(
       fmin(pow(2.0, ceil(log2(accuracy_boost))), 16.0));
-    Ntable.N_a = (cache[0] - 1)*m + 1;
+    Ntable.N_a = (boost_base[0] - 1)*m + 1;
   }
   else {
-    Ntable.N_a = static_cast<int>(ceil(cache[0]*accuracy_boost));
+    Ntable.N_a = static_cast<int>(ceil(boost_base[0]*accuracy_boost));
   }
   
-  if (0 == cache[1]) cache[1] = Ntable.N_ell[NODES_DENSE];
-  Ntable.N_ell[NODES_DENSE] = static_cast<int>(ceil(cache[1]*accuracy_boost));
+  if (0 == boost_base[1]) boost_base[1] = Ntable.N_ell[NODES_DENSE];
+  Ntable.N_ell[NODES_DENSE] = static_cast<int>(ceil(boost_base[1]*accuracy_boost));
 
-  if (0 == cache[2]) cache[2] = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-  Ntable.dCX_dlnk_nlnk[NODES_DENSE] = static_cast<int>(ceil(cache[2]*accuracy_boost));
+  if (0 == boost_base[2]) boost_base[2] = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
+  Ntable.dCX_dlnk_nlnk[NODES_DENSE] = static_cast<int>(ceil(boost_base[2]*accuracy_boost));
 
   // NL_Nchi: the baseline shared with init_nonlimber_accuracy_boost (see
   // nl_nchi_base); the combined boost refines by nested interval
@@ -1336,37 +1376,37 @@ void init_accuracy_boost(
   set_nl_nchi();
   debug("{}: NL_Nchi = {}", fname, Ntable.NL_Nchi);
 
-  if (0 == cache[4]) cache[4] = Ntable.nz_fine_sampling_factor;
+  if (0 == boost_base[4]) boost_base[4] = Ntable.nz_fine_sampling_factor;
   Ntable.nz_fine_sampling_factor = 
-                                static_cast<int>(ceil(cache[4]*accuracy_boost));
+                                static_cast<int>(ceil(boost_base[4]*accuracy_boost));
 
-  if (0 == cache[5]) cache[5] = Ntable.N_ell[NODES_COARSE];
-  Ntable.N_ell[NODES_COARSE] = static_cast<int>(ceil(cache[5]*accuracy_boost));
+  if (0 == boost_base[5]) boost_base[5] = Ntable.N_ell[NODES_COARSE];
+  Ntable.N_ell[NODES_COARSE] = static_cast<int>(ceil(boost_base[5]*accuracy_boost));
 
-  if (0 == cache[6]) cache[6] = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
+  if (0 == boost_base[6]) boost_base[6] = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
   Ntable.dCX_dlnk_nlnk[NODES_COARSE] =
-      static_cast<int>(ceil(cache[6]*accuracy_boost));
+      static_cast<int>(ceil(boost_base[6]*accuracy_boost));
 
-  if (0 == cache[7]) cache[7] = Ntable.N_M[NODES_COARSE];
-  Ntable.N_M[NODES_COARSE] = static_cast<int>(ceil(cache[7]*accuracy_boost));
+  if (0 == boost_base[7]) boost_base[7] = Ntable.N_M[NODES_COARSE];
+  Ntable.N_M[NODES_COARSE] = static_cast<int>(ceil(boost_base[7]*accuracy_boost));
 
-  if (0 == cache[8]) cache[8] = Ntable.halo_uks_n[UKS_N_LNC];
-  Ntable.halo_uks_n[UKS_N_LNC] = static_cast<int>(ceil(cache[8]*accuracy_boost));
+  if (0 == boost_base[8]) boost_base[8] = Ntable.halo_uks_n[UKS_N_LNC];
+  Ntable.halo_uks_n[UKS_N_LNC] = static_cast<int>(ceil(boost_base[8]*accuracy_boost));
 
-  if (0 == cache[9]) cache[9] = Ntable.halo_uks_n[UKS_N_LNZ];
-  Ntable.halo_uks_n[UKS_N_LNZ] = static_cast<int>(ceil(cache[9]*accuracy_boost));
+  if (0 == boost_base[9]) boost_base[9] = Ntable.halo_uks_n[UKS_N_LNZ];
+  Ntable.halo_uks_n[UKS_N_LNZ] = static_cast<int>(ceil(boost_base[9]*accuracy_boost));
 
-  if (0 == cache[10]) cache[10] = Ntable.halo_nfw_n;
-  Ntable.halo_nfw_n = static_cast<int>(ceil(cache[10]*accuracy_boost));
+  if (0 == boost_base[10]) boost_base[10] = Ntable.halo_nfw_n;
+  Ntable.halo_nfw_n = static_cast<int>(ceil(boost_base[10]*accuracy_boost));
 
-  if (0 == cache[11]) cache[11] = Ntable.halo_na_lens;
-  Ntable.halo_na_lens = static_cast<int>(ceil(cache[11]*accuracy_boost));
+  if (0 == boost_base[11]) boost_base[11] = Ntable.halo_na_lens;
+  Ntable.halo_na_lens = static_cast<int>(ceil(boost_base[11]*accuracy_boost));
 
-  if (0 == cache[12]) cache[12] = Ntable.halo_ia_na;
-  Ntable.halo_ia_na = static_cast<int>(ceil(cache[12]*accuracy_boost));
+  if (0 == boost_base[12]) boost_base[12] = Ntable.halo_ia_na;
+  Ntable.halo_ia_na = static_cast<int>(ceil(boost_base[12]*accuracy_boost));
 
-  if (0 == fptcache) fptcache = Ntable.FPT_internal_accuracy_boost;
-  Ntable.FPT_internal_accuracy_boost = fptcache*accuracy_boost;
+  if (0 == fpt_boost_base) fpt_boost_base = Ntable.FPT_internal_accuracy_boost;
+  Ntable.FPT_internal_accuracy_boost = fpt_boost_base*accuracy_boost;
 
   if (accuracy_boost>1) {
     Ntable.FPTboost = static_cast<int>(accuracy_boost-1.0);
