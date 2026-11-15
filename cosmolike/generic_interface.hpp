@@ -1021,16 +1021,15 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_sizes()
 
 // ---------------------------------------------------------------------------
 // One-call setup of the measurement side: computes the block sizes,
-// adds them into like.Ndata, then fills the IP singleton from the
+// sets like.Ndata to their sum, then fills the IP singleton from the
 // three files.
 //
-//   compute_..._sizes<N,M>() -> like.Ndata += sum of the block sizes
+//   compute_..._sizes<N,M>() -> like.Ndata = sum of the block sizes
 //     -> IP::set_mask    (needs like.Ndata; builds the sqzd index map)
 //     -> IP::set_data    (needs the mask to zero and compact the data)
 //     -> IP::set_inv_cov (needs the mask to zero, invert and compact)
 //
-// The += assumes like.Ndata is 0 on entry (initial_setup /
-// reset_like_struct leave it there): a second call doubles like.Ndata.
+// A second call (a new mask, in a notebook) replaces the first.
 //
 // Parameters:
 //   cov, mask, data - file paths handed to the IP setters
@@ -1050,6 +1049,7 @@ void init_data_Mx2pt_N(
   using spdlog::debug; using spdlog::info;
   debug("{}: {}", fname, errbegins);
   arma::Col<int>::fixed<M> ndv = compute_data_vector_Mx2pt_N_sizes<N,M>();
+  like.Ndata = 0;
   for(int i=0; i<(int) ndv.n_elem; i++) {
     like.Ndata += ndv(i);
   }
