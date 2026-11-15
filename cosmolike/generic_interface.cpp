@@ -427,7 +427,8 @@ static void reset_boost_baselines(void);
 // like.adopt_limber[LIMBER_GS] = 1 and pdeltaparams.runmode = "Halofit".
 // Module state outside the structs is cleared too: the accuracy-boost
 // baselines (reset_boost_baselines), the gg cross-pair list and the k
-// window of cosmo2D.c, and the run-mode latch of Pdelta (cosmo3D.c).
+// window of cosmo2D.c, the run-mode latch of Pdelta (cosmo3D.c) and the
+// baryon scenario (reset_bary_struct).
 // The cluster probe flags (cluster.probe[]) are reset by reset_cluster
 // (generic_interface_cluster.cpp), not here.
 //
@@ -469,6 +470,8 @@ void initial_setup()
   reset_boost_baselines();
   reset_like_struct();
   reset_cmb_struct();
+  // the baryon scenario multiplies P(k) and lives outside the structs
+  reset_bary_struct();
 
   // The gg cross-pair list lives in cosmo2D.c, outside the structs
   // above. Clear it too: a model built after a pair-carrying one in
@@ -1484,6 +1487,9 @@ void init_baryons_contamination(std::string sim)
   debug("{}: Baryon simulation w/ Name = {} & Tag = {} selected",fname,name,tag);
   std::string tmp = name + "-" + std::to_string(tag);
   init_baryons(tmp.c_str());
+  // the scenario multiplies P(k): every table built from P(k) keys on
+  // cosmology.random
+  cosmology.random = RandomNumber::get_instance().get();
   debug("{}: {}", fname, errends);
   return;
 }
@@ -1513,6 +1519,9 @@ void init_baryons_contamination(std::string sim, std::string all_sims_file)
   auto [name, tag] = get_baryon_sim_name_and_tag(sim);
   debug("{}: Baryon simulation w/ Name = {} & Tag = {} selected", fname, name, tag);
   init_baryons_from_hdf5_file(name.c_str(), tag, all_sims_file.c_str());
+  // the scenario multiplies P(k): every table built from P(k) keys on
+  // cosmology.random
+  cosmology.random = RandomNumber::get_instance().get();
   debug("{}: {}", fname, errends);
   return;
 }

@@ -35,9 +35,18 @@ barypara bary =
 // grid sizes and set is_Pk_bary = 0, so that PkRatio_baryons returns 1 (no
 // baryonic contamination) until init_baryons or init_baryons_from_hdf5_file
 // loads another scenario.
+//
+// Unloading a scenario changes P(k), so it also changes cosmology.random,
+// the key of every table built from P(k). C has no access to the nonce
+// generator (RandomNumber, generic_interface.hpp); one step gives a key
+// that differs from the current one, so every table built from the old
+// P(k) rebuilds.
 // ---------------------------------------------------------------------------
 void reset_bary_struct(void)
 {
+  if (1 == bary.is_Pk_bary) {
+    cosmology.random += 1;
+  }
   bary.is_Pk_bary = 0;
   bary.T = NULL;
   bary.Na_bins = 0;
