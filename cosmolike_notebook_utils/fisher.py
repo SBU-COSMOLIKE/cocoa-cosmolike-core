@@ -557,7 +557,10 @@ def plot_Fisher_amplitude_cut(F, names, fiducial, amplitude, biases, boxes,
             return f"${labels[name]}$"
         return name
 
-    colors = ["C0", "C3", "C2", "C1", "C4"]
+    # Okabe-Ito (colorblind safe, never red with green), each forecast
+    # also told apart by its line width
+    colors = ["#0072B2", "#E69F00", "#CC79A7", "#56B4E9", "#D55E00"]
+    widths = [2.4, 1.8, 1.3, 0.9, 0.7]
     gray = ListedColormap(["white", "0.80"])
     n = len(shown)
     if figsize is None:
@@ -591,7 +594,7 @@ def plot_Fisher_amplitude_cut(F, names, fiducial, amplitude, biases, boxes,
                     sigma = np.sqrt(covariances[k][col, col])
                     gauss = np.exp(-0.5*((x_grid - center[col])/sigma)**2)
                     ax.plot(x_grid, gauss, color=colors[k % len(colors)],
-                            lw=1.5)
+                            lw=widths[k % len(widths)])
                 ax.set_ylim(0.0, 1.1)
                 ax.set_yticks([])
             else:
@@ -618,7 +621,7 @@ def plot_Fisher_amplitude_cut(F, names, fiducial, amplitude, biases, boxes,
                                                            cov2, level)
                         ax.plot(x_line, y_line,
                                 color=colors[k % len(colors)],
-                                linestyle=style, lw=1.3)
+                                linestyle=style, lw=widths[k % len(widths)])
                 ax.plot(center[col], center[row], marker="*", color="k",
                         ms=9, mec="white", mew=0.5)
                 ax.set_ylim(boxes[y_name])
@@ -636,7 +639,8 @@ def plot_Fisher_amplitude_cut(F, names, fiducial, amplitude, biases, boxes,
 
     handles = []
     for k in range(len(covariances)):
-        handles.append(Line2D([], [], color=colors[k % len(colors)], lw=1.8,
+        handles.append(Line2D([], [], color=colors[k % len(colors)],
+                              lw=widths[k % len(widths)],
                               label=chain_names[k]))
     handles.append(Line2D([], [], color="0.3", lw=1.3, linestyle="-",
                           label=r"$1\sigma$ (68.3%)"))
@@ -775,7 +779,10 @@ def plot_Fisher_prior_walls(F, names, fiducial, params, ranges, boxes=None,
             return f"${labels[name]}$"
         return name
 
-    colors = ["C0", "C3", "C2", "C1", "C4"]
+    # Okabe-Ito (colorblind safe, never red with green), each forecast
+    # also told apart by its line width
+    colors = ["#0072B2", "#E69F00", "#CC79A7", "#56B4E9", "#D55E00"]
+    widths = [2.4, 1.8, 1.3, 0.9, 0.7]
     gray = ListedColormap(["white", "0.80"])
     n = len(params)
     if figsize is None:
@@ -800,7 +807,7 @@ def plot_Fisher_prior_walls(F, names, fiducial, params, ranges, boxes=None,
                     sigma = np.sqrt(covariances[k][col, col])
                     gauss = np.exp(-0.5*((x_grid - center[col])/sigma)**2)
                     ax.plot(x_grid, gauss, color=colors[k % len(colors)],
-                            lw=1.5)
+                            lw=widths[k % len(widths)])
                 ax.set_ylim(0.0, 1.1)
                 ax.set_yticks([])
             else:
@@ -829,7 +836,7 @@ def plot_Fisher_prior_walls(F, names, fiducial, params, ranges, boxes=None,
                                                            cov2, level)
                         ax.plot(x_line, y_line,
                                 color=colors[k % len(colors)],
-                                linestyle=style, lw=1.3)
+                                linestyle=style, lw=widths[k % len(widths)])
                 ax.plot(center[col], center[row], marker="*", color="k",
                         ms=9, mec="white", mew=0.5)
                 ax.set_ylim(ranges[y_name])
@@ -846,7 +853,8 @@ def plot_Fisher_prior_walls(F, names, fiducial, params, ranges, boxes=None,
 
     handles = []
     for k in range(len(covariances)):
-        handles.append(Line2D([], [], color=colors[k % len(colors)], lw=1.8,
+        handles.append(Line2D([], [], color=colors[k % len(colors)],
+                              lw=widths[k % len(widths)],
                               label=chain_names[k]))
     handles.append(Line2D([], [], color="0.3", lw=1.3, linestyle="-",
                           label=r"$1\sigma$ (68.3%)"))
