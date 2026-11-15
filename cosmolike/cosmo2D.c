@@ -296,6 +296,42 @@ int get_use_nonlinear_kaiser_GG(void)
   return use_nonlinear_kaiser_GG;
 }
 
+// The Limber limit of the nonlinear Kaiser loop parts at one node: equal
+// times, so every growth ordering of get_FPT_kaiser's spectra is D^4,
+//
+//   tdt = D^4 (P22_dt + A_t + A_d)   (density x velocity, per f)
+//   ttt = D^4 (P22_tt + 2 A_t)       (velocity x velocity, per f^2),
+//
+// at k in H0/c units; zero outside the FPTkaiser table. The Limber
+// linear terms subtract them (with the W_RSD kernel, which carries f),
+// so the FFTLog loop rows cancel at high l. get_FPT_kaiser must have
+// run (serially) for this cosmology.
+static inline void nl_kaiser_limber(
+    const double k,      // Limber wavenumber, H0/c units
+    const double D,      // growth factor at the node
+    double* const tdt,   // out: density x velocity loop
+    double* const ttt    // out: velocity x velocity loop
+  )
+{
+  const double lnkmin = log(FPTkaiser.krange[RANGE_MIN]);
+  const double lnkmax = log(FPTkaiser.krange[RANGE_MAX]);
+  const double dlnk   = (lnkmax - lnkmin)/FPTkaiser.N;
+  const double lnk    = log(k);
+  if (lnk < lnkmin || lnk > lnkmax) {
+    *tdt = 0.0;
+    *ttt = 0.0;
+    return;
+  }
+  const int N = FPTkaiser.N;
+  double t[4]; // P22_dt, P22_tt, A_d, A_t
+  for (int m=0; m<4; m++) {
+    t[m] = interpol1d(FPTkaiser.tab[m], N, lnkmin, lnkmax, dlnk, lnk);
+  }
+  const double D4 = D*D*D*D;
+  *tdt = D4*(t[0] + t[3] + t[2]);
+  *ttt = D4*(t[1] + 2.0*t[3]);
+}
+
 // refuse a path that has no halo-model IA implementation
 static void halo_IA_unsupported(const char* where)
 {
@@ -5757,6 +5793,12 @@ static void C_gg_tomo_limber_work(
   if (NULL != table || NULL != table_lin) {
     alpha2 = has_alpha2_galaxies();
   }
+  // the nonlinear Kaiser loops enter the linear term alone, the Limber
+  // limit of the non-Limber loop rows (nl_kaiser_limber)
+  int nlk = 0;
+  if (NULL != table_lin && 1 == rsd && 1 == use_nonlinear_kaiser_GG) {
+    nlk = 1;
+  }
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
@@ -5794,6 +5836,9 @@ static void C_gg_tomo_limber_work(
       (void) gbK(0.1, 0);
       FPT_bias_tables();
     }
+    if (1 == nlk) {
+      get_FPT_kaiser();
+    }
   }
   const double chi_a_min = (1 == rsd) ? chi(limits.a_min) : 0.0;
   double limbias[3] = {0.0, 0.0, 0.0};
@@ -5825,6 +5870,12 @@ static void C_gg_tomo_limber_work(
   }
   double*** WO  = NULL;
   double**** KB = NULL;
+  // the nonlinear Kaiser loops at every node: KN[0] = D^4 (P22_dt + A_t
+  // + A_d), KN[1] = D^4 (P22_tt + 2 A_t) (nl_kaiser_limber)
+  double**** KN = NULL;
+  if (1 == nlk) {
+    KN = (double****) malloc4d(2, nbin, nell, npts_max);
+  }
   if (1 == nonlinear_bias) {
     WO = (double***) malloc3d(4, nbin, npts_max);
     // slot 6, with table_dd only: 1 where the FPT tables cover k, the
@@ -5987,6 +6038,10 @@ static void C_gg_tomo_limber_work(
                              gg_kwin.Kbin[zl] :
                              gg_kwin.kmax/cn->data[CN_GROWFAC][p];
             KG[2][zl][i][p] *= gg_kwin_pass(k, K);
+          }
+          if (1 == nlk) {
+            nl_kaiser_limber(k, cn->data[CN_GROWFAC][p],
+                             &KN[0][zl][i][p], &KN[1][zl][i][p]);
           }
           if (1 == nonlinear_bias) {
             const double lnk = log(k);
@@ -6192,6 +6247,21 @@ static void C_gg_tomo_limber_work(
           }
           sum += galpha2(zl)*sum_ct;
         }
+        // The nonlinear Kaiser loops of the linear term (o = 1): the
+        // density x RSD and RSD x RSD rows against the loop spectra, in a
+        // separate sum so the terms above keep their exact order
+        if (1 == nlk && 1 == o) {
+          const double* restrict ldt = KN[0][zl][i];
+          const double* restrict ltt = KN[1][zl][i];
+          double sum_nlk = 0.0;
+          for (int p=0; p<npts; p++) {
+            const double Wdd  = WGAL[p]*b1[p];
+            const double loop = 2.0*Wdd*WRSD[p]*ldt[p] +
+                                WRSD[p]*WRSD[p]*ltt[p];
+            sum_nlk += mask[p]*(loop*dchida[p]/(fK[p]*fK[p]))*wt[p];
+          }
+          sum += sum_nlk;
+        }
         out[zl][i] = sum;
       }
     }
@@ -6201,6 +6271,9 @@ static void C_gg_tomo_limber_work(
   if (KB != NULL) free(KB);
   if (KH != NULL) {
     free(KH);
+  }
+  if (KN != NULL) {
+    free(KN);
   }
 }
 
@@ -14230,6 +14303,12 @@ static void C_gg_cross_tomo_limber_work(
   if (NULL != table || NULL != table_lin) {
     alpha2 = has_alpha2_galaxies();
   }
+  // the nonlinear Kaiser loops enter the linear term alone, the Limber
+  // limit of the non-Limber loop rows (nl_kaiser_limber)
+  int nlk = 0;
+  if (NULL != table_lin && 1 == rsd && 1 == use_nonlinear_kaiser_GG) {
+    nlk = 1;
+  }
 
   // the magnification row is formed when any bin of the pair list has
   // b_mag != 0; it then exists for every pair (a bin with b_mag = 0
@@ -14280,6 +14359,9 @@ static void C_gg_cross_tomo_limber_work(
       (void) gb3(0.1, 0);
       (void) gbK(0.1, 0);
       FPT_bias_tables();
+    }
+    if (1 == nlk) {
+      get_FPT_kaiser();
     }
   }
   const double chi_a_min = (1 == rsd) ? chi(limits.a_min) : 0.0;
@@ -14473,6 +14555,8 @@ static void C_gg_cross_tomo_limber_work(
         // the four above keep their exact order
         double sumct    = 0.0;
         double sumctlin = 0.0;
+        // the nonlinear Kaiser loops of the linear term, likewise
+        double sumnlk   = 0.0;
         const double alpha2_i = (1 == alpha2) ? galpha2(gg_cross_i[n]) : 0.0;
         const double alpha2_j = (1 == alpha2) ? galpha2(gg_cross_j[n]) : 0.0;
         for (int p=0; p<cn->npts; p++) {
@@ -14522,6 +14606,16 @@ static void C_gg_cross_tomo_limber_work(
             if (NULL != table_lin) {
               sumctlin += wt*maskp*ct*KL[n][i][p];
             }
+          }
+          // the nonlinear Kaiser loops (nl_kaiser_limber): each bin's
+          // density row against the other's RSD row, and the two RSD rows
+          if (1 == nlk) {
+            double tdt;
+            double ttt;
+            nl_kaiser_limber(ell/fK, cn->data[CN_GROWFAC][p], &tdt, &ttt);
+            const double loop = (dd_i*rsd_j + rsd_i*dd_j)*tdt +
+                                rsd_i*rsd_j*ttt;
+            sumnlk += wt*maskp*loop;
           }
           // full or density-only kernels, against the nonlinear
           // spectrum (KP) or the separable linear model (KL): the
@@ -14638,6 +14732,9 @@ static void C_gg_cross_tomo_limber_work(
         if (1 == alpha2) {
           sum    += sumct;
           sumlin += sumctlin;
+        }
+        if (1 == nlk) {
+          sumlin += sumnlk;
         }
         if (NULL != table) {
           table[n][i] = sum;
