@@ -1642,6 +1642,14 @@ double w_gg_tomo(
     log_fatal("wgg requested but tomo.clustering_Npowerspectra = %d", NSIZE);
     exit(1);
   }
+  // the spectra rows below are sized by the pair count, and the non-Limber
+  // core writes one row per lens bin
+  if (NSIZE != redshift.clustering_nbin) {
+    log_fatal("tomo.clustering_Npowerspectra = %d != clustering_nbin = %d: "
+              "call init_ntomo_powerspectra after changing the lens bins",
+              NSIZE, redshift.clustering_nbin);
+    exit(1);
+  }
 
   if (NULL == Pl || 
       NULL == w_vec || 
@@ -9514,7 +9522,8 @@ static double** C_cl_tomo_core(
       NULL == y || 
       NULL == Fy || 
       NULL == fx ||
-      fdiff2(cache[0], Ntable.random))
+      fdiff2(cache[0], Ntable.random) ||
+      cache[1] != (uint64_t) nbins)
   {
     if (x != NULL) free((void*) x);
     x =  (double*) malloc1d(nchi);
@@ -9560,6 +9569,7 @@ static double** C_cl_tomo_core(
     cfg[2].derivative = 0;
     cfg[2].N_pad = (long) ceil(500.0*nchi/512.0);
     cache[0] = Ntable.random;
+    cache[1] = (uint64_t) nbins;
   }
   // chi() returns comoving distance in c/H0 units and real_coverH0 =
   // coverH0/h0 = 2997.92458/h0 is c/H0 in Mpc, so chi_min/chi_max are
