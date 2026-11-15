@@ -5703,7 +5703,8 @@ double PointMass::get_pm(
 {
   static constexpr std::string_view fname = "PointMass::get_pm"sv;
   debug("{}: {}", fname, errbegins);
-  if (static_cast<int>(this->pm_.n_elem) <= zl) [[unlikely]] {
+  if (zl < 0 ||
+      static_cast<int>(this->pm_.n_elem) <= zl) [[unlikely]] {
     critical("{}: no point mass for lens bin {} ({} set): call "
              "set_point_mass for every lens bin", fname, zl, this->pm_.n_elem);
     exit(1);
