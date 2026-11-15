@@ -104,26 +104,27 @@ arma::Col<double> get_binning_real_space()
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Log-spaced bin-center multipoles of the Ncl fourier-space bins:
-//
-//   ell_i = exp(ln(lmin) + (i + 1/2) dlnl), dlnl = ln(lmax/lmin)/Ncl,
-//   [lmin, lmax] = like.lrange[RANGE_MIN, RANGE_MAX],
-//
-// the log-space midpoint (geometric center) of each bin.
+// The band-center multipoles of the Ncl Fourier-space bins, like.ell: the
+// log-space midpoints of init_binning_fourier, or the explicit centers of
+// init_binning_fourier_ells - the multipoles the data vectors use.
 //
 // Parameters:
-//   none (reads like.Ncl, like.lrange[RANGE_MIN], like.lrange[RANGE_MAX])
+//   none (reads like.Ncl, like.ell)
 //
 // Returns:
 //   arma::Col of length like.Ncl: the bin-center multipoles
 // ---------------------------------------------------------------------------
 arma::Col<double> get_binning_fourier_space()
-{  
+{
+  if (NULL == like.ell ||
+      like.Ncl <= 0) {
+    spdlog::critical("get_binning_fourier_space: no Fourier binning; call "
+                     "init_binning_fourier or init_binning_fourier_ells");
+    exit(1);
+  }
   arma::Col<double> result(like.Ncl, arma::fill::none);
-  const double logdl = (std::log(like.lrange[RANGE_MAX]) -
-                        std::log(like.lrange[RANGE_MIN]))/like.Ncl;
-  for (int i = 0; i < like.Ncl; i++) {  
-    result(i) = std::exp(std::log(like.lrange[RANGE_MIN]) + (i + 0.5)*logdl);
+  for (int i = 0; i < like.Ncl; i++) {
+    result(i) = like.ell[i];
   }
   return result;
 }
