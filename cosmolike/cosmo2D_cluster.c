@@ -1195,6 +1195,21 @@ static void check_cluster_setup_cs(void)
       redshift.shear_nbin);
     exit(1);
   }
+  // the source alignment of cluster lensing is the NLA term W_source A_1:
+  // a TATT model with tidal-torque or density-weighting amplitudes would
+  // be silently dropped
+  if (1 == cluster.include_ia &&
+      IA_MODEL_TATT == nuisance.IA_MODEL) {
+    for (int i=0; i<redshift.shear_nbin; i++) {
+      if (0.0 != nuisance.ia[1][i] ||
+          0.0 != nuisance.ia[2][i]) {
+        log_fatal("cluster lensing implements the NLA A_1 term only: set "
+                  "the TATT amplitudes A_2 and b_TA to zero, or the IA "
+                  "model to NLA");
+        exit(1);
+      }
+    }
+  }
 }
 
 
