@@ -186,6 +186,16 @@ void set_include_HOD_GX(const int flag)
     log_fatal("invalid include_HOD_GX = %d (0 or 1)", flag);
     exit(1);
   }
+  // the low-rank and nonlinear Kaiser gg rows are gated off with HOD
+  // galaxies: switching HOD on under them would drop those rows silently
+  if (1 == flag && 1 == use_lowrank_DD_GG) {
+    log_fatal("include_HOD_GX = 1 requires use_lowrank_DD_GG = 0");
+    exit(1);
+  }
+  if (1 == flag && 1 == use_nonlinear_kaiser_GG) {
+    log_fatal("include_HOD_GX = 1 requires use_nonlinear_kaiser_GG = 0");
+    exit(1);
+  }
   include_HOD_GX = flag;
 }
 
