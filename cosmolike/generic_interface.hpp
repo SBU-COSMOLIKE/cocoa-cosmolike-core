@@ -253,7 +253,7 @@ private:
     }
 
     double get_inv_cov_masked_sqzd(const int ci, const int cj) const {
-      static constexpr std::string_view fn = "IP::get_dv_masked_sqzd"sv;
+      static constexpr std::string_view fn = "IP::get_inv_cov_masked_sqzd"sv;
       if (ci >= this->ndata_sqzd_ || ci < 0) [[unlikely]] {
         spdlog::critical(errornv, fn, ci, 0, this->ndata_sqzd_); exit(1);
       }
