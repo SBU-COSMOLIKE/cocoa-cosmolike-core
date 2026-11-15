@@ -10022,7 +10022,7 @@ static double** C_cl_tomo_core(
         active[i][jj] = (i < nbins || jj < 2) ? 1 : 0;
       }
     }
-    tmpl = (double***) malloc3d(4, 16, nchi);
+    tmpl = (double***) malloc3d(4, BLOCK, nchi);
   }
 
   cfftlog_ells_p1((double* const) x, 
