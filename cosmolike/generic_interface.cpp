@@ -5634,6 +5634,11 @@ double PointMass::get_pm(
 {
   static constexpr std::string_view fname = "PointMass::get_pm"sv;
   debug("{}: {}", fname, errbegins);
+  if (static_cast<int>(this->pm_.n_elem) <= zl) [[unlikely]] {
+    critical("{}: no point mass for lens bin {} ({} set): call "
+             "set_point_mass for every lens bin", fname, zl, this->pm_.n_elem);
+    exit(1);
+  }
   constexpr double Goverc2 = 1.6e-23;
   const double a_lens = 1.0/(1.0 + zmean(zl));
   const double chi_lens = chi(a_lens);
