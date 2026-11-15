@@ -1229,6 +1229,17 @@ void limber_spectra_cov(
     log_fatal("limber_spectra_cov needs nell > 0, power mode 0..2 and RSD 0/1");
     exit(1);
   }
+  // the covariance's RSD fields carry no redshift-space counterterm
+  if (1 == include_rsd) {
+    for (int i=0; i<redshift.clustering_nbin; i++) {
+      if (0.0 != galpha2(i)) {
+        log_fatal("limber_spectra_cov: alpha_2 = %g in lens bin %d, but the "
+                  "covariance omits the alpha_2 counterterm: set alpha_2 = 0 "
+                  "or turn RSD off for the covariance", galpha2(i), i);
+        exit(1);
+      }
+    }
+  }
   for (int index=0; index<nell; index++) {
     if (!isfinite(ell[index])
         || ell[index] < 1.0) {
