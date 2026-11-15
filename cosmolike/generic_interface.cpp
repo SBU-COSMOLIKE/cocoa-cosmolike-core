@@ -127,8 +127,8 @@ void set_blas_single_threaded()
 //
 // Implementation notes:
 //   - errno must be cleared before the call. strtod sets errno on range
-//     errors but never clears it, so a stale ERANGE from elsewhere would
-//     otherwise be misattributed to this parse.
+//     errors but never clears it, so a leftover ERANGE from an earlier
+//     call elsewhere would otherwise be misattributed to this parse.
 //   - end == tok.c_str() is the canonical "no digits consumed" check;
 //     this catches empty tokens, pure whitespace, and garbage like "abc".
 //   - Tokens like "nan" and "inf" parse without a range error, so they

@@ -13080,6 +13080,476 @@ void unset_gg_kwindow(void)
   gg_kwin.nonce++;
 }
 
+// ---------------------------------------------------------------------------
+// The white-noise constant of the one-loop galaxy spectrum under the
+// IR k window.
+//
+// CosmoLike renormalizes the one-loop galaxy spectrum by subtracting
+// the k -> 0 limits of the quadratic-operator templates (the sigma4
+// subtractions of C_gg_tomo_limber_work). The subtracted spectrum is
+// therefore the raw (unsubtracted) loop sum plus one constant power
+// per bin pair,
+//
+//   P_wn = -(sigma4/2) c_i c_j D^2(z_i) D^2(z_j),  c = b2 + (2/3) bs2,
+//
+// where b2 and bs2 are the quadratic and tidal galaxy biases, D is the
+// linear growth factor with D(0) = 1, and sigma4 is half the k -> 0
+// plateau of P_d2d2 (pt_cfastpt.c). The raw loop sum carries a
+// white-noise plateau of exactly -P_wn at low k, so in 3D the two
+// cancel and the subtracted spectrum vanishes as k -> 0.
+//
+// The low-rank engine cannot project the subtracted spectrum: its
+// factorization needs sqrt(P_gg), which exists only for the positive
+// raw sum (P_wn < 0 drives the subtracted spectrum through zero). The
+// engine therefore projects the raw sum non-Limber and restores P_wn
+// through its Limber splice. Without a window this is exact, because a
+// constant power projects locally: by the closure relation of the
+// spherical Bessel functions,
+//
+//   int_0^inf dk k^2 j_l(k chi1) j_l(k chi2)
+//     = pi/(2 chi1^2) delta(chi1 - chi2),
+//
+// the non-Limber and Limber projections of a constant are equal.
+//
+// The IR k window cuts the k integral at K = kmax/D(zbar) and breaks
+// that equality. The raw sum is windowed inside the FFTLog sum, which
+// keeps only the finite-k part of its plateau. The constant rides the
+// Limber terms of the splice, whose node step keeps all (on a kept
+// band of a thin bin) or nearly all of its local projection. The two
+// plateau pieces then no longer cancel: C_l^IR comes out too negative
+// and C_l^UV = full - IR too positive, each by the plateau fraction
+// the finite-k kernel leaves above the cut.
+//
+// This function restores the cancellation. Per spectrum it replaces
+// the Limber-step IR projection of P_wn (called L_K below) by the
+// finite-k projection N_K with the same threshold the FFTLog sum uses
+// - Kbin for an auto, Kpair for a pair - by adding N_K - L_K to the IR
+// spectra in place. N_K is the windowed non-Limber projection of the
+// constant,
+//
+//   N_K = -(sigma4/2) (2/pi) int_0^K dk k^2 Delta_i(k) Delta_j(k),
+//
+// where Delta_b(k) = int dchi f_b(chi) j_l(k chi) and f_b = W_gal D^2
+// c_b collects bin b's radial kernel with the growth and bias factors
+// of the constant. The k integral has a closed form per node pair
+// (a, b) of the chi grid,
+//
+//   int_0^K dk k^2 j_l(ka) j_l(kb)
+//     = K^2 [b j_l(Ka) j_{l-1}(Kb) - a j_{l-1}(Ka) j_l(Kb)]/(a^2 - b^2)
+//
+// and (K^3/2) [j_l(Ka)^2 - j_{l-1}(Ka) j_{l+1}(Ka)] at a = b, so N_K
+// reduces to a double sum over the grid with no k integration left.
+// L_K is the same constant through the Limber integrand of
+// C_gg_tomo_limber_work / C_gg_cross_tomo_limber_work: f_i f_j / chi^2
+// under the per-node step k <= kmax/D(a), the FPT k range and the RSD
+// reach mask. Evaluating N_K and L_K on one shared chi grid lets their
+// common full-projection part cancel node by node, so the small
+// difference is far better converged than either term alone.
+//
+// The correction touches exactly the band centers the low-rank splice
+// corrects, 1 <= ell < lowrank_DD_GG_lmax - 1, with N_K interpolated
+// linearly between the two integers around each band center, as the
+// splice interpolates its non-Limber difference. Above the cap the
+// spectrum is Limber throughout, plateau and constant through the same
+// node step, which is already consistent.
+//
+// Runs only under the IR window (set_gg_kwindow(kmax, 1); fatal
+// otherwise) and only when the low-rank engine computes one-loop
+// galaxies (use_lowrank_DD_GG and has_b2_galaxies); with either off
+// there is no spliced constant to fix and it returns at once.
+//
+// Parameters:
+//   ells - band centers (length nell)
+//   nell - number of band centers
+//   out  - autos [clustering_nbin][nell], corrected in place
+//   outx - pairs [gg_cross_npairs][nell], corrected in place (NULL
+//          without pairs)
+// ---------------------------------------------------------------------------
+void C_gg_kwindow_white_noise_ells(
+    const double* ells,   // band centers (length nell)
+    const int nell,       // number of band centers
+    double** out,         // autos [clustering_nbin][nell]
+    double** outx         // pairs [gg_cross_npairs][nell] (or NULL)
+  )
+{
+  if (1 != gg_kwin.active || 1 != gg_kwin.keep_ir) {
+    log_fatal("C_gg_kwindow_white_noise_ells needs the IR k window "
+              "(set_gg_kwindow(kmax, 1))");
+    exit(1);
+  }
+  if (1 != use_lowrank_DD_GG || 0 == has_b2_galaxies()) {
+    return;
+  }
+  const int nbins  = redshift.clustering_nbin;
+  const int npairs = gg_cross_npairs;
+  if (npairs > 0 && NULL == outx) {
+    log_fatal("C_gg_kwindow_white_noise_ells: %d cross pairs and no "
+              "output", npairs);
+    exit(1);
+  }
+  const int LNL = lowrank_DD_GG_lmax;
+
+  // Collect the integer multipoles N_K must be computed at: the splice
+  // interpolates between l0 = floor(ell) and l0 + 1 around every band
+  // center in [1, LNL - 1), so only those integers are needed. ls packs
+  // them in ascending order; lidx maps an integer back to its slot.
+  int* need = (int*) calloc(LNL + 2, sizeof(int));
+  if (NULL == need) {
+    log_fatal("array allocation failed");
+    exit(1);
+  }
+  int lmax_need = 0;
+  for (int i=0; i<nell; i++) {
+    if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
+      const int l0 = (int) floor(ells[i]);
+      need[l0] = 1;
+      need[l0 + 1] = 1;
+      if (l0 + 1 > lmax_need) {
+        lmax_need = l0 + 1;
+      }
+    }
+  }
+  if (0 == lmax_need) {
+    free(need);
+    return;
+  }
+  int nls = 0;
+  for (int l=1; l<=lmax_need; l++) {
+    nls += need[l];
+  }
+  int* ls = (int*) malloc(sizeof(int)*nls);
+  int* lidx = (int*) malloc(sizeof(int)*(lmax_need + 1));
+  if (NULL == ls || NULL == lidx) {
+    log_fatal("array allocation failed");
+    exit(1);
+  }
+  {
+    int m = 0;
+    for (int l=0; l<=lmax_need; l++) {
+      lidx[l] = -1;
+      if (l >= 1 && 1 == need[l]) {
+        lidx[l] = m;
+        ls[m++] = l;
+      }
+    }
+  }
+  free(need);
+  // Bessel orders 0 .. JROWS - 1 are tabulated: the closed form reads
+  // j_{l-1}, and on the diagonal a = b also j_{l+1}, so the table goes
+  // one order above the largest multipole needed
+  const int JROWS = lmax_need + 2;
+
+  // The FPT one-loop tables supply sigma4 and the k range they cover.
+  // The Limber sums zero every one-loop entry outside that range,
+  // constant included, and the RSD rows mask nodes whose second radius
+  // (ell + 1)/k lies beyond the distance tables; L_K below must apply
+  // the same masks, or the correction would move power the Limber terms
+  // never carried. Serial warm-up, before the parallel loops (the FPT
+  // tables are owned elsewhere when IA_code != 0).
+  if (0 == nuisance.IA_code) {
+    get_FPT_bias();
+  }
+  const double s4 = FPTbias.sigma4;
+  const double lnkmin = log(FPTbias.krange[RANGE_MIN]);
+  const double lnkmax = log(FPTbias.krange[RANGE_MAX]);
+  const int rsd = (1 == include_RSD_GG) ? 1 : 0;
+  const double chi_a_min = (1 == rsd) ? chi(limits.a_min) : 0.0;
+
+  // One uniform chi grid serves every bin: a step of 0.5 Mpc/h (in
+  // c/H0 units here), halved per level of integration_accuracy up to
+  // level 2. A shared grid is load-bearing twice over. Two bins' nodes
+  // coincide on their support overlap, so the a = b closed-form limit
+  // applies there instead of the 0/0 of the general form; and N_K and
+  // L_K below are discretized on the same nodes, so the part they share
+  // cancels node by node in the difference.
+  const int hdi = abs(Ntable.high_def_integration);
+  const int halvings = (hdi < 2) ? hdi : 2;
+  const double h = (0.5/cosmology.coverH0)/((double) (1 << halvings));
+
+  // Sample f_b = W_gal D^2 (b2 + (2/3) bs2) on each bin's support: the
+  // radial kernel of the constant, one factor D^2 c per side of the
+  // projection. gfb keeps D alone for the per-node Limber threshold
+  // kmax/D(a) of L_K. Serial on purpose: W_gal, growfac and the bias
+  // readers build lazy tables, and lazy builds from a parallel region
+  // race. Nodes where |f| < 1e-12 max |f| (the zero-padded tails of the
+  // n(z) histogram) are trimmed off: they contribute nothing and the
+  // double sum below is quadratic in the node count.
+  int q0[MAX_SIZE_ARRAYS];
+  int nq[MAX_SIZE_ARRAYS];
+  double* fb[MAX_SIZE_ARRAYS];
+  double* gfb[MAX_SIZE_ARRAYS];
+  for (int b=0; b<nbins; b++) {
+    const int qa = (int) ceil(chi(amax_lens(b))/h);
+    const int qb = (int) floor(chi(amin_lens(b))/h);
+    const int n  = (qb >= qa) ? qb - qa + 1 : 0;
+    double* f  = (double*) malloc(sizeof(double)*((n > 0) ? n : 1));
+    double* gf = (double*) malloc(sizeof(double)*((n > 0) ? n : 1));
+    if (NULL == f || NULL == gf) {
+      log_fatal("array allocation failed");
+      exit(1);
+    }
+    double fmax = 0.0;
+    for (int q=0; q<n; q++) {
+      const double x = (qa + q)*h;
+      const double a = a_chi(x);
+      const double z = 1.0/a - 1.0;
+      const double D = growfac(a);
+      f[q]  = W_gal(a, b, hoverh0(a))*D*D*(gb2(z, b) + (2.0/3.0)*gbs2(z, b));
+      gf[q] = D;
+      if (fabs(f[q]) > fmax) {
+        fmax = fabs(f[q]);
+      }
+    }
+    int lo = 0;
+    int hi = n - 1;
+    if (fmax > 0.0) {
+      while (lo < n && fabs(f[lo]) <= 1.0e-12*fmax) lo++;
+      while (hi > lo && fabs(f[hi]) <= 1.0e-12*fmax) hi--;
+    }
+    if (fmax > 0.0 && lo <= hi) {
+      q0[b] = qa + lo;
+      nq[b] = hi - lo + 1;
+      memmove(f, f + lo, sizeof(double)*nq[b]);
+      memmove(gf, gf + lo, sizeof(double)*nq[b]);
+    }
+    else {
+      q0[b] = 0;
+      nq[b] = 0;
+    }
+    fb[b]  = f;
+    gfb[b] = gf;
+  }
+
+  const int nspec = nbins + npairs;
+  double** dN = (double**) malloc2d(nspec, nls); // N_K at the integers
+
+  // the GSL error handler aborts the process by default; the Bessel
+  // calls below check their status codes instead (handler restored
+  // after the loop)
+  gsl_error_handler_t* gsl_handler_saved = gsl_set_error_handler_off();
+  int bessel_failed = 0;
+
+  // One iteration computes N_K for one spectrum s - an auto (s < nbins)
+  // or a cross pair - at every needed integer multipole: it tabulates
+  // the spherical Bessel functions at that spectrum's own threshold K,
+  // then runs the closed-form double sum over the two kernels' nodes.
+  // Spectra are independent and their supports differ widely in size,
+  // so the dynamic schedule balances the load; bessel_failed collects
+  // the GSL status across threads through the OR reduction.
+  #pragma omp parallel for schedule(dynamic, 1) reduction(|:bessel_failed)
+  for (int s=0; s<nspec; s++) {
+    const int bi = (s < nbins) ? s : gg_cross_i[s - nbins];
+    const int bj = (s < nbins) ? s : gg_cross_j[s - nbins];
+    const double K = ((s < nbins) ? gg_kwin.Kbin[s] :
+                      gg_kwin.Kpair[s - nbins])*cosmology.coverH0;
+    for (int m=0; m<nls; m++) {
+      dN[s][m] = 0.0;
+    }
+    if (0 == nq[bi] || 0 == nq[bj]) {
+      continue;
+    }
+    // Tabulate j_l(K chi) for l = 0 .. JROWS - 1 at every node of the
+    // two bins, stored by order (J[l][q], contiguous in q so the double
+    // sum below reads rows). Per node, GSL evaluates two orders exactly
+    // and the standard recurrence j_{l-1} = (2l + 1)/x j_l - j_{l+1}
+    // fills the rest downward - the numerically stable direction, since
+    // j_l grows toward small l at fixed x. The seed order leff sits in
+    // the Airy tail l - x > 20 (x/2)^(1/3) + 20, where j_l(x) has
+    // fallen below about 1e-20 of its peak; orders above leff stay at
+    // the zero the table was initialized to.
+    const int same = (bi == bj);
+    double** Jt[2] = {NULL, NULL};
+    for (int side=0; side<(same ? 1 : 2); side++) {
+      const int b = (0 == side) ? bi : bj;
+      double** J = (double**) malloc2d(JROWS, nq[b]);
+      double* col = (double*) malloc(sizeof(double)*JROWS);
+      if (NULL == col) {
+        log_fatal("array allocation failed");
+        exit(1);
+      }
+      for (int q=0; q<nq[b]; q++) {
+        const double x = K*(q0[b] + q)*h;
+        int leff = (int) floor(x + 20.0*cbrt(0.5*x) + 20.0);
+        if (leff > JROWS - 1) {
+          leff = JROWS - 1;
+        }
+        for (int l=0; l<JROWS; l++) {
+          col[l] = 0.0;
+        }
+        gsl_sf_result r1;
+        gsl_sf_result r0;
+        const int st1 = gsl_sf_bessel_jl_e(leff + 1, x, &r1);
+        const int st0 = gsl_sf_bessel_jl_e(leff, x, &r0);
+        if (st0 != GSL_SUCCESS || st1 != GSL_SUCCESS) {
+          bessel_failed = 1;
+        }
+        double jp = r1.val;
+        double jc = r0.val;
+        col[leff] = jc;
+        for (int l=leff; l>=1; l--) {
+          const double jm = (2.0*l + 1.0)/x*jc - jp;
+          jp = jc;
+          jc = jm;
+          col[l - 1] = jm;
+        }
+        for (int l=0; l<JROWS; l++) {
+          J[l][q] = col[l];
+        }
+      }
+      free(col);
+      Jt[side] = J;
+    }
+    double** Ji = Jt[0];
+    double** Jj = same ? Jt[0] : Jt[1];
+    const double* restrict fi = fb[bi];
+    const double* restrict fj = fb[bj];
+
+    // The closed form turns N_K into a double sum over node pairs,
+    //
+    //   N_K = -(sigma4/2) (2/pi) K^2 h^2 sum_{a,b} f_i(a) f_j(b)
+    //         I_l(x_a, x_b),
+    //
+    // where x = chi at the node and K^2 I_l is the k integral of
+    // k^2 j_l(k x_a) j_l(k x_b) up to K. One m iteration evaluates one
+    // integer multipole l; the inner pair of loops walks bin i's nodes
+    // against bin j's. The restrict row pointers (order l and its two
+    // neighbors, for both bins) let the innermost loop read the Bessel
+    // tables contiguously.
+    for (int m=0; m<nls; m++) {
+      const int l = ls[m];
+      const double* restrict jla  = Ji[l];
+      const double* restrict jlma = Ji[l - 1];
+      const double* restrict jlpa = Ji[l + 1];
+      const double* restrict jlb  = Jj[l];
+      const double* restrict jlmb = Jj[l - 1];
+      double S = 0.0;
+      for (int a=0; a<nq[bi]; a++) {
+        const int qa = q0[bi] + a;
+        const double xa = qa*h;
+        const double Aa = jla[a];
+        const double Ba = jlma[a];
+        // The general closed form is 0/0 at equal radii. On the shared
+        // grid an equal radius can only be bin j's node with the same
+        // grid index qa; that node (bd, when it lies inside bin j's
+        // support) is skipped below and added through the a = b limit.
+        const int bd = qa - q0[bj];
+        double row = 0.0;
+        // An auto pairs a kernel with itself: I_l(x_a, x_b) and
+        // f_i f_j are both symmetric under a <-> b, so only the nodes
+        // above the diagonal are summed and the row is doubled.
+        const int b0 = same ? a + 1 : 0;
+        for (int b=b0; b<nq[bj]; b++) {
+          if (b == bd) {
+            continue;
+          }
+          // the off-diagonal closed form, without the K^2 prefactor:
+          // I_l = [x_b j_l(Kx_a) j_{l-1}(Kx_b)
+          //        - x_a j_{l-1}(Kx_a) j_l(Kx_b)]/(x_a^2 - x_b^2)
+          const double xb = (q0[bj] + b)*h;
+          row += fj[b]*(xb*Aa*jlmb[b] - xa*Ba*jlb[b])/(xa*xa - xb*xb);
+        }
+        if (same) {
+          row *= 2.0;
+        }
+        if (bd >= 0 && bd < nq[bj]) {
+          // the a = b limit, again without the K^2 prefactor:
+          // I_l = (K/2) [j_l(Kx_a)^2 - j_{l-1}(Kx_a) j_{l+1}(Kx_a)]
+          row += fj[bd]*0.5*K*(Aa*Aa - Ba*jlpa[a]);
+        }
+        S += fi[a]*row;
+      }
+      // assemble N_K: the amplitude -(sigma4/2) of the constant (its
+      // c_i c_j D^4 factors already live in f_i f_j), the (2/pi) of the
+      // non-Limber measure, the K^2 common to both closed forms, and
+      // one grid step h per chi integral
+      dN[s][m] = -0.5*s4*(2.0/M_PI)*K*K*h*h*S;
+    }
+    free(Jt[0]);
+    if (!same) {
+      free(Jt[1]);
+    }
+  }
+  gsl_set_error_handler(gsl_handler_saved);
+  if (bessel_failed) {
+    log_fatal("C_gg_kwindow_white_noise_ells: a spherical Bessel "
+              "evaluation failed");
+    exit(1);
+  }
+
+  // Apply the correction. One iteration finishes one (spectrum, band
+  // center) pair: N_K at the band center, interpolated linearly between
+  // the two integers exactly as the splice interpolates its non-Limber
+  // difference, minus L_K - the Limber-step projection the IR spectra
+  // already carry, so what the splice put in is what comes out. L_K is
+  // rebuilt here rather than read from the engine: it is a plain 1D
+  // integral, and on this same grid its full-projection part cancels
+  // against N_K's. Its integrand mirrors the Limber workers': the node
+  // step k <= kmax/D(a), the FPT k range and the RSD reach mask, so no
+  // node contributes here that did not contribute there.
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int s=0; s<nspec; s++) {
+    for (int i=0; i<nell; i++) {
+      if (!(ells[i] >= 1.0 && ells[i] < LNL - 1.0)) {
+        continue;
+      }
+      const int bi = (s < nbins) ? s : gg_cross_i[s - nbins];
+      const int bj = (s < nbins) ? s : gg_cross_j[s - nbins];
+      const int l0 = (int) floor(ells[i]);
+      const double t = ells[i] - l0;
+      const double NK = (1.0 - t)*dN[s][lidx[l0]] + t*dN[s][lidx[l0 + 1]];
+      // the Limber integrand f_i f_j / chi^2 lives on the overlap of
+      // the two trimmed supports, in shared-grid indices
+      const int qlo = (q0[bi] > q0[bj]) ? q0[bi] : q0[bj];
+      const int qe_i = q0[bi] + nq[bi];
+      const int qe_j = q0[bj] + nq[bj];
+      const int qhi = (qe_i < qe_j) ? qe_i : qe_j;
+      const double ell = ells[i] + 0.5;
+      double LK = 0.0;
+      for (int q=qlo; q<qhi; q++) {
+        const double x = q*h;
+        const double k = ell/x; // the Limber wavenumber of this node
+        const double lnk = log(k);
+        // outside the FPT k range the Limber sums zero their one-loop
+        // entries, the constant among them
+        if (lnk < lnkmin || lnk > lnkmax) {
+          continue;
+        }
+        // the RSD rows mask the whole node when the second sampling
+        // radius (ell + 1)/k reaches beyond the distance tables
+        if (1 == rsd && (ell + 1.0)/k > chi_a_min) {
+          continue;
+        }
+        // the per-node window step: D depends on chi alone, so either
+        // bin's growth table serves; the threshold kmax/D(a) is in
+        // h/Mpc and coverH0 converts it to the engines' k units
+        const double D = gfb[bi][q - q0[bi]];
+        if (k > gg_kwin.kmax/D*cosmology.coverH0) {
+          continue;
+        }
+        LK += fb[bi][q - q0[bi]]*fb[bj][q - q0[bj]]/(x*x);
+      }
+      // the amplitude -(sigma4/2) and one grid step h; the c_i c_j D^4
+      // factors of the constant already live in f_i f_j
+      LK *= -0.5*s4*h;
+      const double delta = NK - LK;
+      if (s < nbins) {
+        out[s][i] += delta;
+      }
+      else {
+        outx[s - nbins][i] += delta;
+      }
+    }
+  }
+
+  free(dN);
+  for (int b=0; b<nbins; b++) {
+    free(fb[b]);
+    free(gfb[b]);
+  }
+  free(ls);
+  free(lidx);
+}
+
 // The Gauss-Legendre rule of every pair panel, shared by the three pair
 // integrals: the pair Limber batch, its FKEM twin and the low-rank core.
 //

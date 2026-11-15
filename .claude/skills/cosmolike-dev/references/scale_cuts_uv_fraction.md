@@ -95,6 +95,66 @@ Applying the step after the transforms is exact: the final sum is
 linear in the per-wavenumber contributions, so partitioning the
 wavenumbers partitions C_l with no numerical residue beyond rounding.
 
+## The white-noise constant of the one-loop spectrum
+
+The one-loop galaxy templates are renormalized by subtracting the
+k -> 0 limits of the quadratic-operator spectra (the sigma4
+subtractions of `C_gg_tomo_limber_work`). The subtracted spectrum is
+therefore the raw loop sum plus one constant power per bin pair,
+
+    P_wn = -(sigma4/2) c_i c_j D^2(z_i) D^2(z_j),  c = b2 + (2/3) bs2,
+
+and the raw sum carries a white-noise plateau of exactly -P_wn at low
+k, so in 3D the two cancel and the subtracted spectrum vanishes as
+k -> 0. Under the window, each engine must split the plateau and the
+constant with the same step, or the cancellation leaks into the IR/UV
+split:
+
+- Limber (`adopt_limber_gg = 1`): the subtracted templates are
+  evaluated per node, so plateau and constant pass the same node step.
+  Consistent as is.
+- Classic FKEM: the FFTLog sum carries only the separable linear
+  spectrum; every one-loop term, plateau and constant alike, rides the
+  Limber difference under the node step. Consistent as is.
+- Low-rank: the factorization needs `sqrt(P_gg)`, which exists only
+  for the positive raw sum (P_wn < 0 drives the subtracted spectrum
+  through zero). The raw sum therefore passes the finite-k step of the
+  FFTLog sum while the spliced constant passes the Limber node step.
+  On a kept band the node step keeps (nearly) all of the constant's
+  local projection, the finite-k kernel keeps only a fraction of the
+  raw plateau, and the IR part comes out too negative - the UV part
+  too positive - by the difference. The spurious UV excess grows as
+  c^2 and moved kept bands at the paper settings, where many bands sit
+  within 1e-3 of alpha.
+
+`C_gg_kwindow_white_noise_ells` (cosmo2D.c) repairs the low-rank IR
+spectra in place: it replaces the constant's Limber-step IR projection
+L_K by the finite-k projection N_K at the same threshold the FFTLog
+sum uses (`Kbin` per auto, `Kpair` per pair). The k integral of N_K
+has a closed form per radial node pair,
+
+    int_0^K dk k^2 j_l(ka) j_l(kb)
+      = K^2 [b j_l(Ka) j_{l-1}(Kb) - a j_{l-1}(Ka) j_l(Kb)]/(a^2 - b^2)
+
+and (K^3/2) [j_l(Ka)^2 - j_{l-1}(Ka) j_{l+1}(Ka)] at a = b, so N_K is
+a double sum over a radial grid with no k integration. The grid is
+uniform in chi, 0.5 Mpc/h halved per `integration_accuracy` level up
+to level 2, and shared by every bin: overlapping supports meet on
+common nodes (where the a = b limit applies), and L_K is discretized
+on the same nodes, so the part the two projections share cancels node
+by node and only the small difference survives discretization error.
+The spherical Bessel tables come from two exact GSL evaluations per
+node at an order in the Airy tail (l - x > 20 (x/2)^(1/3) + 20, where
+j_l is below ~1e-20 of its peak) and stable downward recurrence.
+
+The correction applies exactly where the splice put the constant: at
+band centers 1 <= ell < `lowrank_DD_GG_lmax` - 1, with N_K
+interpolated linearly between the two neighboring integers as the
+splice interpolates, and L_K mirroring the Limber workers' integrand
+(per-node step kmax/D(a), FPT k range, RSD reach mask). Above the cap
+the spectrum is Limber throughout and already consistent. Without a
+window, or with linear bias only, nothing changes.
+
 ## Rejected prototype: stepping P(k) before the transforms
 
 A prototype multiplied P(k) by the step before the FFTLog transforms.
@@ -129,7 +189,10 @@ region or hold a window across unrelated evaluations.
   with or without the window — Limber when `adopt_limber[LIMBER_GG]`
   is set, the configured non-Limber engine otherwise; autos before the
   crosses, which consume the stash. `kmax <= 0` means no window; the
-  window is always unset on return.
+  window is always unset on return. With the low-rank engine a
+  windowed IR run also receives the white-noise correction above, and
+  a windowed UV run is computed as full - IR, so IR + UV = full stays
+  exact.
 - `gg_scale_cuts_tomo_ells_work`: over an ascending k_max grid, the
   full spectra, the IR parts and the UV fractions (UV = full - IR,
   exact because the window partitions P(k)). The bands kept are a
@@ -140,11 +203,15 @@ region or hold a window across unrelated evaluations.
   plus one per k_max.
 - `C_gg_kwindow_tomo_cpp`: (autos, pairs) tuple of the IR or UV
   spectra at the data-vector band centers.
+- `C_gg_kwindow_white_noise_cpp`: the white-noise correction alone at
+  one kmax, as an (autos, pairs) tuple - a diagnostic for notebooks
+  and the scale-cut tests (`C_gg_kwindow_tomo_cpp` already applies
+  it). Zero unless the low-rank engine runs with one-loop galaxies.
 - `gg_scale_cuts_tomo_cpp`: dict of kmax, alpha, ell, nautos, lmax,
   mask, uv_fraction, full, ir; rows are the autos, then the pairs, in
-  data-vector order. Projects bind both in their `interface.cpp`;
-  lssty1xdesi binds them as `gg_scale_cuts_tomo` and
-  `C_gg_kwindow_tomo`.
+  data-vector order. Projects bind these in their `interface.cpp`;
+  lssty1xdesi binds them as `gg_scale_cuts_tomo`, `C_gg_kwindow_tomo`
+  and `C_gg_kwindow_white_noise`.
 
 ## Validation (lssty1xdesi, dz = 0.05 layout)
 
@@ -154,6 +221,28 @@ region or hold a window across unrelated evaluations.
   (Limber).
 - k_max = 1e3 h/Mpc gives IR = full exactly; k_max = 1e-4 gives
   IR = 0.
+- The white-noise correction: an asserted study test (lssty1xdesi
+  `tests/studies/test_scale_cut_white_noise.py`) checks the exact zero
+  with linear bias, IR + UV = full under the corrected split, the
+  correction's shape against an independent spherical-Bessel quadrature
+  on deep-IR bands (one fitted prefactor per spectrum, bilinear across
+  bins) and closure at a large cut, on the wide and thin paper layouts.
+  The shape comparison stays in the deep IR because near the transition
+  l = K chi the finite-k projection rises steeply with the threshold K,
+  so percent-level input differences between two independent pipelines
+  are amplified to tens of percent of the correction.
+- The white-noise correction on dz = 0.2 at the final accuracy tier:
+  the fiducial data vector and the full spectra are bit for bit the
+  pre-correction cached ones (the correction only moves the IR/UV
+  split), and the corrected cuts differ from an independent numpy
+  finite-k re-cut of the cached IR parts in 10 of about 11,000 entries,
+  all sitting at the threshold, within the agreement of the two
+  implementations.
+- Chi-grid convergence of the correction, step 0.5 against 0.125 Mpc/h
+  (dz = 0.2): at most 8.6e-5 of C_l on the 243 entries within 0.01 of
+  the alpha = 0.05 threshold. The largest differences, up to 1.3e-3 of
+  C_l, sit on bands with UV fractions 0.16-0.87, which are cut anyway.
+- Cost: the correction adds 0.7 s per kmax on the dz = 0.2 layout.
 - Auto band powers kept at alpha = 0.05 (summed over the auto spectra):
 
 | Method | 0.05 | 0.075 | 0.1 | 0.125 | 0.15 |

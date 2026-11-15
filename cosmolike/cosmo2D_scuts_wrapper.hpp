@@ -137,6 +137,12 @@ py::tuple C_gg_kwindow_tomo_cpp(
     const int keep_ir
   );
 
+// the white-noise correction the low-rank IR spectra receive at kmax,
+// returned alone (a diagnostic; C_gg_kwindow_tomo_cpp applies it)
+py::tuple C_gg_kwindow_white_noise_cpp(
+    const double kmax
+  );
+
 // UV-fraction scale cuts (arXiv:2603.13031) of the Fourier gg spectra
 // (autos, then cross pairs) at the data-vector band centers, on an
 // ascending kmax grid (h/Mpc at z = 0): dict of lmax, mask, UV

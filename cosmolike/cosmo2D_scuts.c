@@ -2602,6 +2602,12 @@ void RF_w_ks_tomo_limber_work(
 // inside every gg engine - Limber, FKEM and the low-rank non-Limber
 // path - so a thin bin's radial modes, which Limber misses, count
 // toward its UV part.
+//
+// One term needs care beyond the step: the one-loop white-noise
+// constant that the sigma4 subtractions introduce, which the low-rank
+// engine restores through its Limber splice. Under the window its IR
+// part must be projected with the same finite-k kernel as the rest of
+// the low-rank IR spectrum (C_gg_kwindow_white_noise_ells, cosmo2D.c).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -2611,6 +2617,12 @@ void RF_w_ks_tomo_limber_work(
 // adopt_limber_gg = 1, the non-Limber engine otherwise; the autos first,
 // because they hand the pairs their non-Limber corrections), so with
 // kmax <= 0 it returns the data vector's own spectra.
+//
+// A windowed run with the low-rank engine and one-loop galaxies does
+// two things more (see C_gg_kwindow_white_noise_ells in cosmo2D.c):
+// the IR part receives the finite-k correction of the spliced
+// white-noise constant, and the UV part is computed as full - IR, so
+// IR + UV = full stays exact.
 //
 // Parameters:
 //   kmax    - the cut at z = 0 in h/Mpc; kmax <= 0 = no window
@@ -2635,6 +2647,35 @@ void C_gg_kwindow_tomo_ells(
     log_fatal("C_gg_kwindow_tomo_ells: %d cross pairs and no output", npairs);
     exit(1);
   }
+  const int lowrank = (0 == like.adopt_limber[LIMBER_GG] &&
+                       1 == get_use_lowrank_DD_GG());
+  if (kmax > 0.0 && 0 == keep_ir && 1 == lowrank) {
+    // The low-rank IR part receives the white-noise correction below
+    // (C_gg_kwindow_white_noise_ells). A UV run with the plain UV
+    // window would not see that correction, and IR + UV would miss the
+    // full spectra by it. Computing UV = full - IR instead hands the UV
+    // part the opposite shift by construction, so the split stays an
+    // exact partition; the price is a second windowed engine run.
+    double** ia = (double**) malloc2d(NSIZE, nell);
+    double** ix = (npairs > 0) ? (double**) malloc2d(npairs, nell) : NULL;
+    C_gg_kwindow_tomo_ells(-1.0, 1, ells, nell, out, outx);
+    C_gg_kwindow_tomo_ells(kmax, 1, ells, nell, ia, ix);
+    for (int s=0; s<NSIZE; s++) {
+      for (int i=0; i<nell; i++) {
+        out[s][i] -= ia[s][i];
+      }
+    }
+    for (int n=0; n<npairs; n++) {
+      for (int i=0; i<nell; i++) {
+        outx[n][i] -= ix[n][i];
+      }
+    }
+    free(ia);
+    if (ix != NULL) {
+      free(ix);
+    }
+    return;
+  }
   if (kmax > 0.0) {
     set_gg_kwindow(kmax, keep_ir);
   }
@@ -2646,6 +2687,16 @@ void C_gg_kwindow_tomo_ells(
   }
   if (npairs > 0) {
     C_gg_cross_tomo_ells(ells, nell, outx);
+  }
+  if (kmax > 0.0 && 1 == lowrank) {
+    // The low-rank splice restores the one-loop white-noise constant
+    // through its Limber terms, whose node step keeps a different IR
+    // fraction of it than the finite-k FFTLog step keeps of the raw
+    // sum's matching plateau. Replace the constant's Limber-step IR
+    // projection by the finite-k one (see the function's header in
+    // cosmo2D.c). Only the IR branch reaches this point: the UV branch
+    // returned above with full - IR.
+    C_gg_kwindow_white_noise_ells(ells, nell, out, outx);
   }
   unset_gg_kwindow();
 }
@@ -2675,7 +2726,11 @@ void C_gg_kwindow_tomo_ells(
 //
 // Cost: one evaluation of the gg engines for the full spectra plus one
 // per kmax (each windowed evaluation reruns the engine). UV = full - IR
-// is exact, the window being a partition of the power spectrum.
+// is exact, the window being a partition of the power spectrum. With
+// the low-rank engine each IR part already carries the white-noise
+// correction of C_gg_kwindow_white_noise_ells, so the UV fractions
+// split the one-loop constant with the same finite-k kernel as the
+// rest of the spectrum.
 //
 // Validation: nkmax > 0 with kmax > 0 strictly ascending, 0 < alpha
 // < 1, ells strictly ascending; violations are fatal.

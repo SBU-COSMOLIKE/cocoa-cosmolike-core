@@ -120,6 +120,13 @@ void set_gg_kwindow(const double kmax, const int keep_ir);
 
 void unset_gg_kwindow(void);
 
+// The one-loop white-noise constant under the IR k window: adds, in
+// place, its finite-k projection minus the Limber-step projection the
+// low-rank splice gave the IR spectra (no-op unless the low-rank
+// engine runs with one-loop galaxies)
+void C_gg_kwindow_white_noise_ells(const double* ells, const int nell,
+    double** out, double** outx);
+
 double C_ks_tomo_limber(const double l, const int ni);
 
 double C_gk_tomo_limber(const double l, const int ni);

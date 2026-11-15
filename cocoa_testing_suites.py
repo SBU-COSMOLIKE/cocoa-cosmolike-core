@@ -1604,8 +1604,8 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
     delta is seen (dead-flag floor), only the probe's own block
     changes, the round trip reproduces the first vector bitwise, the
     delta chi2 matches the project's measured value to the relative
-    band, and the default reproduces the frozen reference (last, so a
-    stale snapshot cannot hide the other checks).
+    band, and the default reproduces the frozen reference (last, so an
+    out-of-date snapshot cannot hide the other checks).
 
     Arguments:
       u        = the project's cocoa_test_utils module.
@@ -1792,8 +1792,8 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
                 f"delta chi2 = {dchi2:.4f} differs from the measured "
                 f"{measured:.4f} by more than {rtol:.0%}")
 
-            # last, so that a stale frozen snapshot does not hide the
-            # four checks above
+            # last, so that an out-of-date frozen snapshot does not
+            # hide the four checks above
             self.assertLess(
                 abs(chi2s[settings[0][0]]
                     - self.reference[reference_key]),
@@ -2146,6 +2146,10 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
                     icov = np.array(ci.get_inv_cov_masked())
                     sigma = np.sqrt(np.clip(np.diag(
                         np.array(ci.get_cov_masked())), 0.0, None))
+                    if not hasattr(ci, "compute_data_vector_3x2pt_fourier_sizes"):
+                        raise ValueError(
+                            f"{example}: the pair quadrature suite needs a Fourier "
+                            "project (compute_data_vector_3x2pt_fourier_sizes)")
                     sizes = ci.compute_data_vector_3x2pt_fourier_sizes()
                     ggx = _ggx_len(ci)
                     if ggx == 0:
@@ -2591,8 +2595,8 @@ def cache_ladder_suite(u, name, example="example2",
                         self.assertFalse(
                             np.array_equal(dv, prev),
                             f"{order}: {sector} step {r} left the "
-                            "data vector unchanged (dead sector flag "
-                            "or stale cache)")
+                            "data vector unchanged (dead sector flag, "
+                            "or a sector cache that did not rebuild)")
                         if sector == "m":
                             # check 2: the expected ratio dv/prev of
                             # every entry is the product of
@@ -2651,8 +2655,8 @@ def cache_ladder_suite(u, name, example="example2",
                 self.assertTrue(
                     np.array_equal(back_dv, final_dv),
                     f"{order}: returning after the scramble did not "
-                    "reproduce the data vector bit for bit (stale "
-                    "sector cache)")
+                    "reproduce the data vector bit for bit (a "
+                    "sector cache that did not rebuild)")
                 self.assertEqual(
                     back_chi2, final_chi2,
                     f"{order}: chi2 after the scramble return "

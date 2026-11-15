@@ -338,6 +338,56 @@ criteria to notebooks: response-function tables for the shear
 observables, and the full/IR spectra, UV fractions and kept-band masks
 for clustering.
 
+One subtlety arises where the split meets the one-loop galaxy bias
+model (its parameters $`b_2`$ and $`b_{s^2}`$ are defined in the next
+section). Several of the one-loop operator spectra approach constants
+at small wavenumber, so the raw loop sum contains a
+scale-independent, shot-noise-like plateau at low $`k`$. CosmoLike
+renormalizes the model by subtracting those $`k\to 0`$ limits
+([Saito et al.](https://arxiv.org/abs/1405.1447)), which amounts to
+adding to the raw sum the negative constant power
+
+```math
+P_{\rm wn}=-\frac{\sigma_4}{2}\,c_i\,c_j\,D^4,
+\qquad c_b\equiv b_{2,b}+\tfrac{2}{3}\,b_{s^2,b},
+\qquad \sigma_4=\int\frac{d^3q}{(2\pi)^3}\,P_{\rm lin}^2(q),
+```
+
+for bins $`i`$ and $`j`$, with one factor $`D^2`$ per galaxy field at
+the redshift of the modes: the plateau and $`P_{\rm wn}`$ cancel
+exactly as $`k\to 0`$. The low-rank non-Limber engine of the next
+section must project the raw, positive sum — its factorization takes a
+square root — and restores $`P_{\rm wn}`$ through a Limber term. That
+is exact without the window, because a constant power projects
+identically with and without the Limber approximation: by the closure
+relation of the spherical Bessel functions $`j_\ell`$,
+
+```math
+\int_0^{\infty} dk\,k^2\,j_\ell(k\chi_1)\,j_\ell(k\chi_2)
+=\frac{\pi}{2\chi_1^2}\,\delta_D(\chi_1-\chi_2),
+```
+
+the beyond-Limber double line-of-sight integral of a constant
+collapses to the same local integral Limber gives. The window cuts the
+$`k`$ integral at $`K=k_{\rm max}/D`$ and breaks this equality: the
+raw plateau, windowed inside the non-Limber transform, keeps only the
+finite-$`k`$ fraction of its projection, while the constant, windowed
+in the Limber term, keeps everything a kept band's modes pass. The two
+pieces would no longer cancel, leaving a spurious offset proportional
+to $`c_i c_j`$ in both parts of the split. The code therefore
+re-projects the constant's IR part through the same finite-$`k`$
+kernel as the raw sum, using the closed form
+
+```math
+\int_0^{K} dk\,k^2\,j_\ell(k\chi_1)\,j_\ell(k\chi_2)
+=K^2\,\frac{\chi_2\,j_\ell(K\chi_1)\,j_{\ell-1}(K\chi_2)
+-\chi_1\,j_{\ell-1}(K\chi_1)\,j_\ell(K\chi_2)}{\chi_1^2-\chi_2^2}
+```
+
+(and its $`\chi_1=\chi_2`$ limit) on a radial grid, so the IR/UV split
+treats the plateau and its subtraction consistently
+(`C_gg_kwindow_white_noise_ells` in `cosmo2D.c`).
+
 ## Galaxy clustering with thin lens bins <a name="thin_bins"></a>
 
 A spectroscopic lens sample can be split into many narrow redshift bins.

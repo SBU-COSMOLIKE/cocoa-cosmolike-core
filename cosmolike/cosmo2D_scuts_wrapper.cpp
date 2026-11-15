@@ -1352,6 +1352,68 @@ py::tuple C_gg_kwindow_tomo_cpp(
 }
 
 // ---------------------------------------------------------------------------
+// The white-noise correction alone, at the data-vector band centers:
+// what C_gg_kwindow_white_noise_ells (cosmo2D.c) adds to the low-rank
+// IR spectra at this kmax - the one-loop constant's finite-k IR
+// projection minus its Limber-step one. C_gg_kwindow_tomo_cpp already
+// applies it; this export isolates it for notebooks and the scale-cut
+// tests, which compare it against an independent quadrature. Zero
+// unless the low-rank engine runs with one-loop galaxies. For the
+// model of the last evaluation.
+//
+// Parameters:
+//   kmax - the cut at z = 0 in h/Mpc; must be > 0
+//
+// Returns:
+//   (autos, pairs) tuple of numpy arrays, shapes
+//   (clustering_Npowerspectra, nell) and (gg_cross_npairs, nell)
+// ---------------------------------------------------------------------------
+py::tuple C_gg_kwindow_white_noise_cpp(
+    const double kmax    // cut at z = 0 in h/Mpc
+  )
+{
+  if (!(kmax > 0.0)) {
+    spdlog::critical("{}: kmax = {} (h/Mpc, must be > 0)",
+                     "C_gg_kwindow_white_noise_cpp", kmax);
+    exit(1);
+  }
+  const int nell = like.Ncl;
+  if (nell < 1 || NULL == like.ell) {
+    spdlog::critical("{}: no Fourier band centers (init_binning_fourier"
+                     "_ells)", "C_gg_kwindow_white_noise_cpp");
+    exit(1);
+  }
+  const int nautos = tomo.clustering_Npowerspectra;
+  const int npairs = get_gg_cross_npairs();
+  double** ca = (double**) malloc2d(nautos, nell);
+  double** cx = (npairs > 0) ? (double**) malloc2d(npairs, nell) : NULL;
+  zero2d(ca, nautos, nell);
+  if (cx != NULL) {
+    zero2d(cx, npairs, nell);
+  }
+  set_gg_kwindow(kmax, 1);
+  if (0 == like.adopt_limber[LIMBER_GG]) {
+    C_gg_kwindow_white_noise_ells(like.ell, nell, ca, cx);
+  }
+  unset_gg_kwindow();
+  matrix A(nautos, nell);
+  matrix X(npairs, nell);
+  for (int i=0; i<nell; i++) {
+    for (int s=0; s<nautos; s++) {
+      A(s, i) = ca[s][i];
+    }
+    for (int n=0; n<npairs; n++) {
+      X(n, i) = cx[n][i];
+    }
+  }
+  free(ca);
+  if (cx != NULL) {
+    free(cx);
+  }
+  return py::make_tuple(carma::mat_to_arr(A), carma::mat_to_arr(X));
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
