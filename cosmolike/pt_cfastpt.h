@@ -168,6 +168,10 @@ void set_FPT_IA_from_python(void);
 
 void set_FPT_bias_from_python(void);
 
+// initial_setup: a new model installs its own Python tables (the next
+// IA_code = 1 read before set_IA_PS / set_bias_PS stops, naming them)
+void reset_FPT_from_python(void);
+
 // The FAST-PT tables a data vector reads: with IA_code = 0 the C-FAST-PT
 // tables, built on demand; with IA_code = 1 the installed Python tables,
 // refused when a C-FAST-PT rebuild (a covariance call) replaced them

@@ -144,6 +144,12 @@ void set_FPT_bias_from_python(void)
   FPTbias_tab_from_python = 1;
 }
 
+void reset_FPT_from_python(void)
+{
+  FPTIA_tab_from_python = 0;
+  FPTbias_tab_from_python = 0;
+}
+
 void FPT_IA_tables(void)
 {
   if (0 == nuisance.IA_code) {

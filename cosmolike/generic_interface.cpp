@@ -497,6 +497,8 @@ void initial_setup()
   // the point masses and the CMB-lensing options live in singletons
   PointMass::get_instance().set_pm_vector(arma::Col<double>());
   IPCMB::get_instance().reset();
+  // the origin flags of the FAST-PT tables (pt_cfastpt.c)
+  reset_FPT_from_python();
 
   like.adopt_limber[LIMBER_GG] = 0;
   like.adopt_limber[LIMBER_GS] = 1;
