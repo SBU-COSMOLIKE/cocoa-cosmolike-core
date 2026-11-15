@@ -2694,3 +2694,230 @@ def cache_ladder_suite(u, name, example="example2",
     TestCacheLadder.__name__ = name
     TestCacheLadder.__qualname__ = name
     return TestCacheLadder
+
+
+# ---- the setting-sequence checks --------------------------------------------
+
+def common_sequences(space, shear_example=None, lens_example=None,
+                     nsource=0, nlens=0, tatt=False, rebuild_example=None,
+                     baryons=None, lens_bins=True):
+    """The setting sequences every project with these examples can run.
+
+    Each sequence reproduces one class of notebook-safety gap (the
+    catalog of the notebook-safety plan): bin counts changed in one
+    process (S1, S2, and S2-without-recount, which must stop with a
+    named error), the IA model (S6), the bias model (S7), the run mode
+    (S8), a baryon scenario loaded and reset (S9), a second model built
+    after initial_setup (S10), init_data called twice (S11), and a
+    binning or probe change after init_data (S12, a named error).
+
+    Arguments:
+      space           = "real" or "fourier", the examples' binning space.
+      shear_example   = an EXAMPLES key whose evaluation computes cosmic
+                        shear (S1, S6, S8), or None.
+      lens_example    = an EXAMPLES key with lens bins in its vector
+                        (S2, S7, S9, S11, S12), or None.
+      nsource, nlens  = the source and lens bin counts of those examples.
+      tatt            = True when shear_example has a TATT variant (S6
+                        starts from the TATT point, whose second-order
+                        amplitudes are not zero).
+      rebuild_example = the EXAMPLES key S10 builds after lens_example,
+                        or None to skip S10.
+      baryons         = (scenario, HDF5 library file in the dataset
+                        folder) for S9 and S10, or None.
+      lens_bins       = False skips S2 (a gg cross-pair list names lens
+                        bins, so the lens count cannot change under it).
+
+    Returns:
+      a list of sequence dictionaries (setting_sequence_suite).
+    """
+    if space == "real":
+        shear = ["xi_pm_tomo"]
+        lens = ["w_gg_tomo", "w_gammat_tomo"]
+    else:
+        shear = ["C_ss_tomo_limber"]
+        lens = ["C_gg_tomo", "C_gs_tomo_limber"]
+    sequences = []
+    if shear_example is not None:
+        sequences.append({
+            "name": "S1_source_bins", "base": shear_example,
+            "steps": [[("source_bins", {"nbin": nsource - 1})],
+                      [("source_bins", {"nbin": nsource + 1})],
+                      [("source_bins", {"nbin": nsource})]],
+            "evaluate": shear, "fresh": "base_first", "compare": [2, 3],
+            "expect": "bitwise"})
+        sequences.append({
+            "name": "S8_runmode_round_trip", "base": shear_example,
+            "steps": [[("call", {"name": "init_cosmo_runmode",
+                                 "is_linear": True})],
+                      [("call", {"name": "init_cosmo_runmode",
+                                 "is_linear": False})]],
+            "evaluate": "masked", "compare": [1, 2], "expect": "bitwise"})
+        if tatt:
+            sequences.append({
+                "name": "S6_ia_model_round_trip", "base": shear_example,
+                "tatt": True,
+                "steps": [[("ia_model", {"model": 0})],
+                          [("ia_model", {"model": 1})]],
+                "evaluate": "masked", "compare": [1, 2],
+                "expect": "bitwise"})
+    if lens_example is not None:
+        recount = [("call", {"name": "init_adopt_limber_gg",
+                             "adopt_limber_gg": 0}),
+                   ("lens_bins", {"nbin": nlens - 1})]
+    if lens_example is not None and lens_bins:
+        sequences.append({
+            "name": "S2_lens_bins", "base": lens_example,
+            "steps": [recount, [("lens_bins", {"nbin": nlens + 1})]],
+            "evaluate": lens, "fresh": "base_first", "compare": [1, 2],
+            "expect": "bitwise"})
+        if space == "real":
+            sequences.append({
+                "name": "S2_lens_bins_without_recount", "base": lens_example,
+                "steps": [recount,
+                          [("lens_bins", {"nbin": nlens + 1,
+                                          "recount": False})]],
+                "evaluate": "w_gg_tomo", "fresh": "base_first",
+                "expect": "fatal:call init_ntomo_powerspectra"})
+    if lens_example is not None:
+        sequences.append({
+            "name": "S7_bias_model_round_trip", "base": lens_example,
+            "steps": [[("bias_b1", {"code": 2})], [("bias_b1", {})]],
+            "evaluate": "masked", "compare": [1, 2], "expect": "bitwise"})
+        sequences.append({
+            "name": "S11_init_data_twice", "base": lens_example,
+            "steps": [[("init_data", {"drop": 40})],
+                      [("init_data", {"drop": 120})]],
+            "evaluate": "chi2", "compare": [1, 2], "expect": "bitwise"})
+        sequences.append({
+            "name": "S12_binning_change_after_init_data",
+            "base": lens_example, "steps": [[("halve_binning", {})]],
+            "evaluate": "masked", "expect": "fatal:re-run init_data"})
+        sequences.append({
+            "name": "S12_probe_change_after_init_data",
+            "base": lens_example,
+            "steps": [[("call", {"name": "init_probes",
+                                 "possible_probes": "xi"})]],
+            "evaluate": "masked", "expect": "fatal:re-run init_data"})
+        if baryons is not None:
+            load = ("baryons", {"sim": baryons[0], "allsims": baryons[1]})
+            sequences.append({
+                "name": "S9_baryons_load_and_reset", "base": lens_example,
+                "steps": [[load], [("call", {"name": "reset_bary_struct"})]],
+                "evaluate": "masked", "compare": [1, 2],
+                "expect": "bitwise"})
+        if rebuild_example is not None:
+            # model A: linear P(k) and a baryon scenario; model B is built
+            # after it in the same process
+            setup = [("call", {"name": "init_cosmo_runmode",
+                               "is_linear": True})]
+            if baryons is not None:
+                setup.append(("baryons", {"sim": baryons[0],
+                                          "allsims": baryons[1]}))
+            setup.append(("rebuild", {"example": rebuild_example}))
+            sequences.append({
+                "name": "S10_second_model_after_initial_setup",
+                "base": lens_example, "steps": [setup],
+                "evaluate": "masked", "expect": "bitwise"})
+    return sequences
+
+
+def setting_sequence_suite(u, name, sequences):
+    """Build the class that changes settings in one process.
+
+    A notebook changes cosmolike settings between evaluations without
+    restarting the kernel. Every such change must give the numbers a
+    process seeing only the final settings gives. Each sequence is a
+    plain dictionary:
+
+      {"name": str, "base": EXAMPLES key, "overrides": optional
+       {likelihood key: value} of the base build,
+       "steps": [[(op, kwargs), ...], ...], "evaluate": an evaluator
+       name or a list of them, "expect": "bitwise" or "fatal:<text>",
+       "compare": optional step numbers whose vectors are compared
+       (default: the last), "fresh": optional "ops_first" or
+       "base_first", "fresh_steps": optional steps of the fresh leg
+       (default: "steps"), "check": optional (check name, kwargs)}
+
+    The operations, evaluators and checks are the SEQUENCE_OPS,
+    SEQUENCE_EVALUATORS and SEQUENCE_CHECKS tables of cocoa_testing.py;
+    _sequence_worker documents the two legs. For "bitwise" the class
+    runs the in-process leg once and one fresh leg per compared step,
+    each in its own worker, and asserts exact float64 equality. For
+    "fatal:<text>" the in-process leg must exit with an error whose
+    output contains <text>.
+
+    Arguments:
+      u         = the project's cocoa_test_utils module.
+      name      = the class name to build (the caller assigns the class
+                  to this same module-level name).
+      sequences = the list of sequence dictionaries; each becomes one
+                  test method test_<sequence name>.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestSettingSequences(unittest.TestCase):
+        """Settings changed in one process against a fresh process."""
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR and verify the frozen state."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+
+    def make_test(sequence):
+        def test(self):
+            import numpy as np
+            print(f"\n  sequence {sequence['name']} (base "
+                  f"{sequence['base']}, {len(sequence['steps'])} steps)",
+                  flush=True)
+            code, output, inprocess = u._H.run_sequence_leg(
+                sequence, "inprocess")
+            expect = sequence["expect"]
+            if expect.startswith("fatal:"):
+                text = expect[len("fatal:"):]
+                self.assertNotEqual(
+                    code, 0,
+                    f"{sequence['name']}: the sequence ran to the end; it "
+                    f"must stop with an error naming '{text}'")
+                self.assertIn(
+                    text, output,
+                    f"{sequence['name']}: the process stopped (exit code "
+                    f"{code}) without the message '{text}':\n"
+                    f"{output[-3000:]}")
+                return
+            self.assertEqual(
+                code, 0,
+                f"{sequence['name']}: the in-process leg failed (exit code "
+                f"{code}):\n{output[-3000:]}")
+            compare = sequence.get("compare", [len(sequence["steps"])])
+            for upto in compare:
+                code, output, fresh = u._H.run_sequence_leg(
+                    sequence, "fresh", upto=upto)
+                self.assertEqual(
+                    code, 0,
+                    f"{sequence['name']}: the fresh leg of step {upto} "
+                    f"failed (exit code {code}):\n{output[-3000:]}")
+                key = f"v{upto}"
+                same = np.array_equal(inprocess[key], fresh[key])
+                print(f"    step {upto}: {inprocess[key].size} entries, "
+                      f"in-process {'==' if same else '!='} fresh",
+                      flush=True)
+                self.assertTrue(
+                    same,
+                    f"{sequence['name']}: after step {upto} the in-process "
+                    "vector differs from a fresh process at the same "
+                    "settings: a cached table did not follow the change")
+
+        test.__name__ = f"test_{sequence['name']}"
+        test.__doc__ = f"Setting sequence {sequence['name']}."
+        return test
+
+    for sequence in sequences:
+        test = make_test(sequence)
+        setattr(TestSettingSequences, test.__name__, test)
+    TestSettingSequences.__name__ = name
+    TestSettingSequences.__qualname__ = name
+    return TestSettingSequences

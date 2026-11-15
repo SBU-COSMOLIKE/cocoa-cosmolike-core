@@ -317,7 +317,11 @@ MAP OF THIS FILE
     report_fastpt_comparison, report_nonlinear_comparison
 
   Section 3: WORKER-SUBPROCESS PLUMBING (shared text)
-    _WORKER_FLAG, _WORKER_DRIVER
+    _WORKER_FLAG, _WORKER_DRIVER, _SEQUENCE_DRIVER
+    setting sequences        SEQUENCE_OPS, SEQUENCE_EVALUATORS,
+                             SEQUENCE_CHECKS (the settings changes, the
+                             compared vectors and the reach checks of
+                             setting_sequence_suite)
 
   Section 4: class CocoaTestHarness (bound to one project's spec)
     frozen-state integrity   compute_manifest, verify_frozen,
@@ -329,6 +333,8 @@ MAP OF THIS FILE
     baryonic feedback        _baryon_accuracy_delta_impl,
                              _baryon_drift_chi2_impl
     worker isolation         _worker, _run_isolated
+    setting sequences        _sequence_build, _sequence_worker,
+                             run_sequence_leg
     test quantities          single_model_chi2, ten_in_a_row_chi2,
                              baryon_accuracy_delta, baryon_drift_chi2
     CFASTPT vs FASTPT        _fastpt_comparison_info,
@@ -1596,6 +1602,408 @@ _WORKER_DRIVER = (
     "spec.loader.exec_module(module)\n"
     "module._worker(*sys.argv[2:9])\n"
 )
+
+# The setting-sequence worker's driver: the same file-path import, then
+# _sequence_worker(spec file, result file).
+_SEQUENCE_DRIVER = (
+    "import importlib.util, sys\n"
+    "spec = importlib.util.spec_from_file_location("
+    "'cocoa_test_utils_worker', sys.argv[1])\n"
+    "module = importlib.util.module_from_spec(spec)\n"
+    "spec.loader.exec_module(module)\n"
+    "module._sequence_worker(sys.argv[2], sys.argv[3])\n"
+)
+
+
+# ---- setting sequences: the named settings changes --------------------------
+#
+# A setting sequence (setting_sequence_suite in cocoa_testing_suites.py)
+# changes cosmolike settings in one process and compares the result with
+# a process that saw only the final settings. Each operation below is one
+# settings change a notebook can make between evaluations. It receives
+# the worker's context dictionary (ci = the compiled interface, like =
+# the likelihood object, model, point, harness) and keyword arguments
+# read from the sequence's json description. Every array crossing into
+# the compiled interface is a numpy array: carma turns a plain list of
+# more than 16 entries into zeros.
+
+def _sequence_nz_table(ctx, kind, nbin):
+    """The likelihood's n(z) table cut or extended to nbin bins.
+
+    The table has the z grid in column 0 and one n(z) per bin after it
+    (read_nz_sample's layout). Extra bins repeat the last bin's n(z), a
+    valid sample with a known support.
+
+    Arguments:
+      ctx  = the worker context (ci, like).
+      kind = "lens" or "source".
+      nbin = the number of bins of the returned table.
+
+    Returns:
+      a numpy array of shape (n_z, nbin + 1).
+    """
+    import numpy as np
+    like = ctx["like"]
+    tables = ctx["ci"].read_redshift_distributions(
+        lens_multihisto_file=like.lens_file,
+        lens_ntomo=int(like.lens_ntomo),
+        source_multihisto_file=like.source_file,
+        source_ntomo=int(like.source_ntomo))
+    if kind == "lens":
+        table = np.array(tables[0], dtype=float)
+    else:
+        table = np.array(tables[1], dtype=float)
+    loaded = table.shape[1] - 1
+    if nbin <= loaded:
+        return np.ascontiguousarray(table[:, :nbin + 1])
+    columns = [table]
+    for _ in range(nbin - loaded):
+        columns.append(table[:, -1:])
+    return np.ascontiguousarray(np.hstack(columns))
+
+
+def _sequence_op_source_bins(ctx, nbin, recount=True):
+    """Install nbin source bins with zero shear calibration and photo-z.
+
+    Arguments:
+      ctx     = the worker context.
+      nbin    = the new number of source bins.
+      recount = True also calls init_ntomo_powerspectra (the pair
+                counts follow the new bins).
+    """
+    import numpy as np
+    ci = ctx["ci"]
+    ci.init_source_sample_size(int(nbin))
+    ci.set_source_sample(_sequence_nz_table(ctx, "source", int(nbin)))
+    ci.set_nuisance_shear_calib(M=np.zeros(int(nbin)))
+    ci.set_nuisance_shear_photoz(bias=np.zeros(int(nbin)))
+    if recount:
+        ci.init_ntomo_powerspectra()
+
+
+def _sequence_op_lens_bins(ctx, nbin, b1=1.5, recount=True):
+    """Install nbin lens bins with bias b1, no other bias and no photo-z.
+
+    Arguments:
+      ctx     = the worker context.
+      nbin    = the new number of lens bins.
+      b1      = the linear bias of every bin.
+      recount = True also calls init_ntomo_powerspectra.
+    """
+    import numpy as np
+    ci = ctx["ci"]
+    n = int(nbin)
+    ci.init_lens_sample_size(n)
+    ci.set_lens_sample(_sequence_nz_table(ctx, "lens", n))
+    ci.set_nuisance_bias(B1=np.full(n, float(b1)), B2=np.zeros(n),
+                         B_MAG=np.zeros(n), B3nl=np.zeros(n),
+                         BK=np.zeros(n))
+    ci.set_nuisance_clustering_photoz(bias=np.zeros(n))
+    if hasattr(ci, "set_point_mass"):
+        ci.set_point_mass(PMV=np.zeros(n))
+    if recount:
+        ci.init_ntomo_powerspectra()
+
+
+def _sequence_op_recount(ctx):
+    """Recount the tomographic pairs (init_ntomo_powerspectra)."""
+    ctx["ci"].init_ntomo_powerspectra()
+
+
+def _sequence_op_ggl_exclude(ctx, pairs):
+    """Replace the excluded (lens, source) pairs.
+
+    Arguments:
+      ctx   = the worker context.
+      pairs = a list of [lens bin, source bin] pairs.
+    """
+    import numpy as np
+    flat = np.array(pairs, dtype=np.int32).flatten()
+    ctx["ci"].init_ggl_exclude(flat)
+
+
+def _sequence_op_call(ctx, name, **kwargs):
+    """Call one interface setter by name with keyword arguments.
+
+    Lists among the arguments become numpy arrays (integers stay
+    integers), so long lists cross the pybind boundary intact.
+
+    Arguments:
+      ctx      = the worker context.
+      name     = the interface function, e.g. "init_IA".
+      **kwargs = its keyword arguments.
+    """
+    import numpy as np
+    arguments = {}
+    for key, value in kwargs.items():
+        if isinstance(value, list):
+            value = np.array(value)
+        arguments[key] = value
+    getattr(ctx["ci"], name)(**arguments)
+
+
+def _sequence_op_init_data(ctx, mask="frozen", drop=0):
+    """Reload the covariance, mask and data vector (init_data).
+
+    Arguments:
+      ctx  = the worker context.
+      mask = "frozen" for the likelihood's mask file, or a file name in
+             the same folder.
+      drop = the number of leading kept entries to mask in addition, so
+             two calls can load two different masks.
+    """
+    import numpy as np
+    like = ctx["like"]
+    mask_file = like.mask_file
+    if mask != "frozen":
+        mask_file = os.path.join(os.path.dirname(like.mask_file), mask)
+    if drop > 0:
+        table = np.loadtxt(mask_file)
+        kept = np.flatnonzero(table[:, 1] > 0)
+        table[kept[:int(drop)], 1] = 0.0
+        mask_file = os.path.join(ctx["scratch"], f"mask_drop{int(drop)}.mask")
+        np.savetxt(mask_file, table, fmt=["%d", "%.1f"])
+    ci = ctx["ci"]
+    extended = (hasattr(ci, "compute_data_vector_fourier_with_gg_cross_sizes")
+                and int(ci.compute_data_vector_fourier_with_gg_cross_sizes()[3]) > 0)
+    if extended:
+        ci.init_data_fourier_gg_cross(like.cov_file, mask_file,
+                                      like.data_vector_file)
+    elif hasattr(ci, "init_data_fourier") and ctx["space"] == "fourier":
+        ci.init_data_fourier(like.cov_file, mask_file, like.data_vector_file)
+    else:
+        ci.init_data_real(like.cov_file, mask_file, like.data_vector_file)
+
+
+def _sequence_op_baryons(ctx, sim, allsims):
+    """Contaminate P(k) with one baryon scenario of an HDF5 library.
+
+    Arguments:
+      ctx     = the worker context.
+      sim     = the scenario label, e.g. "antilles-2".
+      allsims = the library file name, in the folder of the likelihood's
+                mask file (the dataset folder).
+    """
+    folder = os.path.dirname(ctx["like"].mask_file)
+    ctx["ci"].init_baryons_contamination(
+        sim=sim, allsims=os.path.join(folder, allsims))
+
+
+def _sequence_op_ia_model(ctx, model):
+    """Switch the intrinsic-alignment model, keeping the likelihood's
+    redshift evolution and FAST-PT code (init_IA).
+
+    Arguments:
+      ctx   = the worker context.
+      model = 0 (NLA) or 1 (TATT).
+    """
+    like = ctx["like"]
+    ctx["ci"].init_IA(ia_model=int(model),
+                      ia_redshift_evolution=int(like.IA_redshift_evolution),
+                      ia_code=int(like.IA_code))
+
+
+def _sequence_op_bias_b1(ctx, code=None):
+    """Replace the b1 evolution code of the likelihood's bias model.
+
+    Arguments:
+      ctx  = the worker context.
+      code = the new b1 code; None restores the likelihood's own model.
+    """
+    import numpy as np
+    model = np.array(ctx["like"].bias_model, dtype=float)
+    if code is not None:
+        model[0] = float(code)
+    ctx["ci"].init_bias(bias_model=model)
+
+
+def _sequence_op_halve_binning(ctx):
+    """Keep every other angular bin or band center (a new layout)."""
+    import numpy as np
+    like = ctx["like"]
+    if hasattr(like, "band_ells"):
+        # every other center; a contiguous copy (carma refuses a strided view)
+        ells = np.ascontiguousarray(np.array(like.band_ells, dtype=float)[::2])
+        ctx["ci"].init_binning_fourier_ells(
+            ells=ells, lmax_shear=int(np.ceil(ells[-1])))
+    elif hasattr(like, "ncl"):
+        # log-spaced bands: (count, l_min, l_max, l_max of shear), under
+        # the two attribute spellings the Fourier likelihoods use
+        lmin = getattr(like, "l_min", getattr(like, "lmin", None))
+        lmax = getattr(like, "l_max", getattr(like, "lmax", None))
+        lmax_shear = getattr(like, "l_max_shear",
+                             getattr(like, "lmax_shear", None))
+        ctx["ci"].init_binning(int(like.ncl)//2, int(lmin), int(lmax),
+                               int(lmax_shear))
+    else:
+        ctx["ci"].init_binning(int(like.ntheta)//2, like.theta_min_arcmin,
+                               like.theta_max_arcmin)
+
+
+def _sequence_op_cluster_ytransform(ctx):
+    """Flip the cluster-lensing Y transform, keeping the likelihood's
+    other cluster model choices (init_cluster_model).
+
+    Arguments:
+      ctx = the worker context.
+    """
+    like = ctx["like"]
+    current = int(getattr(like, "cluster_ytransform", 1))
+    ctx["ci"].init_cluster_model(
+        mor_model=0,
+        kernel_mode=int(getattr(like, "cluster_kernel_mode", 0)),
+        selection_model=int(like.cluster_selection_model),
+        ytransform=1 - current,
+        include_ia=int(getattr(like, "cluster_include_ia", 1)),
+        magnification=float(getattr(like, "cluster_magnification", -2.0)))
+
+
+def _sequence_op_scale_band_centers(ctx, factor):
+    """Move every Fourier band center by one factor (the same count).
+
+    Arguments:
+      ctx    = the worker context.
+      factor = the multiplier of the likelihood's band centers.
+    """
+    import numpy as np
+    ells = float(factor)*np.array(ctx["like"].band_ells, dtype=float)
+    ctx["ci"].init_binning_fourier_ells(
+        ells=ells, lmax_shear=int(np.ceil(ells[-1])))
+
+
+def _sequence_op_rebuild(ctx, example, overrides=None):
+    """Build a second likelihood in the same process and evaluate it.
+
+    The likelihood's initialize runs initial_setup and its own setters,
+    as a notebook building a second model does.
+
+    Arguments:
+      ctx       = the worker context; model, like and point are replaced.
+      example   = the key of EXAMPLES to build.
+      overrides = optional {likelihood key: value}.
+    """
+    ctx["harness"]._sequence_build(ctx, example, overrides)
+    evaluate_chi2(ctx["model"], ctx["point"])
+
+
+SEQUENCE_OPS = {
+    "source_bins": _sequence_op_source_bins,
+    "lens_bins": _sequence_op_lens_bins,
+    "recount": _sequence_op_recount,
+    "ggl_exclude": _sequence_op_ggl_exclude,
+    "call": _sequence_op_call,
+    "init_data": _sequence_op_init_data,
+    "baryons": _sequence_op_baryons,
+    "ia_model": _sequence_op_ia_model,
+    "bias_b1": _sequence_op_bias_b1,
+    "halve_binning": _sequence_op_halve_binning,
+    "cluster_ytransform": _sequence_op_cluster_ytransform,
+    "scale_band_centers": _sequence_op_scale_band_centers,
+    "rebuild": _sequence_op_rebuild,
+}
+
+
+# ---- setting sequences: what is compared ------------------------------------
+
+# Multipoles of the Fourier spectra evaluators: integers and band-like
+# centers from the non-Limber range up to the Limber range.
+SEQUENCE_ELLS = (2.0, 10.5, 30.0, 75.5, 140.0, 212.5, 400.0, 1000.0)
+
+
+def _sequence_masked(ctx):
+    """The masked theory vector the likelihood scores (data-vector space).
+
+    Returns:
+      a numpy array, the masked vector of the native space.
+    """
+    import numpy as np
+    ci = ctx["ci"]
+    # a single-space interface binds the generic name to its own space; a
+    # dual-space one keeps it on the real layout and adds Fourier twins
+    if (ctx["space"] == "fourier"
+            and hasattr(ci, "compute_data_vector_fourier_masked")):
+        if (hasattr(ci, "compute_data_vector_fourier_with_gg_cross_sizes")
+                and int(ci.compute_data_vector_fourier_with_gg_cross_sizes()[3]) > 0):
+            return np.array(ci.compute_data_vector_fourier_gg_cross_masked())
+        return np.array(ci.compute_data_vector_fourier_masked())
+    return np.array(ci.compute_data_vector_masked())
+
+
+def _sequence_cluster(ctx):
+    """The masked theory vector of the joint cluster analysis."""
+    import numpy as np
+    return np.array(ctx["ci"].compute_data_vector_cluster_masked())
+
+
+def _sequence_chi2(ctx):
+    """The masked vector followed by its chi2 against the loaded data."""
+    import numpy as np
+    vector = _sequence_masked(ctx)
+    chi2 = ctx["ci"].compute_chi2(vector)
+    return np.append(vector, float(chi2))
+
+
+def _sequence_spectra(name):
+    """An evaluator returning one family of tomographic spectra, flattened.
+
+    Arguments:
+      name = the interface function: xi_pm_tomo, w_gammat_tomo, w_gg_tomo,
+             w_gk_tomo, w_ks_tomo (real space, no arguments), or
+             C_ss_tomo_limber, C_gs_tomo_limber, C_gg_tomo_limber,
+             C_gg_tomo, C_gk_tomo_limber, C_ks_tomo_limber (at
+             SEQUENCE_ELLS).
+
+    Returns:
+      a function of the worker context returning a flat numpy array.
+    """
+    def evaluate(ctx):
+        import numpy as np
+        function = getattr(ctx["ci"], name)
+        if name.startswith("C_"):
+            result = function(np.array(SEQUENCE_ELLS))
+        else:
+            result = function()
+        parts = result if isinstance(result, tuple) else (result,)
+        flat = []
+        for part in parts:
+            flat.append(np.array(part, dtype=float).flatten())
+        return np.concatenate(flat)
+    return evaluate
+
+
+SEQUENCE_EVALUATORS = {
+    "masked": _sequence_masked,
+    "chi2": _sequence_chi2,
+    "cluster": _sequence_cluster,
+}
+for _name in ("xi_pm_tomo", "w_gammat_tomo", "w_gg_tomo", "w_gk_tomo",
+              "w_ks_tomo", "C_ss_tomo_limber", "C_gs_tomo_limber",
+              "C_gg_tomo_limber", "C_gg_tomo", "C_gk_tomo_limber",
+              "C_ks_tomo_limber"):
+    SEQUENCE_EVALUATORS[_name] = _sequence_spectra(_name)
+
+
+# ---- setting sequences: reach checks ----------------------------------------
+
+def _sequence_check_band_centers(ctx, low, high):
+    """Raise unless a Fourier band center lies in [low, high).
+
+    A multipole cap raised from low to high changes only band centers
+    between the two caps; without one, the sequence never reaches the
+    storage it tests.
+    """
+    import numpy as np
+    ells = np.array(ctx["like"].band_ells, dtype=float)
+    inside = (ells >= low) & (ells < high)
+    if not np.any(inside):
+        raise AssertionError(
+            f"no band center in [{low}, {high}): the band centers run from "
+            f"{ells.min()} to {ells.max()}; choose caps around a band center")
+
+
+SEQUENCE_CHECKS = {
+    "band_centers": _sequence_check_band_centers,
+}
 
 
 # =============================================================================
@@ -2954,6 +3362,163 @@ class CocoaTestHarness:
         # the file even when the dump fails
         with open(result_path, "w") as f:
             json.dump(value, f)
+
+    def _sequence_build(self, ctx, example, overrides=None, tatt=False):
+        """Build one frozen example's model into the worker context.
+
+        Arguments:
+          ctx       = the worker context; model, like, point and space
+                      are (re)placed.
+          example   = a key of the project's EXAMPLES table.
+          overrides = optional {likelihood key: value}.
+          tatt      = True builds the TATT variant (frozen TATT point).
+        """
+        import importlib
+        info = self.load_frozen_info(example, tatt=tatt)
+        lk_name = self.examples[example]["likelihood"]
+        for key, value in (overrides or {}).items():
+            info["likelihood"][lk_name][key] = value
+        ctx["model"] = make_model(info)
+        ctx["like"] = ctx["model"].likelihood[lk_name]
+        ctx["point"] = self.build_point(ctx["model"], example, tatt=tatt)
+        ctx["ci"] = importlib.import_module(self.interface_module)
+        # the native space of the example: a Fourier likelihood carries
+        # band centers or an n_cl count
+        fourier = (hasattr(ctx["like"], "band_ells")
+                   or hasattr(ctx["like"], "ncl"))
+        ctx["space"] = "fourier" if fourier else "real"
+
+    def _sequence_worker(self, spec_path, result_path):
+        """Worker-side entry of one setting-sequence leg.
+
+        The spec (json) holds the sequence of setting_sequence_suite
+        plus "leg": "inprocess" or "fresh", and for the fresh leg
+        "upto", the number of steps it applies.
+
+        The in-process leg builds the base, evaluates it through cobaya
+        (cosmology and nuisance parameters set, every table filled),
+        runs the optional reach check, then applies one step at a time
+        and evaluates after each. The fresh leg applies the operations
+        of steps 1..upto at once (of "fresh_steps" when the spec gives
+        them: the operations a correct code needs for the same final
+        state) and evaluates one time. With "fresh":
+        "ops_first" (the default) the operations run before the first
+        cobaya evaluation, so no table ever saw an earlier setting. With
+        "base_first" (steps that change bin counts, which the
+        likelihood's own per-point setters cannot follow) the base is
+        evaluated first. A step holding a "rebuild" starts the fresh
+        leg from that model.
+
+        Arguments:
+          spec_path   = the json file of the spec.
+          result_path = the npz file the vectors are written to (v0 =
+                        the base, v<k> = after step k; the fresh leg
+                        writes v<upto>).
+        """
+        import numpy as np
+        require_cocoa_environment()
+        with open(spec_path) as f:
+            spec = json.load(f)
+        ctx = {"harness": self, "scratch": os.path.dirname(result_path)}
+        evaluators = spec["evaluate"]
+        if isinstance(evaluators, str):
+            evaluators = [evaluators]
+
+        def evaluate():
+            parts = []
+            for name in evaluators:
+                parts.append(SEQUENCE_EVALUATORS[name](ctx))
+            return np.concatenate(parts)
+
+        def apply(ops):
+            for name, kwargs in ops:
+                SEQUENCE_OPS[name](ctx, **kwargs)
+
+        def check():
+            if spec.get("check"):
+                name, kwargs = spec["check"]
+                SEQUENCE_CHECKS[name](ctx, **kwargs)
+
+        vectors = {}
+        tatt = bool(spec.get("tatt", False))
+        if spec["leg"] == "inprocess":
+            self._sequence_build(ctx, spec["base"], spec.get("overrides"), tatt)
+            evaluate_chi2(ctx["model"], ctx["point"])
+            check()
+            vectors["v0"] = evaluate()
+            for k, step in enumerate(spec["steps"]):
+                apply(step)
+                vectors[f"v{k + 1}"] = evaluate()
+        else:
+            upto = int(spec["upto"])
+            base = spec["base"]
+            overrides = spec.get("overrides")
+            ops = []
+            for step in spec.get("fresh_steps", spec["steps"])[:upto]:
+                for name, kwargs in step:
+                    if name == "rebuild":
+                        # the fresh leg starts from the rebuilt model
+                        base = kwargs["example"]
+                        overrides = kwargs.get("overrides")
+                        tatt = False
+                        ops = []
+                    else:
+                        ops.append((name, kwargs))
+            self._sequence_build(ctx, base, overrides, tatt)
+            if spec.get("fresh", "ops_first") == "ops_first":
+                apply(ops)
+                evaluate_chi2(ctx["model"], ctx["point"])
+                check()
+            else:
+                evaluate_chi2(ctx["model"], ctx["point"])
+                check()
+                apply(ops)
+            vectors[f"v{upto}"] = evaluate()
+        np.savez(result_path, **vectors)
+
+    def run_sequence_leg(self, spec, leg, upto=None):
+        """Spawn one setting-sequence worker and hand back its output.
+
+        Arguments:
+          spec = the sequence (see setting_sequence_suite).
+          leg  = "inprocess" or "fresh".
+          upto = the fresh leg's number of applied steps.
+
+        Returns:
+          (exit code, captured output text, {name: vector} or None).
+        """
+        import subprocess
+        import sys
+
+        import numpy as np
+        folder = tempfile.mkdtemp(prefix="cocoa_sequence_")
+        try:
+            spec_path = os.path.join(folder, "spec.json")
+            result_path = os.path.join(folder, "result.npz")
+            leg_spec = dict(spec)
+            leg_spec["leg"] = leg
+            leg_spec["upto"] = upto
+            with open(spec_path, "w") as f:
+                json.dump(leg_spec, f)
+            environment = dict(os.environ)
+            environment[_WORKER_FLAG] = "1"
+            environment["OMP_NUM_THREADS"] = REQUIRED_OMP_THREADS
+            # stdout and stderr are captured together: an expected fatal
+            # is recognized by its message, and a failure prints them
+            completed = subprocess.run(
+                [sys.executable, "-c", _SEQUENCE_DRIVER, self.worker_file,
+                 spec_path, result_path],
+                env=environment, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True)
+            vectors = None
+            if completed.returncode == 0 and os.path.exists(result_path):
+                with np.load(result_path) as data:
+                    vectors = {}
+                    for name in data.files:
+                        vectors[name] = np.array(data[name])
+            return completed.returncode, completed.stdout, vectors
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def _run_isolated(self, function, example, tatt,
                       high_accuracy=False, knob=None, baryon=None):
