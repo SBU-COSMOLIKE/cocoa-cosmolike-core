@@ -721,6 +721,13 @@ void init_lowrank_nonlimber_gg(
     const int lmax
   );
 
+// nonlinear Kaiser terms of the non-Limber gg engines (cosmo2D.c
+// set_nonlinear_kaiser_GG): flag 0 = linear Kaiser (default,
+// bit-identical), 1 = the one-loop velocity spectra in the RSD rows
+void init_nonlinear_kaiser_gg(
+    const int flag
+  );
+
 void init_accuracy_boost(
     const double accuracy_boost,
     const int integration_accuracy

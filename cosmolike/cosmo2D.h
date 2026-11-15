@@ -95,6 +95,13 @@ int get_lowrank_DD_GG_nrank(void);
 
 int get_lowrank_DD_GG_lmax(void);
 
+// runtime switch and reader of the nonlinear Kaiser terms (cosmo2D.c
+// use_nonlinear_kaiser_GG): 0 keeps the linear Kaiser terms, bit for
+// bit; 1 adds the one-loop velocity spectra to the non-Limber RSD rows
+void set_nonlinear_kaiser_GG(const int flag);
+
+int get_use_nonlinear_kaiser_GG(void);
+
 // gg cross pairs for thin-bin surveys (the cross-pair section at the
 // end of cosmo2D.c): the measured pair list, each pair one spectrum of
 // the data vector's appended gg-cross block; npairs = 0 (the default)

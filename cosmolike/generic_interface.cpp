@@ -409,6 +409,9 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 //                    -> init_lowrank_nonlimber_gg
 //                                              -> use_lowrank_DD_GG et al.
 //                       -> the w_gg_tomo non-Limber dispatch (cosmo2D.c)
+//   nonlinear_kaiser -> init_nonlinear_kaiser_gg
+//                                              -> use_nonlinear_kaiser_GG
+//                       -> the RSD rows of the non-Limber gg engines
 // ---------------------------------------------------------------------------
 
 // Clears the accuracy-boost baselines (defined next to them, below);
@@ -484,10 +487,11 @@ void initial_setup()
   unset_gg_kwindow();
   // the cosmo2D.c model switches, at the values of their definitions
   // there (include_HOD_GX, include_halo_IA, use_lowrank_DD_GG with its
-  // rank and multipole cap)
+  // rank and multipole cap, use_nonlinear_kaiser_GG)
   set_include_HOD_GX(0);
   set_include_halo_IA(0);
   set_lowrank_DD_GG(0, 5, 150);
+  set_nonlinear_kaiser_GG(0);
   // the non-Limber multipole cap, at its value in structs.c (limits)
   limits.LMAX_NOLIMBER = 150;
   // the point masses and the CMB-lensing options live in singletons
@@ -1305,6 +1309,34 @@ void init_lowrank_nonlimber_gg(const int flag, const int nrank,
     return;
   }
   set_lowrank_DD_GG(flag, nrank, lmax);
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// Switch the non-Limber galaxy clustering to the nonlinear Kaiser terms,
+// writing cosmo2D.c's use_nonlinear_kaiser_GG through
+// set_nonlinear_kaiser_GG: flag 0 = the linear Kaiser RSD rows (the
+// default, bit-identical to the code without the feature), 1 = the RSD
+// rows also carry the one-loop velocity spectra P_delta_Theta and
+// P_Theta_Theta (every gg engine: FKEM, low-rank, the cross pairs).
+// Likelihood yaml key: nonlinear_kaiser. No nuisance random is redrawn:
+// w_gg_tomo keys its cache on the flag and the Fourier path recomputes.
+//
+// Validation: flag in {0, 1}; flag = 1 refuses include_HOD_GX = 1 (both
+// in set_nonlinear_kaiser_GG, which prints the value and exits).
+//
+// Parameters:
+//   flag - 0 = linear Kaiser, 1 = nonlinear Kaiser
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_nonlinear_kaiser_gg(const int flag)
+{
+  static constexpr std::string_view fname = "init_nonlinear_kaiser_gg"sv;
+  debug("{}: {}", fname, errbegins);
+  set_nonlinear_kaiser_GG(flag);
   debug("{}: {}", fname, errends);
   return;
 }

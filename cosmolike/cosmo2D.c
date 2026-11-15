@@ -97,6 +97,17 @@ static int use_lowrank_DD_GG = 0;    // 0 or 1
 static int lowrank_DD_GG_nrank = 5;  // 1..16
 static int lowrank_DD_GG_lmax = 150; // 32..Ntable.LMAX
 
+// Nonlinear Kaiser (default off: the linear Kaiser terms, bit for bit).
+// The RSD rows of the non-Limber gg engines take the one-loop velocity
+// spectra of standard perturbation theory, P_delta_Theta and
+// P_Theta_Theta at unequal times, instead of their linear limits.
+// Theta = -div v/(a H), so its linear part is f delta_L. Galaxies keep
+// linear bias in these rows and the redshift-space map stays linear.
+// The loop pieces ride extra FFTLog rows (D^2 and D^3 kernels) against
+// the templates of get_FPT_kaiser (pt_cfastpt.c), and the Limber linear
+// term subtracts their Limber limit, so they cancel at high l.
+static int use_nonlinear_kaiser_GG = 0; // 0 or 1
+
 // ---------------------------------------------------------------------------
 // The k window of the gg engines: off unless the scale-cut driver of
 // cosmo2D_scuts.c turns it on (set_gg_kwindow), so every data-vector
@@ -259,6 +270,30 @@ int get_lowrank_DD_GG_nrank(void)
 int get_lowrank_DD_GG_lmax(void)
 {
   return lowrank_DD_GG_lmax;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime switch of the nonlinear Kaiser terms (generic_interface.cpp
+// init_nonlinear_kaiser_gg; yaml key nonlinear_kaiser). w_gg_tomo keys
+// its cache on the flag, so one process can flip it and get each vector
+// back bitwise. flag = 1 refuses include_HOD_GX = 1 (no RSD rows there).
+// ---------------------------------------------------------------------------
+void set_nonlinear_kaiser_GG(const int flag)
+{
+  if (flag != 0 && flag != 1) {
+    log_fatal("invalid use_nonlinear_kaiser_GG = %d (0 or 1)", flag);
+    exit(1);
+  }
+  if (1 == flag && 1 == include_HOD_GX) {
+    log_fatal("use_nonlinear_kaiser_GG = 1 requires include_HOD_GX = 0");
+    exit(1);
+  }
+  use_nonlinear_kaiser_GG = flag;
+}
+
+int get_use_nonlinear_kaiser_GG(void)
+{
+  return use_nonlinear_kaiser_GG;
 }
 
 // refuse a path that has no halo-model IA implementation
@@ -1610,7 +1645,8 @@ double w_gammat_tomo(
 // recomputes when cosmology, clustering photo-z,
 // clustering redshift distribution, Ntable, galaxy bias, the source
 // n(z) (with magnification it sets the lens range), the limber
-// flag, or the low-rank DD settings (flag, nrank, lmax) change. The
+// flag, the low-rank DD settings (flag, nrank, lmax) or the nonlinear
+// Kaiser flag change. The
 // flags are part of the cache key so that one process can switch
 // between the paths and get each bitwise back (the projects'
 // tests/data_vector/test_nonlimber_gg.py do).
@@ -1769,8 +1805,10 @@ double w_gg_tomo(
   // 1000-wide decimal slot), so decimal packing would alias settings -
   // (nrank 9, lmax 1000) and (nrank 8, lmax 2000) pack identically -
   // and silently serve an out-of-date data vector; lmax < 2^24 and
-  // nrank < 2^16 can never cross their fields.
-  const uint64_t ggdd = ((uint64_t) use_lowrank_DD_GG << 40) |
+  // nrank < 2^16 can never cross their fields. The nonlinear Kaiser
+  // flag takes its own bit above them.
+  const uint64_t ggdd = ((uint64_t) use_nonlinear_kaiser_GG << 48) |
+                        ((uint64_t) use_lowrank_DD_GG << 40) |
                         ((uint64_t) lowrank_DD_GG_nrank << 24) |
                         (uint64_t) lowrank_DD_GG_lmax;
 
@@ -12879,7 +12917,8 @@ void C_cl_tomo_lowrank(
 // The keys (nonces, sizes) plus the fresh flag prove the stash
 // belongs to this evaluation; any other call order is fatal.
 static double** ggx_stash = NULL;   // [npairs][nell] corrections
-static uint64_t ggx_stash_key[5];   // nonces, npairs, nell, window at fill time
+static uint64_t ggx_stash_key[6];   // nonces, npairs, nell, window and
+                                    // nonlinear Kaiser flag at fill time
 static int ggx_stash_fresh = 0;     // 1 = filled and not yet consumed
 
 // Fill the stash from one core run's pair corrections Clx[n][l], given
@@ -12928,6 +12967,7 @@ static void ggx_stash_store(
   ggx_stash_key[2] = (uint64_t) npairs;
   ggx_stash_key[3] = (uint64_t) nell;
   ggx_stash_key[4] = gg_kwin.nonce; // a stash serves one window setting
+  ggx_stash_key[5] = (uint64_t) use_nonlinear_kaiser_GG;
   ggx_stash_fresh = 1;
 }
 
@@ -15083,7 +15123,8 @@ void C_gg_cross_tomo_ells(
         fdiff2(ggx_stash_key[1], Ntable.random) ||
         ggx_stash_key[2] != (uint64_t) gg_cross_npairs ||
         ggx_stash_key[3] != (uint64_t) nell ||
-        ggx_stash_key[4] != gg_kwin.nonce) {
+        ggx_stash_key[4] != gg_kwin.nonce ||
+        ggx_stash_key[5] != (uint64_t) use_nonlinear_kaiser_GG) {
       log_fatal("C_gg_cross_tomo_ells: no fresh cross corrections for "
                 "this evaluation - the auto gg block must be computed "
                 "first, in the same evaluation (the data-vector "
