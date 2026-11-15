@@ -13704,7 +13704,10 @@ void C_gg_kwindow_white_noise_ells(
   double* fb[MAX_SIZE_ARRAYS];
   double* gfb[MAX_SIZE_ARRAYS];
   for (int b=0; b<nbins; b++) {
-    const int qa = (int) ceil(chi(amax_lens(b))/h);
+    // the chi = 0 node carries no volume, and its Bessel recurrence would
+    // divide by x = 0: the grid starts at node 1 at the latest
+    const int qa_lens = (int) ceil(chi(amax_lens(b))/h);
+    const int qa = (qa_lens < 1) ? 1 : qa_lens;
     const int qb = (int) floor(chi(amin_lens(b))/h);
     const int n  = (qb >= qa) ? qb - qa + 1 : 0;
     double* f  = (double*) malloc(sizeof(double)*((n > 0) ? n : 1));
