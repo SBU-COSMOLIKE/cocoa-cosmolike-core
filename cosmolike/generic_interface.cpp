@@ -1948,7 +1948,8 @@ void init_cosmo_runmode(const bool is_linear)
 // Writes nuisance.IA_MODEL (0 = IA_MODEL_NLA, 1 = IA_MODEL_TATT),
 // nuisance.IA (redshift dependence: NO_IA, IA_NLA_LF, IA_REDSHIFT_BINNING
 // or IA_REDSHIFT_EVOLUTION, see IA.h) and nuisance.IA_code (0 = CFASTPT,
-// 1 = python FAST-PT fed through set_IA_PS). No cache key is bumped.
+// 1 = python FAST-PT fed through set_IA_PS). A change of any of the
+// three redraws nuisance.random_ia, the key of every IA consumer.
 //
 // Validation: values outside these sets are critical() + exit(1).
 //
@@ -1968,6 +1969,14 @@ void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA
   debug(debugsel, fname, "IA MODEL", IA_MODEL);
   debug(debugsel, fname, "IA REDSHIFT EVOLUTION", IA_REDSHIFT_EVOL);
   debug(debugsel, fname, "IA code", IA_code);
+
+  // every IA consumer keys on nuisance.random_ia: redraw it when the
+  // model changes, as init_include_halo_IA does
+  if (nuisance.IA_MODEL != IA_MODEL ||
+      nuisance.IA != IA_REDSHIFT_EVOL ||
+      nuisance.IA_code != IA_code) {
+    nuisance.random_ia = RandomNumber::get_instance().get();
+  }
   
   if (0 == IA_MODEL || 1 == IA_MODEL) {
     nuisance.IA_MODEL = IA_MODEL;
