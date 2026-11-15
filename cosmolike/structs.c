@@ -88,6 +88,11 @@ void reset_like_struct(void)
   like.halo_model[1] = 0;
   like.halo_model[2] = 0;
   like.halo_model[3] = 0;
+  // the compiled default of every bias term: code 0, one free amplitude
+  // per lens bin (init_bias)
+  for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
+    like.galaxy_bias_model[i] = 0;
+  }
 }
 
 void reset_cosmology_struct(void)
@@ -196,6 +201,8 @@ void reset_nuisance_struct(void)
   nuisance.random_ia_halo = 0.0;
   nuisance.random_photoz_shear = 0.0;
   nuisance.random_photoz_clustering = 0.0;
+  nuisance.random_galaxy_bias = 0.0;
+  nuisance.random_gas = 0.0;
   for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
     nuisance.shear_calibration_m[i] = 0.0;
     nuisance.gc[i] = 0.0;

@@ -427,8 +427,10 @@ static void reset_boost_baselines(void);
 // like.adopt_limber[LIMBER_GS] = 1 and pdeltaparams.runmode = "Halofit".
 // Module state outside the structs is cleared too: the accuracy-boost
 // baselines (reset_boost_baselines), the gg cross-pair list and the k
-// window of cosmo2D.c, the run-mode latch of Pdelta (cosmo3D.c) and the
-// baryon scenario (reset_bary_struct).
+// window of cosmo2D.c, the run-mode latch of Pdelta (cosmo3D.c), the
+// baryon scenario (reset_bary_struct), the cosmo2D.c model switches,
+// the non-Limber multipole cap, the point masses and the CMB-lensing
+// options (IPCMB::reset).
 // The cluster probe flags (cluster.probe[]) are reset by reset_cluster
 // (generic_interface_cluster.cpp), not here.
 //
@@ -480,6 +482,17 @@ void initial_setup()
   set_gg_cross_pairs(NULL, NULL, 0);
   // and the k window of the UV-fraction scale cuts, which also lives there
   unset_gg_kwindow();
+  // the cosmo2D.c model switches, at the values of their definitions
+  // there (include_HOD_GX, include_halo_IA, use_lowrank_DD_GG with its
+  // rank and multipole cap)
+  set_include_HOD_GX(0);
+  set_include_halo_IA(0);
+  set_lowrank_DD_GG(0, 5, 150);
+  // the non-Limber multipole cap, at its value in structs.c (limits)
+  limits.LMAX_NOLIMBER = 150;
+  // the point masses and the CMB-lensing options live in singletons
+  PointMass::get_instance().set_pm_vector(arma::Col<double>());
+  IPCMB::get_instance().reset();
 
   like.adopt_limber[LIMBER_GG] = 0;
   like.adopt_limber[LIMBER_GS] = 1;

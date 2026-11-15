@@ -372,6 +372,18 @@ public:
     }
     ~IPCMB() = default;
 
+    // forget every option set (initial_setup): the flags return to their
+    // constructed values; the cmb struct has its own reset_cmb_struct
+    void reset() {
+      this->is_wxk_fwhm_set_ = false;
+      this->is_wxk_lminmax_set_ = false;
+      this->is_wxk_healpix_window_set_ = false;
+      this->is_kk_bandpower_ = false;
+      this->is_kk_binning_matrix_set_ = false;
+      this->is_kk_offset_set_ = false;
+      this->is_alpha_Hartlap_cov_kkkk_set_ = false;
+      return;
+    }
     
     bool is_kk_bandpower() const {
       return this->is_kk_bandpower_;
