@@ -714,6 +714,13 @@ double compute_sigma2(
 // dependent kernels through the redshift stamps. Samples that are not
 // loaded yet are skipped, so calling this before any load changes nothing.
 // ---------------------------------------------------------------------------
+
+// The bin counts the stored n(z) tables were saved with (set_source_sample,
+// set_lens_sample). set_*_sample_size may change the struct's count before
+// the next load, and a stored table must be read with its own count.
+static int stored_shear_nbin = 0;
+static int stored_clustering_nbin = 0;
+
 static void reload_loaded_redshift_samples()
 {
   // One reload recipe serves both samples: index 0 is the source (shear)
@@ -739,6 +746,14 @@ static void reload_loaded_redshift_samples()
     // this sample is loaded for the first time.
     if (hist == NULL || ntomo == 0) {
       continue;
+    }
+    const int stored = (sample == 0) ? stored_shear_nbin
+                                     : stored_clustering_nbin;
+    if (stored != ntomo) {
+      critical("the stored {} n(z) has {} bins but the sample now has {}: "
+               "load the new n(z) before changing the n(z) selection",
+               (sample == 0) ? "source" : "lens", stored, ntomo);
+      exit(1);
     }
 
     // --- 2. REBUILD THE LOADER'S INPUT MATRIX FROM THE STORED TABLE ---
@@ -4248,7 +4263,9 @@ void set_lens_sample(arma::Mat<double> input_table)
       (preparation_factor_cache != Ntable.photoz_histogram_akima_factor) ||
       (interpolation_cache != Ntable.photoz_interpolation_type) ||
       (zmid_cache != Ntable.photoz_zmid_convention);
+  // a table saved with another bin count is not compared entry by entry
   if (redshift.clustering_nzbins != static_cast<int>(input_table.n_rows) ||
+      stored_clustering_nbin != Ntomo ||
       NULL == redshift.clustering_zdist_table) {
     cache_update = 1;
   }
@@ -4276,6 +4293,7 @@ void set_lens_sample(arma::Mat<double> input_table)
   if (1 == cache_update || 1 == force_cache_update_test)
   {
     redshift.clustering_nzbins = input_table.n_rows;
+    stored_clustering_nbin = Ntomo;
     const int nzbins = redshift.clustering_nzbins;    // alias
 
     if (redshift.clustering_zdist_table != NULL) {
@@ -4451,7 +4469,9 @@ void set_source_sample(arma::Mat<double> input_table)
       (preparation_factor_cache != Ntable.photoz_histogram_akima_factor) ||
       (interpolation_cache != Ntable.photoz_interpolation_type) ||
       (zmid_cache != Ntable.photoz_zmid_convention);
+  // a table saved with another bin count is not compared entry by entry
   if (redshift.shear_nzbins != static_cast<int>(input_table.n_rows) ||
+      stored_shear_nbin != Ntomo ||
       NULL == redshift.shear_zdist_table) {
     cache_update = 1;
   }
@@ -4478,6 +4498,7 @@ void set_source_sample(arma::Mat<double> input_table)
   if (1 == cache_update || 1 == force_cache_update_test)
   {
     redshift.shear_nzbins = input_table.n_rows;
+    stored_shear_nbin = Ntomo;
     const int nzbins = redshift.shear_nzbins; // alias
 
     if (redshift.shear_zdist_table != NULL) {
