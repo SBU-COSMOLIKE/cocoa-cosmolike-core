@@ -8,6 +8,15 @@ T*C*T^t. A joint analysis must also transform the cross covariances
 with counts, galaxy clustering and other lensing bins. Transforming
 only the shear diagonal blocks would describe inconsistent observables.
 
+The Y identity is written for the physical surface density Sigma, in
+mass per area, but this module never sees Sigma itself: x is the
+project's vector of dimensionless angular tangential-shear bin means,
+and y=T*x is its angular Y representation. T only combines the
+supplied angular bins, so y keeps the representation and units of x.
+No critical-surface-density factor and no conversion from angle to
+physical radius is applied here; where needed, those conversions
+belong to the project's mean prediction.
+
 The caller supplies the angular matrix from the project's existing mean
 prediction and the cluster-lensing positions in the full vector. This
 module chooses no finite-difference rule, selection factor or scale cut.

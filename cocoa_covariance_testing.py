@@ -1,8 +1,13 @@
 """Project-boundary checks for the shared galaxy/shear covariance forecast.
 
 Each project supplies its compiled interface and thin survey adapter. These
-checks exercise the real catalog files with a small measured subset. They
-check assembly and state/thread consistency, not integration convergence.
+checks exercise the real catalog files with a small measured subset: one
+cosmology is initialized once, and the checks then compare repeated
+assemblies of that fixed initialized forecast - the notebook call against
+the production call, and one against eight OpenMP threads - plus component
+sums, matrix properties, dimensions and saved metadata. They do not vary
+cosmology or nuisance parameters, so they say nothing about cache behavior
+under parameter changes, and nothing about integration convergence.
 Independent component references live in the LSST covariance tests.
 """
 

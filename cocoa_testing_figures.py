@@ -5,21 +5,31 @@ Two figure families live here.
 The photo-z convention figures: every project's
 tests/data_vector/generate_photoz_convention_figure.py evaluates the
 frozen cosmic-shear fiducial under the four runtime photo-z settings
-(cspline/Z_LOW default, linear, Steffen, Z_MID; see the core README's
-shared data-vector checks for what they mean) and plots the fractional
-data-vector differences against the default, per tomographic pair and
-per angular bin. The machinery is the same in every project, so it
-lives here; the thin script keeps the survey data (binning, mask file,
-panel grid) and calls photoz_convention_figures with it.
+and plots the fractional data-vector differences against the default,
+per tomographic pair and per angular bin. The settings vary two
+choices in reading the tabulated n(z): which redshift a histogram row
+is attached to (Z_LOW, the lower cell edge and the default, or Z_MID,
+the cell center - a half-cell shift of every distribution), and how
+the table is interpolated (cubic spline, the default; linear;
+Steffen's monotone cubic). The core README's shared data-vector
+checks section discusses the conventions in full. Each plotted curve
+is (changed - default)/default: a relative change with no covariance
+weighting, so its size is not a statistical significance, and it
+grows without bound where the reference signal crosses zero. The
+machinery is the same in every project, so it lives here; the thin
+script keeps the survey data (binning, mask file, panel grid) and
+calls photoz_convention_figures with it.
 
 The N-random-models figure: the N-random-models accuracy check
-(test_ax99_nmodels of every project's test_accuracy.py) draws N
-reproducible points across the prior and scores each with the pushed
+(test_ax99_nmodels of every project's test_accuracy.py) evaluates N
+reproducible stress points (uniform draws of the box-prior
+parameters, with the project's cuts and holds; see
+cocoa_testing.nmodels_points) and scores each with the pushed
 accuracy settings against its own default-settings vector.
-random_models_triangle draws each point's delta chi2 against the two
-quantities that set it, Omega_m and the clustering amplitude A_s b^2,
-plus the plane of the two, so the reader sees where in the prior the
-numerical error grows.
+random_models_triangle draws each point's delta chi2 against two
+diagnostic coordinates, Omega_m and the clustering-amplitude proxy
+A_s b^2, plus the plane of the two, so the reader sees where in the
+sampled region the numerical error grows.
 
 This module imports matplotlib, so the test shims never import it at
 module level: the figure scripts import it after their own
@@ -44,11 +54,15 @@ import numpy as np
 SETTINGS = (("cspline/Z_LOW (default)", 0, 0), ("linear", 1, 0),
             ("steffen", 2, 0), ("Z_MID", 0, 1))
 
-# The fixed y half-ranges of the two figures: fractional differences
-# blow up where the signal crosses zero, and a fixed range keeps the
-# flat offsets, which are the physics, readable (the spikes run
-# off-panel). The Z_MID shift is percent-level; the interpolant
-# differences are 1e-4-level.
+# The fixed y half-ranges of the two figures: a fractional difference
+# grows without bound where the reference signal crosses zero, and a
+# fixed range keeps the broad offsets readable while those spikes run
+# off-panel. The figures therefore show a chosen band, not a bound on
+# the whole vector: a clipped spike marks a near-zero reference
+# entry, and the panels say nothing about its covariance-weighted
+# size. On the frozen fiducial the Z_MID half-cell shift produces
+# percent-level offsets and the interpolant differences are
+# 1e-4-level, which sets the two ranges.
 ZMID_YLIM = 4.0
 INTERP_YLIM = 8.0
 
@@ -186,6 +200,15 @@ def photoz_convention_figures(u, out_dir, kind, ntomo, nlen,
                               grid, example="example1"):
     """Evaluate the four settings and write the two figures.
 
+    The vector layout is assumed, not read from the data: shear
+    pairs in pair-major order, xi_+ then xi_- in real space, the
+    cosmic-shear block leading the vector in Fourier space, and nlen
+    logarithmically binned entries per pair between x_min and x_max.
+    The plotted centers are reconstructed from those logarithmic
+    edges (area-weighted in real space, geometric in Fourier space),
+    so the supplied bounds and counts must describe the frozen
+    vector's actual binning.
+
     Arguments:
       u         = the project's cocoa_test_utils module.
       out_dir   = the folder the PNG files go into (the figure
@@ -194,8 +217,10 @@ def photoz_convention_figures(u, out_dir, kind, ntomo, nlen,
                   the bands).
       ntomo     = the number of source tomographic bins.
       nlen      = angular bins (real) or bands (fourier) per block.
-      x_min     = the lower edge of the angular or band range.
-      x_max     = the upper edge.
+      x_min     = the lower edge of the angular range (arcminutes,
+                  real space) or band range (dimensionless
+                  multipoles, Fourier space).
+      x_max     = the upper edge, same units.
       mask_file = the scale-cut mask of the frozen contract (two
                   columns, entry index and 0/1; one column accepted).
       grid      = (nrows, ncols) of the panel grid; the pairs fill
@@ -299,12 +324,16 @@ NMODELS_COLOR_CEILING = 100.0
 def random_models_amplitude(point, fiducial):
     """Return the largest clustering-amplitude ratio of one drawn point.
 
-    The galaxy power spectrum of lens bin i is proportional to
-    A_s b_i^2. A numerical error that is a fixed fraction of the signal
-    therefore grows by A_i = (A_s b_i^2) / (A_s b_i^2)_fid at a drawn
-    point, and its delta chi2 against a covariance held at the
-    fiducial grows by A_i^2. The figure plots the largest A_i of each
-    point: the lens bin whose error is amplified most.
+    For linear, density-only galaxy clustering at fixed shape, the
+    power of lens bin i is proportional to A_s b_i^2 (A_s the
+    primordial amplitude, b_i the bin's linear bias), which motivates
+    A_i = (A_s b_i^2) / (A_s b_i^2)_fid as a diagnostic coordinate.
+    IF an entire error vector scaled by one common factor A_i at
+    fixed covariance, its delta chi2 would grow by A_i^2; velocity
+    terms, other probes, nonlinear shape changes and unequal per-bin
+    factors break that single-factor picture. The figure plots the
+    largest A_i of each point to sort the scan - it does not name the
+    bin contributing the largest covariance-weighted discrepancy.
 
     Arguments:
       point    = the drawn {parameter name: value} point.
@@ -325,13 +354,17 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
                            colorbarlabel, held=None, label=None):
     """Draw the N-random-models delta chi2 as an Omega_m - amplitude triangle.
 
-    Two quantities set the numerical error of a random point. The
-    matter density Omega_m raises the shear signal and pushes the
-    matter power deeper into the nonlinear regime, where the relative
-    error itself grows. The clustering-amplitude ratio of
-    random_models_amplitude multiplies the galaxy power, so a fixed
-    relative error grows by its square against the fiducial
-    covariance. The two often move together, so the figure is a
+    The figure examines how the numerical error of a point associates
+    with two diagnostic coordinates. The matter density Omega_m
+    raises the shear signal and pushes the matter power deeper into
+    the nonlinear regime, where the relative error itself grows. The
+    clustering-amplitude proxy of random_models_amplitude scales the
+    linear galaxy power, so an error vector scaled by one common
+    factor would grow by its square against the fixed fiducial
+    covariance (the proxy's density-only limit). These are
+    associations across the evaluated sample, not a causal
+    decomposition of each discrepancy. The two coordinates often
+    move together, so the figure is a
     triangle: the diagonal panels show delta chi2 against each
     quantity (logarithmic delta chi2, the limit as a dashed line), and
     the lower panel shows Omega_m against the amplitude ratio, which
@@ -342,18 +375,25 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
     configuration that samples no linear bias (cosmic shear) draws the
     Omega_m panel only.
 
-    Models that held Omega_m, A_s and the biases at the fiducial (the
-    odd models of a run with a hold list) are drawn as black-edged
-    diamonds: they stack at Omega_m = fiducial and amplitude ratio 1,
-    and the height of the stack is the error the other parameters
-    cause.
+    Models flagged in `held` are drawn as black-edged diamonds. The
+    legend text is fixed and names the usual hold list - Omega_m,
+    A_s and the biases; a run whose hold list differs should name it
+    in `label`, because the legend will not. With the usual list the
+    diamonds stack at Omega_m = fiducial and amplitude ratio 1, and
+    the height of the stack is the error the other parameters cause.
 
     Arguments:
       points        = the drawn points, one {parameter name: value}
                       dict per model, in model order; they must
                       include omegam.
       deltas        = the per-model delta chi2 floats, in the same
-                      order.
+                      order. Each must be the nonnegative quadratic
+                      prediction distance
+                      (v_high - v_default)^T C^-1 (v_high - v_default)
+                      the N-models check computes; a signed
+                      difference of likelihood chi2 values is not an
+                      acceptable input (the display would hide its
+                      sign).
       fiducial      = the frozen {parameter name: value} point.
       path          = the PNG path to write.
       limit         = the delta chi2 of the dashed line (the pass
@@ -388,8 +428,11 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
         raise ValueError(
             f"the points do not sample omegam (names {list(points[0])}): "
             "the figure needs the drawn matter density")
-    # a delta chi2 is a chi2 against the point's own vector, so it is
-    # negative only by round-off; the floor puts zero on the log axes
+    # The expected input is the quadratic form of the docstring,
+    # negative only by round-off. abs() and the floor are display
+    # operations for the log axes; they would also silently flip a
+    # genuinely negative input, so they validate nothing - the
+    # deltas contract above is what rules such inputs out.
     delta_plot = np.maximum(np.abs(delta_values), NMODELS_DELTA_FLOOR)
     omegam = np.array([point["omegam"] for point in points])
     amplitudes = []

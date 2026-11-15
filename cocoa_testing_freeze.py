@@ -807,11 +807,16 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
     # in the ISO form the frozen-module headers carry
     stamp = time.strftime(STAMP_FORMAT, time.gmtime())
 
-    # the stored N-models vectors take hours to compute and do not
-    # depend on anything the full freeze rewrites unless the
-    # high-accuracy configuration changes, which the check's
-    # fingerprint detects; they are read before frozen/ is removed and
-    # written back afterwards. Only the files of the current
+    # The stored N-models vectors take hours to compute, so they are
+    # read before frozen/ is removed and written back afterwards. The
+    # check's fingerprint (nmodels_config_hash) guards only the
+    # recorded likelihood and theory settings, with path keys left
+    # out: it does not see the CONTENT of input files, so a data file
+    # changed under the same filename leaves a retained archive in
+    # place. Whether to regenerate the vectors after such a change is
+    # a maintainer decision (--nmodels recomputes them); preservation
+    # here is a cost-saving default, not a guarantee of freshness.
+    # Only the files of the current
     # NMODELS_EXAMPLES keys survive: the file of an example removed
     # from that table would otherwise be pinned into the manifest
     # again by every refreeze, with no test left that reads it.

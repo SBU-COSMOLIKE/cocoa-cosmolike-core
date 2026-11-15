@@ -4,11 +4,12 @@ The cluster counterpart of plot_datavectors: one function per block
 of the cluster data vectors (4x2pt + N, 6x2pt + N). Cluster counts
 as one panel per cluster redshift bin (plot_N_cluster), cluster
 lensing as a cluster z x source grid (plot_gammat_cluster_tomo for
-gamma_t, plot_sigma_cluster_tomo for Sigma = Y gamma_t,
-plot_C_cs_tomo_limber in harmonic space), cluster clustering as one
-row of cluster z bins (plot_wcc_tomo, plot_C_cc_tomo_limber), and
-cluster x galaxy clustering as one row of (cluster z, lens) pairs
-(plot_wcg_tomo, plot_C_cg_tomo_limber).
+gamma_t, plot_sigma_cluster_tomo for Sigma = Y gamma_t, the
+localized form of cluster lensing defined in that function's
+docstring, plot_C_cs_tomo_limber in harmonic space), cluster
+clustering as one row of cluster z bins (plot_wcc_tomo,
+plot_C_cc_tomo_limber), and cluster x galaxy clustering as one row
+of (cluster z, lens) pairs (plot_wcg_tomo, plot_C_cg_tomo_limber).
 
 The module is not part of the package namespace (cnu.*): import it
 explicitly,
@@ -22,7 +23,10 @@ tick labels near an interior panel boundary are hidden; an
 identically zero panel is drawn "excluded"), and the glued-panel
 helpers are imported from there, so cluster and galaxy figures look
 alike. What the cluster blocks add is one more bin index, the
-richness bin:
+richness bin. Richness (lambda) is the observed galaxy count of a
+cluster: the mass proxy the survey uses to select the cluster
+sample and to bin it, since halo mass itself is not observable.
+In the figures:
 
 - A panel is a tomographic bin (or bin pair), as in the galaxy
   plots: (cluster z bin, source bin) for cluster lensing, the
@@ -49,7 +53,9 @@ richness bin:
   panels of cluster x galaxy.
 - data overlays measurements with error bars on the real-space
   blocks and on the counts; NaN entries (the scale cuts) are
-  skipped.
+  skipped. The errors are per-point standard deviations, drawn as
+  symmetric bars: correlations between points are not shown, and
+  visual overlap with a curve is not a goodness-of-fit statement.
 - The entries of a list may sit on different theta grids (a change
   of the angular binning), as in the galaxy plots; a ratio needs
   every entry, and the data, on the reference's grid.
@@ -499,7 +505,16 @@ def _plot_cluster_panels(X, Y, X_ref, Y_ref, data, bintext, curvelabel, xlabel, 
                     err = None if data[2] is None else np.asarray(data[2])[:,c,i,j]
                     # the data take the form of their curves: |d| and its
                     # error times the panel factor, or d/ref - 1 with the
-                    # error divided by |ref| (the reference is taken as exact)
+                    # error divided by |ref| (the reference is taken as
+                    # exact, so no reference uncertainty enters). The
+                    # errors are per-point standard deviations;
+                    # correlations between points are not drawn. In
+                    # magnitude mode the symmetric bar about |d| is a
+                    # display convention: near d = 0 it is not a
+                    # confidence interval for the magnitude of a noisy
+                    # signed value (that distribution is folded and
+                    # asymmetric) - interpret agreement with the signed
+                    # data and the covariance.
                     if Y_ref is None:
                         d = np.abs(d)*fac
                         err = None if err is None else err*fac
@@ -944,8 +959,11 @@ def plot_gammat_cluster_tomo(theta_gammat, gammat_ref = None, param = None, colo
       data     = None, or (theta, values, errors): measurements in
                  the layout of one gammat array, drawn as points
                  with error bars (errors may be None); NaN entries
-                 (the scale cuts) are skipped. datalabel = its
-                 legend label, or None for no legend entry.
+                 (the scale cuts) are skipped. The errors are
+                 per-point standard deviations drawn as symmetric
+                 bars; correlations between points are not shown
+                 (module docstring). datalabel = its legend label,
+                 or None for no legend entry.
       marker   = list of matplotlib markers (points instead of
                  lines), or None for lines.
       linestyle, linewidth = lists cycled across the richness
@@ -1030,16 +1048,30 @@ def plot_sigma_cluster_tomo(theta_sigma, sigma_ref = None, param = None, colorba
     """Panel grid of the cluster lensing statistic Sigma(theta).
 
     Sigma = Y gamma_t is cluster lensing as the data vector holds
-    it: the Y transform of gamma_t, times the selection bias and
-    the shear calibration. The layout is the one of
-    plot_gammat_cluster_tomo: one panel per (cluster z bin, source
-    bin) pair (columns are cluster redshift bins, rows are source
-    bins), the richness bins as curves told apart by their line
-    style. Without sigma_ref each curve is |Sigma| on a log scale;
-    with sigma_ref each curve is the fractional difference
-    Sigma / ref - 1. With the Y transform on, the last angular bin
-    of Sigma is identically zero (the transform has no value
-    there): it is left out of every curve and of the ratio.
+    it: the Y transform of the cluster tangential shear gamma_t,
+    times the selection bias and the shear calibration. Y is the
+    localization transform of Park, Rozo & Krause (2021, arXiv
+    2004.07504; eq. 15 of arXiv 2503.13631): one fixed matrix T
+    acting across the angular bins, Sigma_i = sum_k T_ik
+    gamma_t(theta_k), built so that Sigma at theta_i depends only
+    on the mass profile between theta_i and the last angular bin -
+    it removes the dependence on the mass enclosed inside theta_i
+    that gamma_t itself carries. Sigma is dimensionless, like
+    gamma_t: despite the symbol, it is not the surface mass density
+    Sigma(R) in mass per area. The transform runs in the compiled
+    interface; this plotter receives the finished values and
+    applies no transform or unit conversion.
+
+    The layout is the one of plot_gammat_cluster_tomo: one panel
+    per (cluster z bin, source bin) pair (columns are cluster
+    redshift bins, rows are source bins), the richness bins as
+    curves told apart by their line style. Without sigma_ref each
+    curve is |Sigma| on a log scale; with sigma_ref each curve is
+    the fractional difference Sigma / ref - 1. With the Y transform
+    on, the last angular bin of Sigma is identically zero (the last
+    row of T is zero: the transform would need gamma_t beyond the
+    last bin, so that entry carries no signal - it is not a
+    measured zero): it is left out of every curve and of the ratio.
 
     Arguments:
       theta_sigma = list of (theta, sigma) pairs, one per list

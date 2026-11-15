@@ -566,9 +566,12 @@ def accuracy_suite(u, name, checks, knob_scan=None):
         They share one frozen-state verification (setUpClass) and one
         implementation (_accuracy_check), which evaluates a
         configuration in a worker subprocess and prints the report
-        block. There is no pass/fail on the size of the delta: how
-        much numerical error an analysis tolerates is a judgment
-        call, so only a broken evaluation fails.
+        block. For the A-checks and the K scan there is no pass/fail
+        on the size of the delta: how much numerical error an
+        analysis tolerates is a judgment call, so only a broken
+        evaluation fails. The N-random-models check on this class is
+        the exception: with NMODELS_LIMIT set it enforces that bound
+        on every model's delta.
         """
 
         # @classmethod is a decorator (a line starting with @ that
@@ -614,13 +617,17 @@ def accuracy_suite(u, name, checks, knob_scan=None):
             settings on top of it, builds the cobaya model, evaluates
             the chi2 at the frozen point, and hands it back as a
             float. The default-settings value is the frozen
-            reference, so the printed difference is the numerical
-            error the default settings carry.
+            reference, so the printed difference is a refinement
+            comparison at the frozen point: the measured sensitivity
+            of the chi2 to pushing every numerical setting under the
+            same physical model. It estimates the defaults' numerical
+            error; the pushed settings are a finer calculation, not
+            the continuum answer.
 
             Arguments:
               check   = the advisory label (e.g. "A1") for the
                         report.
-              example = a key of u.EXAMPLES (exact-physics
+              example = a key of u.EXAMPLES (non-emulated
                         configurations only).
               tatt    = True evaluates the TATT variant against the
                         TATT-generated data vector, False the NLA
@@ -701,12 +708,13 @@ def accuracy_suite(u, name, checks, knob_scan=None):
 
     def make_nmodels(nm_example, nm_label):
         def test_ax99_nmodels(self):
-            """N-random-models check across the prior.
+            """N-random-models check at the fixed stress points.
 
-            The A-checks measure the numerical error of the default
-            settings at the one frozen fiducial point. This check
-            measures it at NMODELS_COUNT fixed points across the
-            prior. For each point
+            The A-checks report the measured sensitivity to the
+            pushed accuracy settings at the one frozen fiducial
+            point. This check measures that sensitivity at
+            NMODELS_COUNT fixed points of the designed stress sample
+            (nmodels_points). For each point
 
                 delta chi2 = (v_high - v_default)^T C^-1 (v_high - v_default),
 
@@ -1597,8 +1605,10 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
     """Build one Limber-vs-non-Limber class (clustering or ggl).
 
     The likelihood key adopt_limber_gg (clustering) or adopt_limber_gs
-    (galaxy-galaxy lensing) chooses between the exact low-l projection
-    and the Limber approximation at every multipole. The class
+    (galaxy-galaxy lensing) chooses between the full non-Limber
+    projection integral at low multipoles (within the adopted
+    modeling prescriptions) and the Limber approximation at every
+    multipole. The class
     evaluates the frozen fiducial three times in one process (the
     default, the other setting, the default again) and asserts: the
     delta is seen (dead-flag floor), only the probe's own block
@@ -1750,8 +1760,18 @@ def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
             print(f"    delta^T C^-1 delta = {dchi2:.4f} "
                   f"(measured {measured:.4f})")
             print(f"    {per_block_note}")
-            # per-block contributions, printed largest first; the
-            # loop stops at the first one below 0.1% of the total
+            # Per-block scores, printed largest first; the loop stops
+            # at the first one below 0.1% of the total. Each score
+            # zeroes every entry outside one bin pair and applies the
+            # FULL precision matrix W = C^-1: for a difference split
+            # over two disjoint blocks, delta = delta_1 + delta_2,
+            #   delta^T W delta = delta_1^T W delta_1
+            #                     + delta_2^T W delta_2
+            #                     + 2 delta_1^T W delta_2,
+            # and the printed scores omit the cross term, so they
+            # rank the sensitive blocks without adding up to the
+            # total (with W = [[1, 1/2], [1/2, 1]] and delta = (1, 1)
+            # the two blocks score 1 and 1 while the total is 3).
             rows = []
             for b in range(nblocks):
                 block = np.zeros_like(delta)
@@ -1818,11 +1838,17 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
     """Build one FKEM-vs-low-rank-SVD clustering class.
 
     The likelihood key nonlimber_lowrank_gg picks the non-Limber
-    clustering engine: 0 = FKEM (every project's default), 1 = the
-    low-rank SVD thin-bin engine (C_cl_tomo_lowrank in cosmo2D.c).
-    The delta measures FKEM's approximations - its Limber treatment
-    of the nonlinear density term, and its multipole cap
-    lmax_nonlimber - against the SVD's rank truncation. Its size
+    clustering engine: 0 = FKEM, 1 = the low-rank SVD thin-bin
+    engine (C_cl_tomo_lowrank in cosmo2D.c); the `default` argument
+    names the engine the project's likelihood defaults to. The
+    delta compares the two implementations at the frozen
+    configuration: their main modeling differences are FKEM's
+    Limber treatment of the nonlinear density term and its
+    multipole cap lmax_nonlimber against the SVD's rank truncation,
+    on top of the numerical controls each engine carries. Neither
+    engine is the exact physical answer, so agreement with the
+    recorded `measured` value checks that the comparison
+    reproduces, not that either engine is right. The delta's size
     depends on the bins: small for photometric ones, large for thin
     spectroscopic ones unless FKEM's cap covers every band.
 
@@ -2010,9 +2036,13 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
 # rule of every frozen test, |delta chi2| < CHI2_TOLERANCE (0.2). A
 # Fisher run raises integration_accuracy; at the project's Fisher level
 # the pair block must sit 200 times deeper, and no kept band power (one
-# entry of the pair block) may move by more than 1% of its error bar, so
-# the Fisher derivatives (differences of nearby vectors) see a
-# quadrature error far below any physics.
+# entry of the pair block) may move by more than 1% of its error bar.
+# These are accuracy targets on the FIDUCIAL vector at different
+# quadrature settings, under one fixed covariance. A Fisher derivative
+# divides the difference of nearby parameter points by a step, so a
+# small error at the fiducial does not by itself bound the derivative
+# error: derivative stability is a separate check, run with the Fisher
+# machinery itself.
 PAIR_QUADRATURE_FISHER_DCHI2 = 1.0e-3
 PAIR_QUADRATURE_FISHER_BAND = 1.0e-2
 # The reference must agree with a rule twice as fine to this level, far
@@ -2033,6 +2063,14 @@ PAIR_QUADRATURE_DEEP_FLAG = "COCOA_PAIR_QUADRATURE_DEEP"
 
 def _pair_block_scores(delta, icov, sigma, pair, used):
     """The delta chi2 of a vector difference, whole and pair block alone.
+
+    The pair and outside scores zero the complementary entries and
+    apply the full precision matrix, so they omit the cross term
+    2 delta_pair^T C^-1 delta_outside and need not add up to the
+    whole-vector score; they locate where the difference sits, not a
+    partition of it. The precision matrix is the masked inverse of
+    the full covariance, not the inverse of a separately
+    marginalized sub-covariance.
 
     Arguments:
       delta = theory-vector difference (tested level minus reference),

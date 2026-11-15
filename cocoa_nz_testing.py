@@ -323,13 +323,20 @@ def histogram_probability_audit(native, source_file, lens_file,
                                 preparation_factors=(3,), accuracyboost=1.0):
     """Integrate the compiled curves over every original Z_LOW histogram cell.
 
-    Reset shifts/stretch, so this measures reconstruction alone. The optional
-    preparation_factors select fixed histogram models; accuracyboost sets only
-    their final lookup density (and the default cubic's second fit). Split at
-    every reader knot; a
-    two-point Gauss rule integrates each cubic exactly. A four-point rule
-    independently checks the partition. No Limber or cosmology is involved.
-    Returns per-distribution metrics and arrays suitable for area plots.
+    Shifts and stretch are reset, so this measures reconstruction alone. The
+    optional preparation_factors select fixed histogram models; accuracyboost
+    sets only their final lookup density (and the default cubic's second
+    fit). The integration partition splits at every reader knot, so each
+    subinterval holds one polynomial piece: a two-point Gauss rule integrates
+    a cubic exactly, and a four-point rule independently checks the
+    partition. No Limber or cosmology is involved. Returns per-distribution
+    metrics and arrays suitable for area plots.
+
+    Side effects: each arm calls native.initial_setup, installs its own
+    accuracy settings and redshift distributions, and leaves that state in
+    the shared compiled library - the caller's previously initialized model
+    is NOT restored. A caller that needs its own configuration afterwards
+    must reinitialize it completely.
     """
     import ctypes
 
@@ -388,6 +395,19 @@ def histogram_probability_audit(native, source_file, lens_file,
             reader = getattr(library, "nz_" + sample + "_photoz")
             reader.argtypes = [ctypes.c_double, ctypes.c_int]
             reader.restype = ctypes.c_double
+            # The quadrature arrays: s labels subintervals (split at
+            # every histogram edge and reader knot), q labels the Gauss
+            # nodes inside one subinterval. positions[s, q] =
+            # centres[s] + half_widths[s]*nodes[q] has shape
+            # (n_subintervals, order). The reader returns n(z), a
+            # density per unit redshift, so the subinterval area is
+            # a_s = half_widths[s] * sum_q weights[q] * n(z_sq); the
+            # half-width is the Jacobian of mapping the [-1, 1] Gauss
+            # nodes onto the subinterval. cells[s] names the original
+            # histogram cell containing subinterval s, so bincount adds
+            # the areas back into input cells: each bins row has shape
+            # (n_input_cells,), and the stacked result
+            # (n_tomographic_bins, n_input_cells).
             masses = []
             for order in (2, 4):
                 nodes, weights = np.polynomial.legendre.leggauss(deg=order)
@@ -403,6 +423,12 @@ def histogram_probability_audit(native, source_file, lens_file,
                     bins.append(np.bincount(cells, weights=areas, minlength=count))
                 masses.append(np.asarray(bins))
             np.testing.assert_allclose(actual=masses[0], desired=masses[1], atol=2.e-13, rtol=0.0)
+            # Total area and redistribution are separate questions: a
+            # curve can integrate to one while moving mass between
+            # cells, or keep the relative cell weights while losing
+            # total area. total is the integral over the table's
+            # support; normalized renormalizes it to one before the
+            # cell-by-cell comparison with the target.
             actual = masses[1]
             total = np.sum(actual, axis=1)
             normalized = actual / total[:, None]
@@ -415,6 +441,14 @@ def histogram_probability_audit(native, source_file, lens_file,
             for tomo in range(table.shape[1] - 1):
                 curves.append(np.fromiter((reader(float(x), tomo) for x in query),
                                           dtype=float, count=query.size))
+                # bin_redistribution_pct: the 50 is 100/2, percent of
+                # HALF the L1 difference. For nonnegative normalized
+                # cells, half the sum of |changes| is exactly the
+                # fraction of mass moved between cells (each transfer
+                # counts once as a loss and once as a gain). With
+                # signed cells - negative_input_cells counts them in
+                # the raw table - it stays half an L1 difference, not
+                # a probability fraction.
                 rows.append({
                     "sample": sample,
                     "arm": arm,

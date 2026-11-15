@@ -25,7 +25,13 @@ tests/frozen/ and pinned by a SHA-256 hash (a 64-character
 fingerprint that changes when any byte of the file changes) in
 tests/manifest_sha256.json. The live project configuration is never
 read, so a user can edit the examples, the likelihood default yaml
-files, or ../data without touching the tests. The frozen state has
+files, or ../data without touching the tests. Frozen means the
+INPUTS and the recorded reference outputs. The code under test (the
+likelihood Python, the compiled cosmolike library, CAMB, the
+numerical dependencies) is deliberately current: a regression test
+compares today's behavior on the saved inputs against the saved
+result, and the manifest is an identity check on the stored bytes,
+not a judgment of their scientific correctness. The frozen state has
 three parts:
 
   - frozen/frozen_config_*.py: one auto-generated module per
@@ -371,10 +377,18 @@ import tempfile
 REQUIRED_OMP_THREADS = "4"
 
 # Reference tests: |chi2(now) - chi2(frozen reference)| must stay
-# below this. The bound tolerates compiler and library-version noise
-# but catches a real physics change: no physics is detectable below a
-# chi2 shift of 0.2. The reports print the difference with more
-# decimals than the bound needs, so a drift below it stays visible.
+# below this. The bound is a chosen regression tolerance: wide enough
+# to tolerate compiler and library-version noise, tight enough that a
+# code or input change is unlikely to hide under it. It is NOT a
+# physical detectability limit: with r the residual of the reference
+# prediction against the data and e the prediction change,
+#   delta chi2 = 2 r^T C^-1 e + e^T C^-1 e,
+# so far from a minimum the signed cross term can cancel a large
+# prediction change. The ZERO-BASED COMPARISONS of the module
+# docstring are built at r = 0 exactly so that their delta chi2 IS
+# the squared prediction distance e^T C^-1 e. The reports print the
+# difference with more decimals than the bound needs, so a drift
+# below it stays visible.
 CHI2_TOLERANCE = 0.2
 
 # Race tests: |chi2(10th of a row) - chi2(fresh model)|. The two
@@ -509,9 +523,13 @@ def _baryon_dataset(label):
 # ---- the CFASTPT-vs-FASTPT comparison points --------------------------------
 
 # The comparison evaluates the SAME intrinsic-alignment points in
-# every project (each project's five TATT parameters carry the same
-# [-5, 5] and [0, 2] prior boxes, so a per-point number is comparable
-# project to project). The first 20 points are hard-coded draws:
+# every project: each project's five TATT parameters carry the same
+# [-5, 5] and [0, 2] prior boxes, so the same tuples are valid
+# everywhere and a divergence can be chased at one shared point.
+# The scalar per-point numbers are still each project's own - the
+# observables, masks and covariance weights differ - so they are
+# not directly interchangeable between projects. The first 20
+# points are hard-coded draws:
 # drawn ONCE, uniformly across the prior boxes, with
 # numpy.random.default_rng(20250922), and written out here so every
 # run evaluates exactly these points. Points 21-30 are the
@@ -639,13 +657,17 @@ def require_cocoa_environment():
 
 
 def assert_omp_threads():
-    """Refuse a race test that would not actually run multi-threaded.
+    """Refuse a race test whose environment does not request 4 threads.
 
     OpenMP reads OMP_NUM_THREADS once, when the compiled library is
     first loaded, so the value must be in the environment before any
     cobaya or cosmolike import. The test modules set it at their first
-    line; this check catches a run that imported the stack some other
-    way first (for example from an interactive session).
+    line. This check is an environment prerequisite read at call time:
+    it verifies the variable's CURRENT value, but it cannot see when
+    an already-loaded library read it, so a stack imported earlier
+    under a different value can still pass. The stronger control is
+    the worker isolation: each worker subprocess receives the variable
+    in its environment before its first import (_run_isolated).
 
     Arguments:
       none.
@@ -890,9 +912,13 @@ def make_model(info):
 def evaluate_chi2(model, point):
     """Evaluate one point and return the likelihood chi2.
 
-    cached=False forces a full recomputation: the race tests evaluate
+    cached=False turns off cobaya's own component reuse, so CAMB and
+    the likelihood recompute at the point: the race tests evaluate
     the same point twice on one model, and letting cobaya return a
-    cached value would compare a number with itself.
+    cached value would compare a number with itself. Tables cached
+    inside the compiled layers follow their own rebuild rules; the
+    race sequence exercises them by changing the cosmology between
+    its two fiducial evaluations.
 
     Arguments:
       model = the cobaya Model to evaluate on.
@@ -1136,8 +1162,13 @@ def report_accuracy(label, chi2_high, default_ref,
 
     The default-settings chi2 is the frozen reference (recorded at
     freeze time); the high-accuracy chi2 is computed in this run. The
-    difference is the numerical error of the default settings at this
-    point: there is no pass/fail because how much numerical error an
+    difference is a refinement comparison at this one point: the
+    measured sensitivity of the chi2 to pushing every numerical
+    setting, under the same physical model. The pushed settings are a
+    finer calculation, not the continuum answer, so the difference
+    estimates the defaults' numerical error rather than measuring it
+    exactly.
+    There is no pass/fail because how much numerical error an
     analysis tolerates is a judgment call, not a fixed bound.
 
     Arguments:
@@ -1319,9 +1350,13 @@ def report_fastpt_test(number, label, chi2, ref, cfastpt_ref, tol):
 
     Two numbers matter here: how far the FASTPT chi2 moved from its
     own frozen reference (the pass/fail criterion, same rule as every
-    other reference test), and the physical difference between the
-    FASTPT and cfastpt implementations of the TATT terms at the same
-    point (informational; it was measured and saved at freeze time).
+    other reference test), and the difference between the FASTPT and
+    cfastpt scalar chi2 values at the same point (informational).
+    Both chi2 values are measured against the shipped data, so their
+    difference rides the local chi2 slope: it is a difference of
+    likelihood scores, not the chi2 distance between the two theory
+    vectors. The comparison sweep computes that distance directly,
+    as delta^T C^-1 delta of the vectors (_fastpt_comparison_block).
 
     Arguments:
       number      = the test number shown in the header.
@@ -1367,11 +1402,16 @@ AMPLITUDE_NAME = "As_1e9"
 def largest_amplitude_ratio(point, fiducial):
     """Return the largest clustering-amplitude ratio of a point.
 
-    The galaxy power of lens bin i is proportional to A_s b_i^2, so a
-    point's amplitude relative to the fiducial is
-    A_i = (A_s/A_s,fid)(b_i/b_i,fid)^2. A numerical error that is a
-    fixed fraction of the signal grows by A_i, and its delta chi2
-    against the fiducial covariance by A_i^2.
+    For linear, density-only galaxy clustering at fixed shape, the
+    power of lens bin i is proportional to A_s b_i^2 (A_s the
+    primordial amplitude, b_i the bin's linear bias), so a point's
+    amplitude relative to the fiducial is
+    A_i = (A_s/A_s,fid)(b_i/b_i,fid)^2. IF an entire error vector
+    scaled by one common factor A_i at fixed covariance, its delta
+    chi2 would grow by A_i^2. Velocity terms, other probes,
+    nonlinear shape changes and unequal per-bin factors break that
+    single-factor picture, so A_i is a diagnostic proxy for sorting
+    a scan, not a decomposition of each error's cause.
 
     Arguments:
       point    = {parameter name: value}.
@@ -1480,20 +1520,24 @@ def report_emul2_advisory(label, chi2, frozen_ref, exact_ref, limit):
     There is no pass/fail here. An emulator is an approximation, so
     the useful outputs are the numbers themselves: the change against
     the frozen emulator reference (nonzero: the installed emulator no
-    longer reproduces the chi2 it gave at freeze time),
-    the difference against the exact-physics chi2 at the same
-    cosmology (how accurate the emulator is), and the recommendation
-    derived from that accuracy. Emulated configuration and exact
-    counterpart both evaluate the counterpart's synthetic NLA vector
-    (see load_frozen_info), and the exact reference is 0.000000 there
-    by construction, so |emulator - exact| is the emulator error at
-    the same data and nothing else.
+    longer reproduces the chi2 it gave at freeze time), the
+    difference against the non-emulated reference calculation at the
+    same cosmology, and the recommendation derived from that
+    difference. The non-emulated counterpart is itself a numerical
+    model (the frozen pipeline without the emulator), so the number
+    measures agreement between two calculations at this one
+    configuration, mask and covariance - not a general accuracy
+    certificate. Emulated configuration and non-emulated counterpart
+    both evaluate the counterpart's synthetic NLA vector (see
+    load_frozen_info), and the counterpart's own reference is
+    0.000000 there by construction, so |emulator - reference| is the
+    disagreement at the same data and nothing else.
 
     Arguments:
       label      = one line naming the emulated configuration.
       chi2       = the emulator chi2 computed in this run.
       frozen_ref = the frozen emulator reference chi2.
-      exact_ref  = the exact-physics reference chi2 (from the matching
+      exact_ref  = the non-emulated reference chi2 (from the matching
                    example's frozen reference).
       limit      = the recommendation threshold on |chi2 - exact_ref|.
 
@@ -2055,7 +2099,7 @@ class CocoaTestHarness:
                          tatt=True and by a non-frozen mask), the
                          optional "nla_dataset" (a synthetic NLA
                          descriptor), and "emulator": True with
-                         "exact_example" (the exact-physics entry
+                         "exact_example" (the non-emulated entry
                          whose ggl_exclude layout an emulator entry
                          copies; see load_frozen_info). Other keys
                          serve the generator and the test modules.
@@ -2372,7 +2416,7 @@ class CocoaTestHarness:
         from cobaya.yaml import yaml_load
 
         cfg = self.examples[example]
-        # cfg.get("emulator") is None (falsy) for the exact-physics
+        # cfg.get("emulator") is None (falsy) for the non-emulated
         # entries, which do not carry the flag at all
         if cfg.get("emulator") and (tatt or high_accuracy):
             raise ValueError(
@@ -2607,8 +2651,11 @@ class CocoaTestHarness:
                     (test_accuracy_baryons.py).
 
         Returns:
-          the chi2 as a float, or None when a baryon method rejected
-          the frozen fiducial (a training-box violation).
+          the chi2 as a float, or None when, with a baryon method
+          enabled, the evaluation returned a non-finite chi2. The
+          usual cause is the method rejecting the frozen fiducial (a
+          training-range violation, identified by the bfmt block's
+          own log line); the None alone does not name the cause.
 
         Raises:
           ValueError when knob names no ACCURACY_KNOBS entry;
@@ -2658,12 +2705,14 @@ class CocoaTestHarness:
             point.update(BARYON_POINT_OVERRIDES.get(baryon, {}))
         print("  evaluating the fiducial point ...", flush=True)
         if baryon is not None:
-            # With the feedback on, a non-finite chi2 means the
-            # method REJECTED the frozen fiducial (a training-box
-            # violation; the bfmt block logs a warning naming the
-            # offending parameter). The docstring makes that case a
-            # None return the caller can report, so hand back None
-            # instead of letting the assertion kill the worker.
+            # With the feedback on, a non-finite chi2 is expected
+            # when the method rejects the frozen fiducial (a
+            # training-range violation; the bfmt block logs a warning
+            # naming the offending parameter). The non-finite value
+            # alone does not identify the cause - that log line does.
+            # The docstring makes this case a None return the caller
+            # can report, so hand back None instead of letting the
+            # assertion kill the worker.
             try:
                 return evaluate_chi2(model, point)
             except AssertionError:
@@ -2680,8 +2729,10 @@ class CocoaTestHarness:
         leaked between evaluations, or an OpenMP race under
         REQUIRED_OMP_THREADS threads, shifts the second fiducial
         value away from the first; correct code reproduces it to
-        float noise. Each evaluation prints its chi2, so a stuck or
-        slow run is visible line by line.
+        float noise. Agreement is evidence for this sequence,
+        observable and thread count - it does not prove the absence
+        of every possible race or state leak. Each evaluation prints
+        its chi2, so a stuck or slow run is visible line by line.
 
         Arguments:
           example = a key of the project's EXAMPLES table.
@@ -3003,12 +3054,18 @@ class CocoaTestHarness:
                        seed=RANDOM_MODEL_SEED):
         """Return the fixed points of the N-random-models check.
 
-        Model m draws a uniform point of the frozen prior with
-        numpy.random.default_rng(seed + m) (draw_uniform_point). The
-        draw settings narrow that prior the way the examples do, and
-        every odd model resets a hold list to the frozen point, so half
-        of the models measure what the other parameters alone do to the
-        accuracy.
+        The points are a designed stress sample, not a draw from the
+        whole joint prior. Model m draws every box-prior parameter
+        uniformly with numpy.random.default_rng(seed + m)
+        (draw_uniform_point) while the Gaussian-prior parameters keep
+        their frozen values; box_overrides can narrow a box,
+        amplitude_cut can reject and redraw, and with a hold list
+        every odd model resets the listed parameters to the frozen
+        point, so half of the models measure what the other
+        parameters alone do to the accuracy. Statistics over the
+        points (the maximum, the fraction above a limit) describe
+        these evaluated points, not probabilities under the
+        scientific prior.
 
         The points never change: the project's stored high-accuracy
         vectors (frozen/nmodels_<example>.npz) were evaluated at exactly
@@ -3124,12 +3181,22 @@ class CocoaTestHarness:
         The stored N-random-models vectors hold the theory at the
         pushed accuracy settings on top of the frozen configuration.
         The fingerprint is the SHA-256 of that configuration's
-        likelihood and theory blocks, with every "path" entry left out
-        (they are absolute paths that differ between machines). A
-        change of the frozen configuration, the high-accuracy
-        settings, or the likelihood defaults the freeze expanded
-        changes the fingerprint, and the check then asks for the
-        stored vectors to be regenerated.
+        resolved likelihood and theory dictionaries, with every
+        "path" entry left out (they are absolute paths that differ
+        between machines). A change of those recorded settings - the
+        frozen configuration, the high-accuracy overrides, or the
+        likelihood defaults the freeze expanded - changes the
+        fingerprint, and the check then asks for the stored vectors
+        to be regenerated.
+
+        The fingerprint identifies only those recorded settings. It
+        does not hash the params block, the source code, the
+        compiled libraries, or the CONTENT of input files: a data
+        file changed under the same filename leaves it unchanged.
+        Matching it therefore does not prove that a retained vector
+        was produced by the current calculation; regenerating after
+        such a change is a separate maintainer decision (see the
+        preservation note in cocoa_testing_freeze's freeze_main).
 
         Arguments:
           example = a key of the project's EXAMPLES table.
@@ -3865,6 +3932,16 @@ class CocoaTestHarness:
         deviation and never rides the slope of the distance to the
         shipped data.
 
+        The vector contract: every printed theory vector keeps the
+        FULL data-vector length [n_full] of the frozen configuration;
+        masking never shortens it. The inverse covariance is
+        [n_full, n_full] as the compiled interface supplies it, with
+        the rows and columns of masked entries zeroed, so excluded
+        entries carry zero weight in the quadratic form instead of
+        being dropped. Each covariance entry carries the product of
+        its two observables' units, which is what makes
+        delta^T C^-1 delta dimensionless.
+
         This function is meant to run inside a FRESH python process
         (see cfastpt_vs_fastpt_chi2s): process isolation is what
         guarantees that nothing computed under the other
@@ -4445,8 +4522,9 @@ class CocoaTestHarness:
         (NONLINEAR_COMPARISON_POINTS) evaluated twice with
         everything else identical:
 
-          1. EuclidEmulator2 (non_linear_emul 1), the reference: its
-             printed data vector at each cosmology becomes the
+          1. EuclidEmulator2 (non_linear_emul 1), the reference of
+             the comparison (a chosen baseline, not exact physics):
+             its printed data vector at each cosmology becomes the
              fiducial the Halofit block is measured against;
           2. CAMB's Takahashi halofit (non_linear_emul 2, the frozen
              contracts' setting).

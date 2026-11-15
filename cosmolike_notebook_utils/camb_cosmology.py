@@ -74,7 +74,7 @@ def get_camb_cosmology(omegam,
       omegab  = baryon density parameter Omega_b.
       H0      = Hubble constant in km/s/Mpc.
       ns      = scalar spectral index.
-      As_1e9  = 10^9 x As (primordial amplitude, so ~2.1).
+      As_1e9  = 10^9 x A_s (primordial amplitude, so ~2.1).
       w       = dark-energy equation of state today.
       w0pwa   = w0 + wa; wa is reconstructed as w0pwa - w.
       mnu     = sum of neutrino masses in eV (one massive state).
@@ -106,8 +106,18 @@ def get_camb_cosmology(omegam,
                            (Mpc/h)^3: the (n_z2D, n_k) tables flattened
                            in Fortran (column) order, the layout the
                            compiled interface expects.
-        G_growth         = G(z) = D(z) (1 + z) on z_growth, divided by
-                           its value at z_interp_2D[-1]; n_zG entries.
+        G_growth         = G(z) = D_*(z) (1 + z) on z_growth, divided
+                           by its value at z_interp_2D[-1]; n_zG
+                           entries. D_*(z) = sqrt(P(k_*, z)/P(k_*, 0))
+                           is the growth factor read off the
+                           total-matter linear power at the one fixed
+                           sub-horizon scale k_* = 0.05/Mpc; cosmolike
+                           renormalizes to D(z = 0) = 1 on its side,
+                           so D_*(z) = G(z)/[(1 + z) G(0)]. Applying
+                           this one scalar table at every scale is an
+                           approximation wherever growth depends on k,
+                           as with massive neutrinos; the full k
+                           dependence stays in the P(k) tables.
         z_growth         = z nodes of G_growth: the z_interp_1D nodes
                            up to z_interp_2D[-1]; n_zG nodes.
         z_interp_1D      = z nodes of chi, n_z1D nodes.
@@ -308,10 +318,16 @@ def get_camb_cosmology(omegam,
     # grid to h/Mpc
     log10k_interp_2D = log10k_interp_2D - np.log10(H0/100.)
 
-    # growth factor G(z) = D(z) (1 + z) from the linear P(k) at one
-    # sub-horizon scale (k = 0.05/Mpc; at 5e-4/Mpc, about 2 H0/c, CAMB's
-    # dark-energy perturbations change the growth at w != -1, see the
-    # likelihoods' comment), where P grows as D^2. It is sampled
+    # growth factor G(z) = D_*(z) (1 + z), with
+    # D_*(z) = sqrt(P(k_*, z)/P(k_*, 0)) read off the total-matter
+    # linear P at the one fixed sub-horizon scale k_* = 0.05/Mpc
+    # (at 5e-4/Mpc, about 2 H0/c, CAMB's dark-energy perturbations
+    # change the growth at w != -1, see the likelihoods' comment),
+    # where P grows as D^2. One scalar growth table applied at every
+    # scale is an approximation wherever growth depends on k (massive
+    # neutrinos suppress it below their free-streaming scale); the
+    # halo statistics of the cb field read the separate P_cb table
+    # instead of rescaling this one. The table is sampled
     # on the dense 1D grid, cut where the 2D grid (the z range of PKL)
     # ends: cosmolike reads G linearly in z, and on the 2D grid
     # (dz ~ 0.03) that read misses D by up to 9e-5 and the growth rate

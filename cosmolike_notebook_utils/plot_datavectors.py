@@ -10,12 +10,32 @@ plot_wtheta_tomo), and one flat panel of baryonic feedback
 suppression curves for bfmt parameter sweeps
 (plot_baryon_suppression).
 
+The observables, in brief: cosmic shear correlates the weak-lensing
+shape distortions (the shear) of the galaxies of two source bins;
+galaxy-galaxy lensing correlates the galaxy positions of a lens bin
+with the tangential shear gamma_t of a source bin behind it; galaxy
+clustering correlates the galaxy positions (the overdensity) of one
+lens bin with themselves. C_ell is the harmonic-space angular power
+spectrum at multipole ell; xi_pm(theta), gamma_t(theta) and
+w(theta) are the real-space correlations at angular separation
+theta in arcmin. These functions draw the arrays they are given and
+compute no physics.
+
 Conventions every panel plotter shares:
 
 - Without a reference, each panel shows the quantity itself with its
   own y-range; with a *_ref argument it shows the fractional
   difference (value/reference - 1) on one shared linear band, and
   the panels are glued edge to edge (zero subplot spacing).
+- A fractional difference compares shapes and amplitudes point by
+  point, nothing more. The reference is taken as exact, the ratio
+  divides by it directly (a zero of the reference sends the drawn
+  point to infinity), and no covariance enters: a large excursion
+  near a zero of the reference need not be statistically
+  significant, and the visual separation of curves does not measure
+  a parameter constraint - that weighing happens in the Fisher and
+  likelihood machinery, which folds in the correlations between
+  entries.
 - rescale = 1 glues the absolute panels too: each panel is
   multiplied by its own power of ten, chosen so its maximum lands in
   [1, 10), one y-range serves the whole grid, the factor is
@@ -811,9 +831,14 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
 
     One panel per (lens, source) bin pair: rows are source bins,
     columns are lens bins, and the panel label reads (lens, source).
-    Without C_gs_ref each curve is C_ell itself (no ell(ell+1)/2 pi
-    factor) on a log scale; with C_gs_ref each curve is the
-    fractional difference C / C_ref - 1.
+    Without C_gs_ref each curve is the signed C_ell itself (no
+    ell(ell+1)/2 pi factor) handed to a log scale, which draws only
+    positive values: no absolute value is taken, so where
+    magnification drives C_gs negative the curve is simply absent,
+    although the default axis labels read |C^gs|
+    (plot_gammat_tomo_limber and the cluster plotters plot |value|
+    instead). With C_gs_ref each curve is the fractional difference
+    C / C_ref - 1.
 
     Arguments:
       ell      = 1D array of multipoles, shared by every C_gs entry.
@@ -1044,7 +1069,9 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
 
             for x, Cl in enumerate(C_gs):
                 if C_gs_ref is None:
-                    # 10**alpha = 1 unless rescale is on for this panel
+                    # 10**alpha = 1 unless rescale is on for this panel.
+                    # The spectrum stays signed: the log axis then
+                    # omits any nonpositive stretch (docstring).
                     tmp = Cl[:,i,j] * 10.0**alpha[i,j]
                 else:
                     tmp = Cl[:,i,j] / C_gs_ref[:,i,j] - 1

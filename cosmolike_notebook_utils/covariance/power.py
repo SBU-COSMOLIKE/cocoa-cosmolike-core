@@ -10,8 +10,10 @@ def refine_power_tables(tables, refinement=8):
     Arguments:
         tables = CAMB arrays in the set_cosmology interchange format, with
             at least log10k_2D, z_2D, lnP_linear, lnP_nonlinear and
-            lnP_linear_cb. log10k_2D is uniform; each flattened lnP array
-            has redshift varying fastest, followed by wavenumber.
+            lnP_linear_cb. log10k_2D[ik] = log10(k / (h/Mpc)) is uniform;
+            z_2D is dimensionless redshift; each flattened lnP array holds
+            ln(P(k,z) / (Mpc/h)^3) with redshift varying fastest, followed
+            by wavenumber: lnP[iz + nz*ik].
         refinement = positive integer number of intervals replacing each
             original interval. Eight turns 1,500 k nodes into 11,993.
     Returns:
@@ -30,6 +32,9 @@ def refine_power_tables(tables, refinement=8):
     cubic spline of ln(P) against log10(k) provides the inserted samples.
     Natural means that the spline's second derivative vanishes at each end.
     This preparation adds no new CAMB information or extrapolation range.
+    It also leaves the table units above unchanged: the conversion from
+    h/Mpc and (Mpc/h)^3 to the core length unit c/H0 happens in the core
+    table readers when the tables are installed, never here.
 
     The C kernels still use their ordinary fast linear lookups. All
     covariance components receive the same dense tables, rather than

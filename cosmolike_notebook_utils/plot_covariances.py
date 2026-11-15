@@ -380,6 +380,14 @@ def plot_covariance_diagonal(theta_arcmin, covariances, panel_labels,
         matrix with a non-positive diagonal entry is refused, never
         clipped or made positive: its standard deviation is undefined, so
         use plot_covariance_components, which keeps signs, for it.
+
+    Diagonal standard deviations ignore the correlations between
+    data-vector entries. As with the element ratios of
+    plot_covariance_components, smaller plotted diagonals alone do not
+    establish a smaller marginalized parameter error or a larger FoM:
+    those weigh the full inverse covariance against the data-vector
+    derivatives (the Fisher product), where correlated entries add
+    less information than independent ones.
     """
     theta = np.asarray(a=theta_arcmin, dtype=float)
     if theta.ndim != 1 or len(theta) == 0 or not np.all(np.isfinite(theta)):

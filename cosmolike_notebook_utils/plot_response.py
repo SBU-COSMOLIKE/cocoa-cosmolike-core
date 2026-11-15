@@ -1,12 +1,26 @@
 """Response-function plots shared by the EXAMPLE_EVALUATE notebooks.
 
 Curves of a data vector's response to the matter power spectrum as a
-function of wavenumber k: either the local logarithmic derivative
-d ln DV / d ln k or its cumulative integral R(k_max). Pure matplotlib
-and numpy: nothing here touches CAMB or the compiled cosmolike
-interface, so every project shares this function unchanged. The
-notebooks compute the response arrays with their own interface-bound
-functions and hand the finished arrays here.
+function of wavenumber k. For one data-vector entry DV (one multipole
+ell or one angular bin theta of one bin pair), the Limber integral
+can be rewritten as DV = int I(k) dln k, so each logarithmic
+wavenumber interval contributes I(k) dln k. Two kinds of curve share
+this figure:
+
+- the local response d ln DV / d ln k = I(k)/DV: the fractional
+  contribution of the matter power at wavenumber k to that entry,
+  per unit ln k. It is a contribution density of the data vector,
+  not the spectral slope d ln P / d ln k of the power spectrum.
+- the cumulative response R(k_max): the integral of
+  |d ln DV / d ln k| over ln k up to k_max (arXiv:2011.06469,
+  eq. 17), which rises toward a constant once k_max passes every
+  scale that contributes to the entry.
+
+The notebooks compute both arrays with their own interface-bound
+functions and hand the finished arrays here: this module takes no
+derivative and no integral. Pure matplotlib and numpy: nothing here
+touches CAMB or the compiled cosmolike interface, so every project
+shares this function unchanged.
 """
 
 import numpy as np
@@ -91,7 +105,9 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
     tomographic bin (i, i) sets the dash pattern. The same figure
     serves the local response d ln DV / d ln k (normalize=True
     divides each curve by its own maximum) and the cumulative
-    response R(k_max) (normalize=False plots the array as given).
+    response R(k_max) (normalize=False plots the array as given);
+    the module docstring defines both quantities, which the caller
+    computes.
 
     Arguments:
       k      = wavenumbers in h/Mpc (the x axis).
@@ -105,7 +121,15 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
       ylabel = y-axis label (LaTeX string).
       idx    = position of each label's slice on the array's second
                axis, or None when label j is slice j.
-      normalize = divide each curve by its own maximum.
+      normalize = divide each curve by its own maximum: a
+               display-only shape comparison. Peak normalization
+               removes the amplitude differences between bins and
+               slices (the drawn heights no longer compare physical
+               contributions), takes no absolute value, integrates
+               nothing, and assumes each curve's maximum is positive
+               (a curve with a nonpositive maximum is flipped or
+               blown up by the division). It is not a unit-area or
+               probability normalization.
       ncolors = how many colors the colormap is split into, or None
                for one per label. Passing more than len(labels)
                reproduces figures whose color list was built for a
@@ -168,6 +192,8 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
             # 3D: single-bin-index probes, bin i directly
             y = resp[:, sel, i, i] if resp.ndim == 4 else resp[:, sel, i]
             if normalize:
+                # display shape normalization only (peak 1): see the
+                # normalize argument for what this does not preserve
                 y = y / np.max(y)
             # width in points: 0.9 for a black line, growing with the
             # color's brightness and the dash factor up to

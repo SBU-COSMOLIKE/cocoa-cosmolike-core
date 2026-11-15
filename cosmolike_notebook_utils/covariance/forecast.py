@@ -36,8 +36,13 @@ def gaussian_model(gaussian, nsource):
             rsd (bool, default False: add the lens redshift-space
             distortions to the Gaussian spectra - the Limber window,
             and the distortion transfer of the non-Limber recompute
-            when nonlimber is true; spectroscopic thin lens bins need
-            it, wide photometric bins do not), ia (none/NLA/TATT,
+            when nonlimber is true. Peculiar velocities shift each
+            galaxy's apparent redshift, so galaxies move across the
+            edges of the radial selection; a narrow radial window
+            retains more of this effect than a broad one. rsd=False
+            records an adopted modeling choice: its adequacy is a
+            property of the analyzed forecast, not of bin width
+            alone), ia (none/NLA/TATT,
             default none), A1, A2 and B_TA (default 0).
             Amplitudes are constants per source bin: a scalar applies to
             all bins; an array needs one value per bin. The core supplies
@@ -54,6 +59,15 @@ def gaussian_model(gaussian, nsource):
         another IA model, nonfinite amplitudes or a wrong amplitude
         count, nonzero amplitudes with ia=none, or nonzero A2/B_TA with
         NLA.
+
+    The defaults above describe this resolver only: gaussian=None, or a
+    key absent from a supplied mapping, selects the default shown. An
+    absent gaussian entry in the forecast settings means something else:
+    set_gaussian_model and the survey assembly then use Limber, zero-IA
+    spectra without redshift-space distortions. The survey assembly reads
+    the settings' gaussian entry directly, without this resolver, and a
+    supplied entry must state nonlimber, rsd and ia explicitly. In a
+    forecast, supply a complete gaussian mapping or omit the entry.
     """
     # --- 1. THE SUPPLIED MAPPING: ONLY THE SIX KNOWN KEYS ---
 
@@ -124,7 +138,10 @@ def set_gaussian_model(interface, settings):
         (ia_redshift_evolution=2); ia=none installs zero amplitudes.
     """
     nsource = len(settings["source_density_arcmin2"])
-    # Settings without a gaussian entry select zero IA and Limber spectra.
+    # Settings without a gaussian entry select zero IA and Limber spectra
+    # without RSD; the survey assembler applies the same absent-entry
+    # convention. This differs from gaussian_model(None), whose defaults
+    # describe a supplied but partial mapping (nonlimber on).
     requested = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
     model = gaussian_model(gaussian=requested, nsource=nsource)
     interface.init_IA(
@@ -171,10 +188,16 @@ def initialize_forecast(interface, settings, project):
         nonfinite bias2/bias_s2 entries, a nonzero bias_s2 with bias2 zero
         in every bin, nonzero mnu, or invalid densities or dispersions;
         RuntimeError when one-loop bias is requested from an interface
-        without set_nuisance_bias_tidal. These checks run before the
-        interface state changes.
+        without set_nuisance_bias_tidal. These listed checks run before
+        the interface state changes. Installation then proceeds in
+        stages, and the gaussian entry is validated only when
+        set_gaussian_model runs, after the core reset and the cosmology
+        and bias installation: an invalid gaussian mapping raises with
+        the interface partially initialized. There is no rollback to the
+        previous forecast; after such a failure, call this function
+        again with corrected settings before any computation.
     """
-    # --- 1. INPUT CHECKS: THE INTERFACE IS NOT TOUCHED UNTIL ALL PASS ---
+    # --- 1. PREFLIGHT CHECKS: THE INTERFACE IS NOT TOUCHED UNTIL THESE PASS ---
 
     # getattr with a default reads False when the build does not define the
     # flag at all. Without covariance support the C entry points used by
@@ -348,7 +371,11 @@ def compute_forecast(interface, settings, space="real", rows=None,
         interface = already initialized project interface.
         settings = resolved project mapping with covariance_accuracy values,
             cosmology, densities, area_deg2, theta_edges_arcmin, a_edges,
-            lnm_edges, excluded_gammat, band_first and band_last.
+            lnm_edges, excluded_gammat, band_first and band_last. An
+            optional gaussian entry must be a complete mapping stating
+            nonlimber, rsd and ia (see gaussian_model); an absent entry
+            selects Limber, zero-IA spectra without redshift-space
+            distortions.
         space = "real" for angular bins, "fourier" for E-mode bandpowers.
         backend = None uses notebook wrappers; interface.covariance uses
             the direct production bindings to the same C calculations.

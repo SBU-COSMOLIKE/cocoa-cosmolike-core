@@ -65,7 +65,9 @@ OPTIONS (minimize and profile)
 --nstw     emcee steps per walker in each temperature stage (default 200).
 --cov      Text file with a sampled-parameter covariance; its header must
            list the parameter names in the printed sampled order. Without
-           it, the prior covariance is used.
+           it, the prior covariance is used. The covariance shapes the
+           starting walker clouds and the profile grid width: its standard
+           deviations are a search scale, not posterior error bars.
 
 OPTIONS (profile)
 
@@ -124,7 +126,18 @@ _MODEL = None
 
 
 def evaluate(model, values):
-    """Return log prior and log likelihood for one ordered sampled point."""
+    """Return log prior and log likelihood for one ordered sampled point.
+
+    Arguments:
+        model = the Cobaya model of this process.
+        values = the full sampled point [n_sampled], ordered exactly as
+            model.parameterization.sampled_params() lists the names.
+    Returns:
+        (log prior, log likelihood), floats. A point outside the prior
+        returns (-inf, -inf) without calling the likelihood.
+    Raises:
+        ValueError on non-finite inputs or an invalid model score.
+    """
     values = np.asarray(values, dtype=float)
     if not np.all(np.isfinite(values)):
         raise ValueError("sampled parameters must be finite")
@@ -141,7 +154,15 @@ def evaluate(model, values):
 
 
 def log_probability(values, fixed, fixed_value, temperature):
-    """Evaluate the tempered posterior, restoring a fixed profile coordinate."""
+    """Evaluate the tempered posterior, restoring a fixed profile coordinate.
+
+    With fixed >= 0, `values` is the REDUCED point [n_sampled - 1]: the
+    profile coordinate was removed, and this call re-inserts fixed_value at
+    index `fixed` to rebuild the full ordered point. With fixed = -1,
+    `values` is already the full point [n_sampled]. Returns
+    (log prior + log likelihood)/temperature; a point outside the prior
+    returns -inf, which emcee treats as zero probability.
+    """
     if fixed >= 0:
         values = np.insert(values, fixed, fixed_value)
     prior, likelihood = evaluate(model=_MODEL, values=values)
@@ -151,8 +172,10 @@ def log_probability(values, fixed, fixed_value, temperature):
 def nested_likelihood(values):
     """Exclude the independent prior already represented by Nautilus.
 
+    `values` is the full sampled point [n_sampled] in the model's order.
     Returns log likelihood plus any external prior factor: Cobaya's full log
     prior minus its independent one-parameter part, which Nautilus samples.
+    A point outside the prior returns -inf.
     """
     prior, likelihood = evaluate(model=_MODEL, values=values)
     if prior == -np.inf:
@@ -229,9 +252,12 @@ def minimize(start, covariance, steps, pool, rng, fixed=-1):
             nwalkers=walkers, ndim=dimension, log_prob_fn=log_probability,
             args=(fixed, fixed_value, temperature), pool=pool,
             moves=[(emcee.moves.DEMove(), 0.8), (emcee.moves.DESnookerMove(), 0.2)])
-        # A cold stage draws nearly identical walkers, which emcee's linear
-        # independence check would reject even though the DE moves re-spread
-        # the ensemble; the explicit finite-score loop above already ran.
+        # skip_initial_state_check drops emcee's test that the starting
+        # walkers are linearly independent: a cold stage draws nearly
+        # identical walkers, which that test would reject even though the DE
+        # moves re-spread the ensemble in practice. Skipping means no
+        # independence check runs at all; the finite-score loop above only
+        # guarantees finite starting scores, a different property.
         sampler.run_mcmc(initial_state=initial, nsteps=steps,
                          skip_initial_state_check=True)
         # emcee stores (log prior + log likelihood)/temperature; multiplying by
@@ -461,10 +487,13 @@ def run(mode, project, example=1):
                 if not 0 <= fixed < len(names):
                     raise ValueError("profile index is outside the sampled parameter order")
                 prior, likelihood = evaluate(model=_MODEL, values=start)
-                # Re-evaluating the saved minimum must reproduce its saved score:
-                # 0.02 in -2 log posterior is far below the 0.2 physics floor of
-                # the chi2 tests, so this only trips when the YAML, emulator
-                # networks or sampled-parameter order actually changed.
+                # Re-evaluating the saved minimum must reproduce its saved
+                # score: an operational compatibility check. 0.02 in
+                # -2 log posterior is far below the 0.2 regression tolerance
+                # of the chi2 tests; a trip means this model no longer
+                # reproduces the saved record. A changed YAML, emulator
+                # networks or sampled-parameter order are the usual causes,
+                # though any change to the evaluation can do it.
                 if abs(-2*(prior+likelihood)-minimum["minus2_log_posterior"]) > 0.02:
                     raise ValueError("the saved minimum score no longer matches this model")
                 # 0.999999 confidence turns an unbounded or very wide prior into

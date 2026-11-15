@@ -1,10 +1,20 @@
 """Notebook tools for covariance components and survey assembly.
 
+Covariance here means the covariance of the measured data vector, not a
+power spectrum: with d_i one angular-bin correlation or one bandpower
+estimate, Cov[i,j] = <(d_i - <d_i>)(d_j - <d_j>)> describes how two
+estimates fluctuate together across realizations of the survey. The
+angular spectra C_ell below are inputs to this matrix, not the matrix
+itself.
+
 A survey covariance has three components: the Gaussian part G, built from
-signal-plus-noise power spectra; the super-sample covariance SSC, from the
+the two Wick pairings of signal-plus-noise power spectra, where the signal
+spectra may use the nonlinear matter power and the selected Gaussian
+extensions; the super-sample covariance SSC, from the
 response of the measured spectra to density modes larger than the survey
 footprint; and the connected non-Gaussian part cNG, built from the
-halo-model matter trispectrum.
+halo-model matter trispectrum. The forecast returns the three components
+separately.
 
 The caller supplies an initialized project interface. This package never
 imports a project's compiled module. Reading a supplied likelihood covariance

@@ -112,7 +112,9 @@ def angular_rule(nquad, npanel, interface):
     """Build a planar dtheta/pi rule resolving nearly opposite wavevectors.
 
     Arguments:
-        nquad: precomputed GSL size: 64, 96, 128, 256, 512 or 1024.
+        nquad: supported GSL Gauss-Legendre size: 64, 96, 128, 256, 512,
+            1024, 2048, 4096 or 8192. GSL stores the rules through 1024
+            and generates the three larger ones at allocation.
         npanel: number of panels, between 1 and 40.
         interface: project binding exposing covariance_integration_rule.
 

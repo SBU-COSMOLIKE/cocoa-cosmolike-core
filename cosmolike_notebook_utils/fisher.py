@@ -1,9 +1,27 @@
 """Fisher forecasting helpers shared by the EXAMPLE_EVALUATE notebooks.
 
 A Fisher matrix forecasts parameter uncertainties from the
-derivatives of the theory data vector: F = D^T C^-1 D, with D the
-matrix whose column p is the derivative of the data vector with
-respect to parameter p, and C the data covariance. Everything in
+derivatives of the theory data vector. Near the fiducial parameter
+vector p0, expand the predicted data vector mu to first order,
+mu(p0 + dp) ~ mu0 + D dp, with D the (n_data, n_params) matrix
+whose column p is the derivative of mu with respect to parameter p.
+For a Gaussian data likelihood with a covariance C that is held
+fixed (no parameter dependence of C), the quadratic part of the
+change of -2 ln L about the fiducial is then dp^T F dp with
+
+    F = D^T C^-1 D,
+
+the Fisher matrix: it measures how strongly parameter changes move
+the predictions relative to their correlated measurement
+uncertainty. Entry F_ij carries the reciprocal units of parameter i
+times parameter j. The forecast is local (first order about the
+fiducial), differentiates no covariance, and knows nothing of flat
+prior walls; within it, the inverse F^-1 is the forecast parameter
+covariance. Two different errors follow for one parameter p:
+1/sqrt(F_pp) is the error with every other parameter held fixed,
+while sqrt((F^-1)_pp), from the diagonal of the inverse, is the
+marginalized error after every other parameter (nuisances included)
+is free to move; the second is what an analysis quotes. Everything in
 this module is pure numpy/getdist mathematics except the data vector
 itself, which needs a project's compiled cosmolike interface. That
 dependency arrives as an explicit argument, never by replacing a
@@ -52,7 +70,11 @@ def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
     has weight zero, so it is never evaluated). The step is relative
     (p0 * (1 + s)) so one h suits parameters of any magnitude; a
     parameter whose fiducial is zero (|p0| <= 1e-12) falls back to
-    an absolute step.
+    an absolute step. Fiducials with 0 < |p0| <= 1e-12 are outside
+    the contract: the evaluations take absolute steps there while
+    the final division still uses the relative scale h * p0 (the
+    comment at the return records the mismatch), so place a fiducial
+    at exactly 0.0 or well above 1e-12, never in between.
 
     Arguments:
       dv    = the data-vector function, called as
@@ -169,6 +191,12 @@ def get_Fisher(ddv, CV=None, h=0.02, AccuracyBoost=3.1, priors=None,
                invcov=None):
     """Assemble F = D^T C^-1 D from a derivative function.
 
+    The module docstring derives the expression: the local Gaussian
+    forecast with a fixed data covariance, valid to first order
+    about the fiducial CV. For marginalized errors invert the full
+    returned matrix; the diagonal of F itself gives fixed-parameter
+    errors only.
+
     Arguments:
       ddv   = derivative function, called as
               ddv(index=p, h=h, CV=CV, AccuracyBoost=AccuracyBoost)
@@ -189,11 +217,19 @@ def get_Fisher(ddv, CV=None, h=0.02, AccuracyBoost=3.1, priors=None,
     Returns:
       the Fisher matrix (n_params x n_params array).
     """
-    # the comprehension evaluates ddv once per parameter (four
+    # D[a, p] = d mu_a / d p, shape (n_data, n_params). The
+    # comprehension evaluates ddv once per parameter (four
     # data-vector evaluations per call with get_ddv); np.column_stack
     # glues the returned 1D arrays side by side as the columns of D
     D = np.column_stack([ddv(index=p, h=h, CV=CV, AccuracyBoost=AccuracyBoost) for p in list(range(len(CV)))]).astype(np.float64)
-    # @ is numpy matrix multiplication: D^T (C^-1 D)
+    # @ is numpy matrix multiplication: D^T (C^-1 D). The inverse
+    # covariance weights coherent changes of the predictions: two
+    # parameters with nearly parallel derivative columns move the
+    # data the same way, so the data constrain their combination
+    # rather than each one (a degeneracy only F^-1 exposes), and
+    # entries whose fluctuations are strongly correlated add less
+    # information than independent ones. Visual curve separation in
+    # the data-vector plots measures none of this.
     F = D.T @ (invcov @ D)
     if priors is not None:
         F = add_gaussian_priors(F=F, priors=priors)
@@ -231,8 +267,19 @@ def get_FoM(i, j, F):
     """Compute the figure of merit of the parameter pair (i, j).
 
     FoM = 1/sqrt(det C_ij), with C_ij the 2x2 block of the parameter
-    covariance (the inverse Fisher matrix) for parameters i and j: a
-    larger FoM means a smaller error ellipse.
+    covariance (the inverse of the full Fisher matrix) for
+    parameters i and j: a larger FoM means a smaller error ellipse.
+    Inverting the full matrix first marginalizes every other
+    parameter of F (cosmology and nuisances alike), so the block is
+    the marginalized pair covariance, not the inverse of the pair's
+    2x2 Fisher block. The FoM is proportional to the inverse area of
+    the pair's error ellipse, with the probability-contour constant
+    (the delta chi2 of a chosen confidence level) left out, and it
+    carries the reciprocal units of parameter i times parameter j:
+    values compare only between forecasts of the same two parameters
+    in the same normalization with a stated nuisance set. The
+    forecast requires a nonsingular, positive-definite Fisher
+    matrix.
 
     Arguments:
       i, j = the two parameter indices.
@@ -240,8 +287,12 @@ def get_FoM(i, j, F):
 
     Returns:
       the figure of merit as a float; inf (or a very large value)
-      when det C_ij <= 0, instead of an error. A block with two
-      negative eigenvalues has det C_ij > 0 and passes unnoticed.
+      when det C_ij <= 0, instead of an error. Such a return signals
+      a numerically indefinite covariance block, not an unbounded
+      constraint: it is not a usable forecast. A block with two
+      negative eigenvalues has det C_ij > 0 and passes unnoticed, so
+      a finite positive determinant alone does not establish a
+      positive-definite block.
     """
     # 0.5 * (F + F^T) symmetrizes away numerical asymmetry before
     # inverting; np.ix_([i, j], [i, j]) selects the 2x2 block with
@@ -270,6 +321,16 @@ def plot_Fisher(F, mu, F2=None, root=None, select=None, labels=None,
     flat-prior boxes, and handed to getdist, which draws the familiar
     triangle of 1D and 2D marginals. An MCMC chain loaded from root
     joins the same figure, so forecast and chain overlay directly.
+
+    The truncation clips the drawn samples in the selected
+    coordinates only, after the covariance sub-block has already
+    marginalized the dropped parameters: a flat prior on a parameter
+    that was marginalized out cannot be imposed afterwards by
+    cutting the shown coordinates, and the clipped cloud illustrates
+    a truncated Gaussian, not a recomputed posterior. The wall
+    plotters below (plot_Fisher_amplitude_cut,
+    plot_Fisher_prior_walls) make the complementary choice:
+    untruncated Gaussian contours next to shaded walls.
 
     Arguments:
       F      = one full-size Fisher matrix or a list of them (one
@@ -447,17 +508,26 @@ def plot_Fisher_amplitude_cut(F, names, fiducial, amplitude, biases, boxes,
                               figsize=None, show=None):
     """Draw the amplitude-bias prior box, an amplitude cut and Fisher contours.
 
-    The galaxy power of lens bin i is proportional to A_s b_i^2. A prior
-    box that lets A_s and b_i range freely reaches amplitude ratios
+    The linear galaxy power of lens bin i scales as A_s b_i^2 (the
+    full prediction adds nonlinear, RSD and magnification terms that
+    do not follow this scaling; the ratio below uses the linear
+    scaling as a proxy). A prior box that lets A_s and b_i range
+    freely reaches amplitude ratios
     A_i = (A_s/A_s,fid)(b_i/b_i,fid)^2 far above 1, where a fixed
     relative numerical error of the data vector costs a large delta
     chi2 against the fiducial covariance. A cut A_i <= cut removes that
-    corner of the box. This triangle tells whether such a cut can move
-    an inference: it shades the excluded region gray and draws each
-    Fisher forecast's 1 and 2 sigma contours about the fiducial (68.3%
-    and 95.4% of a two-dimensional Gaussian, delta chi2 = 2.30 and
-    6.18). A cut far outside the 2 sigma contours removes only prior
-    volume the data already exclude.
+    corner of the box. This triangle is an overlap diagnostic for such
+    a cut: it shades the excluded region gray and draws each Fisher
+    forecast's 1 and 2 sigma contours about the fiducial (68.3% and
+    95.4% of a two-dimensional Gaussian, delta chi2 = 2.30 and 6.18).
+    The contours come from the local Gaussian approximation the Fisher
+    matrix defines (module docstring): a cut far outside the 2 sigma
+    contours overlaps little of each forecast Gaussian, which within
+    that approximation marks the removed corner as prior volume the
+    data already disfavor. The Gaussian keeps nonzero probability
+    beyond any contour, and the figure says nothing about the true
+    likelihood far from the fiducial, where the local approximation
+    itself degrades.
 
     The panels form a lower triangle over [amplitude] + biases:
       - an amplitude - b_i panel shades bin i's own cut;
@@ -669,11 +739,17 @@ def plot_Fisher_prior_walls(F, names, fiducial, params, ranges, boxes=None,
     A flat prior is a set of walls: the box of each parameter and, for
     combinations, linear walls such as lo <= w0 + wa <= hi. A wall can
     only move an inference if the data allow points near it. This
-    triangle shades the region the walls exclude and draws each Fisher
-    forecast's 1 and 2 sigma contours about the fiducial (68.3% and
-    95.4% of a two-dimensional Gaussian, delta chi2 = 2.30 and 6.18),
-    every other parameter of the matrix marginalized. A wall far outside
-    the 2 sigma contours removes only prior volume the data exclude.
+    triangle is an overlap diagnostic: it shades the region the walls
+    exclude and draws each Fisher forecast's 1 and 2 sigma contours
+    about the fiducial (68.3% and 95.4% of a two-dimensional Gaussian,
+    delta chi2 = 2.30 and 6.18), every other parameter of the matrix
+    marginalized. The contours come from the local Gaussian
+    approximation the Fisher matrix defines (module docstring): a wall
+    far outside the 2 sigma contours overlaps little of each forecast
+    Gaussian, and within that approximation it removes only prior
+    volume the data disfavor. The Gaussian keeps nonzero probability
+    beyond any contour, and the figure says nothing about the true
+    likelihood far from the fiducial.
 
     The panels form a lower triangle over params: a two-parameter panel
     shades the points outside either parameter's box or outside a wall

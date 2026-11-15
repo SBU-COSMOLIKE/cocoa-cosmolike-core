@@ -8,8 +8,11 @@ into CAMB and cosmolike contributions.
                        tables (fiducial + t * CAMB response, perfectly
                        smooth in t); nuisance parameters as in (a)
 
-A flat FoM(h) means the derivatives do not depend on the step, i.e. no
-noise; drift with h is the noise the notebook's "Test 2: Step Size" shows.
+A FoM(h) that is flat over the tested steps means the derivatives are
+insensitive to the step size there: it bounds the step-dependent noise,
+not errors shared by every variant (stencil truncation, or a numerical
+error common to all three pipelines). Drift with h is the step-size
+instability the notebook's "Test 2: Step Size" shows.
 """
 import os
 os.environ["OMP_NUM_THREADS"] = "4"

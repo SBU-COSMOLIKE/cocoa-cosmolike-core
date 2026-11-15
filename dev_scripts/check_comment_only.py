@@ -1,15 +1,32 @@
 #!/usr/bin/env python3
-"""Verify two C/C++ sources differ only in comments and whitespace.
+"""Check that two C/C++ sources differ only in comments and whitespace.
 
 Usage: python3 check_comment_only.py <original> <edited>
 Exit 0 and print OK when the comment-stripped, whitespace-collapsed
-token streams are identical; otherwise print the first divergence and
-exit 1.
+character streams are identical; otherwise print the first divergence
+and exit 1.
+
+This is a text-comparison aid, not a proof that the two sources
+compile to the same behavior. Known limits: the final whitespace
+collapse also normalizes whitespace INSIDE string and character
+literals, so an edit that only changes spacing inside a quoted
+string passes unnoticed, and preprocessor tricks (macros spanning
+comment syntax, line splices) are outside this simple scanner. For
+a guarantee, compare compiler output or an AST dump.
 """
 import sys
 
 
 def strip(src):
+    """Return src without C/C++ comments, whitespace collapsed to spaces.
+
+    A hand-rolled scanner: // comments run to the line end, /* */
+    comments to their terminator, and quoted regions ("..." or '...')
+    are copied verbatim with backslash escapes honored, so comment
+    markers inside strings are kept. The final split/join collapses
+    every whitespace run - including runs inside the copied quoted
+    regions - to one space.
+    """
     out = []
     i, n = 0, len(src)
     while i < n:
