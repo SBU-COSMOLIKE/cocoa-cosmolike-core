@@ -1075,7 +1075,8 @@ double xi_pm_tomo(
   if (NULL == Glpm || 
       NULL == xipm || 
       NULL == Cl || 
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) NSIZE)
   {
     if (lnell != NULL) {
       free(lnell);
@@ -1253,7 +1254,8 @@ double xi_pm_tomo(
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) NSIZE)
   {
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
@@ -1286,6 +1288,7 @@ double xi_pm_tomo(
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
+    cache[5] = (uint64_t) NSIZE;
   }
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d", nt); exit(1); 
@@ -1378,7 +1381,8 @@ double w_gammat_tomo(
   if (NULL == Pl || 
       NULL == w_vec || 
       NULL == Cl || 
-      fdiff2(cache[6], Ntable.random))
+      fdiff2(cache[6], Ntable.random) ||
+      cache[8] != (uint64_t) NSIZE)
   {
     const int lmin = 1;
 
@@ -1503,7 +1507,8 @@ double w_gammat_tomo(
       fdiff2(cache[5], redshift.random_clustering) ||
       fdiff2(cache[6], Ntable.random) ||
       fdiff2(cache[7], nuisance.random_galaxy_bias) ||
-      cache_limber != limber)
+      cache_limber != limber ||
+      cache[8] != (uint64_t) NSIZE)
   {
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
@@ -1541,6 +1546,7 @@ double w_gammat_tomo(
     cache[5] = redshift.random_clustering;
     cache[6] = Ntable.random;
     cache[7] = nuisance.random_galaxy_bias;
+    cache[8] = (uint64_t) NSIZE;
     cache_limber = limber;
   }
   // ---------------------------------------------------------------------------
@@ -1654,7 +1660,8 @@ double w_gg_tomo(
   if (NULL == Pl || 
       NULL == w_vec || 
       NULL == Cl || 
-      fdiff2(cache[3], Ntable.random))
+      fdiff2(cache[3], Ntable.random) ||
+      cache[6] != (uint64_t) NSIZE)
   {
     const int lmin = 1;
 
@@ -1773,7 +1780,8 @@ double w_gg_tomo(
       // so a new source n(z) alone moves these integrals
       fdiff2(cache[5], redshift.random_shear) ||
       cache_limber != limber ||
-      cache_ggdd != ggdd)
+      cache_ggdd != ggdd ||
+      cache[6] != (uint64_t) NSIZE)
   {
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
@@ -1830,6 +1838,7 @@ double w_gg_tomo(
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = redshift.random_shear;
+    cache[6] = (uint64_t) NSIZE;
     cache_limber = limber;
     cache_ggdd = ggdd;
   }
@@ -1919,7 +1928,8 @@ double w_gk_tomo(
   if (NULL == Pl ||
       NULL == w_vec || 
       NULL == Cl || 
-      fdiff2(cache[3], Ntable.random))
+      fdiff2(cache[3], Ntable.random) ||
+      cache[7] != (uint64_t) NSIZE)
   {
     if (Pl != NULL) free(Pl);
     Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);
@@ -2029,7 +2039,8 @@ double w_gk_tomo(
       // redshift.random_shear: with magnification bias on, amax_lens
       // (redshift_spline.c) ends the lens range at the source z_min,
       // so a new source n(z) alone moves these integrals
-      fdiff2(cache[6], redshift.random_shear))
+      fdiff2(cache[6], redshift.random_shear) ||
+      cache[7] != (uint64_t) NSIZE)
   { 
     #pragma omp parallel for
     for (int l=0; l<Ntable.LMAX; l++) {
@@ -2071,6 +2082,7 @@ double w_gk_tomo(
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = cmb.random;
     cache[6] = redshift.random_shear;
+    cache[7] = (uint64_t) NSIZE;
   }
   if (ni < 0 || ni > redshift.clustering_nbin-1) {
     log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
@@ -2148,7 +2160,8 @@ double w_ks_tomo(
   if (Pl == NULL || 
       w_vec == NULL || 
       NULL == Cl || 
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[6] != (uint64_t) NSIZE)
   {
     if (Pl != NULL) free(Pl);
     Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);
@@ -2265,7 +2278,8 @@ double w_ks_tomo(
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) || 
       fdiff2(cache[4], Ntable.random) ||
-      fdiff2(cache[5], cmb.random))
+      fdiff2(cache[5], cmb.random) ||
+      cache[6] != (uint64_t) NSIZE)
   {
     #pragma omp parallel for
     for (int l=0; l<Ntable.LMAX; l++) {
@@ -2306,6 +2320,7 @@ double w_ks_tomo(
     cache[3] = redshift.random_shear; 
     cache[4] = Ntable.random;
     cache[5] = cmb.random;
+    cache[6] = (uint64_t) NSIZE;
   }
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
@@ -3714,7 +3729,9 @@ double C_ss_tomo_limber(
   static double*** tabc = NULL; // coarse C_ell values
   static double*** cspl = NULL; // natural-cubic-spline c coefficients
 
-  if (NULL == table || fdiff2(cache[4], Ntable.random))
+  if (NULL == table ||
+      fdiff2(cache[4], Ntable.random) ||
+      cache[7] != (uint64_t) tomo.shear_Npowerspectra)
   {
     nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = log(fmax(limits.LMIN_tab - 1., 1.0));
@@ -3815,7 +3832,8 @@ double C_ss_tomo_limber(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random) ||
       fdiff2(cache[5], (uint64_t) include_halo_IA) ||
-      fdiff2(cache[6], nuisance.random_ia_halo))
+      fdiff2(cache[6], nuisance.random_ia_halo) ||
+      cache[7] != (uint64_t) tomo.shear_Npowerspectra)
   {
     const double amin = 1./(zmax_source_photoz() + 1.); // shifted support
     const double amax = 1./(1.+fmax(redshift.shear_zdist_zall[RANGE_MIN],1e-6));
@@ -3913,6 +3931,7 @@ double C_ss_tomo_limber(
     cache[4] = Ntable.random;
     cache[5] = (uint64_t) include_halo_IA;
     cache[6] = nuisance.random_ia_halo;
+    cache[7] = (uint64_t) tomo.shear_Npowerspectra;
   }
 
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
@@ -5085,7 +5104,9 @@ double C_gs_tomo_limber(
   static double** tabc = NULL; // coarse C_ell values
   static double** cspl = NULL; // natural-cubic-spline c coefficients
 
-  if (NULL == table || fdiff2(cache[6], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[6], Ntable.random) ||
+      cache[11] != (uint64_t) tomo.ggl_Npowerspectra) {
     nell   = Ntable.N_ell[NODES_DENSE];
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
@@ -5226,7 +5247,8 @@ double C_gs_tomo_limber(
       fdiff2(cache[7], nuisance.random_galaxy_bias) ||
       fdiff2(cache[8], (uint64_t) include_HOD_GX) ||
       fdiff2(cache[9], (uint64_t) include_halo_IA) ||
-      fdiff2(cache[10], nuisance.random_ia_halo))
+      fdiff2(cache[10], nuisance.random_ia_halo) ||
+      cache[11] != (uint64_t) tomo.ggl_Npowerspectra)
   {
     // per-lens-bin nodes (split rule with magnification, see
     // create_cosmo_nodes_lens)
@@ -5326,6 +5348,7 @@ double C_gs_tomo_limber(
     cache[8] = (uint64_t) include_HOD_GX;
     cache[9] = (uint64_t) include_halo_IA;
     cache[10] = nuisance.random_ia_halo;
+    cache[11] = (uint64_t) tomo.ggl_Npowerspectra;
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1 ||
@@ -6460,7 +6483,9 @@ double C_gg_tomo_limber(
     exit(1);
   }
 
-  if (NULL == table || fdiff2(cache[3], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[3], Ntable.random) ||
+      cache[7] != (uint64_t) redshift.clustering_nbin) {
     nell   = Ntable.N_ell[NODES_DENSE];
     NSIZE  = redshift.clustering_nbin;
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
@@ -6485,7 +6510,8 @@ double C_gg_tomo_limber(
       // redshift.random_shear: with magnification bias on, amax_lens
       // (redshift_spline.c) ends the lens range at the source z_min,
       // so a new source n(z) alone moves these integrals
-      fdiff2(cache[6], redshift.random_shear))
+      fdiff2(cache[6], redshift.random_shear) ||
+      cache[7] != (uint64_t) redshift.clustering_nbin)
   {
     double* lx = (double*) malloc1d(nell);
     for (int i=0; i<nell; i++) {
@@ -6500,6 +6526,7 @@ double C_gg_tomo_limber(
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = (uint64_t) include_HOD_GX;
     cache[6] = redshift.random_shear;
+    cache[7] = (uint64_t) redshift.clustering_nbin;
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
@@ -7105,7 +7132,9 @@ double C_gk_tomo_limber(const double l, const int ni)
   static double** tabc = NULL; // coarse C_ell values
   static double** cspl = NULL; // natural-cubic-spline c coefficients
 
-  if (NULL == table || fdiff2(cache[3], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[3], Ntable.random) ||
+      cache[6] != (uint64_t) redshift.clustering_nbin) {
     nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
@@ -7194,7 +7223,8 @@ double C_gk_tomo_limber(const double l, const int ni)
       // redshift.random_shear: with magnification bias on, amax_lens
       // (redshift_spline.c) ends the lens range at the source z_min,
       // so a new source n(z) alone moves these integrals
-      fdiff2(cache[5], redshift.random_shear))
+      fdiff2(cache[5], redshift.random_shear) ||
+      cache[6] != (uint64_t) redshift.clustering_nbin)
   {
     if (ncoarse > 0) {
       // ---------------------------------------------------------------
@@ -7275,6 +7305,7 @@ double C_gk_tomo_limber(const double l, const int ni)
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = redshift.random_shear;
+    cache[6] = (uint64_t) redshift.clustering_nbin;
   }
   
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {

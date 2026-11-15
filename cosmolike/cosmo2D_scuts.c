@@ -413,7 +413,9 @@ double dC_ss_dlnk_tomo_limber(
   static double* lxc = NULL;  // coarse ell values
   static double**** tabc = NULL; // coarse dC values
   
-  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) tomo.shear_Npowerspectra) {
     nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = 0.0; // ln(l = 1): the grid covers every multipole l >= 1
     lim[1] = log(Ntable.LMAX + 1.);
@@ -478,7 +480,8 @@ double dC_ss_dlnk_tomo_limber(
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) tomo.shear_Npowerspectra)
   {
     if (nkc < nlnk || nlc < nell) {
       // ---------------------------------------------------------------
@@ -534,6 +537,7 @@ double dC_ss_dlnk_tomo_limber(
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
+    cache[5] = (uint64_t) tomo.shear_Npowerspectra;
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
       nj < 0 || nj > redshift.shear_nbin - 1) {
@@ -628,7 +632,9 @@ double dlnC_ss_dlnk_tomo_limber(
   static double* lxc = NULL;  // coarse ell values
   static double**** tabc = NULL; // coarse dC values
   
-  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) tomo.shear_Npowerspectra) {
     nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = 0.0; // ln(l = 1): the grid covers every multipole l >= 1
     lim[1] = log(Ntable.LMAX + 1.);
@@ -686,7 +692,8 @@ double dlnC_ss_dlnk_tomo_limber(
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) tomo.shear_Npowerspectra)
   {
     if (nkc < nlnk || nlc < nell) {
       // Internal coarse grid, in 2D: exact single-node Limber on the
@@ -722,6 +729,7 @@ double dlnC_ss_dlnk_tomo_limber(
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
+    cache[5] = (uint64_t) tomo.shear_Npowerspectra;
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
       nj < 0 || nj > redshift.shear_nbin - 1) {
@@ -818,7 +826,9 @@ double dC_ks_dlnk_tomo_limber(
   static double* lxc = NULL;  // coarse ell values
   static double*** tabc = NULL; // coarse dC values
 
-  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) redshift.shear_nbin) {
     nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = 0.0; // ln(l = 1): the grid covers every multipole l >= 1
     lim[1] = log(Ntable.LMAX + 1.);
@@ -883,7 +893,8 @@ double dC_ks_dlnk_tomo_limber(
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) redshift.shear_nbin)
   {
     if (nkc < nlnk || nlc < nell) {
       // Internal coarse grid, in 2D: exact single-node Limber on the
@@ -917,6 +928,7 @@ double dC_ks_dlnk_tomo_limber(
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
+    cache[5] = (uint64_t) redshift.shear_nbin;
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
@@ -1002,7 +1014,9 @@ double dlnC_ks_dlnk_tomo_limber(
   static double* lxc = NULL;  // coarse ell values
   static double*** tabc = NULL; // coarse dC values
 
-  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) redshift.shear_nbin) {
     nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = 0.0; // ln(l = 1): the grid covers every multipole l >= 1
     lim[1] = log(Ntable.LMAX + 1.);
@@ -1060,7 +1074,8 @@ double dlnC_ks_dlnk_tomo_limber(
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) redshift.shear_nbin)
   {
     if (nkc < nlnk || nlc < nell) {
       // Internal coarse grid, in 2D: exact single-node Limber on the
@@ -1094,6 +1109,7 @@ double dlnC_ks_dlnk_tomo_limber(
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
+    cache[5] = (uint64_t) redshift.shear_nbin;
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
@@ -1746,7 +1762,9 @@ double dlnxi_dlnk_pm_tomo(
   static double*** tabc = NULL; // coarse dlnxi values
   static double*** cspl = NULL; // natural-cubic-spline c coefficients
   const int NSIZE = tomo.shear_Npowerspectra;
-  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) NSIZE) {
     nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
     lim[0] = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
     lim[1] = log(Ntable.dCX_dlnk_k[RANGE_MAX]);
@@ -1793,7 +1811,8 @@ double dlnxi_dlnk_pm_tomo(
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) NSIZE)
   {
     if (nkc < nlnk) {
       // exact nointerp builds on the coarse ln k nodes only - the
@@ -1876,6 +1895,7 @@ double dlnxi_dlnk_pm_tomo(
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random; 
+    cache[5] = (uint64_t) NSIZE;
   }
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d", nt); exit(1); 
@@ -2178,7 +2198,9 @@ double dlnw_ks_dlnk_tomo(
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
-  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
+  if (NULL == table ||
+      fdiff2(cache[4], Ntable.random) ||
+      cache[6] != (uint64_t) NSIZE) {
     nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
     lim[0] = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
     lim[1] = log(Ntable.dCX_dlnk_k[RANGE_MAX]);
@@ -2226,7 +2248,8 @@ double dlnw_ks_dlnk_tomo(
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random) ||
-      fdiff2(cache[5], cmb.random))
+      fdiff2(cache[5], cmb.random) ||
+      cache[6] != (uint64_t) NSIZE)
   {
     if (nkc < nlnk) {
       // coarse exact nointerp builds + house cubic upsample in ln k,
@@ -2283,6 +2306,7 @@ double dlnw_ks_dlnk_tomo(
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
     cache[5] = cmb.random;
+    cache[6] = (uint64_t) NSIZE;
   }
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d", nt); exit(1);
