@@ -92,6 +92,11 @@ cancel pairwise, so Cl -> CLnl up to the rank truncation and the
 Limber splice works unchanged. The rank kernels ride the shared
 transforms as extra rows; SIZE2 stays 3 so the FFTLog configs remain
 byte-identical to the FKEM ones and their static caches never rebuild.
+With `use_nonlinear_kaiser_GG = 1` the RSD rows additionally carry the
+one-loop velocity spectra through two more FFTLog rows per bin,
+outside the SVD (the loop spectra are exactly separable, so they need
+no decomposition); the switch, the templates, the Limber match and the
+validation record are in `nonlinear_kaiser.md`.
 
 The DD Limber tables come from the auto batch's DD outputs
 (`C_gg_tomo_limber_work` table_dd/table_dd_lin;
@@ -206,8 +211,9 @@ pools, same FFTLog configs as `C_cl_tomo_core`, cap
 transform of the auto run, so the auto Fourier entry stashes the
 band-center corrections (`ggx_stash`) and `C_gg_cross_tomo_ells`
 consumes them in the same evaluation. The stash is keyed on
-(cosmology.random, Ntable.random, npairs, nell, gg_kwin.nonce) plus a
-fresh flag; any other call order is fatal, never silently recomputed,
+(cosmology.random, Ntable.random, npairs, nell, gg_kwin.nonce,
+use_nonlinear_kaiser_GG) plus a fresh flag; any other call order is
+fatal, never silently recomputed,
 and one stash serves one evaluation. With Limber autos
 (`adopt_limber_gg = 1`) the pairs are Limber at every multipole,
 consistent with the autos. The cross pass requires tol = 0 (no

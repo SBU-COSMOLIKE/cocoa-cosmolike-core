@@ -304,8 +304,17 @@ int get_use_nonlinear_kaiser_GG(void)
 //
 // at k in H0/c units; zero outside the FPTkaiser table. The Limber
 // linear terms subtract them (with the W_RSD kernel, which carries f),
-// so the FFTLog loop rows cancel at high l. get_FPT_kaiser must have
-// run (serially) for this cosmology.
+// so the FFTLog loop rows cancel at high l exactly as the linear
+// Kaiser rows do. With N[.] the exact FFTLog projection and L[.] the
+// engine's Limber sum, the flag therefore turns
+//
+//   C = N[lin] + L[halofit] - L[lin]          (flag 0)
+// into
+//   C = N[lin + loop] + L[halofit] - L[lin + loop],
+//
+// and the FKEM hand-off of the RSD rows - L[halofit] minus the linear
+// Limber term - stays in place, neither dropped nor counted twice.
+// get_FPT_kaiser must have run (serially) for this cosmology.
 static inline void nl_kaiser_limber(
     const double k,      // Limber wavenumber, H0/c units
     const double D,      // growth factor at the node
@@ -9553,17 +9562,20 @@ void cfftlog_ells_p2(
 //
 // va and vb hold a bin's transformed kernels {g1, R1, g2, R2, g3, R3}:
 // g_m the density kernel and R_m the RSD kernel carrying D^m (m = 1, the
-// linear rows; m = 2, 3, the loop rows). t holds the four a = 1
-// templates of FPTkaiser.tab, {P22_dt, P22_tt, A_d, A_t}. Every term of
-// get_FPT_kaiser's unequal-time spectra appears once with each bin in
-// each role:
+// linear rows; m = 2, 3, the loop rows of nl_kaiser_rows). t holds the
+// four a = 1 templates of FPTkaiser.tab, {P22_dt, P22_tt, A_d, A_t},
+// which are theta = Theta/f spectra: each R row already carries one
+// factor of -f in its kernel, so f enters exactly once per velocity leg
+// and the loop terms add with the signs of the linear Kaiser product.
+// Every term of get_FPT_kaiser's unequal-time spectra appears once with
+// each bin in each role:
 //
 //   density x velocity: P22_dt g2 R2' + A_t g1 R3' + A_d g3 R1'
 //   velocity x velocity: P22_tt R2 R2' + A_t (R1 R3' + R3 R1')
 //
-// (primes on bin b), plus the velocity x density mirror. The RSD rows
-// carry -f, so the signs are those of the linear F^2. For an auto
-// spectrum va = vb. The caller multiplies by k^3.
+// (primes on bin b), plus the velocity x density mirror, so both growth
+// orderings of the propagator (P13) terms, D1 D2^3 and D1^3 D2, are
+// present. For an auto spectrum va = vb. The caller multiplies by k^3.
 // ---------------------------------------------------------------------------
 static inline double nl_kaiser_loop(
     const double* const va,  // bin a: {g1, R1, g2, R2, g3, R3}
@@ -12260,9 +12272,14 @@ static double** C_cl_tomo_lowrank_core(
   // What remains is NK = baseline x global accuracy boost: identical
   // to nchi when no nonlimber boost is set.
   const int NK = (int) ceil(((double) nchi)/Ntable.NL_Nchi_boost);
-  // the nonlinear Kaiser rows (nl_kaiser_rows) after the rank rows: bin
+  // The nonlinear Kaiser rows (nl_kaiser_rows) after the rank rows: bin
   // i's D^2 row is NLK0 + i, its D^3 row NLK0 + nbins + i; they need the
-  // RSD row, so they follow its gate
+  // RSD row, so they follow its gate. They stay outside the SVD: the
+  // decomposition exists for the one-loop density spectrum, whose
+  // scale-dependent growth does not separate, while the loop velocity
+  // spectra are exactly separable (fixed k-templates times powers of D
+  // per leg), so they ride plain FFTLog rows and inherit none of the
+  // geometric-mean unequal-time convention of the rank rows.
   const int nlk = (1 == use_nonlinear_kaiser_GG &&
                    1 == include_RSD_GG) ? 1 : 0;
   const int NLK0 = nbins + nbins*nrank;

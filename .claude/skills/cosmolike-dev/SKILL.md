@@ -73,6 +73,20 @@ nonces and resets (the cross-pair storage guard keys every size it
 allocates), the cap dependence of the decomposition's ln k grid, the
 thread-safety rules, and the remaining limits.
 
+Before changing the nonlinear Kaiser terms of the non-Limber gg
+engines — the switch `use_nonlinear_kaiser_GG` and its binding
+`init_nonlinear_kaiser_gg` (yaml key `nonlinear_kaiser`, default 0),
+the one-loop velocity templates `get_FPT_kaiser` (`pt_cfastpt.c`, the
+`FPTkaiser` table), the loop rows and template blocks of the three gg
+engines (`nl_kaiser_*` in `cosmo2D.c`), or the Limber match
+`nl_kaiser_limber` — read `references/nonlinear_kaiser.md`: the
+separability argument and the Theta = -div v/(aH) convention (f once
+per velocity leg), the template quadrature and its grid, the cache
+keys and row-count guards, the high-l convention (the halofit
+hand-off stays; E3's headline swap drops it) as a recorded design
+choice, the measured validation against the E3 projections, and the
+remaining limits.
+
 Before changing or explaining the growth factor (growfac, f_growth, the
 G_growth table the likelihoods build), the IA amplitudes (1/D, 1/D^2), the
 one-loop D^4 factors or sigma(M, z) = D sigma(M, 0), read

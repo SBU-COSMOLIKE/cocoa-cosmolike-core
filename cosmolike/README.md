@@ -457,8 +457,42 @@ the default switching multipole of 150. Two provisions address this:
   field does not grow like the one-loop density, and the broad
   magnification kernel is where Limber is accurate.
 
+**Nonlinear Kaiser terms** (likelihood key `nonlinear_kaiser`, setter
+`init_nonlinear_kaiser_gg`; default 0). Thin bins resolve radial modes,
+so their redshift-space terms stay large at every multipole, and the
+linear velocity spectra of the Kaiser rows become the leading
+perturbative approximation worth questioning. With the flag on, the
+redshift-space rows of every non-Limber gg engine carry the one-loop
+velocity spectra of standard perturbation theory instead of their
+linear limits. Writing $`\Theta=-\nabla\cdot\mathbf{v}/(aH)`$ for the
+velocity divergence (linear part $`f\,\delta_{\rm L}`$, with $`f`$ the
+linear growth rate), the engines use the one-loop
+$`P_{\delta\Theta}`$ and $`P_{\Theta\Theta}`$ at unequal times, with
+both time orderings of the propagator terms. Galaxies keep linear bias
+in these rows and the redshift-space mapping stays linear. The loop
+terms are exactly separable — fixed $`k`$-shapes times powers of the
+growth factor per redshift leg (second-order kernels:
+[Bernardeau et al.](https://arxiv.org/abs/astro-ph/0112551);
+closed-form propagator integrals:
+[Carlson, White & Padmanabhan](https://arxiv.org/abs/0905.0479)) — so
+they ride a few extra FFTLog rows per bin, no decomposition involved,
+and the Limber term subtracts their Limber limit: the loops cancel at
+high multipole exactly as the linear Kaiser terms do, and the engines'
+halofit hand-off on the redshift-space rows is untouched. With the
+default 0 the prediction is the one computed before the feature
+existed, bit for bit. The cost is the extra rows: on the thinnest
+layout the feature was validated on (90 clustering bins at
+$`\Delta z = 0.02`$), one full data-vector evaluation on an
+eight-core laptop went from 62 s to 82 s with the flag on. The model
+specification is the collaborator description distributed with the
+project that uses the feature
+(`projects/lssty1xdesi/notes/Notes_Nonlinear_Kaiser.pdf`, Stage II,
+and the FKEM-row discussion of that project's
+`notes/higher_order_bias`).
+
 Both engines refuse halo-occupation galaxies: the thin-bin machinery
-models perturbative galaxies only.
+models perturbative galaxies only. The nonlinear Kaiser flag refuses
+them too, for the same reason.
 
 ## Shared numerical support
 
