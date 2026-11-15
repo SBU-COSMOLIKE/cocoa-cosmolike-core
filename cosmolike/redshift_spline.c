@@ -565,10 +565,9 @@ int N_ggl(int ni, int nj)
 // (0,0), (0,1), ..., (0,nbin-1), (1,1), ...; returns z1 of pair ni.
 //
 // Cache invalidation:
-// built once, on the first call (sentinel N[0] = -42,
-// rebuilt while N[0] < -1; built entries are >= 0). There is no
-// invalidation key: the layout depends only on redshift.shear_nbin.
-// First call must happen outside OpenMP regions.
+// built on the first call (sentinel N[0] = -42) and rebuilt when
+// redshift.shear_nbin changes, the only input of the layout.
+// init_ntomo_powerspectra warms it: no rebuild inside an OpenMP region.
 //
 // Parameters:
 //   ni - shear power spectrum index (0 .. shear_Npowerspectra-1)
@@ -579,8 +578,11 @@ int N_ggl(int ni, int nj)
 int Z1(int ni)
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) 
+  static int nbin = -1; // the source bin count of the map
+  if (N[0] < -1 ||
+      nbin != redshift.shear_nbin)
   {
+    nbin = redshift.shear_nbin;
     int n = 0;
     for (int i=0; i < redshift.shear_nbin; i++) 
     {
@@ -607,10 +609,9 @@ int Z1(int ni)
 // Same z1 <= z2 row-major pair layout as Z1; returns z2 of pair nj.
 //
 // Cache invalidation:
-// built once, on the first call (sentinel N[0] = -42,
-// rebuilt while N[0] < -1; built entries are >= 0). There is no
-// invalidation key: the layout depends only on redshift.shear_nbin.
-// First call must happen outside OpenMP regions.
+// built on the first call (sentinel N[0] = -42) and rebuilt when
+// redshift.shear_nbin changes, the only input of the layout.
+// init_ntomo_powerspectra warms it: no rebuild inside an OpenMP region.
 //
 // Parameters:
 //   nj - shear power spectrum index (0 .. shear_Npowerspectra-1)
@@ -621,8 +622,11 @@ int Z1(int ni)
 int Z2(int nj)
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) 
+  static int nbin = -1; // the source bin count of the map
+  if (N[0] < -1 ||
+      nbin != redshift.shear_nbin)
   {
+    nbin = redshift.shear_nbin;
     int n = 0;
     for (int i=0; i<redshift.shear_nbin; i++) 
     {
@@ -651,10 +655,9 @@ int Z2(int nj)
 // over pairs with z1 <= z2.
 //
 // Cache invalidation:
-// built once, on the first call (sentinel
-// N[0][0] = -42, rebuilt while N[0][0] < -1; built entries are >= 0).
-// There is no invalidation key: the layout depends only on
-// redshift.shear_nbin. First call must happen outside OpenMP regions.
+// built on the first call (sentinel N[0][0] = -42) and rebuilt when
+// redshift.shear_nbin changes, the only input of the layout.
+// init_ntomo_powerspectra warms it: no rebuild inside an OpenMP region.
 //
 // Parameters:
 //   ni, nj - source tomographic bin indices (0 .. shear_nbin-1)
@@ -665,8 +668,11 @@ int Z2(int nj)
 int N_shear(int ni, int nj)
 {
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
-  if (N[0][0] < -1) 
+  static int nbin = -1; // the source bin count of the map
+  if (N[0][0] < -1 ||
+      nbin != redshift.shear_nbin)
   {
+    nbin = redshift.shear_nbin;
     int n = 0;
     for (int i=0; i<redshift.shear_nbin; i++) 
     {
@@ -696,10 +702,9 @@ int N_shear(int ni, int nj)
 // uses tomo.clustering_Npowerspectra.
 //
 // Cache invalidation:
-// built once, on the first call (sentinel N[0] = -42,
-// rebuilt while N[0] < -1; built entries are >= 0). There is no
-// invalidation key: the layout depends only on redshift.clustering_nbin.
-// First call must happen outside OpenMP regions.
+// built on the first call (sentinel N[0] = -42) and rebuilt when
+// redshift.clustering_nbin changes, the only input of the layout.
+// init_ntomo_powerspectra warms it: no rebuild inside an OpenMP region.
 //
 // Parameters:
 //   ni - clustering power spectrum index (0 .. clustering_Npowerspectra-1)
@@ -710,8 +715,11 @@ int N_shear(int ni, int nj)
 int ZCL1(int ni)
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) 
+  static int nbin = -1; // the lens bin count of the map
+  if (N[0] < -1 ||
+      nbin != redshift.clustering_nbin)
   {
+    nbin = redshift.clustering_nbin;
     int n = 0;
     for (int i=0; i<redshift.clustering_nbin; i++) 
     {
@@ -739,10 +747,9 @@ int ZCL1(int ni)
 // nj. The bound check uses tomo.clustering_Npowerspectra.
 //
 // Cache invalidation:
-// built once, on the first call (sentinel N[0] = -42,
-// rebuilt while N[0] < -1; built entries are >= 0). There is no
-// invalidation key: the layout depends only on redshift.clustering_nbin.
-// First call must happen outside OpenMP regions.
+// built on the first call (sentinel N[0] = -42) and rebuilt when
+// redshift.clustering_nbin changes, the only input of the layout.
+// init_ntomo_powerspectra warms it: no rebuild inside an OpenMP region.
 //
 // Parameters:
 //   nj - clustering power spectrum index (0 .. clustering_Npowerspectra-1)
@@ -753,8 +760,11 @@ int ZCL1(int ni)
 int ZCL2(int nj)
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) 
+  static int nbin = -1; // the lens bin count of the map
+  if (N[0] < -1 ||
+      nbin != redshift.clustering_nbin)
   {
+    nbin = redshift.clustering_nbin;
     int n = 0;
     for (int i=0; i<redshift.clustering_nbin; i++) 
     {
@@ -782,11 +792,9 @@ int ZCL2(int nj)
 // the zcl1 <= zcl2 row-major pair layout.
 //
 // Cache invalidation:
-// built once, on the first call (sentinel
-// N[0][0] = -42, rebuilt while N[0][0] < -1; built entries are >= 0).
-// There is no invalidation key: the layout depends only on
-// redshift.clustering_nbin. First call must happen outside OpenMP
-// regions.
+// built on the first call (sentinel N[0][0] = -42) and rebuilt when
+// redshift.clustering_nbin changes, the only input of the layout.
+// init_ntomo_powerspectra warms it: no rebuild inside an OpenMP region.
 //
 // Parameters:
 //   ni, nj - lens tomographic bin indices (0 .. clustering_nbin-1)
@@ -797,8 +805,11 @@ int ZCL2(int nj)
 int N_CL(int ni, int nj)
 {
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
-  if (N[0][0] < -1) 
+  static int nbin = -1; // the lens bin count of the map
+  if (N[0][0] < -1 ||
+      nbin != redshift.clustering_nbin)
   {
+    nbin = redshift.clustering_nbin;
     int n = 0;
     for (int i=0; i<redshift.clustering_nbin; i++) 
     {

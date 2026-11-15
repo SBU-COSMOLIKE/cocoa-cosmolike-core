@@ -2244,6 +2244,14 @@ void init_ntomo_powerspectra()
     (void) ZS(0);
     (void) N_ggl(ZL(0), ZS(0));
   }
+  // the shear and clustering pair maps follow the bin counts: rebuild
+  // them here too
+  (void) Z1(0);
+  (void) Z2(0);
+  (void) N_shear(0, 0);
+  (void) ZCL1(0);
+  (void) ZCL2(0);
+  (void) N_CL(0, 0);
 
   debug("{}: tomo.shear_Npowerspectra = {}", fname, tomo.shear_Npowerspectra);
   debug("{}: tomo.ggl_Npowerspectra = {}", fname, tomo.ggl_Npowerspectra);
