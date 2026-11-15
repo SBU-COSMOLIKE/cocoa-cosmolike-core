@@ -68,7 +68,8 @@ they have different physical meanings and must not be interchanged silently.
 
 Caveat 3 (halo batch, 0a761b5): bias_norm, hod_tables, p_gm, p_gg and
 ia_tables are not keyed on like.halo_model[0..2] (only tinker_alpha
-is): changing the menu mid-process returns stale tables. Harmless
+is): changing the menu mid-process returns out-of-date tables (clause
+2 of the invalidation rule, `state_invalidation.md`). Harmless
 while no Python setter exposes mid-process changes. Under HMF_TINKER_2008,
 int f dnu diverges logarithmically at small nu, so 1 - bias_norm loses
 its "missing share" meaning.

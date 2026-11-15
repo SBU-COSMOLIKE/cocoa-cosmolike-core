@@ -29,6 +29,20 @@ Before writing any optimization, read `references/patterns.md`.
 Before reviewing any patch, read `references/pitfalls.md` — it is the catalog
 of bugs this codebase has actually had, and doubles as the review checklist.
 
+**Invalidation rule.** A cached static has two tiers and both have
+complete keys. The allocation tier compares every size its mallocs
+use — directly, as integers, when the size has no dedicated nonce
+(bin counts, pair counts, rank, caps, thread counts), through
+`Ntable.random` only for grid knobs whose every setter bumps it.
+The refill tier keys every input it reads: a nonce the setter
+redraws, or the value itself in a key slot. Derived state (masks,
+stashes) stamps the settings that shaped it and the consumer stops
+with a clear message on mismatch. Every file-scope static outside
+the reset structs has a reset invoked by `initial_setup`. See
+pitfalls 13 and 14, and `references/state_invalidation.md` for the
+full rule, the audited failure classes, the setting-sequence test
+suite and the state of the restoration sweep.
+
 Before writing or reviewing any Python — a plotting function, a notebook
 wrapper, a notebook cell, a likelihood method, a test, a script — read
 `references/python.md`. It is the style contract for Python in these
@@ -40,9 +54,10 @@ Before changing the k window of the gg engines (`gg_kwin` in
 (`cosmo2D_scuts.c`, `cosmo2D_scuts_wrapper.cpp`), read
 `references/scale_cuts_uv_fraction.md`: the UV-fraction IR/UV split of C_l^gg,
 where each engine applies the step, the per-bin thresholds and the
-high-l cancellation they protect, the cache and stash guards, the
-rejected pre-transform prototype, and the measured validation and
-remaining limits.
+high-l cancellation they protect, the finite-k projection of the
+one-loop white-noise constant that repairs the low-rank IR/UV split,
+the cache and stash guards, the rejected pre-transform prototype, and
+the measured validation and remaining limits.
 
 Before changing the thin-bin galaxy-clustering machinery of
 `cosmo2D.c` — the low-rank non-Limber gg engine (the per-bin SVD of
@@ -54,7 +69,9 @@ Fourier entry points, or their setters and bindings
 `init_lmax_nonlimber`) — read
 `references/lowrank_gg_cross_pairs.md`: the method, the DD-output
 contract the splice depends on, the block memory design, the caches,
-nonces and resets, the thread-safety rules, and the remaining limits.
+nonces and resets (the cross-pair storage guard keys every size it
+allocates), the cap dependence of the decomposition's ln k grid, the
+thread-safety rules, and the remaining limits.
 
 Before changing or explaining the growth factor (growfac, f_growth, the
 G_growth table the likelihoods build), the IA amplitudes (1/D, 1/D^2), the

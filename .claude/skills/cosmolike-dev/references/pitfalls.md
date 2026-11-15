@@ -157,3 +157,40 @@ preprocessor-guard fallback path.
   process, so a second likelihood kept the first one's internal FAST-PT
   boost. They are now forgotten in `initial_setup`
   (`reset_boost_baselines`) and re-captured per setup.
+- **The rule, extended (the 2026-11-14 notebook-safety review):** every
+  file-scope static outside the reset structs - model flags, switches,
+  latches, loaded scenarios, and C++ singletons (`IP`, `IPCMB`,
+  `PointMass`) - is reset by `initial_setup`; a cluster project's
+  binding wraps `initial_setup` to call `reset_cluster`. The review
+  found five more survivors: the low-rank trio of `set_lowrank_DD_GG`,
+  `limits.LMAX_NOLIMBER`, the loaded baryon scenario, the `Pdelta`
+  run-mode latch (cosmo3D.c), and the `PointMass`/`IPCMB` singletons.
+  Their resets are part of the restoration sweep; the state of that
+  sweep is in `references/state_invalidation.md`.
+
+## 14. An allocation guard that forgets one of its sizes
+
+- **Symptom:** heap overflow (ASAN report, corruption, or a crash) -
+  or silently reused rows - after changing a bin count, pair count,
+  rank, or multipole cap in one process; the same sequence is clean
+  in a fresh process. A shrink shows nothing (rows are wasted, not
+  overrun), which hides the bug in tests that only shrink.
+- **Cause:** a lazily allocated static sized its arrays with a count
+  (`redshift.shear_nbin`, `tomo.ggl_Npowerspectra`, a cap such as
+  `lowrank_DD_GG_lmax`) inside a guard keyed on `Ntable.random`
+  alone, and no setter of that count bumps `Ntable.random`. The
+  refill tier, keyed on the redshift or nuisance nonces, then writes
+  the new extent into the old allocation.
+- **Fix/rule:** the rebuild guard compares, by value, every size that
+  appears in the block's allocation calls - `static int NSIZE_alloc =
+  -1;` and `NSIZE != NSIZE_alloc` next to the pointer-NULL check -
+  even when a nonce "should" also change. An integer compare is
+  free; a missed one is a heap overflow. The models in-tree:
+  `C_gs_tomo_core`, the FKEM pairs core and the low-rank cross-pair
+  storage (cosmo2D.c), the cluster caches, `nz_histogram_akima`
+  (redshift_spline.c), `sigma_fields_` (cosmo3D.c, thread count
+  included). The full invalidation rule, the audited gaps and the
+  state of their restoration: `references/state_invalidation.md`.
+- **Validate:** grow the size mid-process without `initial_setup` and
+  compare bitwise against a fresh process at the final settings,
+  under the DEBUG/ASAN build; then shrink and compare again.

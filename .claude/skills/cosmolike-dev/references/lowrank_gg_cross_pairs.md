@@ -119,6 +119,14 @@ of the plain layout at BLOCK/cap of the footprint. The FKEM pair twin
 does not grow with `lmax_nonlimber`; the classic gg/gs cores still
 hold every multipole below the cap (rows x cap x NL_Nchi doubles).
 
+The rebuild guards of both cores' pair storage compare every size
+their allocations use — npairs, nbins, nchi, the cap and
+`Ntable.random` — in dedicated cache slots. `set_lowrank_DD_GG` does
+not bump `Ntable.random`, so without the size keys a cap raised in
+one process (a notebook rerun at a larger lmax) kept rows of the old
+length and the pair pass wrote past them (pitfall 14 of
+`pitfalls.md`; restored for the low-rank core in commit 4f9739d).
+
 ### Knobs and validation
 
 `init_lowrank_nonlimber_gg(flag, nrank, lmax)` -> `set_lowrank_DD_GG`:
@@ -228,6 +236,22 @@ baseline grid - a thin-bin configuration measured delta chi2 of order
 `nonlimber_accuracyboost: 8` - so convergence in this knob must be
 tested per project, with the nested rule keeping lower boosts
 comparable node-by-node.
+
+**The ln k grid of the decomposition depends on the cap, by design.**
+The SVD's k nodes span the FFTLog range up to the low-rank cap with a
+fixed node count NK (independent of the cap), so raising the cap
+stretches the same nodes over a wider ln k range and coarsens the
+grid. Pair values below the cap then shift - up to 5.1e-3 relative on
+the measured configuration (cap 600 -> 1000, 2026-11-14) - through
+the factorization and the linear reads of `sqrtPg_kfactor`. This is a
+discretization property, not out-of-date state: an in-process cap
+change and a fresh process at the final cap agree bitwise. Judge the
+tail against the covariance's per-band error bars rather than as a
+defect; the global accuracy boost scales NK at fixed cap and is the
+clean convergence knob (the non-Limber boost deliberately divides
+out). A grid with fixed node spacing, or anchored at `Ntable.LMAX`,
+would make sub-cap values exactly cap-independent at SVD cost growing
+with the cap; it remains a possible study, not the design.
 
 ## Remaining limits
 
