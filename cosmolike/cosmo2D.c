@@ -1508,7 +1508,10 @@ double w_gammat_tomo(
       fdiff2(cache[6], Ntable.random) ||
       fdiff2(cache[7], nuisance.random_galaxy_bias) ||
       cache_limber != limber ||
-      cache[8] != (uint64_t) NSIZE)
+      cache[8] != (uint64_t) NSIZE ||
+      // the (lens, source) pair behind each spectrum index: a new
+      // pair list of the same length moves every entry
+      fdiff2(cache[9], tomo.random_ggl))
   {
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
@@ -1547,6 +1550,7 @@ double w_gammat_tomo(
     cache[6] = Ntable.random;
     cache[7] = nuisance.random_galaxy_bias;
     cache[8] = (uint64_t) NSIZE;
+    cache[9] = tomo.random_ggl;
     cache_limber = limber;
   }
   // ---------------------------------------------------------------------------
@@ -5248,7 +5252,10 @@ double C_gs_tomo_limber(
       fdiff2(cache[8], (uint64_t) include_HOD_GX) ||
       fdiff2(cache[9], (uint64_t) include_halo_IA) ||
       fdiff2(cache[10], nuisance.random_ia_halo) ||
-      cache[11] != (uint64_t) tomo.ggl_Npowerspectra)
+      cache[11] != (uint64_t) tomo.ggl_Npowerspectra ||
+      // the (lens, source) pair behind each table row: a new pair
+      // list of the same length moves every row
+      fdiff2(cache[12], tomo.random_ggl))
   {
     // per-lens-bin nodes (split rule with magnification, see
     // create_cosmo_nodes_lens)
@@ -5349,6 +5356,7 @@ double C_gs_tomo_limber(
     cache[9] = (uint64_t) include_halo_IA;
     cache[10] = nuisance.random_ia_halo;
     cache[11] = (uint64_t) tomo.ggl_Npowerspectra;
+    cache[12] = tomo.random_ggl;
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1 ||
