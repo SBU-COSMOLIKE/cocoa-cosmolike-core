@@ -141,6 +141,10 @@ void tatt_spectra_cov(
   // and settings are unchanged. Unlike cosmo2D.c, this call does not test
   // nuisance.IA_code: a table installed from Python (IA_code = 1) is
   // replaced by the C-FAST-PT one.
+  if (0 != nuisance.IA_code) {
+    log_info("tatt_spectra_cov: the covariance rebuilds the TATT table with "
+             "C-FAST-PT; call set_IA_PS again before the next data vector");
+  }
   get_FPT_IA();
 
   // The table samples ln k uniformly: sample i (0 <= i < N) sits at

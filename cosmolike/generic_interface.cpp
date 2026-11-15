@@ -2761,6 +2761,7 @@ void set_IA_PS(
     }
     nuisance.random_ia = RandomNumber::get_instance().get();
   } 
+  set_FPT_IA_from_python();
 }
 
 // ---------------------------------------------------------------------------
@@ -2894,6 +2895,7 @@ void set_bias_PS(
     }
     nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
   }
+  set_FPT_bias_from_python();
 }
 
 // ---------------------------------------------------------------------------

@@ -2907,7 +2907,7 @@ static void C_ss_tomo_limber_work(
     (void) Z1(0);
     (void) Z2(0);
     if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-      if (0 == nuisance.IA_code) get_FPT_IA();
+      FPT_IA_tables();
     }
   }
 
@@ -2929,7 +2929,7 @@ static void C_ss_tomo_limber_work(
 
   double limTATT[3];
   if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-    if (0 == nuisance.IA_code) get_FPT_IA();
+    FPT_IA_tables();
     limTATT[0] = log(FPTIA.krange[RANGE_MIN]);
     limTATT[1] = log(FPTIA.krange[RANGE_MAX]);
     limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
@@ -3335,7 +3335,7 @@ void dC_ss_dlnk_tomo_limber_work(
     (void) Z1(0);
     (void) Z2(0);
     if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-      if (0 == nuisance.IA_code) get_FPT_IA();
+      FPT_IA_tables();
     }
   }
 
@@ -3357,7 +3357,7 @@ void dC_ss_dlnk_tomo_limber_work(
 
   double limTATT[3];
   if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-    if (0 == nuisance.IA_code) get_FPT_IA();
+    FPT_IA_tables();
     limTATT[0] = log(FPTIA.krange[RANGE_MIN]);
     limTATT[1] = log(FPTIA.krange[RANGE_MAX]);
     limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
@@ -4386,12 +4386,10 @@ static void C_gs_tomo_limber_work(
       (void) W_RSD(100, 0.9, 0.95, 0);
     }
     if (nuisance.IA_MODEL == IA_MODEL_TATT && NULL != table) {
-      if (0 == nuisance.IA_code) get_FPT_IA();
+      FPT_IA_tables();
     }
     if (1 == nonlinear_bias) {
-      if (0 == nuisance.IA_code) {
-        get_FPT_bias();
-      }
+      FPT_bias_tables();
     }
   }
 
@@ -4449,13 +4447,13 @@ static void C_gs_tomo_limber_work(
     exit(1);
   }
   if (tatt) {
-    if (0 == nuisance.IA_code) get_FPT_IA();
+    FPT_IA_tables();
     limTATT[0] = log(FPTIA.krange[RANGE_MIN]);
     limTATT[1] = log(FPTIA.krange[RANGE_MAX]);
     limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
   }
   if (1 == nonlinear_bias) {
-    if (0 == nuisance.IA_code) get_FPT_bias();
+    FPT_bias_tables();
     limbias[0] = log(FPTbias.krange[RANGE_MIN]);
     limbias[1] = log(FPTbias.krange[RANGE_MAX]);
     limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
@@ -5756,9 +5754,7 @@ static void C_gg_tomo_limber_work(
       (void) gbs2(0.1, 0);
       (void) gb3(0.1, 0);
       (void) gbK(0.1, 0);
-      if (0 == nuisance.IA_code) {
-        get_FPT_bias();
-      }
+      FPT_bias_tables();
     }
   }
   const double chi_a_min = (1 == rsd) ? chi(limits.a_min) : 0.0;
@@ -6701,9 +6697,7 @@ static void C_gk_tomo_limber_work(
       (void) gbs2(0.1, 0);
       (void) gb3(0.1, 0);
       (void) gbK(0.1, 0);
-      if (0 == nuisance.IA_code) {
-        get_FPT_bias();
-      }
+      FPT_bias_tables();
     }
   }
   const double chi_a_min = (1 == include_RSD_GK) ? chi(limits.a_min) : 0.0;
@@ -11056,9 +11050,7 @@ static void C_gg_lowrank_decomp_work(
       (void) gbs2(0.5, 0);
       (void) gb3(0.5, 0);
       (void) gbK(0.5, 0);
-      if (0 == nuisance.IA_code) {
-        get_FPT_bias();
-      }
+      FPT_bias_tables();
     }
   }
   // the ln k grid of the FPT tables (no sigma4: this spectrum keeps
@@ -13366,9 +13358,7 @@ void C_gg_kwindow_white_noise_ells(
   // (k chi)^l, so the piece below k_min is many orders below the
   // correction itself, and cutting it would cost a second Bessel
   // table (the closed form at k_min as well as at K).
-  if (0 == nuisance.IA_code) {
-    get_FPT_bias();
-  }
+  FPT_bias_tables();
   const double s4 = FPTbias.sigma4;
   const double lnkmin = log(FPTbias.krange[RANGE_MIN]);
   const double lnkmax = log(FPTbias.krange[RANGE_MAX]);
@@ -14047,9 +14037,7 @@ static void C_gg_cross_tomo_limber_work(
       (void) gbs2(0.1, 0);
       (void) gb3(0.1, 0);
       (void) gbK(0.1, 0);
-      if (0 == nuisance.IA_code) {
-        get_FPT_bias();
-      }
+      FPT_bias_tables();
     }
   }
   const double chi_a_min = (1 == rsd) ? chi(limits.a_min) : 0.0;

@@ -1642,6 +1642,11 @@ void oneloop_bias_spectra_cov(
   // unchanged. It owns static FFTLog state and runs its own OpenMP loops,
   // so it is called here, on the calling thread, before workers read
   // FPTbias.tab.
+  if (0 != nuisance.IA_code) {
+    log_info("oneloop_bias_spectra_cov: the covariance rebuilds the bias "
+             "tables with C-FAST-PT; call set_bias_PS again before the next "
+             "data vector");
+  }
   get_FPT_bias();
 
   // The tables sample ln k uniformly: FPTbias.N samples from ln k_min,

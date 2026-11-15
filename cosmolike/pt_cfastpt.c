@@ -122,6 +122,47 @@ static void fpt_regrid(
 // calling this function. When it runs again (IA_code = 0), it finds the
 // foreign table, frees it and rebuilds its own grid and spectra.
 // ---------------------------------------------------------------------------
+
+// 1 while FPTIA.tab / FPTbias.tab hold the Python tables set_IA_PS /
+// set_bias_PS installed; a C-FAST-PT rebuild below clears them
+static int FPTIA_tab_from_python = 0;
+static int FPTbias_tab_from_python = 0;
+
+void set_FPT_IA_from_python(void)
+{
+  FPTIA_tab_from_python = 1;
+}
+
+void set_FPT_bias_from_python(void)
+{
+  FPTbias_tab_from_python = 1;
+}
+
+void FPT_IA_tables(void)
+{
+  if (0 == nuisance.IA_code) {
+    get_FPT_IA();
+  }
+  else if (0 == FPTIA_tab_from_python) {
+    log_fatal("the Python FAST-PT IA table is not installed or was replaced "
+              "(a covariance call rebuilds C-FAST-PT): call set_IA_PS again");
+    exit(1);
+  }
+}
+
+void FPT_bias_tables(void)
+{
+  if (0 == nuisance.IA_code) {
+    get_FPT_bias();
+  }
+  else if (0 == FPTbias_tab_from_python) {
+    log_fatal("the Python FAST-PT bias table is not installed or was "
+              "replaced (a covariance call rebuilds C-FAST-PT): call "
+              "set_bias_PS again");
+    exit(1);
+  }
+}
+
 void get_FPT_bias(void)
 {
   const int NTAB = 8; // FPTbias.tab rows: 5 spectra, Pd1p3, k, P_lin
@@ -173,6 +214,7 @@ void get_FPT_bias(void)
  
   if (new_tables)
   {
+    FPTbias_tab_from_python = 0; // the table below replaces any Python one
     FPTbias.krange[RANGE_MIN]    = 0.05;
     FPTbias.krange[RANGE_MAX]    = 1.0e+6;
     FPTbias.k_cutoff = 1.0e+4;
@@ -416,6 +458,7 @@ void get_FPT_IA(void)
                           FPTIA.tab != owned_tab);
   if (new_tables)
   {
+    FPTIA_tab_from_python = 0; // the table below replaces any Python one
     FPTIA.krange[RANGE_MIN]    = 0.05;
     FPTIA.krange[RANGE_MAX]    = 1.0e+6;
     FPTIA.k_cutoff = 1.0e+4;

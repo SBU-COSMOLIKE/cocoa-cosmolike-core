@@ -158,6 +158,19 @@ void get_FPT_IA(void);
 
 void get_FPT_bias(void);
 
+// set_IA_PS / set_bias_PS (generic_interface.cpp) installed the Python
+// FAST-PT tables (nuisance.IA_code = 1)
+void set_FPT_IA_from_python(void);
+
+void set_FPT_bias_from_python(void);
+
+// The FAST-PT tables a data vector reads: with IA_code = 0 the C-FAST-PT
+// tables, built on demand; with IA_code = 1 the installed Python tables,
+// refused when a C-FAST-PT rebuild (a covariance call) replaced them
+void FPT_IA_tables(void);
+
+void FPT_bias_tables(void);
+
 #ifdef __cplusplus
 }
 #endif
