@@ -1201,7 +1201,12 @@ static void check_cluster_setup_cs(void)
   // would be silently reduced to NLA, so it is refused instead
   if (1 == cluster.include_ia &&
       IA_MODEL_TATT == nuisance.IA_MODEL) {
-    for (int i=0; i<redshift.shear_nbin; i++) {
+    // the power law (IA_REDSHIFT_EVOLUTION) keeps the A_2 and b_TA
+    // amplitudes in slot 0 (ia[1][1] is the A_2 redshift exponent); the
+    // binned model keeps one amplitude per source bin
+    const int namp = (IA_REDSHIFT_EVOLUTION == nuisance.IA) ? 1 :
+                     redshift.shear_nbin;
+    for (int i=0; i<namp; i++) {
       if (0.0 != nuisance.ia[1][i] ||
           0.0 != nuisance.ia[2][i]) {
         log_fatal("cluster lensing implements the NLA A_1 term only: set "
