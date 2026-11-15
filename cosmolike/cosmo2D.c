@@ -12051,12 +12051,20 @@ static double** C_cl_tomo_lowrank_core(
     cache[3] = (uint64_t) LNL;
   }
 
-  // ---- the cross-pair storage, rebuilt when the pair count changes ----
-  // (its own cache slot: an auto-only caller never allocates any of it)
+  // ---- the cross-pair storage, rebuilt when any of its sizes changes ----
+  // (its own cache slots: an auto-only caller never allocates any of it)
+  //
+  // Every size the three allocations use is a key: npairs, nbins, nchi
+  // and LNL. set_lowrank_DD_GG does not bump Ntable.random, so a cap
+  // raised in one process (a notebook rerun at a larger lmax) must be
+  // caught here, or CLx4 keeps rows of the old length.
   if (npairs > 0 &&
       (NULL == G_block ||
        cache[4] != (uint64_t) npairs ||
-       fdiff2(cache[5], Ntable.random)))
+       fdiff2(cache[5], Ntable.random) ||
+       cache[6] != (uint64_t) nbins ||
+       cache[7] != (uint64_t) nchi ||
+       cache[8] != (uint64_t) LNL))
   {
     if (G_block != NULL) free((void*) G_block);
     G_block = (double***) malloc3d(nbins, BLOCK, nchi);
@@ -12066,6 +12074,9 @@ static double** C_cl_tomo_lowrank_core(
     CLx4 = (double***) malloc3d(4, npairs, LNL);
     cache[4] = (uint64_t) npairs;
     cache[5] = Ntable.random;
+    cache[6] = (uint64_t) nbins;
+    cache[7] = (uint64_t) nchi;
+    cache[8] = (uint64_t) LNL;
   }
   // readable names for the grouped Limber tables
   double** const CLnl     = CL4[0]; // full model
