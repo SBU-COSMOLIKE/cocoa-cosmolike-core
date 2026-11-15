@@ -1698,7 +1698,13 @@ def _sequence_op_lens_bins(ctx, nbin, b1=1.5, recount=True):
     ci.set_nuisance_bias(B1=np.full(n, float(b1)), B2=np.zeros(n),
                          B_MAG=np.zeros(n), B3nl=np.zeros(n),
                          BK=np.zeros(n))
-    ci.set_nuisance_clustering_photoz(bias=np.zeros(n))
+    try:
+        ci.set_nuisance_clustering_photoz(bias=np.zeros(n))
+    except TypeError:
+        # interfaces with a photo-z stretch take it too: a width
+        # factor, 1 = no stretch
+        ci.set_nuisance_clustering_photoz(bias=np.zeros(n),
+                                          stretch=np.ones(n))
     if hasattr(ci, "set_point_mass"):
         ci.set_point_mass(PMV=np.zeros(n))
     if recount:
