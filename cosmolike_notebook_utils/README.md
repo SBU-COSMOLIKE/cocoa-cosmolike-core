@@ -26,13 +26,17 @@ depend on one project live here, once. A private copy in each notebook
 would drift, and every interface change would have to be repeated in
 each project.
 
-The package serves a reader who knows the physics (tomographic
-two-point functions, Fisher forecasts, covariance matrices) and wants
-to inspect a project's predictions interactively. The
-[data-vector guide](../cosmolike/README.md) explains the C calculation
-that produces the quantities plotted here; the
-[covariance physics guide](../cosmolike/covariances/README.md) explains
-the covariance components.
+The package serves a reader who wants to inspect a project's
+predictions interactively. Calculus, linear algebra, elementary
+probability and some NumPy suffice: the
+[data-vector guide](../cosmolike/README.md) explains the observables
+and the C calculation that produces the quantities plotted here, and
+the [covariance physics guide](../cosmolike/covariances/README.md)
+explains the covariance components. A useful first path reads the
+data-vector guide's overview and units, then
+[the plotting conventions](#plotting) and [units](#units) here, and
+then [the Fisher section](#fisher), which defines the forecast its
+helpers compute before naming them.
 
 # Using the package from a notebook <a name="usage"></a>
 
@@ -94,7 +98,7 @@ flowchart TB
 | --- | --- |
 | [camb_cosmology.py](camb_cosmology.py) | `get_camb_cosmology`: one CAMB run packaged into the tuple `set_cosmology` consumes, on the nested grids the likelihoods use. |
 | [plot_datavectors.py](plot_datavectors.py) | Tomographic panel grids of the galaxy/shear data vectors: `plot_C_ss_tomo_limber`, `plot_xi`, `plot_C_gs_tomo_limber`, `plot_gammat_tomo_limber`, `plot_C_gg_tomo`, `plot_wtheta_tomo`, and the baryonic-feedback sweep `plot_baryon_suppression`. |
-| [plot_datavectors_cluster.py](plot_datavectors_cluster.py) | The cluster observables: `plot_N_cluster` counts, cluster lensing (`plot_gammat_cluster_tomo`, `plot_sigma_cluster_tomo`, `plot_C_cs_tomo_limber`), cluster clustering and cluster x galaxy, in the same panel conventions. |
+| [plot_datavectors_cluster.py](plot_datavectors_cluster.py) | The cluster observables: `plot_N_cluster` counts, cluster lensing (`plot_gammat_cluster_tomo`, `plot_sigma_cluster_tomo`, `plot_C_cs_tomo_limber`), cluster clustering and cluster x galaxy, in the same panel conventions. `plot_sigma_cluster_tomo` receives the already transformed localized cluster-lensing statistic (the data vector's Y operator applied to gamma_t, with calibration and selection factors); its last angular bin has no transformed value and is omitted, and the [covariance guide](covariance/README.md#real_space_and_fourier_assembly) defines the transformation. |
 | [plot_response.py](plot_response.py) | `plot_response_function`: how each data-vector entry responds to the matter power spectrum, as d ln DV / d ln k curves and cumulative R(k_max). |
 | [fisher.py](fisher.py) | Finite-difference and derivkit derivatives of a supplied data-vector function (`get_ddv`, `get_ddv_dkit`), Fisher assembly (`get_Fisher`, `get_Fisher2`), `get_FoM`, Gaussian priors and getdist contour plots (`plot_Fisher`). |
 | [plot_nz_reconstruction.py](plot_nz_reconstruction.py) | `plot_nz_four_reconstructions`: regenerate the manual study’s two-panel figure from saved compiled-reader samples and bin-area measurements; no cosmology calculation. |
@@ -124,8 +128,10 @@ units; `help(cnu.plot_xi)` in a notebook prints them.
   in `projects/<name>/interface/cosmolike_<name>_notebook_wrappers.py`,
   which binds them to the shared functions here.
 - **Figures are evidence, not decoration.** A plotting function never
-  alters the quantity it draws: masking an undefined ratio is
-  display-only, and no covariance is repaired to look positive.
+  modifies its input arrays; what it draws is a stated per-family
+  display statistic of them (see
+  [the plotting conventions](#plotting)). Masking an undefined ratio
+  is display-only, and no covariance is repaired to look positive.
 
 # The plotting conventions <a name="plotting"></a>
 
@@ -140,11 +146,10 @@ different probes look alike and notebooks can swap them:
 - **First arguments:** the list of curves (each entry what the project
   wrapper returns), then the optional reference, then `param` and
   `colorbarlabel` for a parameter sweep colored by one colorbar.
-- **Without a reference** each panel shows the quantity itself with
-  its own y-range (the real-space and spectrum plotters show the
-  absolute value on a log axis); **with a reference** each panel shows
-  value/reference - 1 on one shared linear band, with the panels glued
-  edge to edge.
+- **Without a reference** each panel shows the probe's display
+  statistic (the table below) with its own y-range; **with a
+  reference** every family shows value/reference - 1 on one shared
+  linear band, with the panels glued edge to edge.
 - **`rescale = 1`** glues the absolute panels instead: each panel is
   multiplied by its own power of ten, annotated inside as alpha.
 - **`show = 1` draws the figure; `show = None` returns `(fig, axes)`**
@@ -156,6 +161,26 @@ different probes look alike and notebooks can swap them:
 - **The functions do not save files and do not set fonts or styles**;
   see the [styles FAQ](#styles).
 
+The display statistic differs by family; the input arrays are never
+changed:
+
+| Function | Without a reference it draws | y axis |
+| --- | --- | --- |
+| `plot_C_ss_tomo_limber` | ell(ell+1) C_ell / 2 pi | log |
+| `plot_C_gs_tomo_limber` | the signed C_ell (no absolute value is taken; the log axis draws only its positive values, although the default label reads \|C^gs\|) | log |
+| `plot_C_gg_tomo` | C_ell itself | log; linear with `forcelinearyscale` |
+| `plot_xi` | theta xi 10^4, keeping the sign | linear |
+| `plot_gammat_tomo_limber`, `plot_wtheta_tomo` | the absolute value | log |
+
+These conventions describe the `plot_datavectors` families. The other
+modules state their own contracts in their docstrings:
+`plot_response_function` opens a pyplot figure and returns `None` in
+every case, the covariance plotters of
+[plot_covariances.py](plot_covariances.py) raise `ValueError` on
+invalid input instead of printing `Bad Input`, and
+[plot_nz_reconstruction.py](plot_nz_reconstruction.py) saves a PNG to
+the path it is given.
+
 # CAMB input and Fisher forecasts <a name="fisher"></a>
 
 `get_camb_cosmology(...)` runs CAMB once and returns the tuple that
@@ -165,8 +190,53 @@ nested grids the likelihoods build. Its `AccuracyBoost` knob follows
 the likelihoods' split: the CAMB side receives the factor
 `1 + (AccuracyBoost - 1)/3`, and the grid densities scale with the
 boost. The growth factor is normalized at the end of the 2D redshift
-grid, exactly as in the likelihoods, so notebook spectra and
-likelihood spectra agree at the shared settings.
+grid, exactly as in the likelihoods. One grid density grows with the
+CAMB-side boost here and with the cosmolike accuracy boost in the
+likelihoods: the two grids coincide at boost 1, so a shared
+normalization alone does not make boosted notebook and likelihood
+spectra numerically identical; check agreement at the settings you
+use.
+
+**What a Fisher matrix measures.** Near the chosen fiducial
+parameters $`p_0`$, write the predicted data vector as
+$`\mu(p_0+\delta p)\simeq\mu_0+D\,\delta p`$: column $`i`$ of $`D`$ is
+the derivative of the prediction with respect to parameter $`p_i`$.
+With a fixed Gaussian data covariance $`C`$, the quadratic change of
+$`-2\ln L`$ is $`\delta p^{\mathsf T}F\,\delta p`$ with
+
+```math
+F = D^{\mathsf T} C^{-1} D .
+```
+
+A parameter change matters when it is large compared with the
+correlated measurement uncertainty. $`F`$ is a local statement about
+the information in the mean at $`p_0`$, not a global posterior. An
+independent Gaussian prior of width $`\sigma`$ on parameter $`i`$ adds
+$`1/\sigma^2`$ to $`F_{ii}`$. Marginalized errors invert the full
+matrix first and then select parameters:
+$`\sqrt{(F^{-1})_{ii}}`$ marginalizes over the others, while
+$`1/\sqrt{F_{ii}}`$ holds them fixed. `get_FoM` returns
+$`1/\sqrt{\det C_{ij}}`$ with $`C_{ij}`$ the marginalized 2x2 block of
+the pair $`(i, j)`$; an infinite return signals a numerically
+indefinite block ([fisher.py](fisher.py)'s docstrings state this
+limit), not unlimited information.
+
+A two-measurement example shows why more curves alone are not more
+information. Measure one parameter $`p`$ twice, each with variance
+$`\sigma^2`$ and correlation coefficient $`\rho`$, so
+$`D=(1,1)^{\mathsf T}`$. Then
+
+```math
+F=\frac{2}{\sigma^2(1+\rho)},\qquad
+\sigma_p^2=\frac{1}{F}=\frac{\sigma^2(1+\rho)}{2}.
+```
+
+Independent measurements ($`\rho=0`$) halve the variance; as $`\rho`$
+approaches 1 the pair approaches two copies of the same information.
+This is an analytic illustration, not a survey result: whether finer
+tomographic bins help is decided jointly by the derivatives, the
+covariance and the nuisance degeneracies, not by the number of
+plotted curves.
 
 ```mermaid
 flowchart TB
@@ -177,16 +247,28 @@ flowchart TB
 ```
 
 The Fisher helpers build forecasts from any function that maps a
-parameter vector to a data vector:
+parameter vector to a data vector. Here `my_datavector` is the
+notebook's own wrapper around the compiled interface, called as
+`dv(param=<1D array>, AccuracyBoost=<float>)` and returning the
+$`n_d`$-entry theory vector; `fiducial_parameters` holds the $`n_p`$
+fiducial values, and `masked_inverse_cov` is the
+$`(n_d, n_d)`$ inverse covariance, in the same entry ordering as the
+data vector:
 
 ```python
-ddv = cnu.get_ddv(dv=my_datavector, index=0, CV=masked_inverse_cov)
-fisher = cnu.get_Fisher(ddv=ddv, CV=masked_inverse_cov)
-print(cnu.get_FoM(0, 1, fisher))
+def derivative(index, h, CV, AccuracyBoost):
+    return cnu.get_ddv(dv=my_datavector, index=index, h=h,
+                       CV=CV, AccuracyBoost=AccuracyBoost)
+
+fisher = cnu.get_Fisher(ddv=derivative, CV=fiducial_parameters,
+                        invcov=masked_inverse_cov, h=0.02)
+print(cnu.get_FoM(i=0, j=1, F=fisher))
 ```
 
-Here `my_datavector` is the notebook's own wrapper around the compiled
-interface. `get_ddv` uses symmetric finite differences; `get_ddv_dkit`
+`get_Fisher` calls the derivative function once per parameter and
+glues the returned vectors as the columns of $`D`$; `CV` is always the
+fiducial parameter vector, never a covariance. `get_ddv` uses a
+five-point finite-difference stencil; `get_ddv_dkit`
 uses the derivkit package; `get_Fisher2` combines both steps.
 `plot_Fisher` draws getdist contours from one or two Fisher matrices.
 The derivative step sizes and the figure-of-merit convention are
@@ -198,9 +280,10 @@ limits of each shortcut.
 | Quantity | Convention |
 | --- | --- |
 | Angle | The plotters take and display theta in arcminutes; the C core integrates in radians, and the project wrappers convert. |
-| Multipole | Integer ell. The shear plotter draws ell(ell+1) C_ell / 2 pi; the galaxy-galaxy lensing and clustering plotters draw C_ell itself. |
-| Wavenumber | `get_camb_cosmology` hands the interface log10 k in 1/Mpc and shifts to h/Mpc where the tuple requires it; `plot_baryon_suppression` takes log10 k in 1/Mpc. |
+| Multipole | The plotters draw whatever multipole values the wrapper supplies, including noninteger band centers; the C core's internal harmonic sums run over integer ell. The shear plotter draws ell(ell+1) C_ell / 2 pi; the galaxy-galaxy lensing and clustering plotters draw C_ell itself. |
+| Wavenumber | `get_camb_cosmology` works in CAMB's 1/Mpc while filling its tables and returns log10 k in h/Mpc, as the interface tuple requires; `plot_baryon_suppression` takes log10 k in 1/Mpc. If k_phys is the numerical value in 1/Mpc, then k_h = k_phys/h and P_h = h^3 P_phys, so the product k^3 P is unchanged. |
 | Power tables | Natural logarithm of P in (Mpc/h)^3, as the interface expects. |
+| Distance | `get_camb_cosmology` returns comoving distance in Mpc/h. |
 | Bin index | Function arguments count bins from 0, as the arrays do; panel labels and legends count from 1. |
 | Data-vector order | Panel-major: each probe's tomographic rows hold their angular bins or multipoles contiguously, matching the project's data files. |
 
@@ -262,8 +345,11 @@ Cocoa's STIX/retina setup) apply to every figure uniformly.
 
 ## How do I check that a figure is right? <a name="check_figures"></a>
 
-Plot a quantity against its own reference first: the ratio mode must
-give exactly zero everywhere, and the glued band should sit at 1.
+Plot a quantity against its own reference first: the drawn ratio is
+value/reference - 1, so a self-reference must sit at exactly zero
+wherever the reference is nonzero; bins with a zero reference are
+masked for display, not repaired. The `ylim` band of the ratio mode is
+typed around 1 and drawn as ylim - 1, so it brackets that zero line.
 For covariances, `covariance.diagnostics.covariance_modes` reports the
 correlation eigenvalues of the matrix a figure summarizes; a plot can
 hide a negative mode that the eigenvalues expose. The project test

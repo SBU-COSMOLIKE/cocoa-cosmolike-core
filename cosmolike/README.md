@@ -68,9 +68,17 @@ strength of fluctuations at spatial wavenumber $`k`$. The C readers in
 `cosmo3D.c` interpolate these supplied tables; they do not run CAMB.
 
 The galaxy distributions determine which distances the survey samples.
-For galaxy density, the projection weight includes the abundance of
-selected galaxies and their bias relative to matter. For shear, it also
-includes the lensing geometry: matter can distort only sources behind it.
+Galaxy clustering predicts correlations of the **overdensity**
+$`\delta_g=(n-\bar n)/\bar n`$, the fractional fluctuation of the galaxy
+count around its mean, not of the count itself. In each tomographic bin
+the redshift distribution is normalized, $`\int n_i(z)\,dz=1`$, and the
+radial selection weight is $`W_i(\chi)=n_i(z)\,dz/d\chi`$ (`W_gal` in
+[radial_weights.c](radial_weights.c)). Its shape decides which
+distances contribute; galaxy bias enters the model factors separately.
+Enlarging the catalogue while keeping the same normalized selection
+therefore changes the shot noise, not the mean overdensity spectrum.
+For shear, the weight instead encodes the lensing geometry: matter can
+distort only sources behind it.
 
 For a projected matter contribution, the Limber approximation has the form
 
@@ -85,6 +93,12 @@ $`f_K`$ is transverse comoving distance, and $`a=1/(1+z)`$ is scale factor.
 The weights $`W_A,W_B`$ describe the selection and projection of those
 fields. Additional galaxy-bias and intrinsic-alignment terms depend on
 the selected model.
+
+A units check makes the formula concrete for clustering: each density
+weight $`W_i`$ carries inverse length, $`P`$ carries volume, and
+$`d\chi/f_K^2`$ carries inverse length, so the angular spectrum
+$`C_\ell`$ is dimensionless, as a correlation of dimensionless
+overdensities must be.
 
 Limber associates an angular mode with the transverse wavenumber
 $`k=(\ell+1/2)/f_K`$. On large angular scales, the non-Limber galaxy and
@@ -292,11 +306,17 @@ the cut:
 \left|\frac{d\ln X}{d\ln k}\right| d\ln k}.
 ```
 
-A data point is kept when $`\mathrm{RF}\geq\alpha`$ (0.95 in that
+The derivative symbol here means a contribution density, not a slope of
+a plotted curve: $`X(k_{\rm max})`$ is the observable computed with the
+power spectrum cut at $`k_{\rm max}`$, and $`d\ln X/d\ln k`$ is the
+logarithmic rate at which the observable builds up as the cut moves.
+The absolute value is taken **before** integrating, so contributions of
+opposite sign cannot cancel out of the fraction. A data point is kept
+when $`\mathrm{RF}\geq\alpha`$ (0.95 in that
 paper), so at most the fraction $`1-\alpha`$ of its response comes from
 beyond the cut. The derivative is tabulated through the Limber relation
-$`k=(\ell+1/2)/f_K`$, and the same $`k_{\rm max}`$ applies at every
-redshift.
+$`k=(\ell+1/2)/f_K`$, and this criterion applies one
+$`k_{\rm max}`$ at every redshift.
 
 The **UV-fraction scale cut** of
 [arXiv:2603.13031](https://arxiv.org/abs/2603.13031) (following
@@ -312,8 +332,9 @@ where $`C_\ell^{\rm IR}`$ is computed with the three-dimensional power
 spectrum multiplied by a step that keeps $`k\leq k_{\rm max}/D(z)`$, and
 $`C_\ell^{\rm UV}`$ is the remainder. Here $`D(z)`$ is the linear growth
 factor, normalized to $`D(0)=1`$, and $`k_{\rm max}`$ is quoted at
-$`z=0`$ in $`h/\mathrm{Mpc}`$. The cut loosens with redshift as
-$`1/D(z)`$ because fluctuations were smaller at earlier times, so
+$`z=0`$ in $`h/\mathrm{Mpc}`$. The $`1/D(z)`$ loosening of the cut with
+redshift is the adopted prescription of the criterion, motivated by the
+growth of fluctuations: they were smaller at earlier times, so
 nonlinearity sets in at larger $`k`$. A band power is kept while its
 untrusted fraction stays below a threshold $`\alpha`$:
 
@@ -322,18 +343,38 @@ untrusted fraction stays below a threshold $`\alpha`$:
 {\left|C_\ell^{\rm UV}\right|+\left|C_\ell^{\rm IR}\right|}<\alpha,
 ```
 
-with $`\alpha=0.05`$ as the baseline choice.
+with $`\alpha=0.05`$ as the baseline choice. Unlike the response
+criterion, the absolute values here are taken **after** each part has
+been integrated: contributions of opposite sign can still cancel inside
+$`C_\ell^{\rm IR}`$ or inside $`C_\ell^{\rm UV}`$, so the fraction
+measures the net split, not a bound on every individual mode.
 
 Because the split is a step on the power spectrum itself, rather than a
-construction on the Limber mode label, every projection can apply it:
-the Limber integrals window each line-of-sight node, and the non-Limber
-engines window their FFTLog wavenumbers after the radial transforms.
+construction on the Limber mode label, every projection can apply it,
+though with different thresholds: the Limber integrals apply each
+line-of-sight node's own threshold $`k_{\rm max}/D(z)`$, while the
+non-Limber engines window their FFTLog wavenumbers after the radial
+transforms, with one threshold per lens bin (per pair for the crosses)
+evaluated at the bin's mean redshift — by then the radial integral has
+run and the integrand no longer carries a redshift label.
 This matters for thin lens bins. Their clustering signal retains power
 from radial modes along the line of sight — modes the Limber
 approximation drops — and the split counts the small-scale part of
-those modes toward $`C_\ell^{\rm UV}`$ too. For the same
-$`k_{\rm max}`$, the non-Limber cut is therefore stricter than the
-Limber one. The `cosmo2D_scuts_wrapper.cpp` exports expose both
+those modes toward $`C_\ell^{\rm UV}`$ too. Including those radial
+modes changes the UV fraction rather than guaranteeing an ordering: on
+the thin-bin configurations measured so far the non-Limber cut removes
+more bands at the same $`k_{\rm max}`$, and each project measures the
+comparison for its own layout.
+
+For a fixed spectrum, the kept bands form a contiguous prefix in
+$`\ell`$: the UV fraction grows toward finer angular scales, and every
+band up to the first failing one is kept, later dips notwithstanding.
+Raising $`k_{\rm max}`$ keeps a superset of the bands, enforced
+conservatively where sign changes make the raw fraction non-monotonic.
+The window exists only inside this diagnostic: once the mask is chosen,
+the likelihood evaluates the full, unwindowed theory prediction for the
+selected rows with their matching covariance. Nothing filters the
+observed catalogue. The `cosmo2D_scuts_wrapper.cpp` exports expose both
 criteria to notebooks: response-function tables for the shear
 observables, and the full/IR spectra, UV fractions and kept-band masks
 for clustering.
@@ -345,7 +386,7 @@ at small wavenumber, so the raw loop sum contains a
 scale-independent, shot-noise-like plateau at low $`k`$. CosmoLike
 renormalizes the model by subtracting those $`k\to 0`$ limits
 ([Saito et al.](https://arxiv.org/abs/1405.1447)), which amounts to
-adding to the raw sum the negative constant power
+adding to the raw sum the constant power
 
 ```math
 P_{\rm wn}=-\frac{\sigma_4}{2}\,c_i\,c_j\,D^2(z_i)\,D^2(z_j),
@@ -355,7 +396,10 @@ P_{\rm wn}=-\frac{\sigma_4}{2}\,c_i\,c_j\,D^2(z_i)\,D^2(z_j),
 
 for bins $`i`$ and $`j`$ — one factor $`D^2`$ per galaxy field, at the
 redshift of its modes: the plateau and $`P_{\rm wn}`$ cancel
-exactly as $`k\to 0`$. The low-rank non-Limber engine of the next
+exactly as $`k\to 0`$. The sign of $`P_{\rm wn}`$ follows
+$`-c_i c_j`$: negative for an auto spectrum, where $`c_ic_j=c_i^2>0`$,
+but either sign for a cross pair whose two bins have opposite
+$`c_b`$. The low-rank non-Limber engine of the next
 section must project the raw, positive sum — its factorization takes a
 square root — and restores $`P_{\rm wn}`$ through a Limber term. That
 is exact without the window, because a constant power projects
@@ -395,9 +439,13 @@ Two features of the angular calculation exist for that regime, and both
 are off unless a project turns them on: a project that leaves them off
 computes exactly the prediction it computed before they existed.
 
-**Cross-bin pair spectra.** A photometric 3x2pt data vector keeps only
-the clustering auto spectra $`C_\ell^{g_ig_i}`$, because broad bins far
-apart in redshift share almost no structure. Thin bins do: adjacent
+**Cross-bin pair spectra.** A photometric 3x2pt data vector usually
+keeps only the clustering auto spectra $`C_\ell^{g_ig_i}`$. That is a
+configured data-vector choice, reasonable when broad bins far apart in
+redshift share little structure — though even bins with disjoint
+redshift supports are not exactly uncorrelated: radial modes near a
+shared boundary and lensing magnification couple them. Thin bins share
+structure strongly: adjacent
 bins overlap through their redshift tails, and bins of two different
 tracer samples can sit at the same redshift. The measured data vector
 then also contains cross-bin spectra $`C_\ell^{g_ig_j}`$ with
@@ -439,20 +487,42 @@ the default switching multipole of 150. Two provisions address this:
   transform run as the autos.
 - The **low-rank engine** (likelihood keys `nonlimber_lowrank_gg`,
   `nonlimber_lowrank_rank`, `nonlimber_lowrank_lmax`) removes the
-  Limber hand-off from the density–density term entirely. A singular
-  value decomposition writes the square root of the full one-loop
+  Limber hand-off from the density–density term below its own
+  multipole cap `nonlimber_lowrank_lmax`; above the cap, and for a bin
+  whose spectrum has already converged to Limber, the calculation
+  returns to the Limber prediction. A singular
+  value decomposition writes the square root of the one-loop
   galaxy spectrum as a short sum of separable terms,
 
   ```math
   \sqrt{P_g(k,z)}\simeq\sum_{r=1}^{n_{\rm rank}}T_r(k)\,Z_r(z),
   ```
 
-  each of which one FFTLog transform can project, and the spectrum at
-  two different redshifts is approximated by the geometric mean
-  $`P_g(k;z_1,z_2)\simeq\sqrt{P_g(k,z_1)\,P_g(k,z_2)}`$. The geometric
-  mean is exact at equal times; at unequal times it assumes the two
-  tracer fields are fully correlated, which is the method's physical
-  approximation and the reason it is off by default. Redshift-space
+  each of which one FFTLog transform can project — a finite-rank
+  representation, truncated at `nonlimber_lowrank_rank` — and the
+  spectrum at two different redshifts is approximated by the geometric
+  mean $`P_g(k;z_1,z_2)\simeq\sqrt{P_g(k,z_1)\,P_g(k,z_2)}`$.
+
+  The factorized spectrum is a positive reference, not the physical
+  model itself: the square root requires a positive $`P_g`$, so the
+  decomposition uses the one-loop sum without its renormalization
+  subtractions (with a small positive floor), and the subtracted
+  constant is restored through a Limber term that projects it exactly
+  (the [constant-power discussion](#physical-scale-cuts) above).
+  Schematically, a projected density block is $`N[G]+L[B-G]`$: the
+  non-Limber operation $`N`$ projects the factorized geometric-mean
+  reference $`G`$, and a Limber operation $`L`$ adds back the residual
+  of the bilinear one-loop model $`B`$.
+
+  The geometric mean reproduces a bin's own spectrum exactly at equal
+  times. For a cross pair of two samples with different one-loop
+  biases it is an approximation even at the same redshift —
+  $`\sqrt{P_iP_j}`$ is not the bilinear cross spectrum — and the
+  Limber residual term restores that difference, which is second order
+  in the two bins' bias differences. At unequal times the geometric
+  mean assumes the two tracer fields are fully correlated: the
+  method's physical approximation and the reason it is off by default.
+  Redshift-space
   distortions and magnification keep the FKEM treatment: the velocity
   field does not grow like the one-loop density, and the broad
   magnification kernel is where Limber is accurate.
@@ -600,6 +670,32 @@ galaxy/shear vector. It also applies the configured cluster-lensing
 transformation and selection factors. A raw tangential-shear prediction
 and the transformed cluster-lensing quantity used by a likelihood can
 therefore differ; the notebook wrappers expose both stages.
+
+The transformation is the **Y localization** of
+[Park, Rozo & Krause](https://arxiv.org/abs/2004.07504). Around a
+cluster, the tangential shear at radius $`R`$ responds to the mean
+surface density enclosed within $`R`$, including the small inner radii
+the model does not trust. The combination
+$`Y(R)=\Sigma(R)-\Sigma(R_{\max})`$, where $`\Sigma`$ is the projected
+surface density, removes the enclosed-mass contribution: $`Y`$ depends
+only on the profile between $`R`$ and the outermost analysis radius
+$`R_{\max}`$. Because $`\gamma_t`$ is $`\Delta\Sigma/\Sigma_{\rm crit}`$
+with a constant $`\Sigma_{\rm crit}`$ per bin pair, the code applies
+$`Y`$ as a linear matrix acting directly on the $`\gamma_t`$ angular
+bins, and $`\Sigma_{\rm crit}`$ cancels: the transformed statistic is
+dimensionless like $`\gamma_t`$, not a surface mass density in mass per
+area, despite the symbol $`\Sigma`$ some outputs carry.
+
+Two consequences matter when reading a transformed vector. The last
+angular bin of every transformed row is identically zero because
+$`Y(R_{\max})=0`$ by construction — the transform has no value there;
+it is not a measured absence of lensing. And $`Y`$ at one angular bin
+reads the shear at neighboring bins out to $`R_{\max}`$, so the
+transformation needs the full unmasked $`\gamma_t`$ prediction: apply
+the transform first, select scales afterwards. A linear transformation
+also carries the covariance with it, $`C_\Sigma=YC_\gamma Y^T`$, with
+the same calibration and selection factors; relabeling raw-shear errors
+is not equivalent.
 
 # Why data vectors and covariances manage work differently <a name="ownership"></a>
 
@@ -859,6 +955,7 @@ requirements, not a covariance-only calculation.
 Both production interfaces and Armadillo notebook wrappers call these C
 routines. Project YAMLs select Gaussian non-Limber and IA independently
 of numerical boosts. SSC and cNG keep their existing Limber model, in which
-shapes carry lensing only (zero intrinsic alignment); the spectra entering
+shapes carry lensing only (zero intrinsic alignment) and galaxies carry
+linear bias; the spectra entering
 their survey-mean normalization response also stay Limber. See the
 [covariance physics guide](covariances/README.md) for equations and scope.

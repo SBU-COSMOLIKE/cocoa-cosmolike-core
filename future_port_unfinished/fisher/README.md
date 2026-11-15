@@ -1,4 +1,4 @@
- # Analytic Fisher derivatives, and the cosmolike noise test (experimental)
+# Analytic Fisher derivatives, and the cosmolike noise test (experimental)
 
 Status: **experimental draft, not compiled by any project.** Everything
 here was built and run on 2026-09-27 against lsst_y1 (cosmic shear, NLA).
@@ -21,7 +21,11 @@ contribution from CAMB's.
 
 ## Answer
 
-**No. Cosmolike adds no measurable noise; the noise is CAMB's halofit.**
+**For the studied configuration — lsst_y1 cosmic shear, NLA, the
+settings of the 2026-09-27 study — no: cosmolike added no measurable
+noise; the noise was CAMB's halofit.** The bullets below are
+measurements of that one pipeline, not statements about every galaxy,
+velocity or covariance option.
 
 - Along perfectly smooth inputs, cosmolike's finite differences converge
   as s^2 (3-point) and s^4 (5-point stencil) to the analytic derivative,
@@ -48,9 +52,12 @@ contribution from CAMB's.
 
   With the patch the finite-difference Fisher is stable at
   AccuracyBoost 1, and AccuracyBoost 2 and 3 give the same answer
-  (145.2, 145.1 at h = 0.03): the notebook's "we need high accuracy
-  boost" was CAMB's jitter. Every measurement is in
-  [FINDINGS.md](FINDINGS.md).
+  (145.2, 145.1 at h = 0.03): in this study, the notebook's "we need
+  high accuracy boost" was CAMB's jitter. Every measurement, with its
+  configuration, is in [FINDINGS.md](FINDINGS.md); these archived
+  numbers describe the 2026-09-27 configuration and do not transfer by
+  generalization to other observables, samples or derivative
+  questions.
 
 So the practical fix for the notebooks is the CAMB patch (the
 `PATCH_CAMB_HALOFIT_TOLERANCE` key; the Fisher cells of the lsst_y1 and
@@ -61,9 +68,12 @@ natural adapter for differentiable Boltzmann codes (next section).
 
 People are writing CAMB alternatives in JAX with automatic
 differentiation (for example jax-cosmo, DISCO-EB, and neural emulators
-such as CosmoPower-JAX). Such a code gives the four inputs this draft needs
-**exactly**, in one forward-mode pass (`jax.jacfwd` over the parameter
-vector), on the set_cosmology grids:
+such as CosmoPower-JAX). Such a code gives the four inputs this draft
+needs without finite differences, in one forward-mode pass
+(`jax.jacfwd` over the parameter vector), on the set_cosmology grids.
+"Exact" here means exact derivatives of that code's own implemented
+outputs — automatic differentiation differentiates the program, with
+whatever physical approximations the program makes:
 
 | input | meaning | from a JAX code |
 |---|---|---|
@@ -72,8 +82,14 @@ vector), on the set_cosmology grids:
 | `dlnG_dX` | dlnG/dX at fixed z | Jacobian of ln D(z) |
 | `dlnOm_dX` | explicit dlnOmega_m/dX | 1/Omega_m for X = Omega_m, else 0 (Cocoa's basis) |
 
-cosmolike then remains the fast C projection engine and returns exact
-dC_ss/dX and dxi_pm/dX with no finite difference anywhere; the same chain
+cosmolike then remains the fast C projection engine and returns
+dC_ss/dX and dxi_pm/dX with no finite difference anywhere. Three
+levels of "exact" should be kept apart: the chain rule is analytic for
+the implemented, discretized Limber integrand; derivatives of that
+implementation still differ from derivatives of a continuum integrand
+(the measured <= 4e-4 consistency floor under scope below); and neither
+is a derivative of the physical model beyond the approximations the
+implementation already makes. The same chain
 rule would give likelihood gradients for gradient-based samplers. One
 caution: a JAX halofit that finds the nonlinear scale by bisection with a
 fixed tolerance reproduces CAMB's jitter unless the root is tight or
@@ -108,7 +124,19 @@ In a copy of a cosmic-shear project's `interface/` (lsst_y1 was used):
 2. `interface.cpp`: add the include and the blocks from
    `interface_bindings.cpp`.
 3. Build with `make -f MakefileCosmolike all` and put that directory
-   first on `sys.path` (the tests read it from `FISHER_BUILD_DIR`):
+   first on `sys.path` (the tests read it from `FISHER_BUILD_DIR`).
+
+The snippet below is an excerpt, not a self-contained script: it runs
+only after the custom build above, inside a session where `ci` is that
+project's compiled interface module with the fiducial cosmology already
+set. `point` is a dict holding the fiducial value of every
+`get_camb_cosmology` cosmology argument, `camb_kwargs` are the CAMB
+accuracy arguments of the fiducial call (they must match it), and `ell`
+is the multipole array. `set_fisher_response` installs the CAMB-side
+response for parameter slot `ip`; `dC[ip]` then holds
+dC_ss/dX for that parameter with the same axes as `C` — multipole by
+source bin by source bin, symmetrized in the bin pair — and the xi
+call returns the corresponding real-space arrays per angular bin.
 
 ```python
 from fisher_camb_response import get_camb_response

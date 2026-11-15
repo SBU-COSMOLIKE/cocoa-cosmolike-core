@@ -46,17 +46,25 @@ The whole workflow, from a project's inputs to a saved forecast:
 ```mermaid
 flowchart TB
   A["Project adapter: survey numbers + covariance/default.yaml"] --> B["forecast.initialize_forecast: CAMB + setters"]
-  B --> C["survey: all-pairs spectra, with non-Limber and IA choices"]
+  B --> C["survey: all-pairs Gaussian spectra, with non-Limber, RSD and IA choices"]
+  B --> E["Zero-IA, linear-bias Limber spectra: SSC/cNG inputs and the SSC normalization mean"]
   C --> D["Gaussian blocks with pair noise"]
-  C --> E["Shared halo response and trispectrum tables"]
-  E --> F["SSC: shell responses times mask variance"]
-  E --> G["cNG: projected five-term trispectrum"]
-  D --> H["Total matrix + diagnostics + save_forecast"]
-  F --> H
-  G --> H
-  H --> I["Notebook figures: plot_covariances"]
-  H --> J["CLI archive: compute_covariance.py"]
+  E --> F["Shared halo response and trispectrum tables"]
+  F --> G["SSC: shell responses times mask variance"]
+  F --> H["cNG: projected five-term trispectrum"]
+  D --> I["Total matrix + diagnostics + save_forecast"]
+  G --> I
+  H --> I
+  I --> J["Notebook figures: plot_covariances"]
+  I --> K["CLI archive: compute_covariance.py"]
 ```
+
+The two spectrum branches are deliberately distinct. The non-Limber,
+RSD, IA and one-loop bias choices extend the Gaussian spectra and the
+saved Gaussian mean only; SSC and cNG, including the survey-mean
+normalization of SSC, always use the zero-IA, linear-bias Limber
+snapshot ([details below](#gaussian_physics)). Requesting an extended
+Gaussian model therefore does not add matching SSC/cNG physics.
 
 ## Files <a name="files"></a>
 
@@ -95,6 +103,25 @@ and BC, including cross-bin spectra excluded from the data vector.
 Catalog shot noise is $`1/n`$; source shape noise is
 $`\sigma_\epsilon^2/n`$, with $`n`$ per steradian and dispersion per component.
 
+A small example fixes the index conventions. Take two lens bins and
+one source bin: the fields are $`g_0`$, $`g_1`$, $`s_0`$ with IDs 0, 1,
+2. A measured observable is a row `(probe, A, B)` of the table built by
+`survey.observable_rows`, with probe IDs 0 xi+, 1 xi-, 2 gamma_t and
+3 w(theta): the row (2, 0, 2) is tangential shear around lens bin
+$`g_0`$ measured with source $`s_0`$. Each row holds its angular bins
+consecutively, so if that row sits at position $`r`$ and every row has
+$`n_{\rm bin}`$ angular bins, its measured entries occupy the flattened
+indices $`i=r\,n_{\rm bin}+b`$ for bins $`b=0,\ldots,n_{\rm bin}-1`$,
+and the covariance is an
+$`[n_{\rm row}n_{\rm bin},\,n_{\rm row}n_{\rm bin}]`$ matrix. Fourier
+forecasts measure E-mode band powers and drop the xi- rows (probe 1),
+so no shear measurement enters twice. Now compare row (2, 0, 2) with
+(2, 1, 2): their Gaussian covariance pairs the four fields as
+(AC)(BD) and (AD)(BC) and therefore needs the internal
+$`g_0g_1`$ spectrum, although no $`g_0g_1`$ clustering row is
+measured. This is why the supplied signal cube carries every field
+pair.
+
 The component `interface.covariance_*` calls accept `float64` arrays
 (field/band IDs use `int32`). C-order, Fortran-order, sliced and read-only
 inputs keep their original values and layout.
@@ -113,9 +140,17 @@ The production `ci.covariance` submodule instead requires C-contiguous
 copy and returns owned C-order arrays. Its kernels and physical axis
 conventions are the same as the notebook wrappers.
 
-Distances use $`c/H_0`$, wavenumbers its inverse, and matter power
-$`(c/H_0)^3`$. Thus a value of $`k`$ in $`h/{\rm Mpc}`$ is multiplied by
-2997.92458 before a core power/halo call. Angles are radians and survey
+Two unit boundaries meet in this package. The CAMB initialization
+tables store $`\log_{10}[k/(h/{\rm Mpc})]`$ and
+$`\ln[P/({\rm Mpc}/h)^3]`$; `power.refine_power_tables` subdivides
+that sampling and changes neither the units nor CAMB's physical
+wavenumber range. The covariance component arrays instead use
+$`c/H_0 = 2997.92458\ {\rm Mpc}/h`$ as the length unit: distances in
+$`c/H_0`$, wavenumbers in its inverse, and matter power in
+$`(c/H_0)^3`$. Thus
+$`k_{\rm core}=2997.92458\,k_{h/{\rm Mpc}}`$ and
+$`P_{\rm core}=P_{({\rm Mpc}/h)^3}/2997.92458^3`$ before a core
+power/halo call. Angles are radians and survey
 areas steradians; project adapters make the conversion from arcminutes
 and square degrees explicit.
 
@@ -218,7 +253,13 @@ transformation, and a lensing–lensing block receives two. See
 [the DES covariance model, Sec. II.4](https://arxiv.org/abs/2503.13631).
 
 `transform_cluster.py` receives the same angular operator used by the
-project's mean calculation. Supply every unmasked angular bin: the
+project's mean calculation, and applies that supplied operator and
+nothing else: the output keeps the representation and units of the
+supplied shear rows (the dimensionless angular bin means of the
+forecast), with no critical-surface-density factor and no conversion
+from angle to physical radius. The surface-density identity above
+motivates the localization; the project's operator sets what the
+transformed statistic represents. Supply every unmasked angular bin: the
 derivative stencil can read neighboring bins outside the final scale
 selection. The last output bin is exactly zero because it subtracts
 $`\Sigma(R_{\max})`$ from itself. That known null mode remains in the
@@ -322,18 +363,25 @@ at a time when diagnosing convergence, for example
 `survey.configuration(accuracy_boost=1, non_gaussian_accuracyboost=3)`.
 Supported global values are 1, 2, 4 and 8.
 
-Quadrature has its own independent control, `integration_accuracy`. Levels
-0, 1, 2, 3 and 4 select GSL's precomputed 96, 128, 256, 512 and 1024-node
-rules, respectively. Raising the global boost leaves that rule unchanged.
+Quadrature has its own independent control, `integration_accuracy`.
+Levels 0 through 7 select Gauss-Legendre rules of 96, 128, 256, 512,
+1024, 2048, 4096 and 8192 nodes per panel. GSL stores the rules
+through 1024 nodes and generates the nodes of the three larger ones;
+both kinds are supported, as in the
+[C guide](../../cosmolike/covariances/README.md#operators). Raising
+the global boost leaves the selected rule unchanged: integration order
+and interpolation refinement are independent controls.
 The same choice controls radial, halo-mass and relative-angle integrals,
 angular-bin averages, and selected-cluster profile responses. Wide angular
 bins are split into panels to resolve their high-multipole oscillations.
-Low-level tests may also use 64 nodes; smaller and generated rules are
-rejected. Compare, for example,
+Low-level tests may also use the stored 64-node rule, and the smooth
+low-mass Wynn tail has its own 32-4096 ladder; sizes outside these
+ladders are rejected. Compare, for example,
 `survey.configuration(accuracy_boost=1, integration_accuracy=1)` with the
-level-zero baseline to isolate quadrature refinement. Include levels 2, 3
-and 4 before accepting the default: compare it directly with level 4 and
-check stability from level 3 to 4. Hold interpolation settings fixed during
+level-zero baseline to isolate quadrature refinement, and scan
+successive levels until the matrix stabilizes before accepting a
+project default; the ladder above level 4 exists exactly for such
+checks. Hold interpolation settings fixed during
 this scan, then test their refinement separately. Save Gaussian, SSC and
 connected terms as well as the total matrix, so cancellations between terms
 cannot conceal a numerical error.

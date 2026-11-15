@@ -24,18 +24,6 @@ CosmoLike projects. A project supplies its survey data, redshift bins,
 likelihood configuration and compiled Python interface. This repository
 supplies the calculations that those projects share.
 
-> [!WARNING]
-> **CLI for production; notebook wrappers for exploration.**
->
-> Run production and HPC calculations from YAML through the optimized
-> `_interface` bindings. Notebook `_wrapper` APIs expose intermediate
-> quantities for exploration; copying and rearranging their arrays adds
-> overhead. Both routes call the same C kernels.
->
-> Use project CLI entry points as the production performance baseline.
-> The measured wrapper/CLI runtime ratio and its conditions are in
-> [Cocoa's main README](https://github.com/CosmoLike/cocoa#overview).
-
 The principal observables are galaxy clustering, galaxy–galaxy lensing
 and cosmic shear, collectively called **3x2pt**. Galaxy clustering
 measures correlations of galaxy positions. Galaxy–galaxy lensing measures
@@ -54,21 +42,51 @@ A **covariance matrix** describes how their fluctuations are related.
 The likelihood uses a supplied covariance to compare the prediction with
 the data; constructing that covariance is a separate calculation.
 
+Two terms recur throughout this guide. A **fiducial point** is the
+chosen set of parameter values at which a prediction or comparison is
+made. A **nuisance parameter** models an uncertainty in the relation
+between cosmology and the measured quantities — galaxy bias,
+photometric-redshift shifts, shear calibration or intrinsic alignments —
+and is varied alongside the cosmological parameters.
+
 The core also contains CMB-lensing cross correlations, halo-occupation
 calculations, and a separate cluster sector. Which observables and model
 options are available in an analysis depends on the project's interface
 and likelihood. [Krause & Eifler](https://arxiv.org/abs/1601.05779)
 describe the CosmoLike multiprobe framework.
 
+On a first visit, read in this order: the observables above; the
+[data-vector FAQ](#prediction), which defines the Limber projection and
+the intrinsic-alignment models NLA and TATT; the
+[units FAQ](#units); then [one project example](#likelihood). After
+that first pass, the [data-vector source guide](cosmolike/README.md)
+explains the calculation behind the example, and the remaining sections
+are reference material for particular calculations.
+
 > [!NOTE]
 > Each project provides a real/Fourier G+SSC+cNG notebook for its galaxy
-> and shear fields. Gaussian spectra support non-Limber gg/gs and NLA/TATT,
+> and shear fields ([Covariance calculations](#covariance) defines the
+> three terms: Gaussian, super-sample and connected non-Gaussian).
+> Gaussian spectra support non-Limber gg/gs and NLA/TATT,
 > retaining every internal cross-bin spectrum. SSC/cNG keep their zero-IA
 > Limber model. Forecasts use massless neutrinos and a spherical-cap
-> footprint. Numerical and Fisher convergence remain to be established
+> footprint — an idealized round survey patch, not a measured sky mask.
+> Numerical and Fisher convergence remain to be established
 > before inference. DES cluster also has a joint angular 6x2pt+N forecast
 > with explicitly limited cluster cNG and count-cross approximations.
 > DES×Planck covers galaxy–shear only; CMB covariance remains separate work.
+
+> [!WARNING]
+> **CLI for production; notebook wrappers for exploration.**
+>
+> Run production and HPC calculations from YAML through the optimized
+> `_interface` bindings. Notebook `_wrapper` APIs expose intermediate
+> quantities for exploration; copying and rearranging their arrays adds
+> overhead. Both routes call the same C kernels.
+>
+> Use project CLI entry points as the production performance baseline.
+> The measured wrapper/CLI runtime ratio and its conditions are in
+> [Cocoa's main README](https://github.com/CosmoLike/cocoa#overview).
 
 # Running a likelihood example <a name="likelihood"></a>
 
@@ -84,15 +102,29 @@ not a standalone likelihood executable.
 
 **Step :two:**: compile the LSST Y1 interface against this core.
 
+    unset IGNORE_COSMOLIKE_LSST_Y1_CODE
     source ./projects/lsst_y1/scripts/compile_lsst_y1.sh
+
+The `unset` is required: the compile script does nothing while the key
+`IGNORE_COSMOLIKE_LSST_Y1_CODE` is set, which Cocoa's installation can
+leave in place.
 
 **Step :three:**: evaluate the LSST Y1 cosmic-shear likelihood.
 
     cobaya-run ./projects/lsst_y1/EXAMPLE_EVALUATE1.yaml
 
 The YAML file selects the cosmology, nuisance parameters, data, covariance
-and numerical settings. The evaluate sampler prints the likelihood result
-and writes its configured output. Other surveys have their own examples
+and numerical settings. Its `evaluate` sampler computes the likelihood
+once, at the parameter point the YAML's override block specifies; it does
+not fit parameters or draw a posterior chain. The run prints the evaluated
+parameter values with the resulting likelihood and posterior scores, and
+writes them under the prefix `projects/lsst_y1/chains/EXAMPLE_EVALUATE1`.
+The two scores differ by the priors: the likelihood compares prediction
+with data, the posterior also includes the prior densities at that point.
+
+A completed run with a finite score establishes that the configured
+calculation ran; it does not establish that the evaluated model fits the
+data well. Other surveys have their own examples
 and compilation scripts; see the
 [Cocoa project guide](https://github.com/CosmoLike/cocoa/tree/main/Cocoa/projects).
 
@@ -156,10 +188,23 @@ comments define their inputs, units and equations.
 | [cfastpt/](cfastpt/) | C implementation of FAST-PT mode-coupling integrals. |
 | [cosmolike_notebook_utils/](cosmolike_notebook_utils/) | Shared cosmology preparation, plotting, Fisher and covariance tools. |
 | [cocoa_hybrid_sampling.py](cocoa_hybrid_sampling.py) | Shared CPU/MPI hybrid minimization, profiles and Nautilus entry points, reading each project's evaluate YAML. |
-| [cocoa_testing.py](cocoa_testing.py) | Shared machinery for project reference checks, independent processes and repeatability tests. |
+| [cocoa_testing.py](cocoa_testing.py) | Shared harness of the project test suites: frozen-state loading, worker processes and the measurement helpers. |
+| [cocoa_testing_suites.py](cocoa_testing_suites.py) | Factories that build the shared test classes for one project; their docstrings are the test reports' documentation. |
+| [cocoa_testing_freeze.py](cocoa_testing_freeze.py) | The freeze generator behind each project's `tests/generate_frozen_reference.py`: it writes the frozen references the tests compare against. |
+| [cocoa_testing_figures.py](cocoa_testing_figures.py) | The shared diagnostic figures of the data-vector checks (photo-z conventions, N-random-models). |
+| [cocoa_covariance_testing.py](cocoa_covariance_testing.py) | The shared per-project covariance forecast check. |
+| [cocoa_nz_testing.py](cocoa_nz_testing.py), [cocoa_nz_study.py](cocoa_nz_study.py), [cocoa_nz_figures.py](cocoa_nz_figures.py), [cocoa_nz_cache_testing.py](cocoa_nz_cache_testing.py) | The n(z) reconstruction comparison, its opt-in study driver and figures, and the n(z) selection cache round-trip checks. |
 | [log.c/](log.c/README.md) | C logging library. |
 | [dev_scripts/](dev_scripts/) | Source-comment and function-header checks. |
 | [future_port_unfinished/](future_port_unfinished/) | Uncompiled matter/tSZ halo work and experimental analytic Fisher derivatives. |
+
+The testing modules divide the work in one direction: a project's
+`tests/cocoa_test_utils.py` shim supplies its survey configuration, the
+shared factories in `cocoa_testing_suites.py` construct the test classes
+from it, and `cocoa_testing.py` runs each model build in a worker process
+that owns the initialized compiled state. Ordinary `pytest` runs only
+read the stored references; `tests/generate_frozen_reference.py`
+deliberately replaces them, and nothing else writes them.
 
 ## Data-vector C files
 
@@ -364,7 +409,9 @@ boost is a numerical comparison reference, not a guarantee of convergence.
 
 The DES cluster notebook also uses
 [`forecast_cluster.py`](cosmolike_notebook_utils/covariance/forecast_cluster.py)
-to assemble the angular cluster $`6\times2\mathrm{pt}+N`$ matrix, with
+to assemble every row of the angular cluster
+$`6\times2\mathrm{pt}+N`$ layout - a full matrix layout under declared
+approximations, not a complete physical model - with
 absolute counts, all Gaussian and SSC cross blocks, and the same Y
 localization used by its mean model.
 
@@ -513,6 +560,28 @@ test numbers, measured values and deviations, and links here for the
 mechanism. Surveys without a family's subject (no baryon block, no
 TATT examples) simply do not instantiate it.
 
+Most families report one number built the same way. Suppose two retained
+measurements have mean prediction $`d=(d_1,d_2)^T`$ and covariance
+$`C`$: the diagonal of $`C`$ holds each measurement's variance, and an
+off-diagonal entry says how their fluctuations occur together. A change
+of model or setting gives $`\delta=d_{\rm alt}-d_{\rm base}`$, and
+
+```math
+\Delta\chi^2=\delta^T C^{-1}\delta
+```
+
+measures the squared size of that change in the fixed statistical
+metric. This is not the change of a fit to observed data — that scalar
+is a different quantity — but a covariance-weighted distance between two
+predictions.
+
+Three more terms recur in the table below. A **frozen reference** is a
+saved set of inputs and outputs used to detect changes: the tests
+recompute and compare. A **cache** is a saved intermediate result reused
+until its inputs change; several checks exist to catch a cache that did
+not follow a change. A **race** is an unintended dependence on
+concurrent execution, for example two OpenMP workers writing one table.
+
 ### The test-file naming convention <a name="dv_naming"></a>
 
 A test file's name means the same thing in every project, so a reader
@@ -558,28 +627,37 @@ convention it follows next to its roster.
 
 ### Frozen references and the race check <a name="dv_frozen"></a>
 
-The standard configurations get four tests each: a chi2 drift check
-and a race-condition check, in both intrinsic-alignment models.
+The example configurations get four tests each: a chi2 drift check
+and a race-condition check, in both intrinsic-alignment models (where
+the project ships both).
 
 | check | pass limit | a failure means |
 |-------|------------|-----------------|
 | drift | the recomputed chi2 must stay within 0.2 of the value stored in `frozen/reference_chi2.json` | code or data changed the numbers |
 | race condition | the fiducial evaluated on its own versus evaluated again after nine other cosmologies; the two must agree within 1e-4 | leftover state or an OpenMP race |
 
+A passing race check shows that this exercised history leaves no trace
+at the fiducial; it does not certify the absence of every possible race
+or history dependence.
+
 Everything the tests compare against lives under the project's
 `frozen/`: one snapshot of configurations, data and reference values,
 captured together when the references were generated and unchanged
-since. The tests read nothing from the live project folders - the
-frozen configuration modules write out every option and every
-parameter, including the ones that normally come from the default
-yaml files, so editing those files cannot change what the tests
-evaluate. A SHA-256 manifest (`tests/manifest_sha256.json`) pins
+since. The tests read no option or parameter values from the live
+project folders - the frozen configuration modules write out every
+option and every parameter, including the ones that normally come from
+the default yaml files, so editing those files cannot change what the
+tests evaluate. The current code - the likelihood, the compiled
+interface and these shared modules - is deliberately exercised against
+that frozen state; that is what a drift check measures.
+A SHA-256 manifest (`tests/manifest_sha256.json`) pins
 every byte of the snapshot; each test verifies it first and refuses
 to run when a file under `frozen/` was edited, added or removed, naming the file.
 Maintainers refresh a snapshot only for a deliberate change, with
 `tests/generate_frozen_reference.py --overwrite` (it deletes and
 rebuilds `frozen/` from the current project and re-pins the
-manifest), reviewing the printed chi2 values before committing them;
+manifest, keeping the stored N-model vectors, whose
+[own generator](#dv_nmodels) is their only writer), reviewing the printed chi2 values before committing them;
 the `_meta` block of `frozen/reference_chi2.json` records when the
 current references were generated. Each project README lists what its
 snapshot holds.
@@ -599,10 +677,14 @@ They all use the same construction: the default-settings model writes
 its own theory vector during evaluation, that vector becomes the data
 of a temporary dataset (so the default chi2 against it is zero by
 construction, and nothing new is stored in `frozen/`), and the
-alternative evaluation - pushed accuracy, another implementation,
-another random point - scores against it. The single reported number,
-delta chi2 = chi2(alternative) - 0, is then a pure response to what
-changed, with the full masked inverse covariance as the metric.
+alternative evaluation at the same parameter point - pushed accuracy,
+another implementation - scores against it. The single reported number,
+delta chi2 = chi2(alternative) - 0, is then the quadratic distance
+defined [above](#dv_checks) between the two predictions, a pure
+response to what changed, with the full masked inverse covariance as
+the metric. The N-random-models check computes the same quadratic form
+directly from its two stored vectors instead of through a temporary
+dataset.
 
 ### The CFASTPT vs FAST-PT sweep <a name="dv_fastpt"></a>
 
@@ -670,22 +752,34 @@ check with EE2 on, since EE2's compute is OpenMP-threaded.
 ### Accuracy checks <a name="dv_accuracy"></a>
 
 An advisory family, no pass/fail: each check reports the delta chi2
-between a high-accuracy and a default evaluation - the numerical error
-of the default settings. A first scan changes one accuracy setting at
-a time, so a large delta can be attributed to the setting causing it;
-the remaining checks push every setting at once on each configuration
+between a high-accuracy and a default evaluation - the measured
+sensitivity of the prediction to those settings. The pushed evaluation
+is a comparison reference, not established truth: the delta equals the
+numerical error of the defaults only as far as the pushed settings are
+themselves converged, which each project's convergence evidence
+addresses separately. A first scan changes one accuracy setting at
+a time, so a large delta can be attributed to the setting causing it
+(with every other setting held at its default - the scan does not
+assign independent additive errors); the remaining checks push every
+setting at once on each configuration
 the project ships. The settings and what they control:
 
 | setting | what it controls |
 |---------|------------------|
 | `accuracyboost` (cosmolike) | sizes of cosmolike's internal lookup tables, including the dyadic z grid of the power-spectrum tables: every coarser grid's nodes are a subset of every finer grid's, so a higher boost tightens the same interpolation instead of moving the nodes |
-| `integration_accuracy` (cosmolike) | the quadrature level: each integral family selects a fixed Gauss-Legendre rule from its ladder. Since the native-GSL extension the ladders reach 8,192 nodes at level 7, and any higher level (projects push 10) selects the 8,192-node rule |
+| `integration_accuracy` (cosmolike) | the quadrature level: each integral family selects a fixed Gauss-Legendre rule from its own ladder, so one level means different node counts in different families. The standard ladders ([cosmo2D.c](cosmolike/cosmo2D.c)) use 96/128/256/512/1,024/2,048/4,096 nodes at levels 0-6 and 8,192 from level 7 up (projects push 10). The cross-bin pair rule instead grows by 64 nodes per level from 128 (level 7 is 576 nodes, level 10 is 768) per line-of-sight panel, with the same 8,192 cap |
 | `internal_accuracyboost` (cosmolike) | density of the C-FAST-PT convolution grid relative to the output table the likelihood interpolates; the default 1 keeps the two grids equal (the exact single-grid path) |
 | `lmax` (cosmolike) | highest multipole of the internal harmonic-space tables transformed into the real-space correlation functions; arcminute scales need very high multipoles |
 | `kmax_boltzmann` (cosmolike) | the k cutoff of the power spectrum the likelihood requests from CAMB |
 | `AccuracyBoost` (CAMB) | CAMB's overall accuracy multiplier: denser sampling in every internal CAMB grid, the most expensive setting |
 | `k_per_logint` (CAMB) | k samples CAMB computes per logarithmic interval of the transfer functions |
 | `kmax` (CAMB) | highest k of CAMB's matter power spectrum; one physical cutoff with `kmax_boltzmann`, seen from the CAMB side |
+
+These settings differ in kind: `accuracyboost`, `integration_accuracy`,
+`internal_accuracyboost`, `lmax` and the CAMB sampling settings refine
+the numerical representation of a fixed model, while `kmax_boltzmann`
+and CAMB `kmax` set a physical cutoff of the supplied spectrum. None of
+them changes the model itself.
 
 When several settings move the chi2, settle them in cost order: raise
 cosmolike `accuracyboost` first (cheap), then CAMB `k_per_logint`, and
@@ -713,7 +807,7 @@ once), $`v_{\rm high}`$, through the frozen covariance $C$:
 \Delta\chi^2 = (v_{\rm high} - v_{\rm def})^T C^{-1} (v_{\rm high} - v_{\rm def}),
 ```
 
-the numerical error of the default settings at that point (the same
+the measured default-to-pushed difference at that point (the same
 quadratic form [the zero-baseline mechanism](#dv_zero_baseline)
 reports, computed directly from the two vectors). The draws are
 seeded, so every run draws exactly the same points and the numbers
@@ -738,6 +832,12 @@ $(A_s/A_{s,\rm fid})(b_i/b_{i,\rm fid})^2$ exceeds the cut in any bin
 is replaced by the next draw of the same generator, so the points
 sample the box restricted to the cut, still reproducibly.
 
+The result is a finite, conditional stress sample: 50 points over the
+parameters the frozen configuration samples, under the stated box,
+hold and cut rules, with every other parameter at the fiducial. Its
+minimum, median and maximum describe that sample; they are not global
+error bounds over the prior.
+
 The pushed-settings vectors are the expensive half (one model build at
 the pushed settings, then one evaluation per point), so they are
 computed once by
@@ -758,13 +858,19 @@ and requires the fingerprint to match: a changed prior, draw setting,
 fiducial, pushed setting or likelihood default fails the check with
 the instruction to regenerate the stored vectors with
 `generate_frozen_reference.py --nmodels`. Without a stored file the
-check is skipped with the same instruction. To measure the accuracy
+check is skipped with the same instruction. The fingerprint covers the
+resolved likelihood and theory blocks (path entries left out); it does
+not hash code or the contents of the files those blocks name, so a
+changed implementation or a changed same-name input file calls for its
+own regeneration decision rather than relying on automatic detection.
+To measure the accuracy
 around another fiducial or prior, change the frozen state or the draw
 settings and regenerate.
 
 The report streams one block per model and ends with the min/median/max
-delta chi2. The check also draws each point's delta chi2 against the
-two quantities that set it, and prints the file path: the matter density
+delta chi2. The check also draws each point's delta chi2 against two
+explanatory coordinates - an association across the tested points, not
+an established causal decomposition - and prints the file path: the matter density
 $\Omega_m$ (a higher $\Omega_m$ raises the shear signal and pushes the
 matter power deeper into the nonlinear regime, where the relative
 error itself grows) and, when the configuration samples linear galaxy
@@ -848,10 +954,15 @@ The likelihood yaml keys `adopt_limber_gs` and `adopt_limber_gg`
 choose how the galaxy-galaxy lensing and galaxy clustering spectra are
 computed: `0` takes the multipoles below the non-Limber cap (150 by
 default; likelihoods that bind the key `lmax_nonlimber` can raise it)
-from the exact projection, computed with the split of Fang, Krause,
-Eifler & MacCrann (arXiv:1911.11947) - an FFTLog integral of the
-linear power spectrum plus, in Limber, what linear theory misses -
-and `1` uses the Limber approximation at every multipole. Each test evaluates the
+from the FKEM split of Fang, Krause,
+Eifler & MacCrann (arXiv:1911.11947) - a spherical-Bessel FFTLog
+integral projects the separable linear power spectrum without the
+Limber approximation, and what linear theory misses is added in
+Limber - and `1` uses the Limber approximation at every multipole.
+The hybrid is not exact: its Limber part carries the nonlinear
+remainder, which is why the
+[low-rank thin-bin engine](cosmolike/README.md#thin_bins) exists as a
+second clustering route. Each test evaluates the
 frozen 3x2pt fiducial with the default, the other setting, and the
 default again in one process and reports
 delta chi2 = delta^T C^-1 delta of the non-Limber minus the Limber
@@ -870,12 +981,16 @@ Projects that measure clustering in thin lens bins use the
 calculation and add two test families for them.
 
 `test_nonlimber_lowrank_gg.py` compares the two non-Limber clustering
-engines - the default FKEM split above and the low-rank engine - by
-evaluating the frozen fiducial with each in one process. The
+engines - the FKEM split above (`nonlimber_lowrank_gg: 0`, the code
+default) and the low-rank engine (`1`) - by evaluating the frozen
+fiducial with each in one process. A project's likelihood may configure
+either engine as its own default; the sweep starts and ends on the
+engine the frozen configuration selects, with the other in between. The
 assertions follow the non-Limber family: a dead-flag floor on the
 engine delta chi2, only clustering entries change, a bit-identical
-round trip back to the default engine, agreement with the project's
-recorded delta, and the frozen-reference check on the default.
+round trip back to the configured engine, agreement with the project's
+recorded delta, and the frozen-reference check on the configured
+default.
 
 `test_pair_quadrature.py` sweeps the likelihood key
 `integration_accuracy` over the quadrature ladder of the cross-bin
@@ -1162,28 +1277,22 @@ Timing comparisons require a quiet machine and one calculation at a time.
 ## FAQ: Why does the cNG read the power spectrum in log k? <a name="logk"></a>
 
 The cNG angle integrals evaluate the linear power at the internal
-momentum $`\lvert\mathbf{k}+\mathbf{q}\rvert`$ for every wavenumber
-pair and every angular node: at the baseline grids that is 15,852,480
-table reads per radial shell, the largest single cost of a covariance
-run.
-
-The standard reader (`p_lin_at_a`, [cosmo3D.c](cosmolike/cosmo3D.c))
-takes one `log10(k)` per sample to locate the table cell. That
-logarithm is the first link of each sample's dependency chain: its
-result is the table index, so the four table loads and the bilinear
-interpolation all wait for it, and out-of-order execution cannot hide
-the first link of a chain. The `exp` that returns from the stored
-$`\ln P`$ to $`P`$ sits at the chain's end, where its latency hides
-under the next sample's loads; removing it changes the cost by about
-one percent, so it stays.
+momentum $`\lvert\mathbf{k}+\mathbf{q}\rvert`$ - the magnitude of the
+sum of the two coupled wavevectors - for every wavenumber pair and
+every angular node: at the baseline grids that is 15,852,480 table
+reads per radial shell, the largest single cost of a covariance run.
+The power table is sampled in $`\log_{10}k`$, so each read needs one
+logarithm to locate its table cell.
 
 Under the Limber projection the internal-momentum grid is the same at
-every radial shell up to one factor: $`k = \mathrm{magnitude}/f_K`$,
-with the magnitude fixed in multipole units. The logarithm is
+every radial shell up to one factor. Write $`m`$ for that
+shell-independent grid of momentum magnitudes, tabulated in multipole
+units, and $`f_K`$ for the shell's transverse comoving distance; the
+physical wavenumber at the shell is $`k = m/f_K`$. The logarithm is
 therefore shift-invariant,
 
 ```math
-\log_{10}(k) = \log_{10}(\mathrm{magnitude}) - \log_{10}(f_K),
+\log_{10}(k) = \log_{10}(m) - \log_{10}(f_K),
 ```
 
 so [survey.py](cosmolike_notebook_utils/covariance/survey.py) takes
@@ -1193,22 +1302,12 @@ scalar shift to the reader `linear_power_logk_rows_cov`
 removes the per-shell division of the whole grid by $`f_K`$, which
 existed only to feed the reader.
 
-Measured on 2026-10-08 (Apple M2 Pro, 8 OpenMP threads): the
-per-sample `log10` was 46% of the read. The before/after construction-time
-ratios were **1.65** for LSST Y1 real space and **1.44** for the DES cluster
-joint covariance. These ratios describe the measured configurations.
-
-The shifted sum is not bitwise the logarithm of the quotient:
-$`\log_{10}(m) - \log_{10}(f_K)`$ and $`\log_{10}(m/f_K)`$ differ in
-the last bits, so cNG entries move by at most 5.0e-18 in absolute
-value. The Gaussian and SSC blocks do not pass through this reader
-and are bitwise unchanged.
-
-> [!Warning]
-> Do not route the internal-momentum read back through
-> `covariance_power` with `k = magnitude/distance`: that restores the
-> per-sample `log10` and the per-shell division of the full grid,
-> 30% to 40% of the construction time.
+This is a performance arrangement, not a model change: the shifted sum
+can differ from the logarithm of the quotient in the last floating-point
+bits, and only the cNG passes through this reader - the Gaussian and
+SSC blocks do not. The measured construction-time ratios, with their
+dates and machines, stay in the maintainers' performance records rather
+than in this guide.
 
 ## FAQ: What establishes a usable covariance? <a name="positivity"></a>
 

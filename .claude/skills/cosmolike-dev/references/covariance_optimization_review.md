@@ -460,6 +460,50 @@ runtime and positivity checks are recorded in
 The fixed-k radial spline acceleration above remains an independent
 experiment; the full runs evaluate every radial shell directly.
 
+## Shifted-log linear-power reader of the cNG angle grid (2026-10-08)
+
+The cNG angle integrals evaluate the linear power at the internal
+momentum |k+q| for every wavenumber pair and every angular node:
+15,852,480 table reads per radial shell at the baseline grids, the
+largest single cost of a covariance run. The standard reader
+(`p_lin_at_a`, cosmo3D.c) takes one log10(k) per sample to locate the
+table cell. That logarithm is the first link of each sample's
+dependency chain: its result is the table index, so the four table
+loads and the bilinear interpolation all wait for it, and out-of-order
+execution cannot hide the first link of a chain. The `exp` that
+returns from the stored ln P to P sits at the chain's end, where its
+latency hides under the next sample's loads; removing it changes the
+cost by about one percent, so it stays.
+
+Under the Limber projection the internal-momentum grid is the same at
+every radial shell up to one factor, k = magnitude/f_K with the
+magnitude fixed in multipole units, so the logarithm is
+shift-invariant: log10(k) = log10(magnitude) - log10(f_K).
+survey.py therefore takes the table of logarithms once per run and
+each shell supplies one scalar shift to the reader
+`linear_power_logk_rows_cov` (spectra_cov.c). This also removes the
+per-shell division of the whole grid by f_K, which existed only to
+feed the reader.
+
+Measured on 2026-10-08 (Apple M2 Pro, 8 OpenMP threads): the
+per-sample log10 was 46% of the read, and the before/after
+construction-time ratios were 1.65 for LSST Y1 real space and 1.44 for
+the DES cluster joint covariance. The ratios describe these measured
+configurations, not a general factor.
+
+The shifted sum is not bitwise the logarithm of the quotient:
+log10(magnitude) - log10(f_K) and log10(magnitude/f_K) differ in the
+last bits, so cNG
+entries move by at most 5.0e-18 in absolute value. The Gaussian and
+SSC blocks do not pass through this reader and are bitwise unchanged.
+
+Do not route the internal-momentum read back through
+`covariance_power` with k = magnitude/distance: that restores the
+per-sample log10 and the per-shell division of the full grid, 30% to
+40% of the construction time. The root README's log-k FAQ keeps the
+physical shift-invariance explanation for public readers; the
+measurements above live only here.
+
 ## Rejected: four-wavenumber SIMD linear power reader (2026-10-05)
 
 **The candidate did not improve runtime on either tested machine.**

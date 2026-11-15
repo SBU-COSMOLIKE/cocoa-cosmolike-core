@@ -181,7 +181,7 @@ headers inside each file carry the equations and units.
 | --- | --- |
 | How a Limber cross spectrum is built | [The spectra section](#spectra); `spectra_cov.c` (radial grid, efficiencies, windows, then `limber_spectra_cov`). |
 | The non-Limber gg/gs calculation | [The spectra section](#spectra); `fftlog_cov.c` (what one transform does); `nonlimber_cov.c` (component transforms, pair assembly, the matched Limber subtraction). |
-| Why covariance needs unmeasured cross spectra | [The Gaussian section](#files) under `gaussian_cov.c` in this guide; then `gaussian_cov.c` (`gaussian_wick_cov`). |
+| Why covariance needs unmeasured cross spectra | [The Gaussian pairing subsection](#gaussian_pairings) in this guide; then `gaussian_cov.c` (`gaussian_wick_cov`). |
 | Shape/shot noise and the footprint | [The noise section](#noise); `gaussian_cov.c` (analytic pair noise); `mask_cov.c` (pair areas from the mask spectrum). |
 | The halo trispectrum (cNG) | [The connected section](#connected); `halo_cov.c` (the moments); `perturbation_cov.c` (the angle averages); `non_gaussian_cov.c` (the five-term assembly); then the projection path below. |
 | The SSC term | [The SSC section](#ssc); `non_gaussian_cov.c` (`halo_response_cov`); `ssc_cov.c` (mask variance, shell response); `assembly_cov.c` (the weighted outer-product projection). |
@@ -228,98 +228,12 @@ The cluster blocks and the non-Limber correction extend that base.
 
 ## From three-dimensional matter to angular spectra <a name="spectra"></a>
 
-### Spherical-Bessel transforms: `fftlog_cov.c`
-
-A non-Limber projection retains the radial oscillations of a matter mode.
-For density the radial kernel is $`j_\ell(k\chi)`$, where $`j_\ell`$ is a
-spherical Bessel function. Lensing uses $`j_\ell(k\chi)/(k\chi)^2`$ before
-applying its angular spin factor. Keeping this denominator inside the
-integration kernel avoids dividing the input window by a vanishing
-$`\chi^2`$ near the observer.
-
-FFTLog expands a smooth radial input into powers of distance. Each power
-has an analytic Bessel integral; an inverse Fourier transform adds these
-integrals at the requested wavenumbers. The implementation follows
-[Fang et al.](https://arxiv.org/abs/1911.11947) and the lensing formulation
-in [Leonard et al.](https://arxiv.org/abs/2212.04291).
-
-The caller prepares a workspace once and reuses its Fourier coefficients
-for successive multipole blocks. FFTW plans are created serially; workers
-execute the same plan with separate buffers. This component supplies
-transforms to `nonlimber_cov.c`; it does not choose the survey cutoff or
-alter SSC/cNG.
-
-### Non-Limber galaxy spectra: `nonlimber_cov.c`
-
-The Gaussian contractions can use non-Limber clustering and galaxy–shear
-spectra, including crossed pairs absent from the measured data vector.
-`covariance_spectra(..., nonlimber_lmax=1000)` requests
-this correction through the stated multipole; zero retains Limber.
-Both the production interface and the notebook wrapper call the same C
-calculation. Shear–shear spectra remain Limber.
-
-The calculation writes the linear density as $`D(a)\delta(k,1)`$. It
-projects this separable field exactly, then adds the nonlinear Limber
-spectrum minus the Limber projection of that **same** linear field.
-Consequently the exact term and subtraction share one growth convention,
-power-spectrum anchor and set of catalog windows. This is the hybrid
-prescription of [Fang et al.](https://arxiv.org/abs/1911.11947).
-
-Density, magnification and the signed linear-alignment source contribution
-are retained. With `include_rsd=True`, each lens field also receives the
-exact redshift-space-distortion transfer: the plane-parallel velocity
-term projects through the second derivative of the spherical Bessel
-function, $`j_\ell''`$, instead of $`j_\ell`$, and the matched Limber
-subtraction carries the same distortion window, so the hybrid split
-stays consistent. This entry requires flat geometry and massless
-neutrinos. The log-distance resolution, near boundary and multipole cutoff
-need survey-specific refinement tests; the example cutoff above is not a
-convergence certificate. SSC and cNG retain their separate approximations.
-
-The project defaults use a correction cutoff of 1,000, or 4,000 for the
-narrow Roman KL lens bins. Roman uses 8,193 distance samples; the other
-examples use 4,097. The global accuracy boost refines both controls.
-
-Doubling the cutoff and distance intervals changed every generalized
-variance mode of the complete Gaussian matrices by less than 0.019% in
-the seven galaxy/shear examples, in both real and Fourier space. All
-base and refined matrices were positive definite with their catalog noise.
-This check held the other numerical settings fixed and used zero IA;
-it does not establish integration or Fisher convergence.
-
-The mixed approximation still needs care when changing survey inputs.
-Keeping shear–shear Limber while correcting gg/gs does not guarantee a
-positive *noiseless* field matrix. Some low-multipole Roman signal matrices
-fail that check; their catalog noise and complete Gaussian matrices pass.
-Check positivity again for a lower-noise survey, rather than clipping
-negative modes. A consistent non-Limber shear–shear extension is separate
-work.
-
-### Intrinsic shapes in Gaussian covariance: `ia_cov.c`
-
-Observed shapes contain gravitational shear and intrinsic alignment (IA).
-NLA uses a signed local alignment window. Its products with lensing give
-GI and IG; two alignment windows give II. Galaxy–shear spectra also need
-gI. `include_ia=True` reads the configured core amplitudes for these terms.
-
-TATT adds density-weighted tidal alignment, quadratic tidal torquing and
-their cross correlations. These are the one-loop spectra described by
-[Blazek et al.](https://arxiv.org/abs/1708.09247). The implementation reads
-the core's dense FAST-PT tables with linear interpolation, retaining its
-normalization and growth convention. It computes every source pair and
-galaxy–source pair, independently of the measured-row selection.
-
-The returned `spectra` contains E modes; `b_spectra` contains TATT B modes.
-For NLA or disabled IA, `b_spectra` is `None`. B modes contribute to
-$`\xi_+`$ with a plus sign and $`\xi_-`$ with a minus sign. Pass them to
-`covariance_gaussian_real(..., b_spectra=...)` together with E spectra.
-The assembler applies the signs and keeps the analytic pure shape noise
-only once. Fourier examples measure E spectra, so they use the E matrix.
-
-Non-Limber gg/gs corrects the linear-alignment part; higher-order TATT
-terms remain Limber. Gaussian TATT currently requires zero RSD. These
-Gaussian IA terms do not supply an IA response or connected four-point
-model for SSC/cNG.
+The subsections run from the baseline to its corrections: radial
+windows and the Limber spectrum first, then the one-loop galaxy bias,
+the non-Limber correction and intrinsic alignment, and finally why
+the Gaussian covariance needs spectra that are absent from the
+measured data vector. A first reading can stop after the radial
+windows and return for the corrections when a calculation needs them.
 
 ### Radial windows: `spectra_cov.c`
 
@@ -428,7 +342,100 @@ linear-bias halo-model galaxies. The shared Python adds the terms when the
 settings contain nonzero per-bin `bias2` and `bias_s2`; the spectrum
 bindings take `include_oneloop=True`.
 
-### Why covariance needs additional cross spectra: `gaussian_cov.c`
+### Spherical-Bessel transforms: `fftlog_cov.c`
+
+A non-Limber projection retains the radial oscillations of a matter mode.
+For density the radial kernel is $`j_\ell(k\chi)`$, where $`j_\ell`$ is a
+spherical Bessel function. Lensing uses $`j_\ell(k\chi)/(k\chi)^2`$ before
+applying its angular spin factor. Keeping this denominator inside the
+integration kernel avoids dividing the input window by a vanishing
+$`\chi^2`$ near the observer.
+
+FFTLog expands a smooth radial input into powers of distance. Each power
+has an analytic Bessel integral; an inverse Fourier transform adds these
+integrals at the requested wavenumbers. The implementation follows
+[Fang et al.](https://arxiv.org/abs/1911.11947) and the lensing formulation
+in [Leonard et al.](https://arxiv.org/abs/2212.04291).
+
+The caller prepares a workspace once and reuses its Fourier coefficients
+for successive multipole blocks. FFTW plans are created serially; workers
+execute the same plan with separate buffers. This component supplies
+transforms to `nonlimber_cov.c`; it does not choose the survey cutoff or
+alter SSC/cNG.
+
+### Non-Limber galaxy spectra: `nonlimber_cov.c`
+
+The Gaussian contractions can use non-Limber clustering and galaxy–shear
+spectra, including crossed pairs absent from the measured data vector.
+`covariance_spectra(..., nonlimber_lmax=1000)` requests
+this correction through the stated multipole; zero retains Limber.
+Both the production interface and the notebook wrapper call the same C
+calculation. Shear–shear spectra remain Limber.
+
+The calculation writes the linear density as $`D(a)\delta(k,1)`$. It
+projects this separable field exactly, then adds the nonlinear Limber
+spectrum minus the Limber projection of that **same** linear field.
+Consequently the exact term and subtraction share one growth convention,
+power-spectrum anchor and set of catalog windows. This is the hybrid
+prescription of [Fang et al.](https://arxiv.org/abs/1911.11947).
+
+Density, magnification and the signed linear-alignment source contribution
+are retained. With `include_rsd=True`, each lens field also receives the
+exact redshift-space-distortion transfer: the plane-parallel velocity
+term projects through the second derivative of the spherical Bessel
+function, $`j_\ell''`$, instead of $`j_\ell`$, and the matched Limber
+subtraction carries the same distortion window, so the hybrid split
+stays consistent. This entry requires flat geometry and massless
+neutrinos. The log-distance resolution, near boundary and multipole cutoff
+need survey-specific refinement tests; the example cutoff above is not a
+convergence certificate. SSC and cNG retain their separate approximations.
+
+The project defaults use a correction cutoff of 1,000, or 4,000 for the
+narrow Roman KL lens bins. Roman uses 8,193 distance samples; the other
+examples use 4,097. The global accuracy boost refines both controls.
+
+Doubling the cutoff and distance intervals changed every generalized
+variance mode of the complete Gaussian matrices by less than 0.019% in
+the seven galaxy/shear examples, in both real and Fourier space. All
+base and refined matrices were positive definite with their catalog noise.
+This check held the other numerical settings fixed and used zero IA;
+it does not establish integration or Fisher convergence.
+
+The mixed approximation still needs care when changing survey inputs.
+Keeping shear–shear Limber while correcting gg/gs does not guarantee a
+positive *noiseless* field matrix. Some low-multipole Roman signal matrices
+fail that check; their catalog noise and complete Gaussian matrices pass.
+Check positivity again for a lower-noise survey, rather than clipping
+negative modes. A consistent non-Limber shear–shear extension is separate
+work.
+
+### Intrinsic shapes in Gaussian covariance: `ia_cov.c`
+
+Observed shapes contain gravitational shear and intrinsic alignment (IA).
+NLA uses a signed local alignment window. Its products with lensing give
+GI and IG; two alignment windows give II. Galaxy–shear spectra also need
+gI. `include_ia=True` reads the configured core amplitudes for these terms.
+
+TATT adds density-weighted tidal alignment, quadratic tidal torquing and
+their cross correlations. These are the one-loop spectra described by
+[Blazek et al.](https://arxiv.org/abs/1708.09247). The implementation reads
+the core's dense FAST-PT tables with linear interpolation, retaining its
+normalization and growth convention. It computes every source pair and
+galaxy–source pair, independently of the measured-row selection.
+
+The returned `spectra` contains E modes; `b_spectra` contains TATT B modes.
+For NLA or disabled IA, `b_spectra` is `None`. B modes contribute to
+$`\xi_+`$ with a plus sign and $`\xi_-`$ with a minus sign. Pass them to
+`covariance_gaussian_real(..., b_spectra=...)` together with E spectra.
+The assembler applies the signs and keeps the analytic pure shape noise
+only once. Fourier examples measure E spectra, so they use the E matrix.
+
+Non-Limber gg/gs corrects the linear-alignment part; higher-order TATT
+terms remain Limber. Gaussian TATT currently requires zero RSD. These
+Gaussian IA terms do not supply an IA response or connected four-point
+model for SSC/cNG.
+
+### Why covariance needs additional cross spectra: `gaussian_cov.c` <a name="gaussian_pairings"></a>
 
 Suppose we measure spectra $`AB`$ and $`CD`$. Their covariance involves four
 fields, even though each measurement involves only two. For Gaussian
@@ -934,8 +941,12 @@ separately. Their explicit survey area cancels between the absolute count
 and the inverse-area covariance; the SSC retains its footprint dependence.
 
 Discrete cluster partners and shared-object catalog terms need further
-calculations. These components do not yet generate a complete cluster
-$`6\times2\mathrm{pt}+N`$ matrix.
+calculations, so these count helpers alone do not assemble the joint
+cluster matrix. The shared `forecast_cluster.py` does assemble every
+row of the angular cluster $`6\times2\mathrm{pt}+N`$ layout, under the
+declared approximations listed in
+[Running the calculation](#notebooks); the physical terms it omits are
+recorded with each result, not shown to vanish.
 
 ## Cluster cross spectra: `spectra_cluster_cov.c` <a name="cluster_spectra"></a>
 
@@ -1089,8 +1100,8 @@ monopole and dipole; any estimator-specific removal must be consistent.
 
 At high multipoles a wide angular bin contains many oscillations. The
 operator splits that bin into panels whose angular width satisfies
-$`\ell_{\max}\Delta\theta\le128`$. Every panel uses the same precomputed
-GSL rule; their contributions share the measured bin's full area
+$`\ell_{\max}\Delta\theta\le128`$. Every panel uses the same GSL rule,
+stored or generated; their contributions share the measured bin's full area
 normalization. Refining the rule tests integration accuracy without
 changing the measured bins. Evaluating a bin at its center does not
 perform this integral.
@@ -1104,7 +1115,7 @@ each physical panel, generating its nodes when no stored rule is available.
 The C++ binding supplies the same nodes to Python.
 Defaults and levels 0 through 4 are unchanged.
 
-Low-level calls also accept the precomputed 64-node rule. The sole smaller
+Low-level calls also accept the stored 64-node rule. The sole smaller
 internal rule is the smooth low-mass Wynn tail, whose level ladder is
 32/64/128/256/512/1024/2048/4096. Other rule sizes are rejected.
 
@@ -1167,7 +1178,37 @@ For an HPC or other command-line run, use the project's
 `covariance/compute_covariance.py` with its
 `EXAMPLE_EVALUATE_COVARIANCE.yaml`. Cobaya reads the familiar `theory`,
 `params` and `sampler: evaluate` blocks. The driver computes one specified
-cosmology and saves G, SSC, cNG and the total through the production interface.
+cosmology and saves G, SSC, cNG and the total through the production
+interface. From an activated Cocoa installation, in the folder
+`cocoa/Cocoa` and with `<project>` the project folder name:
+
+```bash
+OMP_NUM_THREADS=8 python projects/<project>/covariance/compute_covariance.py \
+    projects/<project>/EXAMPLE_EVALUATE_COVARIANCE.yaml \
+    --output <existing folder>/covariance_preview.npz
+```
+
+The driver requires a positive `OMP_NUM_THREADS` and stops with a
+message before any initialization without it. The archive lands at the
+YAML's `output` key unless `--output` overrides it, and an existing
+archive is refused unless `--overwrite` is passed. The project-owned
+YAML remains the source of the survey and cosmology choices; this
+entry path demonstrates the mechanics, not a recommended accuracy
+setting.
+
+The saved `.npz` archive is interpretable on its own. `gaussian`,
+`ssc`, `cng` and `total` are
+$`[n_{\rm data}, n_{\rm data}]`$ matrices; `rows` is the
+$`[n_{\rm row}, 3]`$ table of measured (probe, A, B) rows, and
+`coordinate` holds the angular-bin or band centers shared by every
+row, with each row's bins consecutive in the flattened index
+($`i = r\,n_{\rm bin} + b`$ for row $`r`$ and bin $`b`$). `signal` is
+the mean built from the selected Gaussian spectra, while
+`ssc_normalization_signal` is the zero-IA Limber mean used by the SSC
+survey-mean subtraction; the two need not be equal when extended
+Gaussian choices are active. `settings_json` records the resolved
+numerical settings. This archive is a computed forecast, distinct from
+the supplied likelihood covariance that the examples compare against.
 
 The [shared Python tools](../../cosmolike_notebook_utils/covariance/README.md)
 prepare survey-independent inputs, build requested Gaussian blocks and
@@ -1188,8 +1229,10 @@ DESxPlanck covers galaxy/shear only;
 CMB observables need their own models. The example boosts demonstrate
 refinement, not a validated inference accuracy.
 
-The shared `forecast_cluster.py` also assembles the full angular DES
-cluster layout from these C components. It retains all internal spectra,
+The shared `forecast_cluster.py` also assembles every row of the
+angular DES cluster $`6\times2\mathrm{pt}+N`$ layout from these C
+components: a full matrix layout under a declared approximation, not a
+complete physical model. It retains all internal spectra,
 adds count Poisson noise and common count/two-point SSC, and propagates
 the Y localization through every cross block.
 

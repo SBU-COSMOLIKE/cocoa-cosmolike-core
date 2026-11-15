@@ -174,6 +174,17 @@ specific to that experiment, not a rejection of other SIMDe kernels.
 See `references/covariance_optimization_review.md` for measurements and
 the limits of the comparison.
 
+**Shifted-log cNG power reader.** The cNG angle integrals read the
+linear power through `linear_power_logk_rows_cov` (spectra_cov.c): the
+log10 table is prepared once per run and each radial shell supplies one
+scalar shift, since k = magnitude/f_K makes the logarithm
+shift-invariant. Do not route this read back through `covariance_power`
+with k = magnitude/distance; that restores the per-sample log10 and the
+per-shell grid division, 30-40% of construction time. The dated
+measurements are in `references/covariance_optimization_review.md`
+(2026-10-08 section); the root README's log-k FAQ keeps only the
+physical explanation.
+
 Covariance power preparation uses global natural-cubic upsampling followed
 by the existing C linear readers: `power_accuracyboost=8` resolves to
 11,993 k samples from 1,500 at global AB1. The global boost multiplies
