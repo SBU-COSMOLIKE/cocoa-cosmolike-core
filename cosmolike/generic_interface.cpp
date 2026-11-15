@@ -1693,6 +1693,9 @@ void init_binning_fourier(
 // Validation: at least one center, every center positive and strictly
 // increasing, else critical() + exit(1).
 //
+// Cache invalidation:
+// bumps Ntable.random when the centers changed.
+//
 // Parameters:
 //   ells       - the band-power centers, in increasing order (need not
 //                be integers)
@@ -1721,6 +1724,25 @@ void init_binning_fourier_ells(arma::Col<double> ells, const int lmax_shear)
   debug(debugsel, fname, "l_min", ells(0));
   debug(debugsel, fname, "l_max", ells(nells - 1));
   debug(debugsel, fname, "l_max_shear", lmax_shear);
+
+  // the Fourier tables and the gg-cross stash key on Ntable.random: new
+  // centers, even of the same count, must reach them
+  int cache_update = 0;
+  if (NULL == like.ell ||
+      like.Ncl != nells) {
+    cache_update = 1;
+  }
+  else {
+    for (int i=0; i<nells; i++) {
+      if (fdiff(like.ell[i], ells(i))) {
+        cache_update = 1;
+        break;
+      }
+    }
+  }
+  if (1 == cache_update) {
+    Ntable.random = RandomNumber::get_instance().get();
+  }
 
   like.Ncl = nells;
   // lrange holds ints; the envelope of the (possibly fractional) centers
