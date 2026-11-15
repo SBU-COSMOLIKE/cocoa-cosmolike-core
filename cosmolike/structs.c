@@ -110,9 +110,12 @@ void reset_cosmology_struct(void)
   cosmology.sigma_8 = 0.0;
   cosmology.lnP_nk = 0;
   cosmology.lnP_nz = 0;
+  // the tables are owned here (one block each); free(NULL) is a no-op
+  free(cosmology.lnP);
   cosmology.lnP = NULL;
   cosmology.lnPL_nk = 0;
   cosmology.lnPL_nz = 0;
+  free(cosmology.lnPL);
   cosmology.lnPL = NULL;
   // the P_cb table belongs to the lnPL table it was installed with
   // (structs.h), so it goes with it; free(NULL) is a no-op on the
@@ -120,12 +123,14 @@ void reset_cosmology_struct(void)
   free(cosmology.lnPL_cb);
   cosmology.lnPL_cb = NULL;
   cosmology.chi_nz = 0;
+  free(cosmology.chi);
   cosmology.chi = NULL;
   // the bucket index belongs to the chi table (structs.h)
   free(cosmology.chi_bucket);
   cosmology.chi_bucket = NULL;
   cosmology.chi_nbucket = 0;
   cosmology.G_nz = 0;
+  free(cosmology.G);
   cosmology.G = NULL;
 }
 
