@@ -164,6 +164,8 @@ class RandomNumber
 //   ndata_, ndata_sqzd_  = full and squeezed lengths
 //   ndata_blocks_        = the probe blocks' share of ndata_ when the
 //                          mask was set (a project may append more)
+//   probe_               = like.probe[] when the mask was set (the mask
+//                          zeroes the blocks of the probes then off)
 //   index_sqzd_          = full index -> sqzd index; -1 when masked
 //   data_masked_         = data vector, full length, zeroed off-mask
 //   cov_masked_, inv_cov_masked_
@@ -273,6 +275,9 @@ private:
     int get_ndata_blocks() const {
       return this->ndata_blocks_;
     }
+    int get_probe(const int i) const {
+      return this->probe_[i];
+    }
     arma::Col<int> get_mask() const {
       return this->mask_;
     }
@@ -304,6 +309,7 @@ private:
     int ndata_ = 0;
     int ndata_sqzd_ = 0;
     int ndata_blocks_ = 0;
+    int probe_[NPROBES] = {0};
     std::string mask_filename_;
     std::string cov_filename_;
     std::string data_filename_;
@@ -1604,6 +1610,14 @@ arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
                      fname, N, M, arma::accu(sizes), ip.get_ndata_blocks());
     exit(1);
   }
+  // and so must the probe selection the mask zeroed its blocks with
+  for (int i=0; i<NPROBES; i++) {
+    if (like.probe[i] != ip.get_probe(i)) [[unlikely]] {
+      spdlog::critical("{}<{},{}>: the probes changed after init_data "
+                       "(init_probes): re-run init_data", fname, N, M);
+      exit(1);
+    }
+  }
   arma::Col<double> data_vector(like.Ndata, arma::fill::zeros); 
   compute_X_N_masked<N,0>(data_vector, start(0));
   compute_X_N_masked<N,1>(data_vector, start(1));
@@ -1779,6 +1793,9 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
   arma::Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
   this->ndata_blocks_ = arma::accu(sizes);
+  for (int i=0; i<NPROBES; i++) {
+    this->probe_[i] = like.probe[i];
+  }
   if (0 == like.probe[PROBE_SS]) {
     const int A = start(0);
     const int B = A + sizes(0);
