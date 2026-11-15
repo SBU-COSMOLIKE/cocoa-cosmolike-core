@@ -587,10 +587,18 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     # not alter the SSC mean-subtraction signal.
     lensing_spectra = snapshot["spectra"]
 
-    # Settings without a gaussian entry use zero-IA Limber Gaussian spectra.
-    model = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
-    # model.get: older saved settings predate the rsd choice and mean False
-    rsd = model.get("rsd", False)
+    # Settings without a gaussian entry use zero-IA Limber Gaussian spectra,
+    # without redshift-space distortions.
+    model = settings.get("gaussian",
+                         {"nonlimber": False, "ia": "none", "rsd": False})
+    # A supplied model states the RSD choice: a missing key is an error,
+    # not a silent "no RSD".
+    if "rsd" not in model:
+        raise KeyError(
+            "settings['gaussian'] has no 'rsd' entry; the Gaussian model "
+            "must say whether its spectra include redshift-space "
+            "distortions: add 'rsd': True or 'rsd': False")
+    rsd = model["rsd"]
     # One-loop galaxy bias in the Gaussian spectra: on when any lens bin has
     # a nonzero quadratic or tidal bias (initialize_forecast installed them
     # in the core). The C code adds the Limber one-loop terms to every
