@@ -144,6 +144,11 @@ void set_FPT_bias_from_python(void)
   FPTbias_tab_from_python = 1;
 }
 
+// initial_setup (generic_interface.cpp) clears both flags: an installed
+// Python table outlives the reset structs, and a second model with
+// nuisance.IA_code = 1 that never called set_IA_PS / set_bias_PS would
+// read the first model's tables as its own. With the flags cleared, the
+// read paths below stop instead and name the setter.
 void reset_FPT_from_python(void)
 {
   FPTIA_tab_from_python = 0;

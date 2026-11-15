@@ -1201,9 +1201,12 @@ static void check_cluster_setup_cs(void)
   // would be silently reduced to NLA, so it is refused instead
   if (1 == cluster.include_ia &&
       IA_MODEL_TATT == nuisance.IA_MODEL) {
-    // the power law (IA_REDSHIFT_EVOLUTION) keeps the A_2 and b_TA
-    // amplitudes in slot 0 (ia[1][1] is the A_2 redshift exponent); the
-    // binned model keeps one amplitude per source bin
+    // only the slots that hold amplitudes decide. In the power-law
+    // mode (IA_REDSHIFT_EVOLUTION) A_2 lives in ia[1][0] and b_TA in
+    // ia[2][0], while ia[1][1] is the A_2 redshift exponent - not an
+    // amplitude, so a model with A_2 = b_TA = 0 and a nonzero exponent
+    // has no TATT terms to lose and must pass. The binned mode holds
+    // one amplitude per source bin, so there every bin is scanned.
     const int namp = (IA_REDSHIFT_EVOLUTION == nuisance.IA) ? 1 :
                      redshift.shear_nbin;
     for (int i=0; i<namp; i++) {

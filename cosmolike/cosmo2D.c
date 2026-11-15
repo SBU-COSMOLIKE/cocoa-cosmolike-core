@@ -186,8 +186,12 @@ void set_include_HOD_GX(const int flag)
     log_fatal("invalid include_HOD_GX = %d (0 or 1)", flag);
     exit(1);
   }
-  // the low-rank and nonlinear Kaiser gg rows are gated off with HOD
-  // galaxies: switching HOD on under them would drop those rows silently
+  // the reverse order of the include_HOD_GX = 0 checks in
+  // set_lowrank_DD_GG and set_nonlinear_kaiser_GG: an incompatibility
+  // must be refused whichever flag arrives second. Without this check,
+  // switching HOD galaxies on under a running engine passed, and the
+  // nlk gate of the non-Limber cores then dropped the nonlinear Kaiser
+  // rows from the next data vector without a message.
   if (1 == flag && 1 == use_lowrank_DD_GG) {
     log_fatal("include_HOD_GX = 1 requires use_lowrank_DD_GG = 0");
     exit(1);

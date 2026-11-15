@@ -497,7 +497,10 @@ void initial_setup()
   // the point masses and the CMB-lensing options live in singletons
   PointMass::get_instance().set_pm_vector(arma::Col<double>());
   IPCMB::get_instance().reset();
-  // the origin flags of the FAST-PT tables (pt_cfastpt.c)
+  // the Python FAST-PT origin flags (pt_cfastpt.c) also outlive the
+  // structs: left set, a second model with nuisance.IA_code = 1 that
+  // never called set_IA_PS / set_bias_PS would read the previous
+  // model's Python tables as its own
   reset_FPT_from_python();
 
   like.adopt_limber[LIMBER_GG] = 0;
