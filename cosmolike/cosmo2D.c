@@ -9475,6 +9475,88 @@ void cfftlog_ells_p2(
 }
 
 // ---------------------------------------------------------------------------
+// The nonlinear Kaiser rows (use_nonlinear_kaiser_GG): the loop part of
+// the RSD terms of one bin pair (a, b) at one FFTLog wavenumber.
+//
+// va and vb hold a bin's transformed kernels {g1, R1, g2, R2, g3, R3}:
+// g_m the density kernel and R_m the RSD kernel carrying D^m (m = 1, the
+// linear rows; m = 2, 3, the loop rows). t holds the four a = 1
+// templates of FPTkaiser.tab, {P22_dt, P22_tt, A_d, A_t}. Every term of
+// get_FPT_kaiser's unequal-time spectra appears once with each bin in
+// each role:
+//
+//   density x velocity: P22_dt g2 R2' + A_t g1 R3' + A_d g3 R1'
+//   velocity x velocity: P22_tt R2 R2' + A_t (R1 R3' + R3 R1')
+//
+// (primes on bin b), plus the velocity x density mirror. The RSD rows
+// carry -f, so the signs are those of the linear F^2. For an auto
+// spectrum va = vb. The caller multiplies by k^3.
+// ---------------------------------------------------------------------------
+static inline double nl_kaiser_loop(
+    const double* const va,  // bin a: {g1, R1, g2, R2, g3, R3}
+    const double* const vb,  // bin b: {g1, R1, g2, R2, g3, R3}
+    const double* const t    // {P22_dt, P22_tt, A_d, A_t} at k
+  )
+{
+  const double dt = t[0]*(va[2]*vb[3] + va[3]*vb[2]) +
+                    t[3]*(va[0]*vb[5] + va[5]*vb[0]) +
+                    t[2]*(va[4]*vb[1] + va[1]*vb[4]);
+  const double tt = t[1]*va[3]*vb[3] +
+                    t[3]*(va[1]*vb[5] + va[5]*vb[1]);
+  return dt + tt;
+}
+
+// The four FPTkaiser templates at the FFTLog wavenumbers of one block of
+// multipoles, tmpl[m][k - ks][q] at k = y[k][q] (1/Mpc, times
+// real_coverH0 to H0/c units); zero outside the table's k range. The
+// wavenumber grid does not depend on the bin, so one block serves all.
+// get_FPT_kaiser must have run (serially) for this cosmology.
+static void nl_kaiser_templates_block(
+    double* const* const yk,    // wavenumbers [k][q] in 1/Mpc
+    const int ks,               // first multipole of the block
+    const int ke,               // one past the last
+    const int nchi,             // chi (and wavenumber) nodes
+    const double real_coverH0,  // c/H0 in Mpc
+    double*** const tmpl        // out [4][>= ke - ks][nchi]
+  )
+{
+  const double lnkmin = log(FPTkaiser.krange[RANGE_MIN]);
+  const double lnkmax = log(FPTkaiser.krange[RANGE_MAX]);
+  const double dlnk   = (lnkmax - lnkmin)/FPTkaiser.N;
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int k=ks; k<ke; k++) {
+    for (int q=0; q<nchi; q++) {
+      const double lnk = log(yk[k][q]*real_coverH0);
+      const int in = (lnk >= lnkmin && lnk <= lnkmax);
+      for (int m=0; m<4; m++) {
+        tmpl[m][k - ks][q] = in ? interpol1d(FPTkaiser.tab[m], FPTkaiser.N,
+                                             lnkmin, lnkmax, dlnk, lnk) : 0.0;
+      }
+    }
+  }
+}
+
+// The loop rows' kernels at one chi node j: rows r2 and r3 take bin i's
+// density and RSD kernels times D and D^2 (so D^2 and D^3 in all), the
+// magnification slot zero. Shared by the three gg engines.
+static inline void nl_kaiser_rows(
+    double*** const fx,              // kernels [rows][3][nchi]
+    const int i,                     // the bin (its linear row)
+    const int r2,                    // its D^2 row
+    const int r3,                    // its D^3 row
+    const int j,                     // the chi node
+    const double D                   // the growth factor there
+  )
+{
+  fx[r2][0][j] = D*fx[i][0][j];
+  fx[r2][1][j] = D*fx[i][1][j];
+  fx[r2][2][j] = 0.0;
+  fx[r3][0][j] = D*D*fx[i][0][j];
+  fx[r3][1][j] = D*D*fx[i][1][j];
+  fx[r3][2][j] = 0.0;
+}
+
+// ---------------------------------------------------------------------------
 // Non-Limber galaxy clustering C_l via the FFTLog algorithm: C_cl_tomo,
 // defined after its worker C_cl_tomo_core (whose header follows this one).
 //
@@ -9598,22 +9680,30 @@ static double** C_cl_tomo_core(
   
   const int nbins = redshift.clustering_nbin; 
   const int nchi  = Ntable.NL_Nchi;
+  // the nonlinear Kaiser rows (nl_kaiser_rows): bin i's D^2 row is
+  // nbins + i, its D^3 row 2 nbins + i; they need the RSD row, so they
+  // follow its gate (below)
+  const int nlk = (1 == use_nonlinear_kaiser_GG &&
+                   1 == include_RSD_GG &&
+                   0 == include_HOD_GX) ? 1 : 0;
+  const int SIZE1 = (1 == nlk) ? 3*nbins : nbins; // radial rows
   
   if (NULL == x ||  
       NULL == y || 
       NULL == Fy || 
       NULL == fx ||
       fdiff2(cache[0], Ntable.random) ||
-      cache[1] != (uint64_t) nbins)
+      cache[1] != (uint64_t) nbins ||
+      cache[2] != (uint64_t) SIZE1)
   {
     if (x != NULL) free((void*) x);
     x =  (double*) malloc1d(nchi);
     if (y != NULL) free((void*) y);
-    y  = (double***) malloc3d(nbins, limits.LMAX_NOLIMBER, nchi);
+    y  = (double***) malloc3d(SIZE1, limits.LMAX_NOLIMBER, nchi);
     if (Fy != NULL) free((void*) Fy);
-    Fy = (double****) malloc4d(nbins, 3, limits.LMAX_NOLIMBER, nchi);
+    Fy = (double****) malloc4d(SIZE1, 3, limits.LMAX_NOLIMBER, nchi);
     if (fx != NULL) free((void*) fx);
-    fx = (double***) malloc3d(nbins,3,nchi); 
+    fx = (double***) malloc3d(SIZE1,3,nchi); 
     if (vres != NULL) free((void*) vres);
     vres = (double***) malloc3d(nbins, limits.LMAX_NOLIMBER, nchi); 
     if (CLnl != NULL) free((void*) CLnl);
@@ -9651,6 +9741,7 @@ static double** C_cl_tomo_core(
     cfg[2].N_pad = (long) ceil(500.0*nchi/512.0);
     cache[0] = Ntable.random;
     cache[1] = (uint64_t) nbins;
+    cache[2] = (uint64_t) SIZE1;
   }
   // chi() returns comoving distance in c/H0 units and real_coverH0 =
   // coverH0/h0 = 2997.92458/h0 is c/H0 in Mpc, so chi_min/chi_max are
@@ -9676,6 +9767,9 @@ static double** C_cl_tomo_core(
       (void) gb1(z,i);
     }
     (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
+    if (1 == nlk) {
+      get_FPT_kaiser();
+    }
   }
 
   // the runs, validated before they index lx and the pools
@@ -9760,6 +9854,9 @@ static double** C_cl_tomo_core(
         fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
         fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2]
       }
+      if (1 == nlk) {
+        nl_kaiser_rows(fx, i, nbins + i, 2*nbins + i, j, D);
+      }
     }
   }
 
@@ -9791,7 +9888,7 @@ static double** C_cl_tomo_core(
       Nmax = N[j][2];
   }
 
-  fftw_complex** toutfwd = (fftw_complex**) malloc2d_fftwc(nbins*SIZE2, Nmax/2+1);
+  fftw_complex** toutfwd = (fftw_complex**) malloc2d_fftwc(SIZE1*SIZE2, Nmax/2+1);
   
   double** eta_m = (double**) malloc2d(SIZE2, Nmax/2+1);
 
@@ -9813,6 +9910,20 @@ static double** C_cl_tomo_core(
     invgf2piv[i] = 1.0/(gfp*gfp);
   }
 
+  // the loop rows have no magnification slot; without them every slot
+  // is active (SIZE2 already drops the mag slot when bmag = 0)
+  int** active = NULL;
+  double*** tmpl = NULL; // the loop templates of a block [4][BLOCK][nchi]
+  if (1 == nlk) {
+    active = (int**) malloc2d_int(SIZE1, SIZE2);
+    for (int i=0; i<SIZE1; i++) {
+      for (int jj=0; jj<SIZE2; jj++) {
+        active[i][jj] = (i < nbins || jj < 2) ? 1 : 0;
+      }
+    }
+    tmpl = (double***) malloc3d(4, 16, nchi);
+  }
+
   cfftlog_ells_p1((double* const) x, 
                   (double* const* const* const) fx, 
                   nchi, 
@@ -9821,8 +9932,8 @@ static double** C_cl_tomo_core(
                   (double* const* const) eta_m, 
                   N, 
                   Nmax, 
-                  NULL, // SIZE2 already drops the mag slot when bmag = 0
-                  nbins, 
+                  (const int* const* const) active,
+                  SIZE1, 
                   SIZE2);
 
   int converged[nbins];
@@ -9831,12 +9942,16 @@ static double** C_cl_tomo_core(
     LMAX[i] = limits.LMAX_NOLIMBER;
   } 
   int all_done = 0;
+  int row_done[SIZE1]; // per radial row: the loop rows follow their bin
 
   for (int r=0; r<nruns && !all_done; r++)
   {
     const int ks = runs[2*r];
     const int ke = runs[2*r+1];
 
+    for (int i=0; i<SIZE1; i++) {
+      row_done[i] = converged[i % nbins];
+    }
     cfftlog_ells_p2((double* const) x,
                      nchi, 
                      cfg, 
@@ -9849,10 +9964,13 @@ static double** C_cl_tomo_core(
                      Nmax,
                      ks, 
                      ke,
-                     converged,
-                     NULL, // all slots active (see the p1 call)
-                     nbins, 
+                     row_done,
+                     (const int* const* const) active,
+                     SIZE1, 
                      SIZE2);
+    if (1 == nlk) {
+      nl_kaiser_templates_block(y[0], ks, ke, nchi, real_coverH0, tmpl);
+    }
     // With SIZE2 = 2 (every |gbmag| below the 1e-12 threshold) p2
     // never writes the magnification slot, so the static Fy[i][2]
     // still holds a previous SIZE2 = 3 call's values or
@@ -9897,6 +10015,17 @@ static double** C_cl_tomo_core(
             const double ct = alpha2_bin[i]*k1cH0*k1cH0*delta1*R;
             vres[i][k][q] += ct*(k1cH0*k1cH0*k1cH0)*plin*invgf2piv[i];
           }
+          if (1 == nlk) {
+            // the one-loop velocity spectra (nl_kaiser_loop)
+            const double v[6] = {Fy[i][0][k][q], Fy[i][1][k][q],
+                                 Fy[nbins + i][0][k][q],
+                                 Fy[nbins + i][1][k][q],
+                                 Fy[2*nbins + i][0][k][q],
+                                 Fy[2*nbins + i][1][k][q]};
+            const double t[4] = {tmpl[0][k - ks][q], tmpl[1][k - ks][q],
+                                 tmpl[2][k - ks][q], tmpl[3][k - ks][q]};
+            vres[i][k][q] += nl_kaiser_loop(v, v, t)*(k1cH0*k1cH0*k1cH0);
+          }
           if (1 == gg_kwin.active) { // the bin's step (see gg_kwin)
             vres[i][k][q] *= gg_kwin_pass(k1cH0, gg_kwin.Kbin[i]);
           }
@@ -9927,6 +10056,12 @@ static double** C_cl_tomo_core(
 
   free((void*) toutfwd);
   free((void*) eta_m);
+  if (NULL != active) {
+    free((void*) active);
+  }
+  if (NULL != tmpl) {
+    free((void*) tmpl);
+  }
   return CLnl;
 }
 
@@ -12052,7 +12187,14 @@ static double** C_cl_tomo_lowrank_core(
   // What remains is NK = baseline x global accuracy boost: identical
   // to nchi when no nonlimber boost is set.
   const int NK = (int) ceil(((double) nchi)/Ntable.NL_Nchi_boost);
-  const int SIZE1 = nbins + nbins*nrank; // FKEM rows + rank rows
+  // the nonlinear Kaiser rows (nl_kaiser_rows) after the rank rows: bin
+  // i's D^2 row is NLK0 + i, its D^3 row NLK0 + nbins + i; they need the
+  // RSD row, so they follow its gate
+  const int nlk = (1 == use_nonlinear_kaiser_GG &&
+                   1 == include_RSD_GG) ? 1 : 0;
+  const int NLK0 = nbins + nbins*nrank;
+  // FKEM rows + rank rows (+ the loop rows)
+  const int SIZE1 = (1 == nlk) ? NLK0 + 2*nbins : NLK0;
   const int SIZE2 = 3; // always 3 (see the header comment): the mag slot
                        // is masked off per row instead of dropped, so the
                        // p1/p2 plan caches never rebuild on a bmag flip
@@ -12067,7 +12209,8 @@ static double** C_cl_tomo_lowrank_core(
       fdiff2(cache[0], Ntable.random) ||
       cache[1] != (uint64_t) nbins ||
       cache[2] != (uint64_t) nrank ||
-      cache[3] != (uint64_t) LNL)
+      cache[3] != (uint64_t) LNL ||
+      cache[9] != (uint64_t) SIZE1)
   {
     if (x != NULL) free((void*) x);
     x =  (double*) malloc1d(nchi);
@@ -12142,6 +12285,7 @@ static double** C_cl_tomo_lowrank_core(
     cache[1] = (uint64_t) nbins;
     cache[2] = (uint64_t) nrank;
     cache[3] = (uint64_t) LNL;
+    cache[9] = (uint64_t) SIZE1;
   }
 
   // ---- the cross-pair storage, rebuilt when any of its sizes changes ----
@@ -12206,6 +12350,9 @@ static double** C_cl_tomo_lowrank_core(
       (void) gb1(z,i);
     }
     (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
+    if (1 == nlk) {
+      get_FPT_kaiser();
+    }
   }
 
   // the runs, validated before they index lx and the pools
@@ -12366,6 +12513,9 @@ static double** C_cl_tomo_lowrank_core(
         fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
         fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2]
       }
+      if (1 == nlk) {
+        nl_kaiser_rows(fx, i, NLK0 + i, NLK0 + nbins + i, j, D);
+      }
     }
     // The rank rows: kernel chi * n(z) * (H/H0) * sqrtPg_zfactor_r(z)
     // in slot 0, zero outside the n(z) support the decomposition was
@@ -12453,6 +12603,12 @@ static double** C_cl_tomo_lowrank_core(
       active[nbins + i*nrank + rr][2] = 0;
     }
   }
+  // the loop rows: density and RSD slots, no magnification
+  for (int i=NLK0; i<SIZE1; i++) {
+    active[i][0] = 1;
+    active[i][1] = 1;
+    active[i][2] = 0;
+  }
 
   fftw_complex** toutfwd =
       (fftw_complex**) malloc2d_fftwc(SIZE1*SIZE2, Nmax/2+1);
@@ -12526,6 +12682,8 @@ static double** C_cl_tomo_lowrank_core(
   // the bin loop would recompute identical values once per bin; this
   // table takes them once per block instead.
   double** lnk_block = (double**) malloc2d(BLOCK, nchi);
+  // the loop templates of a block [4][BLOCK][nchi] (nonlinear Kaiser)
+  double*** tmpl = (1 == nlk) ? (double***) malloc3d(4, BLOCK, nchi) : NULL;
   int converged[nbins]; // per lens bin
   int row_done[SIZE1];  // per radial row: a bin freezes all its rows
   for (int i=0; i<nbins; i++) {
@@ -12552,6 +12710,10 @@ static double** C_cl_tomo_lowrank_core(
         row_done[i] = 0;
         for (int rr=0; rr<nrank; rr++) {
           row_done[nbins + i*nrank + rr] = 0;
+        }
+        if (1 == nlk) {
+          row_done[NLK0 + i] = 0;
+          row_done[NLK0 + nbins + i] = 0;
         }
       }
     }
@@ -12604,6 +12766,9 @@ static double** C_cl_tomo_lowrank_core(
         lnk_row[q] = log(ty[q]*real_coverH0);
       }
     }
+    if (1 == nlk) {
+      nl_kaiser_templates_block(y_rows, ks, ke, nchi, real_coverH0, tmpl);
+    }
 
     for (int i=0; i<nbins; i++) {
       if (converged[i] || ks >= LMAX[i]) continue;
@@ -12639,6 +12804,18 @@ static double** C_cl_tomo_lowrank_core(
             const double R = Fy[i][1][k][q];
             const double ct = alpha2_bin[i]*k1cH0*k1cH0*(F0 + R)*R;
             vres[i][k][q] += ct*plin*invgf2piv[i];
+          }
+          if (1 == nlk) {
+            // the one-loop velocity spectra (nl_kaiser_loop; pass 2
+            // multiplies in k^3)
+            const double v[6] = {Fy[i][0][k][q], Fy[i][1][k][q],
+                                 Fy[NLK0 + i][0][k][q],
+                                 Fy[NLK0 + i][1][k][q],
+                                 Fy[NLK0 + nbins + i][0][k][q],
+                                 Fy[NLK0 + nbins + i][1][k][q]};
+            const double t[4] = {tmpl[0][k - ks][q], tmpl[1][k - ks][q],
+                                 tmpl[2][k - ks][q], tmpl[3][k - ks][q]};
+            vres[i][k][q] += nl_kaiser_loop(v, v, t);
           }
         }
       }
@@ -12777,6 +12954,22 @@ static double** C_cl_tomo_lowrank_core(
                    alpha2_bin[bi]*R_i*(F0_j + R_j));
               vrx[q] += ct*plin*invgf2x[n]*(k1cH0*k1cH0*k1cH0);
             }
+            if (1 == nlk) {
+              // the pair's one-loop velocity spectra (nl_kaiser_loop)
+              const double vi[6] = {Fy[bi][0][k][q], Fy[bi][1][k][q],
+                                    Fy[NLK0 + bi][0][k][q],
+                                    Fy[NLK0 + bi][1][k][q],
+                                    Fy[NLK0 + nbins + bi][0][k][q],
+                                    Fy[NLK0 + nbins + bi][1][k][q]};
+              const double vj[6] = {Fy[bj][0][k][q], Fy[bj][1][k][q],
+                                    Fy[NLK0 + bj][0][k][q],
+                                    Fy[NLK0 + bj][1][k][q],
+                                    Fy[NLK0 + nbins + bj][0][k][q],
+                                    Fy[NLK0 + nbins + bj][1][k][q]};
+              const double t[4] = {tmpl[0][k - ks][q], tmpl[1][k - ks][q],
+                                   tmpl[2][k - ks][q], tmpl[3][k - ks][q]};
+              vrx[q] += nl_kaiser_loop(vi, vj, t)*(k1cH0*k1cH0*k1cH0);
+            }
             if (1 == gg_kwin.active) { // the pair's step (see gg_kwin)
               vrx[q] *= gg_kwin_pass(k1cH0, gg_kwin.Kpair[n]);
             }
@@ -12813,6 +13006,9 @@ static double** C_cl_tomo_lowrank_core(
 
   free((void*) GQ);
   free((void*) lnk_block);
+  if (NULL != tmpl) {
+    free((void*) tmpl);
+  }
   free((void*) active);
   free((void*) toutfwd);
   free((void*) eta_m);
@@ -14581,11 +14777,11 @@ static double** C_cl_tomo_fkem_pairs_core(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* x = NULL;
-  static double*** fx = NULL;         // radial kernels [nbins][3][nchi]
+  static double*** fx = NULL;         // radial kernels [SIZE1][3][nchi]
   static double*** y = NULL;          // row view: y[i] == y_rows for all i
   static double** y_rows = NULL;      // shared wavenumber grid [LNL][nchi]
-  static double**** Fy = NULL;        // view [nbins][3][LNL] -> pool rows
-  static double**** Fy_pool = NULL;   // data [nbins][3][BLOCK][nchi]
+  static double**** Fy = NULL;        // view [SIZE1][3][LNL] -> pool rows
+  static double**** Fy_pool = NULL;   // data [SIZE1][3][BLOCK][nchi]
   static double*** vres_pool = NULL;  // auto integrands [nbins][BLOCK][nchi]
   static double*** vresx_pool = NULL; // pair integrands [npairs][BLOCK][nchi]
   static double** CLnl = NULL;        // auto Limber, full model [nbins][LNL]
@@ -14600,6 +14796,13 @@ static double** C_cl_tomo_fkem_pairs_core(
   const int LNL    = limits.LMAX_NOLIMBER;
   const int BLOCK  = 16; // multipoles per block: the l extent of the pools
                          // and the longest run the caller may pass
+  // the nonlinear Kaiser rows (nl_kaiser_rows): bin i's D^2 row is
+  // nbins + i, its D^3 row 2 nbins + i; they need the RSD row, so they
+  // follow its gate
+  const int nlk = (1 == use_nonlinear_kaiser_GG &&
+                   1 == include_RSD_GG &&
+                   0 == include_HOD_GX) ? 1 : 0;
+  const int SIZE1 = (1 == nlk) ? 3*nbins : nbins; // radial rows
 
   if (npairs <= 0) {
     log_fatal("C_cl_tomo_fkem_pairs_core called with no pair list");
@@ -14609,30 +14812,31 @@ static double** C_cl_tomo_fkem_pairs_core(
       fdiff2(cache[0], Ntable.random) ||
       cache[1] != (uint64_t) nbins ||
       cache[2] != (uint64_t) LNL ||
-      cache[3] != (uint64_t) npairs)
+      cache[3] != (uint64_t) npairs ||
+      cache[4] != (uint64_t) SIZE1)
   {
     if (x != NULL) free((void*) x);
     x = (double*) malloc1d(nchi);
     if (fx != NULL) free((void*) fx);
-    fx = (double***) malloc3d(nbins, 3, nchi);
+    fx = (double***) malloc3d(SIZE1, 3, nchi);
     // y: the grid (k+1)/x is the same for every bin, so every row aliases
     // one shared table, which the transform fills once
     if (y_rows != NULL) free((void*) y_rows);
     y_rows = (double**) malloc2d(LNL, nchi);
     if (y != NULL) free((void*) y);
-    y = (double***) malloc(sizeof(double**) * nbins);
+    y = (double***) malloc(sizeof(double**) * SIZE1);
     if (NULL == y) {
       log_fatal("array allocation failed"); exit(1);
     }
-    for (int i=0; i<nbins; i++) {
+    for (int i=0; i<SIZE1; i++) {
       y[i] = y_rows;
     }
     // Fy: an absolute-l pointer view (no data) over a one-block pool; the
     // l slots are rewired to pool rows before every block
     if (Fy_pool != NULL) free((void*) Fy_pool);
-    Fy_pool = (double****) malloc4d(nbins, 3, BLOCK, nchi);
+    Fy_pool = (double****) malloc4d(SIZE1, 3, BLOCK, nchi);
     if (Fy != NULL) free((void*) Fy);
-    Fy = (double****) malloc3d_ptr(nbins, 3, LNL);
+    Fy = (double****) malloc3d_ptr(SIZE1, 3, LNL);
     if (vres_pool != NULL) free((void*) vres_pool);
     vres_pool = (double***) malloc3d(nbins, BLOCK, nchi);
     if (vresx_pool != NULL) free((void*) vresx_pool);
@@ -14663,6 +14867,7 @@ static double** C_cl_tomo_fkem_pairs_core(
     cache[1] = (uint64_t) nbins;
     cache[2] = (uint64_t) LNL;
     cache[3] = (uint64_t) npairs;
+    cache[4] = (uint64_t) SIZE1;
   }
 
   // the chi grid of C_cl_tomo_core: z = 0.002 to 4, log-spaced, in Mpc
@@ -14684,6 +14889,9 @@ static double** C_cl_tomo_fkem_pairs_core(
       (void) gb1(z,i);
     }
     (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
+    if (1 == nlk) {
+      get_FPT_kaiser();
+    }
   }
 
   // the run multipoles, validated first: ascending, inside the cap, none
@@ -14792,6 +15000,9 @@ static double** C_cl_tomo_fkem_pairs_core(
         fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
         fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2]
       }
+      if (1 == nlk) {
+        nl_kaiser_rows(fx, i, nbins + i, 2*nbins + i, j, D);
+      }
     }
   }
 
@@ -14820,7 +15031,7 @@ static double** C_cl_tomo_fkem_pairs_core(
       Nmax = N[j][2];
   }
 
-  fftw_complex** toutfwd = (fftw_complex**) malloc2d_fftwc(nbins*SIZE2,
+  fftw_complex** toutfwd = (fftw_complex**) malloc2d_fftwc(SIZE1*SIZE2,
                                                            Nmax/2+1);
   double** eta_m = (double**) malloc2d(SIZE2, Nmax/2+1);
 
@@ -14850,6 +15061,20 @@ static double** C_cl_tomo_fkem_pairs_core(
     invgf2x[n] = 1.0/(gfp*gfp);
   }
 
+  // the loop rows have no magnification slot; without them every slot
+  // is active (SIZE2 already drops the mag slot when bmag = 0)
+  int** active = NULL;
+  double*** tmpl = NULL; // the loop templates of a block [4][BLOCK][nchi]
+  if (1 == nlk) {
+    active = (int**) malloc2d_int(SIZE1, SIZE2);
+    for (int i=0; i<SIZE1; i++) {
+      for (int jj=0; jj<SIZE2; jj++) {
+        active[i][jj] = (i < nbins || jj < 2) ? 1 : 0;
+      }
+    }
+    tmpl = (double***) malloc3d(4, BLOCK, nchi);
+  }
+
   cfftlog_ells_p1((double* const) x,
                   (double* const* const* const) fx,
                   nchi,
@@ -14858,13 +15083,13 @@ static double** C_cl_tomo_fkem_pairs_core(
                   (double* const* const) eta_m,
                   N,
                   Nmax,
-                  NULL, // SIZE2 already drops the mag slot when bmag = 0
-                  nbins,
+                  (const int* const* const) active,
+                  SIZE1,
                   SIZE2);
 
   // the transform's row-skip flags: tol = 0, so no row is ever skipped
-  int converged[nbins];
-  for (int i=0; i<nbins; i++) {
+  int converged[SIZE1];
+  for (int i=0; i<SIZE1; i++) {
     converged[i] = 0;
   }
 
@@ -14877,7 +15102,7 @@ static double** C_cl_tomo_fkem_pairs_core(
     // Fy[i][j][k] (k in [ks, ke)) into pool row k - ks, and the loops
     // below read the same pointers. All three slots are wired: the
     // magnification slot is zeroed below when the transform skips it.
-    for (int i=0; i<nbins; i++) {
+    for (int i=0; i<SIZE1; i++) {
       for (int j=0; j<3; j++) {
         for (int k=ks; k<ke; k++) {
           Fy[i][j][k] = Fy_pool[i][j][k - ks];
@@ -14898,9 +15123,12 @@ static double** C_cl_tomo_fkem_pairs_core(
                             ks,
                             ke,
                             converged,
-                            NULL, // all slots active (see the p1 call)
-                            nbins,
+                            (const int* const* const) active,
+                            SIZE1,
                             SIZE2);
+    if (1 == nlk) {
+      nl_kaiser_templates_block(y_rows, ks, ke, nchi, real_coverH0, tmpl);
+    }
     // with SIZE2 = 2 the transform never writes the magnification slot,
     // and its pool rows hold an earlier block's numbers: zero them, as
     // C_cl_tomo_core does (the assembly reads the slot unconditionally)
@@ -14935,6 +15163,18 @@ static double** C_cl_tomo_fkem_pairs_core(
             const double ct = alpha2_bin[i]*k1cH0*k1cH0*delta1*R;
             vres_pool[i][k - ks][q] += ct*(k1cH0*k1cH0*k1cH0)*
                                        plin*invgf2piv[i];
+          }
+          if (1 == nlk) {
+            // the one-loop velocity spectra (nl_kaiser_loop)
+            const double v[6] = {Fy[i][0][k][q], Fy[i][1][k][q],
+                                 Fy[nbins + i][0][k][q],
+                                 Fy[nbins + i][1][k][q],
+                                 Fy[2*nbins + i][0][k][q],
+                                 Fy[2*nbins + i][1][k][q]};
+            const double t[4] = {tmpl[0][k - ks][q], tmpl[1][k - ks][q],
+                                 tmpl[2][k - ks][q], tmpl[3][k - ks][q]};
+            vres_pool[i][k - ks][q] += nl_kaiser_loop(v, v, t)*
+                                       (k1cH0*k1cH0*k1cH0);
           }
           if (1 == gg_kwin.active) { // the bin's step (see gg_kwin)
             vres_pool[i][k - ks][q] *= gg_kwin_pass(k1cH0, gg_kwin.Kbin[i]);
@@ -14981,6 +15221,22 @@ static double** C_cl_tomo_fkem_pairs_core(
                 (alpha2_bin[bj]*delta1_i*R_j + alpha2_bin[bi]*R_i*delta1_j);
             vrx[q] += ct*(k1cH0*k1cH0*k1cH0)*plin*invgf2x[n];
           }
+          if (1 == nlk) {
+            // the pair's one-loop velocity spectra (nl_kaiser_loop)
+            const double vi[6] = {Fy[bi][0][k][q], Fy[bi][1][k][q],
+                                  Fy[nbins + bi][0][k][q],
+                                  Fy[nbins + bi][1][k][q],
+                                  Fy[2*nbins + bi][0][k][q],
+                                  Fy[2*nbins + bi][1][k][q]};
+            const double vj[6] = {Fy[bj][0][k][q], Fy[bj][1][k][q],
+                                  Fy[nbins + bj][0][k][q],
+                                  Fy[nbins + bj][1][k][q],
+                                  Fy[2*nbins + bj][0][k][q],
+                                  Fy[2*nbins + bj][1][k][q]};
+            const double t[4] = {tmpl[0][k - ks][q], tmpl[1][k - ks][q],
+                                 tmpl[2][k - ks][q], tmpl[3][k - ks][q]};
+            vrx[q] += nl_kaiser_loop(vi, vj, t)*(k1cH0*k1cH0*k1cH0);
+          }
           if (1 == gg_kwin.active) { // the pair's step (see gg_kwin)
             vrx[q] *= gg_kwin_pass(k1cH0, gg_kwin.Kpair[n]);
           }
@@ -14993,6 +15249,12 @@ static double** C_cl_tomo_fkem_pairs_core(
 
   free((void*) toutfwd);
   free((void*) eta_m);
+  if (NULL != active) {
+    free((void*) active);
+  }
+  if (NULL != tmpl) {
+    free((void*) tmpl);
+  }
   return CLnl;
 }
 
