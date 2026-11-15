@@ -2442,8 +2442,9 @@ void init_survey(
 //
 // Writes tomo.ggl_exclude as a flat [lens0, src0, lens1, src1, ...] array
 // and tomo.N_ggl_exclude = input size / 2; test_zoverlap(l, s) returns 0
-// for listed pairs. tomo.ggl_Npowerspectra is not recounted here; that (and
-// the single-threaded pair-map warm-up) happens in init_ntomo_powerspectra.
+// for listed pairs. When both samples are loaded, init_ntomo_powerspectra
+// recounts tomo.ggl_Npowerspectra (and warms the pair maps) at the end;
+// before that, the n(z) setup's own init_ntomo_powerspectra call does.
 //
 // Cache invalidation:
 // bumps tomo.random_ggl so the static pair maps
@@ -2483,6 +2484,10 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
       critical(errnance2, fname, i, errnance); exit(1);
     }
     tomo.ggl_exclude[i] = ggl_exclude(i);
+  }
+  if (redshift.shear_nbin > 0 &&
+      redshift.clustering_nbin > 0) {
+    init_ntomo_powerspectra();
   }
   debug("{}: {}", fname, errends);
 }

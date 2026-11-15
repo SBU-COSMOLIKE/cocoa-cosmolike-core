@@ -1935,6 +1935,17 @@ def _sequence_cluster(ctx):
     return np.array(ctx["ci"].compute_data_vector_cluster_masked())
 
 
+def _sequence_sizes(ctx):
+    """The probe-block sizes of the current layout (the pair counts)."""
+    import numpy as np
+    ci = ctx["ci"]
+    if (ctx["space"] == "fourier"
+            and hasattr(ci, "compute_data_vector_3x2pt_fourier_sizes")):
+        return np.array(ci.compute_data_vector_3x2pt_fourier_sizes(),
+                        dtype=float)
+    return np.array(ci.compute_data_vector_3x2pt_real_sizes(), dtype=float)
+
+
 def _sequence_chi2(ctx):
     """The masked vector followed by its chi2 against the loaded data."""
     import numpy as np
@@ -1974,6 +1985,7 @@ def _sequence_spectra(name):
 SEQUENCE_EVALUATORS = {
     "masked": _sequence_masked,
     "chi2": _sequence_chi2,
+    "sizes": _sequence_sizes,
     "cluster": _sequence_cluster,
 }
 for _name in ("xi_pm_tomo", "w_gammat_tomo", "w_gg_tomo", "w_gk_tomo",
