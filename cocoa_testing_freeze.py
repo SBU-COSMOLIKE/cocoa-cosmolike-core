@@ -658,8 +658,9 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
           modules, the generated data vectors and mask descriptors,
           run the extra steps, evaluate the reference chi2 values,
           and hash everything into the manifest last, so it covers
-          every file written before. Stored N-models vectors survive
-          it: they are expensive, and the check's fingerprint
+          every file written before. The stored N-models vectors of
+          the current NMODELS_EXAMPLES keys survive it (the others
+          are dropped): they are expensive, and the check's fingerprint
           (nmodels_config_hash) asks for --nmodels whenever the
           high-accuracy configuration they belong to has changed.
     Without any of them it prints the project's usage text and
@@ -811,12 +812,24 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
     # high-accuracy configuration changes, which the check's
     # fingerprint detects; they are read before frozen/ is removed and
     # written back afterwards
+    # Only the files of the current NMODELS_EXAMPLES keys are kept: the
+    # file of an example removed from the table would otherwise be pinned
+    # again by every refreeze.
+    current_files = set()
+    for nm_example, _label in getattr(u, "NMODELS_EXAMPLES", ()):
+        current_files.add(f"nmodels_{nm_example}.npz")
     kept_nmodels = {}
     if os.path.isdir(u.FROZEN_DIR):
         for file_name in sorted(os.listdir(u.FROZEN_DIR)):
-            if file_name.startswith("nmodels_") and file_name.endswith(".npz"):
-                with open(os.path.join(u.FROZEN_DIR, file_name), "rb") as f:
-                    kept_nmodels[file_name] = f.read()
+            if not (file_name.startswith("nmodels_")
+                    and file_name.endswith(".npz")):
+                continue
+            if file_name not in current_files:
+                print(f"dropped {file_name}: its example is not in "
+                      "NMODELS_EXAMPLES", flush=True)
+                continue
+            with open(os.path.join(u.FROZEN_DIR, file_name), "rb") as f:
+                kept_nmodels[file_name] = f.read()
         shutil.rmtree(u.FROZEN_DIR)
     os.makedirs(u.FROZEN_DIR)
     for file_name in kept_nmodels:
