@@ -14128,6 +14128,10 @@ static void C_gg_cross_tomo_limber_work(
           if (1 == rsd) {
             const double chi_0 = fK;
             const double chi_1 = (ell + 1.0)/k;
+            // a masked node keeps zero kernels, as in the auto work:
+            // stage 3 reads KG at every node, masked or not
+            KG[0][n][i][p] = 0.0;
+            KG[1][n][i][p] = 0.0;
             if (chi_1 > chi_a_min) {
               maskp = 0.0;
             }
