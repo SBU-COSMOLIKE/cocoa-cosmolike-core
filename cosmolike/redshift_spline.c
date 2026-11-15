@@ -2276,7 +2276,10 @@ double g_tomo(double ainput, const int ni) {
   // integrand divides by chi(a')
   const double amax = 0.999999;
   
-  if (NULL == table || fdiff2(cache[0], Ntable.random))  { 
+  // one row per source bin: cache[4] holds the bin count of the tables
+  if (NULL == table ||
+      fdiff2(cache[0], Ntable.random) ||
+      cache[4] != (uint64_t) redshift.shear_nbin)  { 
     if (table != NULL) {
       free(table);
     }
@@ -2296,7 +2299,8 @@ double g_tomo(double ainput, const int ni) {
   if (fdiff2(cache[0], Ntable.random) ||
       fdiff2(cache[1], cosmology.random) ||
       fdiff2(cache[2], nuisance.random_photoz_shear) ||
-      fdiff2(cache[3], redshift.random_shear)) 
+      fdiff2(cache[3], redshift.random_shear) ||
+      cache[4] != (uint64_t) redshift.shear_nbin) 
   {
     (void) nz_source_photoz(0.0, 0); // init static variables
     const double da = (amax - amin) / ((double) Na - 1.0); // fine
@@ -2335,6 +2339,7 @@ double g_tomo(double ainput, const int ni) {
     cache[1] = cosmology.random;
     cache[2] = nuisance.random_photoz_shear;
     cache[3] = redshift.random_shear;
+    cache[4] = (uint64_t) redshift.shear_nbin;
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni);
@@ -2426,7 +2431,10 @@ double g2_tomo(double a, int ni)
   // integrands divide by chi(a')
   const double amax = 0.999999;
 
-  if (NULL == table || fdiff2(cache[0], Ntable.random)) {
+  // one row per source bin: cache[4] holds the bin count of the tables
+  if (NULL == table ||
+      fdiff2(cache[0], Ntable.random) ||
+      cache[4] != (uint64_t) redshift.shear_nbin) {
     if (table != NULL) {
       free(table);
     }
@@ -2451,7 +2459,8 @@ double g2_tomo(double a, int ni)
   if (fdiff2(cache[0], Ntable.random) ||
       fdiff2(cache[1], cosmology.random) ||
       fdiff2(cache[2], nuisance.random_photoz_shear) ||
-      fdiff2(cache[3], redshift.random_shear))
+      fdiff2(cache[3], redshift.random_shear) ||
+      cache[4] != (uint64_t) redshift.shear_nbin)
   {
     const double da = (amax - amin) / ((double) Na - 1.0); // fine
 
@@ -2497,6 +2506,7 @@ double g2_tomo(double a, int ni)
     cache[1] = cosmology.random;
     cache[2] = nuisance.random_photoz_shear;
     cache[3] = redshift.random_shear;
+    cache[4] = (uint64_t) redshift.shear_nbin;
   }
 
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
@@ -2591,7 +2601,10 @@ double g_lens(double a, int ni)
   // integrand divides by chi(a')
   const double amax = 0.999999;
 
-  if (table == NULL || fdiff2(cache[0], Ntable.random)) {
+  // one row per lens bin: cache[4] holds the bin count of the tables
+  if (table == NULL ||
+      fdiff2(cache[0], Ntable.random) ||
+      cache[4] != (uint64_t) redshift.clustering_nbin) {
     if (table != NULL) {
       free(table);
     }
@@ -2611,7 +2624,8 @@ double g_lens(double a, int ni)
   if (fdiff2(cache[0], Ntable.random) ||
       fdiff2(cache[1], cosmology.random) ||
       fdiff2(cache[2], nuisance.random_photoz_clustering) ||
-      fdiff2(cache[3], redshift.random_clustering))
+      fdiff2(cache[3], redshift.random_clustering) ||
+      cache[4] != (uint64_t) redshift.clustering_nbin)
   {
     (void) nz_lens_photoz(0.0, 0);
     const double da = (amax - amin) / ((double) Na - 1.0);
@@ -2644,6 +2658,7 @@ double g_lens(double a, int ni)
     cache[1] = cosmology.random;
     cache[2] = nuisance.random_photoz_clustering;
     cache[3] = redshift.random_clustering;
+    cache[4] = (uint64_t) redshift.clustering_nbin;
   }
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni);
