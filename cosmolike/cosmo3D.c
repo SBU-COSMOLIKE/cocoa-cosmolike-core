@@ -975,10 +975,10 @@ void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
 // The only write of the static is pdelta_type = 3 below. It happens in
 // the first call of Pdelta or Pdelta_at_a that finds pdeltaparams.runmode
 // equal to "linear". While the run mode is anything else, no call writes
-// it: each call compares the string again and returns -1. The latch never
-// returns to -1, so a later change of the run mode away from "linear"
-// (init_cosmo_runmode(false) or initial_setup, generic_interface.cpp) is
-// not seen in this process.
+// it: each call compares the string again and returns -1. The latch
+// returns to -1 only through reset_pdelta_dispatch, which
+// init_cosmo_runmode calls when the run mode changes and initial_setup
+// calls always (generic_interface.cpp).
 //
 // That first "linear" call could run inside an OpenMP loop, where
 // several threads writing the static would race. Every threaded consumer
@@ -988,6 +988,11 @@ void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
 // then only read the latch.
 // ---------------------------------------------------------------------------
 static int pdelta_type = -1;
+
+void reset_pdelta_dispatch(void)
+{
+  pdelta_type = -1;
+}
 
 static inline int pdelta_dispatch(void)
 {
@@ -1005,12 +1010,13 @@ static inline int pdelta_dispatch(void)
 // Matter power spectrum dispatch: p_lin when pdeltaparams.runmode is
 // "linear", p_nonlin otherwise. The linear choice is latched in a static
 // (pdelta_dispatch, shared with Pdelta_at_a) the first time the run mode
-// reads "linear" and reused for the rest of the process, so the run mode
-// must be set before the first evaluation.
+// reads "linear" and reused until the run mode changes
+// (reset_pdelta_dispatch).
 //
 // Cache invalidation:
-// none. The static latch never rebuilds; only
-// the tables read by p_lin/p_nonlin refresh (see those headers).
+// none here; init_cosmo_runmode bumps cosmology.random when the run mode
+// changes, and the tables read by p_lin/p_nonlin refresh on their own
+// keys (see those headers).
 //
 // Parameters:
 //   io_kNL - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)

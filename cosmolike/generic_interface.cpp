@@ -427,7 +427,7 @@ static void reset_boost_baselines(void);
 // like.adopt_limber[LIMBER_GS] = 1 and pdeltaparams.runmode = "Halofit".
 // Module state outside the structs is cleared too: the accuracy-boost
 // baselines (reset_boost_baselines), the gg cross-pair list and the k
-// window of cosmo2D.c.
+// window of cosmo2D.c, and the run-mode latch of Pdelta (cosmo3D.c).
 // The cluster probe flags (cluster.probe[]) are reset by reset_cluster
 // (generic_interface_cluster.cpp), not here.
 //
@@ -483,6 +483,7 @@ void initial_setup()
 
   std::string mode = "Halofit";
   memcpy(pdeltaparams.runmode, mode.c_str(), mode.size() + 1);
+  reset_pdelta_dispatch();
   debug("{}: {}", fname, errends);
   return;
 }
@@ -1906,6 +1907,10 @@ void init_cmb_auto_bandpower (
 // Select the matter power spectrum consumed downstream:
 // pdeltaparams.runmode = "linear" or "Halofit" (string parsed in cosmo3D.c).
 //
+// Cache invalidation:
+// a changed run mode resets Pdelta's latch (reset_pdelta_dispatch) and
+// bumps cosmology.random; the same mode again changes nothing.
+//
 // Parameters:
 //   is_linear - true = "linear", false = "Halofit"
 //
@@ -1918,6 +1923,12 @@ void init_cosmo_runmode(const bool is_linear)
   debug("{}: {}", fname, errbegins);
   std::string mode = is_linear ? "linear" : "Halofit";
   const size_t size = mode.size();
+  // a new run mode must reach Pdelta's latch and every table built from
+  // the previous P(k)
+  if (strcmp(pdeltaparams.runmode, mode.c_str()) != 0) {
+    reset_pdelta_dispatch();
+    cosmology.random = RandomNumber::get_instance().get();
+  }
   memcpy(pdeltaparams.runmode, mode.c_str(), size + 1);
   debug(debugsel, fname, "runmode", mode);
   debug("{}: {}", fname, errends);

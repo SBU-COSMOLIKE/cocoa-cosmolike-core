@@ -72,6 +72,9 @@ double p_nonlin(const double k, const double a);
 
 double Pdelta(double k_NL, double a); // k in coverH0 units
 
+// forget the run-mode latch of Pdelta (init_cosmo_runmode, initial_setup)
+void reset_pdelta_dispatch(void);
+
 // at one scale factor a and n wavenumbers: out[m] = p_lin(k[m], a),
 // p_nonlin(k[m], a), Pdelta(k[m], a), bitwise the per-call functions (the
 // z half of the table read runs once per call, not once per wavenumber)
