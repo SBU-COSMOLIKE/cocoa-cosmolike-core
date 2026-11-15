@@ -1152,6 +1152,9 @@ double xi_pm_tomo(
   //     when any physics tag (cosmology, photo-z, IA, n(z)) or
   //     Ntable.random changed.
   // -------------------------------------------------------------------------
+  // one row per shear pair: cache[5] holds the pair count the tables were
+  // sized and filled with. No setter of the samples bumps Ntable.random,
+  // so a changed count is compared directly, in both tiers.
   if (NULL == Glpm || 
       NULL == xipm || 
       NULL == Cl || 
@@ -1458,6 +1461,7 @@ double w_gammat_tomo(
     exit(1);
   }
 
+  // one row per ggl pair: cache[8] holds the pair count of the tables
   if (NULL == Pl || 
       NULL == w_vec || 
       NULL == Cl || 
@@ -1733,8 +1737,11 @@ double w_gg_tomo(
     log_fatal("wgg requested but tomo.clustering_Npowerspectra = %d", NSIZE);
     exit(1);
   }
-  // the spectra rows below are sized by the pair count, and the non-Limber
-  // core writes one row per lens bin
+  // tomo.clustering_Npowerspectra is a derived count that only
+  // init_ntomo_powerspectra refreshes. The rows below are sized by that
+  // pair count, while the non-Limber core writes one row per lens bin:
+  // after a lens-bin change without the recount the two disagree, and
+  // the core would write rows these tables never allocated
   if (NSIZE != redshift.clustering_nbin) {
     log_fatal("tomo.clustering_Npowerspectra = %d != clustering_nbin = %d: "
               "call init_ntomo_powerspectra after changing the lens bins",
@@ -1742,6 +1749,7 @@ double w_gg_tomo(
     exit(1);
   }
 
+  // one row per clustering pair: cache[6] holds the pair count of the tables
   if (NULL == Pl || 
       NULL == w_vec || 
       NULL == Cl || 
@@ -2012,6 +2020,7 @@ double w_gk_tomo(
     exit(1);
   }
 
+  // one row per lens bin: cache[7] holds the bin count of the tables
   if (NULL == Pl ||
       NULL == w_vec || 
       NULL == Cl || 
@@ -2244,6 +2253,7 @@ double w_ks_tomo(
     exit(1);
   }
 
+  // one row per source bin: cache[6] holds the bin count of the tables
   if (Pl == NULL || 
       w_vec == NULL || 
       NULL == Cl || 
@@ -3816,6 +3826,7 @@ double C_ss_tomo_limber(
   static double*** tabc = NULL; // coarse C_ell values
   static double*** cspl = NULL; // natural-cubic-spline c coefficients
 
+  // one row per shear pair: cache[7] holds the pair count of the tables
   if (NULL == table ||
       fdiff2(cache[4], Ntable.random) ||
       cache[7] != (uint64_t) tomo.shear_Npowerspectra)
@@ -5189,6 +5200,7 @@ double C_gs_tomo_limber(
   static double** tabc = NULL; // coarse C_ell values
   static double** cspl = NULL; // natural-cubic-spline c coefficients
 
+  // one row per ggl pair: cache[11] holds the pair count of the tables
   if (NULL == table ||
       fdiff2(cache[6], Ntable.random) ||
       cache[11] != (uint64_t) tomo.ggl_Npowerspectra) {
@@ -6607,6 +6619,7 @@ double C_gg_tomo_limber(
     exit(1);
   }
 
+  // one row per lens bin: cache[7] holds the bin count of the tables
   if (NULL == table ||
       fdiff2(cache[3], Ntable.random) ||
       cache[7] != (uint64_t) redshift.clustering_nbin) {
@@ -7254,6 +7267,7 @@ double C_gk_tomo_limber(const double l, const int ni)
   static double** tabc = NULL; // coarse C_ell values
   static double** cspl = NULL; // natural-cubic-spline c coefficients
 
+  // one row per lens bin: cache[6] holds the bin count of the tables
   if (NULL == table ||
       fdiff2(cache[3], Ntable.random) ||
       cache[6] != (uint64_t) redshift.clustering_nbin) {
@@ -9773,6 +9787,8 @@ static double** C_cl_tomo_core(
                    0 == include_HOD_GX) ? 1 : 0;
   const int SIZE1 = (1 == nlk) ? 3*nbins : nbins; // radial rows
   
+  // the pools below have one row per lens bin (nbins) or per radial row
+  // (SIZE1): the sizes their allocations use, compared directly
   if (NULL == x ||  
       NULL == y || 
       NULL == Fy || 
@@ -14527,8 +14543,10 @@ static void C_gg_cross_tomo_limber_work(
           if (1 == rsd) {
             const double chi_0 = fK;
             const double chi_1 = (ell + 1.0)/k;
-            // a masked node keeps zero kernels, as in the auto work:
-            // stage 3 reads KG at every node, masked or not
+            // stage 3 reads KG at every node and multiplies it by the
+            // mask, so even a masked node must hold a defined value:
+            // zero both kernels first (as the auto work function does)
+            // instead of leaving freshly allocated memory unwritten
             KG[0][n][i][p] = 0.0;
             KG[1][n][i][p] = 0.0;
             if (chi_1 > chi_a_min) {

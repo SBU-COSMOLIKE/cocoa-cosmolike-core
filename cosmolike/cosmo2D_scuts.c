@@ -413,6 +413,7 @@ double dC_ss_dlnk_tomo_limber(
   static double* lxc = NULL;  // coarse ell values
   static double**** tabc = NULL; // coarse dC values
   
+  // one row per shear pair: cache[5] holds the pair count of the tables
   if (NULL == table ||
       fdiff2(cache[4], Ntable.random) ||
       cache[5] != (uint64_t) tomo.shear_Npowerspectra) {
@@ -632,6 +633,7 @@ double dlnC_ss_dlnk_tomo_limber(
   static double* lxc = NULL;  // coarse ell values
   static double**** tabc = NULL; // coarse dC values
   
+  // one row per shear pair: cache[5] holds the pair count of the tables
   if (NULL == table ||
       fdiff2(cache[4], Ntable.random) ||
       cache[5] != (uint64_t) tomo.shear_Npowerspectra) {
@@ -826,6 +828,7 @@ double dC_ks_dlnk_tomo_limber(
   static double* lxc = NULL;  // coarse ell values
   static double*** tabc = NULL; // coarse dC values
 
+  // one row per source bin: cache[5] holds the bin count of the tables
   if (NULL == table ||
       fdiff2(cache[4], Ntable.random) ||
       cache[5] != (uint64_t) redshift.shear_nbin) {
@@ -1014,6 +1017,7 @@ double dlnC_ks_dlnk_tomo_limber(
   static double* lxc = NULL;  // coarse ell values
   static double*** tabc = NULL; // coarse dC values
 
+  // one row per source bin: cache[5] holds the bin count of the tables
   if (NULL == table ||
       fdiff2(cache[4], Ntable.random) ||
       cache[5] != (uint64_t) redshift.shear_nbin) {
@@ -1762,6 +1766,7 @@ double dlnxi_dlnk_pm_tomo(
   static double*** tabc = NULL; // coarse dlnxi values
   static double*** cspl = NULL; // natural-cubic-spline c coefficients
   const int NSIZE = tomo.shear_Npowerspectra;
+  // one row per shear pair: cache[5] holds the pair count of the tables
   if (NULL == table ||
       fdiff2(cache[4], Ntable.random) ||
       cache[5] != (uint64_t) NSIZE) {
@@ -2198,6 +2203,7 @@ double dlnw_ks_dlnk_tomo(
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
+  // one row per source bin: cache[6] holds the bin count of the tables
   if (NULL == table ||
       fdiff2(cache[4], Ntable.random) ||
       cache[6] != (uint64_t) NSIZE) {

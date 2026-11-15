@@ -2545,6 +2545,9 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
     }
     tomo.ggl_exclude[i] = ggl_exclude(i);
   }
+  // a new list changes the ggl layout now, so recount it here instead of
+  // leaving the old count until the next init_ntomo_powerspectra; before
+  // both samples are loaded, the n(z) setup's own recount runs instead
   if (redshift.shear_nbin > 0 &&
       redshift.clustering_nbin > 0) {
     init_ntomo_powerspectra();
@@ -5065,8 +5068,10 @@ void IP::set_inv_cov(std::string cov_filename)
   // So only the kept block is inverted. With a fraction f of the entries
   // kept, that costs f^3 of a full inversion (f = 0.6 makes it about 4.5
   // times cheaper). IPCluster::set_inv_cov inverts the same block.
-  // every variance of the file is positive, kept or masked: a cheap check
-  // that the covariance file is the intended one
+  // every variance of the file must be positive, masked entries included:
+  // the squeeze below drops the masked rows, so this is the last place a
+  // corrupt or mismatched covariance file can be seen whole. The negated
+  // compare also refuses a NaN variance.
   for (int i=0; i<this->ndata_; i++) {
     if (!(this->cov_masked_(i,i) > 0.0)) [[unlikely]] {
       critical("{}: non-positive variance {} at entry {} of {}",

@@ -111,7 +111,10 @@ void reset_cosmology_struct(void)
   cosmology.sigma_8 = 0.0;
   cosmology.lnP_nk = 0;
   cosmology.lnP_nz = 0;
-  // the tables are owned here (one block each); free(NULL) is a no-op
+  // the struct owns these tables (one malloc block each): free them
+  // before dropping the pointers, or every initial_setup of a process
+  // that builds several models leaks the previous model's tables.
+  // free(NULL) is a no-op, so an empty struct passes through unchanged.
   free(cosmology.lnP);
   cosmology.lnP = NULL;
   cosmology.lnPL_nk = 0;

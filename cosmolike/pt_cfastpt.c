@@ -123,8 +123,14 @@ static void fpt_regrid(
 // foreign table, frees it and rebuilds its own grid and spectra.
 // ---------------------------------------------------------------------------
 
-// 1 while FPTIA.tab / FPTbias.tab hold the Python tables set_IA_PS /
-// set_bias_PS installed; a C-FAST-PT rebuild below clears them
+// With nuisance.IA_code = 1 the data vectors read FAST-PT tables that
+// set_IA_PS / set_bias_PS (generic_interface.cpp) install from Python.
+// A covariance call rebuilds the same storage with C-FAST-PT, and the
+// next data vector would then silently read the C tables as if they
+// were the Python ones. These flags record which origin the storage
+// holds: 1 while an installed Python table is in place, cleared when a
+// C-FAST-PT rebuild replaces it. FPT_IA_tables / FPT_bias_tables below
+// refuse a cleared flag and name the setter to call again.
 static int FPTIA_tab_from_python = 0;
 static int FPTbias_tab_from_python = 0;
 
