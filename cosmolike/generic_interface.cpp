@@ -1531,7 +1531,8 @@ void init_baryons_contamination(std::string sim, std::string all_sims_file)
 // dispatches on them, e.g. [0] = b1 evolution: B1_PER_BIN,
 // B1_PER_BIN_EVOLV, B1_PER_BIN_PASS_EVOLV, B1_GROWTH_SCALING,
 // B1_POWER_LAW). Amplitudes arrive separately via set_nuisance_*_bias.
-// No cache key is bumped.
+// A changed code redraws nuisance.random_galaxy_bias, the key of every
+// galaxy-bias consumer.
 //
 // Validation: input size <= MAX_SIZE_ARRAYS and no NaN entries, else
 // critical() + exit(1).
@@ -1565,6 +1566,11 @@ void init_bias(vector bias_z_evol_model)
       critical(errnance2, fname, i, errnance); exit(1);
     }
     const double bias = bias_z_evol_model(i);
+    // every galaxy-bias consumer keys on nuisance.random_galaxy_bias:
+    // redraw it when a model code changes, as init_include_HOD_GX does
+    if (like.galaxy_bias_model[i] != static_cast<int>(bias)) {
+      nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+    }
     like.galaxy_bias_model[i] = bias;
     debug("{}: {}[{}] = {} selected.", fname, "like.galaxy_bias_model", i, bias);
   }
