@@ -5051,6 +5051,16 @@ void IP::set_inv_cov(std::string cov_filename)
   // So only the kept block is inverted. With a fraction f of the entries
   // kept, that costs f^3 of a full inversion (f = 0.6 makes it about 4.5
   // times cheaper). IPCluster::set_inv_cov inverts the same block.
+  // every variance of the file is positive, kept or masked: a cheap check
+  // that the covariance file is the intended one
+  for (int i=0; i<this->ndata_; i++) {
+    if (!(this->cov_masked_(i,i) > 0.0)) [[unlikely]] {
+      critical("{}: non-positive variance {} at entry {} of {}",
+        fname, this->cov_masked_(i,i), i, cov_filename);
+      exit(1);
+    }
+  }
+
   #pragma omp parallel for collapse(2) schedule(static)
   for(int i=0; i<this->ndata_; i++)
   {
