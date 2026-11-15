@@ -162,6 +162,8 @@ class RandomNumber
 // in that order):
 //   mask_                = 0/1 keep flag per full-layout entry
 //   ndata_, ndata_sqzd_  = full and squeezed lengths
+//   ndata_blocks_        = the probe blocks' share of ndata_ when the
+//                          mask was set (a project may append more)
 //   index_sqzd_          = full index -> sqzd index; -1 when masked
 //   data_masked_         = data vector, full length, zeroed off-mask
 //   cov_masked_, inv_cov_masked_
@@ -268,6 +270,9 @@ private:
     int get_ndata() const {
       return this->ndata_;
     }
+    int get_ndata_blocks() const {
+      return this->ndata_blocks_;
+    }
     arma::Col<int> get_mask() const {
       return this->mask_;
     }
@@ -298,6 +303,7 @@ private:
     bool is_inv_cov_set_ = false;
     int ndata_ = 0;
     int ndata_sqzd_ = 0;
+    int ndata_blocks_ = 0;
     std::string mask_filename_;
     std::string cov_filename_;
     std::string data_filename_;
@@ -1576,6 +1582,16 @@ arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
+  // the layout (bins, binning, pair lists) must still be the one the
+  // mask, data and covariance were loaded with
+  arma::Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
+  IP& ip = IP::get_instance();
+  if (arma::accu(sizes) != ip.get_ndata_blocks()) [[unlikely]] {
+    spdlog::critical("{}<{},{}>: the data-vector layout has {} entries but "
+                     "the loaded mask has {}: re-run init_data",
+                     fname, N, M, arma::accu(sizes), ip.get_ndata_blocks());
+    exit(1);
+  }
   arma::Col<double> data_vector(like.Ndata, arma::fill::zeros); 
   compute_X_N_masked<N,0>(data_vector, start(0));
   compute_X_N_masked<N,1>(data_vector, start(1));
@@ -1750,6 +1766,7 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
 
   arma::Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
+  this->ndata_blocks_ = arma::accu(sizes);
   if (0 == like.probe[PROBE_SS]) {
     const int A = start(0);
     const int B = A + sizes(0);
