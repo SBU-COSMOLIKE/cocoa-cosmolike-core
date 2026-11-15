@@ -2260,7 +2260,7 @@ void init_source_sample(std::string multihisto_file, const int Ntomo)
 // tomo.clustering_Npowerspectra = clustering_nbin (auto only).
 //
 // Cache invalidation:
-// bumps tomo.random_ggl, then (when any pair survives)
+// bumps tomo.random_ggl and Ntable.random, then (when any pair survives)
 // touches ZL(0)/ZS(0)/N_ggl so the static pair maps of redshift_spline.c
 // rebuild here, single-threaded - never inside an OpenMP region (see the
 // inline comments).
@@ -2290,6 +2290,9 @@ void init_ntomo_powerspectra()
   // model, then a cosmic-shear model with another ggl_exclude list): a new
   // key makes the static pair maps of redshift_spline.c rebuild.
   tomo.random_ggl = RandomNumber::get_instance().get();
+  // the safety net of the bin-count keys: every table sized by a bin or
+  // pair count also keys on Ntable.random
+  Ntable.random = RandomNumber::get_instance().get();
   int n = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     for (int j=0; j<redshift.shear_nbin; j++) {
