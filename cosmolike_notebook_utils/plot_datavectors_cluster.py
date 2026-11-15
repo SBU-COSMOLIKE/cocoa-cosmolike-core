@@ -1068,10 +1068,12 @@ def plot_sigma_cluster_tomo(theta_sigma, sigma_ref = None, param = None, colorba
     curves told apart by their line style. Without sigma_ref each
     curve is |Sigma| on a log scale; with sigma_ref each curve is
     the fractional difference Sigma / ref - 1. With the Y transform
-    on, the last angular bin of Sigma is identically zero (the last
-    row of T is zero: the transform would need gamma_t beyond the
-    last bin, so that entry carries no signal - it is not a
-    measured zero): it is left out of every curve and of the ratio.
+    on, the last angular bin of Sigma is identically zero by
+    construction: the underlying Y statistic subtracts the profile
+    term at the outermost bin from itself, Y(R_max) = 0 identically
+    (P21 eq. 9), so the last row of T is zero and that entry
+    carries no signal - it is not a measured zero. It is left out
+    of every curve and of the ratio.
 
     Arguments:
       theta_sigma = list of (theta, sigma) pairs, one per list

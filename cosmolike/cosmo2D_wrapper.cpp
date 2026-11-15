@@ -609,9 +609,13 @@ double C_gg_tomo_limber_cpp(
 // This wrapper is not the Fourier data-vector route. That route
 // (generic_interface.hpp) dispatches through C_gg_tomo_ells, which
 // selects the low-rank and cross-pair paths and disables the early exit
-// (tolerance 0); the two share only the LMAX_NOLIMBER cap. The values
-// here are C_l point values at single multipoles - this wrapper does
-// not average over a band.
+// (tolerance 0). The caps differ too: this wrapper and the ordinary
+// FKEM routes stop their non-Limber corrections at
+// limits.LMAX_NOLIMBER, while the low-rank route uses its own cap,
+// lowrank_DD_GG_lmax. A cap decides where the non-Limber correction
+// stops; the tolerance decides whether an evaluation may stop earlier.
+// The values here are C_l point values at single multipoles - this
+// wrapper does not average over a band.
 //
 // Parameters:
 //   l - multipole values; an empty array aborts (spdlog::critical +

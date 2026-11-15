@@ -68,6 +68,9 @@ def gaussian_model(gaussian, nsource):
     the settings' gaussian entry directly, without this resolver, and a
     supplied entry must state nonlimber, rsd and ia explicitly. In a
     forecast, supply a complete gaussian mapping or omit the entry.
+    At assembly, a supplied mapping without rsd raises a KeyError with a
+    corrective message; one without nonlimber or ia raises a bare
+    KeyError when that key is first read.
     """
     # --- 1. THE SUPPLIED MAPPING: ONLY THE SIX KNOWN KEYS ---
 

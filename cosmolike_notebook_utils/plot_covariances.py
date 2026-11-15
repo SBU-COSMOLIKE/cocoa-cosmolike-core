@@ -386,8 +386,11 @@ def plot_covariance_diagonal(theta_arcmin, covariances, panel_labels,
     plot_covariance_components, smaller plotted diagonals alone do not
     establish a smaller marginalized parameter error or a larger FoM:
     those weigh the full inverse covariance against the data-vector
-    derivatives (the Fisher product), where correlated entries add
-    less information than independent ones.
+    derivatives (the Fisher product), and the effect of the ignored
+    correlations depends on the response direction: at fixed
+    diagonals, positive correlation weakens what a common-mode
+    response measures and sharpens what a difference-mode response
+    measures.
     """
     theta = np.asarray(a=theta_arcmin, dtype=float)
     if theta.ndim != 1 or len(theta) == 0 or not np.all(np.isfinite(theta)):

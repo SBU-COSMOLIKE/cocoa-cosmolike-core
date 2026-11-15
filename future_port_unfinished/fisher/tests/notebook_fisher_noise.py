@@ -8,10 +8,14 @@ into CAMB and cosmolike contributions.
                        tables (fiducial + t * CAMB response, perfectly
                        smooth in t); nuisance parameters as in (a)
 
-A FoM(h) that is flat over the tested steps means the derivatives are
-insensitive to the step size there: it bounds the step-dependent noise,
-not errors shared by every variant (stencil truncation, or a numerical
-error common to all three pipelines). Drift with h is the step-size
+A FoM(h) that is flat over the tested steps means the measured scalar
+FoM is stable against the step size there - and only that. The FoM
+compresses the Fisher matrix to one number, so compensating changes in
+the derivative columns can move individual parameter errors while the
+FoM stays fixed; a claim about a derivative or an error needs that
+quantity tracked itself. The comparison also says nothing about errors
+shared by every variant (stencil truncation, or a numerical error
+common to all three pipelines). Drift with h is the step-size
 instability the notebook's "Test 2: Step Size" shows.
 """
 import os

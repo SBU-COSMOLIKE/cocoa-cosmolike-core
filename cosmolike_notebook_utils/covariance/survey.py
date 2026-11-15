@@ -592,7 +592,9 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     model = settings.get("gaussian",
                          {"nonlimber": False, "ia": "none", "rsd": False})
     # A supplied model states the RSD choice: a missing key is an error,
-    # not a silent "no RSD".
+    # not a silent "no RSD". Only rsd has this dedicated message; a
+    # mapping missing nonlimber or ia fails below with a bare KeyError
+    # when that key is first read.
     if "rsd" not in model:
         raise KeyError(
             "settings['gaussian'] has no 'rsd' entry; the Gaussian model "

@@ -1578,8 +1578,12 @@ void limber_spectra_cov(
 // window and shear(ell) = sqrt((ell-1) ell (ell+1) (ell+2))/(ell+1/2)^2
 // the spin-2 factor of limber_spectra_cov. The loop terms multiply only
 // the lens density windows u2 and u3: the magnification and RSD parts
-// of a lens field keep the linear model, the same prescription as the
-// data vector. That restriction is a modeling choice, not an identity -
+// of a lens field retain the baseline matter-spectrum and linear-bias
+// prescription of the input spectra (linear = 0 selects the run-mode
+// P_delta, which can be nonlinear - linear bias and linear power are
+// separate statements), without these additional galaxy-bias loop
+// correlators; the data vector makes the same choice. That restriction
+// is a modeling choice, not an identity -
 // density operators do correlate with lensing and velocity fields, and
 // the one-loop corrections to those legs are of the same order in
 // P_lin - but this routine does not evaluate them. Source-source

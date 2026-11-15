@@ -81,12 +81,15 @@ them; the covariance modules stay separate because covariance
 generation is optional at compilation and its notebooks follow their
 [own guide](covariance/README.md).
 
-How one figure is produced, from a notebook to the screen:
+How one data-vector figure is produced, from a notebook to the
+screen. The return conventions in this diagram belong to the
+`plot_datavectors` families; the other modules follow their own
+contracts, listed with [the plotting conventions](#plotting):
 
 ```mermaid
 flowchart TB
   A["Project notebook: parameters and bins"] --> B["Project wrapper: calls the compiled interface"]
-  B --> C["Shared plotting function: pure numpy and matplotlib"]
+  B --> C["plot_datavectors plotting function: pure numpy and matplotlib"]
   C --> D["show = 1: the figure is drawn"]
   C --> E["show = None: returns fig and axes for the notebook to extend"]
   C --> F["Malformed input: one Bad Input message, returns 0"]
@@ -98,8 +101,8 @@ flowchart TB
 | --- | --- |
 | [camb_cosmology.py](camb_cosmology.py) | `get_camb_cosmology`: one CAMB run packaged into the tuple `set_cosmology` consumes, on the nested grids the likelihoods use. |
 | [plot_datavectors.py](plot_datavectors.py) | Tomographic panel grids of the galaxy/shear data vectors: `plot_C_ss_tomo_limber`, `plot_xi`, `plot_C_gs_tomo_limber`, `plot_gammat_tomo_limber`, `plot_C_gg_tomo`, `plot_wtheta_tomo`, and the baryonic-feedback sweep `plot_baryon_suppression`. |
-| [plot_datavectors_cluster.py](plot_datavectors_cluster.py) | The cluster observables: `plot_N_cluster` counts, cluster lensing (`plot_gammat_cluster_tomo`, `plot_sigma_cluster_tomo`, `plot_C_cs_tomo_limber`), cluster clustering and cluster x galaxy, in the same panel conventions. `plot_sigma_cluster_tomo` receives the already transformed localized cluster-lensing statistic (the data vector's Y operator applied to gamma_t, with calibration and selection factors); its last angular bin has no transformed value and is omitted, and the [covariance guide](covariance/README.md#real_space_and_fourier_assembly) defines the transformation. |
-| [plot_response.py](plot_response.py) | `plot_response_function`: how each data-vector entry responds to the matter power spectrum, as d ln DV / d ln k curves and cumulative R(k_max). |
+| [plot_datavectors_cluster.py](plot_datavectors_cluster.py) | The cluster observables: `plot_N_cluster` counts, cluster lensing (`plot_gammat_cluster_tomo`, `plot_sigma_cluster_tomo`, `plot_C_cs_tomo_limber`), cluster clustering and cluster x galaxy, in the same panel conventions. `plot_sigma_cluster_tomo` receives the already transformed localized cluster-lensing statistic (the data vector's Y operator applied to gamma_t, with calibration and selection factors); its last angular bin is a constructed zero, not a measured zero signal (the operator subtracts the outermost bin's estimate from itself), and is omitted from the curves; the [covariance guide](covariance/README.md#real_space_and_fourier_assembly) defines the transformation. |
+| [plot_response.py](plot_response.py) | `plot_response_function`: how each data-vector entry responds to the matter power spectrum. It draws the arrays the notebook wrappers compute: local response curves (the entry's contribution per logarithmic wavenumber interval, divided by the fixed full entry) and the accumulated absolute fraction RF(k_max), normalized by the total over the finite response table so it rises from 0 to 1 for a nonzero entry. The optional peak division is display-only. |
 | [fisher.py](fisher.py) | Finite-difference and derivkit derivatives of a supplied data-vector function (`get_ddv`, `get_ddv_dkit`), Fisher assembly (`get_Fisher`, `get_Fisher2`), `get_FoM`, Gaussian priors and getdist contour plots (`plot_Fisher`). |
 | [plot_nz_reconstruction.py](plot_nz_reconstruction.py) | `plot_nz_four_reconstructions`: regenerate the manual study’s two-panel figure from saved compiled-reader samples and bin-area measurements; no cosmology calculation. |
 | [plot_covariances.py](plot_covariances.py) | Covariance figures from supplied arrays: split correlation triangles, component maps and histograms, and standard deviations per angular or multipole bin. |
@@ -130,8 +133,10 @@ units; `help(cnu.plot_xi)` in a notebook prints them.
 - **Figures are evidence, not decoration.** A plotting function never
   modifies its input arrays; what it draws is a stated per-family
   display statistic of them (see
-  [the plotting conventions](#plotting)). Masking an undefined ratio
-  is display-only, and no covariance is repaired to look positive.
+  [the plotting conventions](#plotting)). An undefined ratio point is
+  left undefined rather than repaired (the docstrings state each
+  family's zero-reference behavior), and no covariance is repaired to
+  look positive.
 
 # The plotting conventions <a name="plotting"></a>
 
@@ -347,8 +352,11 @@ Cocoa's STIX/retina setup) apply to every figure uniformly.
 
 Plot a quantity against its own reference first: the drawn ratio is
 value/reference - 1, so a self-reference must sit at exactly zero
-wherever the reference is nonzero; bins with a zero reference are
-masked for display, not repaired. The `ylim` band of the ratio mode is
+wherever the reference is nonzero. A zero reference is not repaired:
+the galaxy plotters divide directly, so a nonzero value over a zero
+reference runs to infinity (off the panel) and 0/0 gives NaN, which
+matplotlib does not draw; the cluster plotters set zero references to
+NaN before dividing. The `ylim` band of the ratio mode is
 typed around 1 and drawn as ylim - 1, so it brackets that zero line.
 For covariances, `covariance.diagnostics.covariance_modes` reports the
 correlation eigenvalues of the matrix a figure summarizes; a plot can

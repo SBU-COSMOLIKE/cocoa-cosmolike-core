@@ -28,9 +28,12 @@ Conventions every panel plotter shares:
   difference (value/reference - 1) on one shared linear band, and
   the panels are glued edge to edge (zero subplot spacing).
 - A fractional difference compares shapes and amplitudes point by
-  point, nothing more. The reference is taken as exact, the ratio
-  divides by it directly (a zero of the reference sends the drawn
-  point to infinity), and no covariance enters: a large excursion
+  point, nothing more. The reference is taken as exact and the
+  ratio divides by it directly: a zero of the reference makes the
+  drawn point nonfinite (infinity for a nonzero numerator, NaN for
+  0/0), which is not a finite residual and may simply be omitted by
+  the display (the cluster helper instead replaces zero references
+  by NaN before dividing). No covariance enters: a large excursion
   near a zero of the reference need not be statistically
   significant, and the visual separation of curves does not measure
   a parameter constraint - that weighing happens in the Fisher and

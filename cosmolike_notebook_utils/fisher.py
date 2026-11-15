@@ -226,10 +226,14 @@ def get_Fisher(ddv, CV=None, h=0.02, AccuracyBoost=3.1, priors=None,
     # covariance weights coherent changes of the predictions: two
     # parameters with nearly parallel derivative columns move the
     # data the same way, so the data constrain their combination
-    # rather than each one (a degeneracy only F^-1 exposes), and
-    # entries whose fluctuations are strongly correlated add less
-    # information than independent ones. Visual curve separation in
-    # the data-vector plots measures none of this.
+    # rather than each one (the degeneracy shows up as nearly
+    # dependent columns of D, as a small eigenvalue of F, and as
+    # large entries of F^-1). How correlations between data entries
+    # change the information depends on the direction of the
+    # response: at fixed per-entry variances, positive correlation
+    # weakens what a common-mode response measures and sharpens
+    # what a difference-mode response measures. Visual curve
+    # separation in the data-vector plots measures none of this.
     F = D.T @ (invcov @ D)
     if priors is not None:
         F = add_gaussian_priors(F=F, priors=priors)

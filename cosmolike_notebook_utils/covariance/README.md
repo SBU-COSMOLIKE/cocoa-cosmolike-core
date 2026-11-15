@@ -242,9 +242,22 @@ legs or shared-object noise terms. A full cluster joint matrix also
 needs cluster SSC/cNG, count–cluster-spectrum terms, consistent catalog
 normalizations and the project's estimator transforms.
 
-Cluster lensing can be expressed as the localized statistic
-$`Y(R)=\Sigma(R)-\Sigma(R_{\max})`$. The angular transformation removes
-the dependence on mass interior to the measured radius. If a mean vector
+Cluster lensing can be localized. Two distinct objects carry that
+idea, so this guide keeps separate symbols for them. The physical
+surface-density statistic is
+$`Y(R)=\Sigma(R)-\Sigma(R_{\max})`$: it removes the dependence on mass
+interior to the measured radius. What the forecast transforms is the
+represented angular statistic $`y_\gamma=A\,\gamma_t`$, with $`A`$ the
+project's dimensionless angular operator acting on the
+tangential-shear bin means. In the illustrative single-lens-plane
+limit with one constant critical surface density, where
+$`\gamma_t=\Delta\Sigma/\Sigma_{\rm crit}`$, linearity gives
+$`y_\gamma=Y(R)/\Sigma_{\rm crit}`$: the $`\Sigma_{\rm crit}`$ factor
+stays in the normalization, and $`y_\gamma`$ is dimensionless because
+$`A`$ acts on shear without converting it to a surface density. A
+broad redshift selection has no single constant
+$`\Sigma_{\rm crit}`$; the supplied operator, not that limit, defines
+the statistic. If a mean vector
 changes as $`y=A x`$, its covariance changes as $`C_y=A C_x A^{\mathsf T}`$.
 Here $`A`$ acts on cluster-lensing angular rows and leaves the other
 measurements unchanged. Consequently a count–lensing block receives one
@@ -261,10 +274,13 @@ from angle to physical radius. The surface-density identity above
 motivates the localization; the project's operator sets what the
 transformed statistic represents. Supply every unmasked angular bin: the
 derivative stencil can read neighboring bins outside the final scale
-selection. The last output bin is exactly zero because it subtracts
-$`\Sigma(R_{\max})`$ from itself. That known null mode remains in the
-returned matrix. Apply the likelihood's selection afterwards; no
-eigenvalue correction is part of the transformation.
+selection. The last output bin of $`y_\gamma`$ is exactly zero by
+construction: the operator subtracts the outermost retained bin's
+estimate from itself, the angular analogue of
+$`Y(R_{\max})=\Sigma(R_{\max})-\Sigma(R_{\max})=0`$. It is a
+constructed zero, not a measured zero signal. That known null mode
+remains in the returned matrix. Apply the likelihood's selection
+afterwards; no eigenvalue correction is part of the transformation.
 
 `survey.realspace_covariance` and `survey.fourier_covariance` receive an initialized project interface,
 resolved integration settings, the observable row map and catalog noise.

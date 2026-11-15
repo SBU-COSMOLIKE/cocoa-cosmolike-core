@@ -58,9 +58,11 @@ SETTINGS = (("cspline/Z_LOW (default)", 0, 0), ("linear", 1, 0),
 # grows without bound where the reference signal crosses zero, and a
 # fixed range keeps the broad offsets readable while those spikes run
 # off-panel. The figures therefore show a chosen band, not a bound on
-# the whole vector: a clipped spike marks a near-zero reference
-# entry, and the panels say nothing about its covariance-weighted
-# size. On the frozen fiducial the Z_MID half-cell shift produces
+# the whole vector: a clipped point only says the ratio lies outside
+# the displayed range - a near-zero reference entry is the common
+# cause, but a large change in the numerator clips the same way - and
+# the panels say nothing about its covariance-weighted size. On the
+# frozen fiducial the Z_MID half-cell shift produces
 # percent-level offsets and the interpolant differences are
 # 1e-4-level, which sets the two ranges.
 ZMID_YLIM = 4.0

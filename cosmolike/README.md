@@ -307,11 +307,24 @@ the cut:
 ```
 
 The derivative symbol here means a contribution density, not a slope of
-a plotted curve: $`X(k_{\rm max})`$ is the observable computed with the
-power spectrum cut at $`k_{\rm max}`$, and $`d\ln X/d\ln k`$ is the
-logarithmic rate at which the observable builds up as the cut moves.
-The absolute value is taken **before** integrating, so contributions of
-opposite sign cannot cancel out of the fraction. A data point is kept
+a plotted curve. At fixed $`\ell`$ or $`\theta`$ the observable is a
+wavenumber integral, $`X=\int I_X(k)\,d\ln k`$, each logarithmic
+interval contributing the piece $`I_X(k)`$ of the projected signal. The
+code tabulates the response $`r(k)=I_X(k)/X`$, where $`X`$ is the
+**full, uncut** observable, computed once before any division:
+$`d\ln X/d\ln k`$ abbreviates this $`r(k)`$.
+
+Writing $`S(K)=\int_{k<K}\lvert I_X(k)\rvert\,d\ln k`$, the implemented
+fraction is $`\mathrm{RF}(k_{\rm max})=S(k_{\rm max})/S(k_{\rm hi})`$
+over the finite tabulated range (the fixed denominator $`X`$ cancels in
+the ratio; RF is 0 below that range and 1 above it for a row whose
+response is not identically zero). The absolute value is applied to the
+density **before** integrating, so contributions of
+opposite sign cannot cancel out of the fraction. Two similar-looking
+objects must not be confused: the rate at which the cut observable
+builds up is $`dX({<}K)/d\ln K=I_X(K)`$, while
+$`d\ln X({<}K)/d\ln K=I_X(K)/X({<}K)`$ carries the moving cumulative in
+its denominator — the code never divides by the cumulative. A data point is kept
 when $`\mathrm{RF}\geq\alpha`$ (0.95 in that
 paper), so at most the fraction $`1-\alpha`$ of its response comes from
 beyond the cut. The derivative is tabulated through the Limber relation
@@ -486,9 +499,10 @@ the default switching multipole of 150. Two provisions address this:
   and the FKEM path computes the installed cross pairs in the same
   transform run as the autos.
 - The **low-rank engine** (likelihood keys `nonlimber_lowrank_gg`,
-  `nonlimber_lowrank_rank`, `nonlimber_lowrank_lmax`) removes the
-  Limber hand-off from the density–density term below its own
-  multipole cap `nonlimber_lowrank_lmax`; above the cap, and for a bin
+  `nonlimber_lowrank_rank`, `nonlimber_lowrank_lmax`) projects a
+  finite-rank positive density reference beyond Limber below its own
+  multipole cap `nonlimber_lowrank_lmax`, retaining the Limber
+  residual described below; above the cap, and for a bin
   whose spectrum has already converged to Limber, the calculation
   returns to the Limber prediction. A singular
   value decomposition writes the square root of the one-loop
@@ -679,12 +693,19 @@ the model does not trust. The combination
 $`Y(R)=\Sigma(R)-\Sigma(R_{\max})`$, where $`\Sigma`$ is the projected
 surface density, removes the enclosed-mass contribution: $`Y`$ depends
 only on the profile between $`R`$ and the outermost analysis radius
-$`R_{\max}`$. Because $`\gamma_t`$ is $`\Delta\Sigma/\Sigma_{\rm crit}`$
-with a constant $`\Sigma_{\rm crit}`$ per bin pair, the code applies
-$`Y`$ as a linear matrix acting directly on the $`\gamma_t`$ angular
-bins, and $`\Sigma_{\rm crit}`$ cancels: the transformed statistic is
-dimensionless like $`\gamma_t`$, not a surface mass density in mass per
-area, despite the symbol $`\Sigma`$ some outputs carry.
+$`R_{\max}`$. Because $`\gamma_t`$ is $`\Delta\Sigma/\Sigma_{\rm crit}`$,
+the same combination of integral and derivative can act on the shear
+directly: the code applies a dimensionless linear matrix to the
+$`\gamma_t`$ angular bins. In the illustrative single-lens-plane limit,
+where one constant $`\Sigma_{\rm crit}`$ serves a bin pair, the result
+equals $`Y(R)/\Sigma_{\rm crit}`$: the critical surface density is not
+removed by the angular matrix — it stays in the normalization exactly
+as it does in $`\gamma_t`$ itself. The transformed statistic is
+dimensionless like $`\gamma_t`$ because no conversion to a physical
+surface density is applied, despite the symbol $`\Sigma`$ some outputs
+carry; for a broad source selection no single constant
+$`\Sigma_{\rm crit}`$ exists, and the supplied angular operator simply
+acts on the shear representation as it is.
 
 Two consequences matter when reading a transformed vector. The last
 angular bin of every transformed row is identically zero because

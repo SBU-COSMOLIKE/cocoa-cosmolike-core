@@ -1,20 +1,28 @@
 """Response-function plots shared by the EXAMPLE_EVALUATE notebooks.
 
 Curves of a data vector's response to the matter power spectrum as a
-function of wavenumber k. For one data-vector entry DV (one multipole
+function of wavenumber k. For one data-vector entry X (one multipole
 ell or one angular bin theta of one bin pair), the Limber integral
-can be rewritten as DV = int I(k) dln k, so each logarithmic
-wavenumber interval contributes I(k) dln k. Two kinds of curve share
-this figure:
+can be rewritten as X = int I_X(k) dln k, so each logarithmic
+wavenumber interval contributes I_X(k) dln k. Two kinds of curve
+share this figure:
 
-- the local response d ln DV / d ln k = I(k)/DV: the fractional
-  contribution of the matter power at wavenumber k to that entry,
-  per unit ln k. It is a contribution density of the data vector,
-  not the spectral slope d ln P / d ln k of the power spectrum.
-- the cumulative response R(k_max): the integral of
-  |d ln DV / d ln k| over ln k up to k_max (arXiv:2011.06469,
-  eq. 17), which rises toward a constant once k_max passes every
-  scale that contributes to the entry.
+- the local response r(k) = I_X(k)/X, written d ln DV / d ln k on
+  the notebooks' axis labels: the fractional contribution of the
+  matter power at wavenumber k to that entry, per unit ln k. X is
+  the full, uncut observable, computed once - the denominator does
+  not move with any cut - and r is a contribution density of the
+  data vector, not the spectral slope d ln P / d ln k of the power
+  spectrum.
+- the cumulative response RF(k_max) = S(k_max)/S(k_hi), with
+  S(K) = int_{k<K} |I_X| dln k and [k_lo, k_hi] the finite range
+  the responses are tabulated on (arXiv:2011.06469, eq. 17; the
+  common factor X cancels in the ratio). RF is the fraction of the
+  entry's total absolute logarithmic response contributed by
+  k < k_max: it rises monotonically from 0 at k_lo to 1 at k_hi.
+  A row whose response is identically zero has no such fraction;
+  the harmonic workers return 0 for it instead of dividing zero by
+  zero.
 
 The notebooks compute both arrays with their own interface-bound
 functions and hand the finished arrays here: this module takes no
@@ -103,11 +111,11 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
     The label picks a slice of the response array (a multipole ell,
     or an angular bin theta) and sets the color; the diagonal
     tomographic bin (i, i) sets the dash pattern. The same figure
-    serves the local response d ln DV / d ln k (normalize=True
-    divides each curve by its own maximum) and the cumulative
-    response R(k_max) (normalize=False plots the array as given);
-    the module docstring defines both quantities, which the caller
-    computes.
+    serves the local response r(k) (axis label d ln DV / d ln k;
+    normalize=True divides each curve by its own maximum) and the
+    cumulative response RF(k_max) (normalize=False plots the array
+    as given); the module docstring defines both quantities, which
+    the caller computes.
 
     Arguments:
       k      = wavenumbers in h/Mpc (the x axis).

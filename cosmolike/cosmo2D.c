@@ -5795,8 +5795,10 @@ double C_gg_tomo_limber_nointerp(
 //                   linear spectrum, b1 only (NULL: not computed)
 //
 // Why one call can fill several: the non-Limber split needs every term
-// at the same multipoles, and they differ only in PK (and in the one-loop
-// terms, which the linear term never has) and in which kernel rows the
+// at the same multipoles, and they differ only in PK, in the one-loop
+// galaxy-bias templates (which only the full and DD outputs carry; the
+// enabled counterterm and velocity-loop pieces of the ledger above
+// ride separate sums below) and in which kernel rows the
 // squared weight keeps. The nodes, the radial weights and the RSD kernel
 // with its mask - the a_chi and W_RSD lookups that dominate the cost -
 // are computed once and summed once per requested output. Each output's
@@ -6196,14 +6198,18 @@ static void C_gg_tomo_limber_work(
 
       // o = 0: the full model into table (PK = P_delta);
       // o = 1: the linear term into table_lin (PK = the separable P_lin;
-      //        no HOD and no one-loop bias, so always the plain sum);
+      //        no HOD and no one-loop galaxy bias, so its base is the
+      //        plain sum - the enabled counterterm and velocity-loop
+      //        additions follow in their own sums below);
       // o = 2: the DD part of the full model into table_dd (PK =
       //        P_delta, kernel W_gal*b1 alone, one-loop terms kept);
       // o = 3: the DD part of the linear term into table_dd_lin (PK =
       //        the separable P_lin, kernel W_gal*b1 alone).
       // The DD sums keep the RSD reach mask of the full sums: the pair
-      // (full - DD) must isolate exactly the magnification and RSD rows,
-      // so both sides drop the same masked nodes.
+      // (full - DD) must recover the magnification and RSD rows plus
+      // the intended density residual (the constant of the DD branch
+      // below) and nothing else, so both sides drop the same masked
+      // nodes.
       for (int o=0; o<4; o++) {
         double** out = (0 == o) ? table :
                        (1 == o) ? table_lin :
@@ -6281,13 +6287,17 @@ static void C_gg_tomo_limber_work(
           // The full output sums the subtracted P_sub and this DD
           // output the unsubtracted P_unsub, so C_l(full) - C_l(DD) is
           // the magnification and RSD rows minus the Limber projection
-          // of A - minus, not plus, because the add-back sits here. A
-          // is a signed, deterministic renormalization constant, not a
-          // catalogue shot-noise variance. Its Limber and non-Limber
-          // projections agree for the full k integral (Bessel
-          // closure), which is what lets the splice restore it through
-          // its Limber terms; the IR k window breaks that identity,
-          // and C_gg_kwindow_white_noise_ells repairs it.
+          // of A - minus, not plus, because the add-back sits here.
+          // The restored term is P_wn = -A: a deterministic
+          // renormalization constant, not a catalogue shot-noise
+          // variance. In this auto formula A >= 0; the cross-pair
+          // counterpart carries one c from each bin and can take
+          // either sign (C_gg_cross_tomo_limber_work). A constant's
+          // Limber and non-Limber projections agree for the full k
+          // integral (Bessel closure), which is what lets the splice
+          // restore it through its Limber terms; the IR k window
+          // breaks that identity, and C_gg_kwindow_white_noise_ells
+          // repairs it.
           const double* restrict growfac = cn->data[CN_GROWFAC];
           const double* restrict b2   = WO[0][zl];
           const double* restrict bs2  = WO[1][zl];
@@ -13791,11 +13801,13 @@ void unset_gg_kwindow(void)
 // the two cancel and the subtracted spectrum vanishes as k -> 0.
 //
 // The low-rank engine cannot project the subtracted spectrum: its
-// factorization needs sqrt(P_gg), which exists only for the positive
-// raw sum (the factorization is per bin, where c_i = c_j makes
-// P_wn < 0 and the subtracted spectrum crosses zero at high k). The
-// engine therefore projects the raw sum non-Limber and restores P_wn
-// through its Limber splice. Without a window, restoring this one
+// factorization needs sqrt(P_gg), and the subtraction can drive the
+// subtracted spectrum negative - per bin c_i = c_j gives P_wn < 0,
+// so a strongly biased sample crosses zero at high k. Removing the
+// subtraction makes the raw sum positive in far more cases; it is not
+// a guarantee, and the decomposition's floor guards the remainder
+// (C_gg_lowrank_decomp_work). The engine therefore projects the raw
+// sum non-Limber and restores P_wn through its Limber splice. Without a window, restoring this one
 // k-independent term through Limber is exact, because a constant
 // power projects locally: by the closure relation of the spherical
 // Bessel functions,
@@ -14475,10 +14487,14 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //    becomes (b1_i b2_j + b2_i b1_j)/2 P_d1d2, so a pair of a bin
 //    with itself would reproduce the auto exactly.
 //
-//    The loop terms are density correlators, so they multiply the
-//    density weights W_gal of both bins and never the RSD rows. Both
-//    bins' biases are read at the same node, because Limber evaluates
-//    both kernels at one comoving distance.
+//    This model places its additional galaxy-bias loop terms in the
+//    density-density block alone: they multiply the density weights
+//    W_gal of both bins and never the RSD rows. That is a
+//    prescription, not a property of density operators - density
+//    operators do correlate with velocity fields, and the
+//    magnification comment in the loop below makes the same point for
+//    the lensing rows. Both bins' biases are read at the same node,
+//    because Limber evaluates both kernels at one comoving distance.
 //
 // 5. With one-loop bias, the DD output is not the full sum with the
 //    RSD rows dropped. It is W_gal_i W_gal_j sqrt(P_g,i P_g,j), where
@@ -14491,9 +14507,11 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //    that never cancels.
 //
 //    Each bin's P_g here is the factorization's spectrum: the one-loop
-//    templates without their sigma4 subtractions, which keeps it
-//    positive (C_gg_lowrank_decomp_work explains why), with the same
-//    floor, max(P_g, 1e-15 b1^2 P_delta), as a guard.
+//    templates without their sigma4 subtractions, which helps keep it
+//    positive without guaranteeing it (C_gg_lowrank_decomp_work
+//    explains why). The same floor, max(P_g, 1e-15 b1^2 P_delta),
+//    guarantees the numerical square root; when it fires it changes
+//    the represented spectrum.
 //
 //    The full output keeps the physical bilinear spectrum with the
 //    subtractions. The Limber splice adds the difference back: the

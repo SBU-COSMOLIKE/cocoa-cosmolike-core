@@ -867,9 +867,15 @@ arma::Col<int>::fixed<cluster_block::count> compute_data_vector_cluster_starts()
            = int_{ln R}^{ln R_max} dln R' [2 DSigma + dDSigma/dln R']
       (P21 eq 9). The integrand removes the enclosed mass: Y at R depends
       only on the profile between R and R_max.
-   2. With R = f_K(chi(zbar)) theta the map is the same in ln theta, and
-      gamma_t = DSigma/Sigma_crit with Sigma_crit constant per block, so
-      T acts on gamma_t directly (P21 eq 12) and Sigma_crit cancels.
+   2. With R = f_K(chi(zbar)) theta the map is the same in ln theta.
+      The stored statistic is T acting on gamma_t itself (P21 eq 12):
+      T is a dimensionless angular matrix applied to the shear, so the
+      result is dimensionless because nothing converts it to a surface
+      density - the 1/Sigma_crit inside gamma_t remains. In the
+      illustrative single-lens-plane limit with one constant Sigma_crit
+      per block, gamma_t = DSigma/Sigma_crit and the output is
+      Y/Sigma_crit; for broad redshift selections no single Sigma_crit
+      applies, and T is simply the supplied angular operator.
    3. The bins are uniform in ln theta, Delta = ln(theta_max/theta_min)/N
       (the area-weighted centers are uniform in ln theta too).
    4. S = trapezoid rule from theta_i to theta_max (P21 eq 10):
@@ -879,9 +885,12 @@ arma::Col<int>::fixed<cluster_block::count> compute_data_vector_cluster_starts()
       stencils of half-width min(i, N-1-i, 4) (orders 2 to 8), the
       one-sided 5-point stencil in rows 0 and N-1.
    6. T = 2 S + S D (lighthouse cluster_util.c T_Ytransform).
-   Consequence: row N-1 of T is zero (the last theta bin of every cs row
-   carries no information), and Y at bin i reads gamma_t down to bin
-   i - 4: gamma_t is needed at every bin, masked or not. */
+   Consequence: row N-1 of T is zero. That entry is the endpoint
+   subtraction evaluated at its own endpoint, Y(R_max) = Sigma(R_max)
+   - Sigma(R_max): a zero by construction, not a measured zero, so the
+   last theta bin of every cs row carries no information. And Y at bin
+   i reads gamma_t down to bin i - 4: gamma_t is needed at every bin,
+   masked or not. */
 // ---------------------------------------------------------------------------
 matrix compute_cluster_ytransform_matrix()
 {
