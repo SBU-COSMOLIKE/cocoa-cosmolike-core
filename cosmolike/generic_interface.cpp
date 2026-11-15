@@ -4268,6 +4268,20 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
   }
   else if (nuisance.IA == IA_REDSHIFT_EVOLUTION)
   {
+    // the power law reads A1(0), A1(1), A2(0), A2(1) and BTA(0)
+    if (A1.n_elem < 2 ||
+        A2.n_elem < 2) [[unlikely]] {
+      critical("{}: the IA power law needs two entries of A1 and A2 "
+               "(amplitude, redshift exponent)", fname);
+      exit(1);
+    }
+    if (std::isnan(A1(0)) ||
+        std::isnan(A1(1)) ||
+        std::isnan(A2(0)) ||
+        std::isnan(A2(1)) ||
+        std::isnan(BTA(0))) [[unlikely]] {
+      critical(errnance2, fname, 0, errnance); exit(1);
+    }
     nuisance.oneplusz0_ia = 1.62;
     if (fdiff(nuisance.ia[0][0],A1(0)) ||
         fdiff(nuisance.ia[0][1],A1(1)) ||

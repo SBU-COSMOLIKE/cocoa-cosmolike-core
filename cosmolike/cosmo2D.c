@@ -13405,6 +13405,14 @@ void set_gg_cross_pairs(
               npairs, GG_CROSS_MAX_PAIRS);
     exit(1);
   }
+  // the k window holds one threshold per pair (gg_kwin.Kpair): a new list
+  // would leave its consumers reading the old one
+  if (1 == gg_kwin.active &&
+      npairs > 0) {
+    log_fatal("the gg cross pairs cannot change while the k window is on "
+              "(unset_gg_kwindow first)");
+    exit(1);
+  }
   for (int n=0; n<npairs; n++) {
     if (bi[n] < 0 ||
         bj[n] <= bi[n] ||

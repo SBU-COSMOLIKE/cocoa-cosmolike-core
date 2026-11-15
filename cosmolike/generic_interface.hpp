@@ -210,7 +210,7 @@ private:
 
     int get_mask(const int ci) const {
       static constexpr std::string_view fn = "IP::get_mask"sv;
-      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+      if (ci >= like.Ndata || ci < 0) [[unlikely]] {
         spdlog::critical(errornv, fn, ci, 0, like.Ndata); exit(1);
       }
       return this->mask_(ci);
@@ -218,7 +218,7 @@ private:
 
     double get_dv_masked(const int ci) const {
       static constexpr std::string_view fn = "IP::get_dv_masked"sv;
-      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+      if (ci >= like.Ndata || ci < 0) [[unlikely]] {
         spdlog::critical(errornv,fn,ci,0,like.Ndata); exit(1);
       }
       return this->data_masked_(ci);
@@ -226,11 +226,11 @@ private:
 
     double get_inv_cov_masked(const int ci, const int cj) const {
       static constexpr std::string_view fn = "IP::get_inv_cov_masked"sv;
-      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+      if (ci >= like.Ndata || ci < 0) [[unlikely]] {
         spdlog::critical(errornv,fn,ci,0,like.Ndata);
         exit(1);
       }
-      if (cj > like.Ndata || cj < 0) [[unlikely]] {
+      if (cj >= like.Ndata || cj < 0) [[unlikely]] {
         spdlog::critical(errornv,fn,cj,0,like.Ndata); exit(1);
       }
       return this->inv_cov_masked_(ci,cj);
@@ -238,7 +238,7 @@ private:
 
     int get_index_sqzd(const int ci) const {
       static constexpr std::string_view fn = "IP::get_index_sqzd"sv;
-      if (ci > like.Ndata || ci < 0) [[unlikely]] {
+      if (ci >= like.Ndata || ci < 0) [[unlikely]] {
         spdlog::critical(errornv, fn, ci, 0, like.Ndata); exit(1);
       }
       return this->index_sqzd_(ci);
@@ -246,19 +246,19 @@ private:
 
     double get_dv_masked_sqzd(const int ci) const {
       static constexpr std::string_view fn = "IP::get_dv_masked_sqzd"sv;
-      if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical(errornv, fn, ci, 0, like.Ndata); exit(1);
+      if (ci >= this->ndata_sqzd_ || ci < 0) [[unlikely]] {
+        spdlog::critical(errornv, fn, ci, 0, this->ndata_sqzd_); exit(1);
       }
       return this->data_masked_sqzd_(ci);
     }
 
     double get_inv_cov_masked_sqzd(const int ci, const int cj) const {
       static constexpr std::string_view fn = "IP::get_dv_masked_sqzd"sv;
-      if (ci > like.Ndata || ci < 0) [[unlikely]] {
-        spdlog::critical(errornv, fn, ci, 0, like.Ndata); exit(1);
+      if (ci >= this->ndata_sqzd_ || ci < 0) [[unlikely]] {
+        spdlog::critical(errornv, fn, ci, 0, this->ndata_sqzd_); exit(1);
       }
-      if (cj > like.Ndata || cj < 0) [[unlikely]] {
-        spdlog::critical(errornv, fn, cj, 0, like.Ndata); exit(1);
+      if (cj >= this->ndata_sqzd_ || cj < 0) [[unlikely]] {
+        spdlog::critical(errornv, fn, cj, 0, this->ndata_sqzd_); exit(1);
       }
       return this->inv_cov_masked_sqzd_(ci,cj);
     }
@@ -436,10 +436,10 @@ public:
       const int lmax = this->get_lmax_kk_bandpower();
       const int lmin = this->get_lmin_kk_bandpower();
       const int ncl  = lmax - lmin + 1;
-      if (ci > nbp || ci < 0) [[unlikely]] {
+      if (ci >= nbp || ci < 0) [[unlikely]] {
         spdlog::critical(errornv, fn, ci, 0, nbp); exit(1);
       }
-      if (cj > ncl || cj < 0) [[unlikely]] {
+      if (cj >= ncl || cj < 0) [[unlikely]] {
         spdlog::critical(errornv, fn, cj, 0, ncl); exit(1);
       }
       return this->params_->binning_matrix_kk[ci][cj];
@@ -451,7 +451,7 @@ public:
         spdlog::critical(errornset, fn, "is_kk_offset_set_"); exit(1);
       }
       const int nbp = this->get_nbins_kk_bandpower();
-      if (ci > nbp || ci < 0) [[unlikely]] {
+      if (ci >= nbp || ci < 0) [[unlikely]] {
         spdlog::critical(errornv, fn, ci, 0, nbp); exit(1);
       }
       return this->params_->theory_offset_kk[ci];

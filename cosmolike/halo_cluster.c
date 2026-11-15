@@ -1969,6 +1969,7 @@ static void cluster_p1h_table(void)
     p1h_.nl_bins = cl_.nl_bins;
     p1h_.n_mass  = cl_.n_mass;
     p1h_.n_a     = cl_.n_a;
+    p1h_.k_warned = 0; // a new table gets its own coverage warning
 
     // uniform ln k nodes from ln k_min (node K_PAD) past ln k_max (node
     // k_last), K_PAD pads beyond each end
