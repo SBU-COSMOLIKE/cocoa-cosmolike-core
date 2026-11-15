@@ -158,6 +158,10 @@ void get_FPT_IA(void);
 
 void get_FPT_bias(void);
 
+// the one-loop velocity templates of the nonlinear Kaiser terms
+// (FPTkaiser.tab), rebuilt when the cosmology or Ntable changes
+void get_FPT_kaiser(void);
+
 // set_IA_PS / set_bias_PS (generic_interface.cpp) installed the Python
 // FAST-PT tables (nuisance.IA_code = 1)
 void set_FPT_IA_from_python(void);

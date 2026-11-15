@@ -358,6 +358,321 @@ void get_FPT_bias(void)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// NONLINEAR KAISER: THE ONE-LOOP VELOCITY TEMPLATES
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The angular bracket B(r) of a one-loop propagator (P13-type) term,
+// r = q/k: which = 0 for the density, P13_dd, which = 1 for the
+// velocity divergence, P13_tt (the forms of Carlson, White and
+// Padmanabhan 2009, arXiv:0905.0479):
+//
+//   B(r) = c_0/r^2 + c_1 + c_2 r^2 + c_3 r^4
+//          + 3 E(r)/r^3 ln|(1 + r)/(1 - r)|,
+//   E(r) = sum_p e_p r^(2p), p = 0..4 (the polynomial (r^2 - 1)^3 times
+//          7 r^2 + 2 for the density, r^2 + 2 for the velocity).
+//
+// Far from r = 1 the polynomial and the logarithm cancel to many digits,
+// so below R_LO and above R_HI the series of the logarithm,
+// ln|(1+r)/(1-r)| = 2 sum_n x^(2n+1)/(2n+1) with x = r or 1/r, is summed
+// term by term instead; the cancelling powers are dropped exactly.
+// ---------------------------------------------------------------------------
+static double fpt_kaiser_bracket(const double r, const int which)
+{
+  static const double cpoly[2][4] = {{12.0, -158.0, 100.0, -42.0},
+                                     {12.0, -82.0, 4.0, -6.0}};
+  static const double epoly[2][5] = {{-2.0, -1.0, 15.0, -19.0, 7.0},
+                                     {-2.0, 5.0, -3.0, -1.0, 1.0}};
+  const double R_LO = 0.1;  // series in r^2 below
+  const double R_HI = 10.0; // series in 1/r^2 above
+  const int NSERIES = 16;   // terms: the last one is below 1e-30 of B
+  const double* c = cpoly[which];
+  const double* e = epoly[which];
+
+  if (r < R_LO) {
+    // coefficient of r^(2m): c_(m+1) + 6 sum_p e_p/(2(m - p) + 3)
+    double sum = 0.0;
+    double r2m = 1.0;
+    for (int m=0; m<NSERIES; m++) {
+      double s = (m <= 2) ? c[m + 1] : 0.0;
+      for (int p=0; p<=4 && p<=m+1; p++) {
+        s += 6.0*e[p]/(2.0*(m - p) + 3.0);
+      }
+      sum += s*r2m;
+      r2m *= r*r;
+    }
+    return sum;
+  }
+  if (r > R_HI) {
+    // coefficient of r^(-2m): c_(1-m) + 6 sum_p e_p/(2(m + p) - 3)
+    const double u2 = 1.0/(r*r);
+    double sum = 0.0;
+    double u2m = 1.0;
+    for (int m=0; m<NSERIES; m++) {
+      double t = (m <= 1) ? c[1 - m] : 0.0;
+      const int p0 = (m < 2) ? 2 - m : 0;
+      for (int p=p0; p<=4; p++) {
+        t += 6.0*e[p]/(2.0*(m + p) - 3.0);
+      }
+      sum += t*u2m;
+      u2m *= u2;
+    }
+    return sum;
+  }
+  const double r2 = r*r;
+  double val = c[0]/r2 + c[1] + c[2]*r2 + c[3]*r2*r2;
+  // at r = 1 the logarithm diverges, but (r^2 - 1)^3 times it vanishes
+  if (r != 1.0) {
+    const double E = e[0] + r2*(e[1] + r2*(e[2] + r2*(e[3] + r2*e[4])));
+    val += 3.0*E*log(fabs((1.0 + r)/(1.0 - r)))/(r2*r);
+  }
+  return val;
+}
+
+// ---------------------------------------------------------------------------
+// The four one-loop velocity templates on a uniform ln k grid, by direct
+// quadrature (the k unit is the caller's: P in that unit^-3).
+//
+//   out[0] = P22_dt(k) = 2 int_q F2 G2 P(q) P(|k - q|)
+//   out[1] = P22_tt(k) = 2 int_q G2^2 P(q) P(|k - q|)
+//   out[2] = A_d(k)    = P13_dd/2 = <delta_1 delta_3>
+//   out[3] = A_t(k)    = P13_tt/2 = <theta_1 theta_3>
+//
+// with F2, G2 the second-order density and velocity kernels (Einstein-de
+// Sitter, Bernardeau et al. 2002, arXiv:astro-ph/0112551) and theta the
+// velocity divergence in units of f.
+//
+// Both integrals run over q = k_j, the table's own nodes (r = q/k on the
+// same ln grid), with the trapezoid rule in ln q.
+//
+// P22: with x the cosine between k and q and y = |k - q|/k,
+//
+//   P22_XY = k^3/(392 pi^2) int dr int_-1^1 dx P(kr) P(ky) a_X a_Y/y^4,
+//   a_d = 3r + 7x - 10 r x^2 = 14 r y^2 F2,  a_t = 7x - r - 6 r x^2,
+//
+// symmetric under q <-> k - q: the half domain y >= r (x <= 1/(2r)),
+// doubled, keeps y >= 1/2, away from the kernels' pole at q = k. The x
+// integral uses NX Gauss-Legendre nodes; P(ky) is a cubic spline of ln P
+// in ln k (power laws past the table ends).
+//
+// P13: P13_X = pref_X k^3 P(k)/(4 pi^2) int dr P(kr) B_X(r), pref 1/252
+// (density) and 1/84 (velocity), B_X of fpt_kaiser_bracket.
+//
+// Arguments:
+//   N, lnk0, dlnk - the grid, ln k_i = lnk0 + i dlnk
+//   P             - P_lin at the nodes [N]
+//   NX, xg, wg    - Gauss-Legendre nodes and weights on [-1, 1]
+//   out           - output [4][N]
+// ---------------------------------------------------------------------------
+static void fpt_kaiser_compute(
+    const int N,
+    const double lnk0,
+    const double dlnk,
+    const double* P,
+    const int NX,
+    const double* xg,
+    const double* wg,
+    double** out
+  )
+{
+  // ln P and its spline coefficients, for the off-node reads P(k y)
+  double* lnP = (double*) malloc1d(N);
+  double* cP  = (double*) malloc1d(N);
+  for (int i=0; i<N; i++) {
+    lnP[i] = log(P[i]);
+  }
+  spline_coeffs_uniform(lnP, N, dlnk, cP);
+  const double slope_lo = (lnP[1] - lnP[0])/dlnk;
+  const double slope_hi = (lnP[N-1] - lnP[N-2])/dlnk;
+
+  // the brackets at every node ratio r = k_j/k_i = exp(m dlnk),
+  // m = j - i in [-(N-1), N-1], stored at index m + N - 1
+  const int NR = 2*N - 1;
+  double* B13 = (double*) malloc1d(2*NR);
+  for (int m=0; m<NR; m++) {
+    const double r = exp((m - (N - 1))*dlnk);
+    B13[m]      = fpt_kaiser_bracket(r, 0);
+    B13[NR + m] = fpt_kaiser_bracket(r, 1);
+  }
+
+  const double PI2 = M_PI*M_PI;
+  #pragma omp parallel for schedule(dynamic, 4)
+  for (int i=0; i<N; i++) {
+    const double lnk = lnk0 + i*dlnk;
+    double s13d  = 0.0;
+    double s13t  = 0.0;
+    double s22dt = 0.0;
+    double s22tt = 0.0;
+    for (int j=0; j<N; j++) {
+      const double w   = (0 == j || N - 1 == j) ? 0.5*dlnk : dlnk;
+      const double r   = exp((j - i)*dlnk);
+      const double wrP = w*r*P[j]; // dr P(kr) = dln r r P(k_j)
+      s13d += wrP*B13[j - i + N - 1];
+      s13t += wrP*B13[NR + j - i + N - 1];
+
+      // the x integral on the half domain x <= 1/(2r)
+      const double xmax = (r <= 0.5) ? 1.0 : 0.5/r;
+      const double half = 0.5*(xmax + 1.0);
+      double idt = 0.0;
+      double itt = 0.0;
+      for (int g=0; g<NX; g++) {
+        const double x  = -1.0 + half*(xg[g] + 1.0);
+        const double y2 = 1.0 + r*r - 2.0*r*x;
+        // P(k y) from the spline of ln P
+        const double lnky = lnk + 0.5*log(y2);
+        const double t = (lnky - lnk0)/dlnk;
+        double lnPky;
+        if (t < 0.0) {
+          lnPky = lnP[0] + slope_lo*(lnky - lnk0);
+        }
+        else if (t > N - 1) {
+          lnPky = lnP[N-1] + slope_hi*(lnky - (lnk0 + (N - 1)*dlnk));
+        }
+        else {
+          const int n = (t < N - 2) ? (int) t : N - 2;
+          const double dx = (t - n)*dlnk;
+          const double b  = (lnP[n+1] - lnP[n])/dlnk
+                            - dlnk*(cP[n+1] + 2.0*cP[n])/3.0;
+          const double d  = (cP[n+1] - cP[n])/(3.0*dlnk);
+          lnPky = lnP[n] + dx*(b + dx*(cP[n] + dx*d));
+        }
+        const double ad = 3.0*r + 7.0*x - 10.0*r*x*x;
+        const double at = 7.0*x - r - 6.0*r*x*x;
+        const double base = half*wg[g]*exp(lnPky)/(y2*y2);
+        idt += base*ad*at;
+        itt += base*at*at;
+      }
+      s22dt += wrP*idt;
+      s22tt += wrP*itt;
+    }
+    const double k3 = exp(3.0*lnk);
+    // the factor 2 doubles the half domain
+    out[0][i] = 2.0*k3/(392.0*PI2)*s22dt;
+    out[1][i] = 2.0*k3/(392.0*PI2)*s22tt;
+    out[2][i] = 0.5*k3*P[i]/(252.0*4.0*PI2)*s13d;
+    out[3][i] = 0.5*k3*P[i]/(84.0*4.0*PI2)*s13t;
+  }
+  free(lnP);
+  free(cP);
+  free(B13);
+}
+
+// ---------------------------------------------------------------------------
+// get_FPT_kaiser: the one-loop velocity templates of the nonlinear Kaiser
+// terms (cosmo2D.c use_nonlinear_kaiser_GG)
+// ---------------------------------------------------------------------------
+//
+// Theta = -div v/(a H) is the velocity divergence, with linear part
+// f delta_L, and theta = Theta/f. Standard perturbation theory with the
+// Einstein-de Sitter kernels and growth D^n at order n gives, for a
+// density leg at z1 and a velocity leg at z2 (D_a = D(z_a), f_a = f(z_a)),
+//
+//   P_dTheta(k; z1, z2) = f2 [D1 D2 P_L + D1^2 D2^2 P22_dt
+//                             + D1 D2^3 A_t + D1^3 D2 A_d],
+//   P_ThetaTheta        = f1 f2 [D1 D2 P_L + D1^2 D2^2 P22_tt
+//                                + (D1^3 D2 + D1 D2^3) A_t],
+//
+// each term a product of one function of z1 and one of z2, so the gg
+// engines project it with extra FFTLog rows. The templates are those of
+// fpt_kaiser_compute (above), at a = 1.
+//
+// FPTkaiser.tab layout (6 rows x FPTkaiser.N; k in H0/c, spectra in
+// (c/H0)^3 at a = 1):
+//   [0] P22_dt, [1] P22_tt, [2] A_d, [3] A_t, [4] k, [5] P_lin
+//
+// The quadrature runs on an internal grid of N_int nodes, 100 per decade
+// (doubled per Ntable.FPTboost level), and fpt_regrid moves the four
+// templates onto the output table, four times denser, which the engines
+// read linearly. The k range covers every wavenumber the gg engines read
+// (the templates are zero outside it).
+//
+// Caching: rebuilt when cosmology.random or Ntable.random changes.
+// Called serially, before any parallel read (the engines' warm-ups).
+// ---------------------------------------------------------------------------
+void get_FPT_kaiser(void)
+{
+  const int NTAB = 6;     // FPTkaiser.tab rows: 4 templates, k, P_lin
+  const int NTEMPL = 4;   // the templates, rows 0..3
+  const int NX = 32;      // Gauss-Legendre nodes of the P22 x integral
+  const int NPD = 680;    // internal nodes over the 6.8 decades: 100/decade
+  const int UPSAMPLE = 4; // output nodes per internal node
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static double** regrid_coeff = NULL; // fpt_regrid scratch [4][N_int]
+  static double* xg = NULL;            // Gauss-Legendre nodes on [-1, 1]
+  static double* wg = NULL;            // and their weights
+
+  const int new_tables = (NULL == FPTkaiser.tab ||
+                          fdiff2(cache[1], Ntable.random));
+  if (new_tables) {
+    FPTkaiser.krange[RANGE_MIN] = 0.05;   // H0/c: 1.7e-5 h/Mpc
+    FPTkaiser.krange[RANGE_MAX] = 3.0e+5; // H0/c: 100 h/Mpc
+    FPTkaiser.k_cutoff = 0.0;
+    FPTkaiser.sigma4   = 0.0;
+    FPTkaiser.N_int = NPD*(1 + Ntable.FPTboost);
+    FPTkaiser.N     = UPSAMPLE*FPTkaiser.N_int;
+    if (FPTkaiser.tab != NULL) {
+      free(FPTkaiser.tab);
+    }
+    if (FPTkaiser.tab_int != NULL) {
+      free(FPTkaiser.tab_int);
+    }
+    if (regrid_coeff != NULL) {
+      free(regrid_coeff);
+    }
+    FPTkaiser.tab     = (double**) malloc2d(NTAB, FPTkaiser.N);
+    FPTkaiser.tab_int = (double**) malloc2d(NTAB, FPTkaiser.N_int);
+    regrid_coeff      = (double**) malloc2d(NTEMPL, FPTkaiser.N_int);
+    if (NULL == xg) {
+      xg = (double*) malloc1d(NX);
+      wg = (double*) malloc1d(NX);
+      gsl_integration_glfixed_table* w = malloc_gslint_glfixed(NX);
+      for (int g=0; g<NX; g++) {
+        gsl_integration_glfixed_point(-1.0, 1.0, g, &xg[g], &wg[g], w);
+      }
+      gsl_integration_glfixed_table_free(w);
+    }
+  }
+
+  if (new_tables ||
+      fdiff2(cache[0], cosmology.random) ||
+      fdiff2(cache[1], Ntable.random))
+  {
+    const long Nk   = FPTkaiser.N_int;
+    const long Nout = FPTkaiser.N;
+    double** tab_int = FPTkaiser.tab_int;
+    const double lnkmin = log(FPTkaiser.krange[RANGE_MIN]);
+    const double lnspan = log(FPTkaiser.krange[RANGE_MAX]) - lnkmin;
+    const double dlnk   = lnspan/Nk; // fpt_regrid's grid convention
+
+    (void) p_lin(FPTkaiser.krange[RANGE_MIN], 1.0); // serial warm-up
+    #pragma omp parallel for schedule(static)
+    for (long i=0; i<Nk; i++) {
+      tab_int[4][i] = exp(lnkmin + i*dlnk);
+      tab_int[5][i] = p_lin(tab_int[4][i], 1.0);
+    }
+
+    fpt_kaiser_compute((int) Nk, lnkmin, dlnk, tab_int[5], NX, xg, wg,
+                       tab_int);
+
+    #pragma omp parallel for schedule(static)
+    for (long i=0; i<Nout; i++) {
+      FPTkaiser.tab[4][i] = exp(lnkmin + i*lnspan/Nout);
+      FPTkaiser.tab[5][i] = p_lin(FPTkaiser.tab[4][i], 1.0);
+    }
+    const int rows[4] = {0, 1, 2, 3};
+    fpt_regrid(tab_int, Nk, FPTkaiser.tab, Nout, rows, NTEMPL, regrid_coeff,
+               lnspan);
+
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // INTRINSIC ALIGNMENT
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

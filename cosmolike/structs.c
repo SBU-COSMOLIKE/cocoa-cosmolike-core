@@ -7,6 +7,7 @@
 
 FPT FPTIA;
 FPT FPTbias;
+FPT FPTkaiser;
 cosmopara cosmology;
 tomopara tomo;
 redshiftparams redshift;
