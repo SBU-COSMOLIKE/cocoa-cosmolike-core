@@ -874,8 +874,15 @@ arma::Col<int>::fixed<cluster_block::count> compute_data_vector_cluster_starts()
       density - the 1/Sigma_crit inside gamma_t remains. In the
       illustrative single-lens-plane limit with one constant Sigma_crit
       per block, gamma_t = DSigma/Sigma_crit and the output is
-      Y/Sigma_crit; for broad redshift selections no single Sigma_crit
-      applies, and T is simply the supplied angular operator.
+      Y/Sigma_crit. A single lens plane can still host broad sources:
+      with normalized weights w(z_s) over the source redshift z_s that
+      do not change with radius, the geometric factor averages into one
+      effective inverse critical density at lens redshift z_l,
+      1/Sigma_eff = int dz_s w(z_s)/Sigma_crit(z_l, z_s), and
+      gamma_t = DSigma/Sigma_eff - averaged, not removed. Only for
+      a broad lens/source stack, which also integrates over the lens
+      redshift, need the geometric factor not separate into one common
+      constant; there T simply acts on the predicted shear directly.
    3. The bins are uniform in ln theta, Delta = ln(theta_max/theta_min)/N
       (the area-weighted centers are uniform in ln theta too).
    4. S = trapezoid rule from theta_i to theta_max (P21 eq 10):

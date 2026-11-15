@@ -703,9 +703,18 @@ removed by the angular matrix — it stays in the normalization exactly
 as it does in $`\gamma_t`$ itself. The transformed statistic is
 dimensionless like $`\gamma_t`$ because no conversion to a physical
 surface density is applied, despite the symbol $`\Sigma`$ some outputs
-carry; for a broad source selection no single constant
-$`\Sigma_{\rm crit}`$ exists, and the supplied angular operator simply
-acts on the shear representation as it is.
+carry.
+
+A broad source distribution alone does not spoil that limit: at a
+fixed lens redshift $`z_l`$, radius-independent normalized source
+weights $`w(z_s)`$ still give one effective factor,
+$`\Sigma_{\rm eff}^{-1}=\int dz_s\,w(z_s)\,
+\Sigma_{\rm crit}^{-1}(z_l,z_s)`$, so
+$`\gamma_t(R)=\Delta\Sigma(R)\,\Sigma_{\rm eff}^{-1}`$ — the geometric
+factor is averaged, not removed. For the broad lens/source stack of the
+actual cluster prediction, which integrates over lens redshift as well,
+the geometric factor need not separate into one common constant, and
+the supplied angular operator acts directly on the predicted shear.
 
 Two consequences matter when reading a transformed vector. The last
 angular bin of every transformed row is identically zero because

@@ -254,10 +254,13 @@ limit with one constant critical surface density, where
 $`\gamma_t=\Delta\Sigma/\Sigma_{\rm crit}`$, linearity gives
 $`y_\gamma=Y(R)/\Sigma_{\rm crit}`$: the $`\Sigma_{\rm crit}`$ factor
 stays in the normalization, and $`y_\gamma`$ is dimensionless because
-$`A`$ acts on shear without converting it to a surface density. A
-broad redshift selection has no single constant
-$`\Sigma_{\rm crit}`$; the supplied operator, not that limit, defines
-the statistic. If a mean vector
+$`A`$ acts on shear without converting it to a surface density. For a
+broad lens and source stack the geometric factor need not separate
+into one common constant, and the supplied angular operator acts
+directly on the predicted shear. A single lens plane with
+radius-independent source weights can still use an effective inverse
+critical density averaged over those weights; the operator, not
+either limit, defines the statistic. If a mean vector
 changes as $`y=A x`$, its covariance changes as $`C_y=A C_x A^{\mathsf T}`$.
 Here $`A`$ acts on cluster-lensing angular rows and leaves the other
 measurements unchanged. Consequently a count–lensing block receives one
