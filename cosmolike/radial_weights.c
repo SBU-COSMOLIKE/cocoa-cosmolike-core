@@ -189,8 +189,21 @@ double f_rsd(double a)
 // ---------------------------------------------------------------------------
 // Linear redshift-space distortion kernel for lens tomographic bin ni.
 //
-// Limber RSD correction to the galaxy density kernel, combining the
-// growth-weighted density f * n_i * H/H0 at two line-of-sight points:
+// A radial peculiar velocity shifts a galaxy's apparent redshift, so at
+// linear order the observed density gains the Kaiser term f mu^2 delta,
+// with delta the matter density contrast, f = dln D/dln a the growth
+// rate (D the linear growth factor) and mu the cosine between the
+// wavevector and the line of sight. In the full radial projection the
+// mu^2 becomes -j_l''(k chi), the second derivative of the spherical
+// Bessel function with respect to its whole argument (k the comoving
+// wavenumber, chi the comoving distance); the non-Limber engines keep
+// that exact Bessel-derivative transfer.
+//
+// W_RSD is the two-point Limber approximation to the same contribution:
+// it combines the growth-weighted density f * n_i * H/H0 at the two
+// Bessel-peak points below instead of integrating against -j_l''. The
+// two evaluations sample the kernel where the approximation needs it -
+// they are not a finite-difference derivative of n_i(z).
 //
 //   W_RSD = (1 + 8*l)/(2*l + 1)^2 * n_i(z(a0)) * (H/H0)(a0) * f_rsd(a0)
 //         - 4/(2*l + 3) * sqrt((2*l + 1)/(2*l + 3))

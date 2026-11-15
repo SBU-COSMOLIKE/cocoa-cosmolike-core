@@ -32,6 +32,46 @@
 #include "simde/x86/avx2.h"
 #include "simde/x86/fma.h"
 
+// ---------------------------------------------------------------------------
+// cosmo2D.c: the projected two-point statistics of every probe - the
+// angular power spectra C_l and their real-space transforms.
+//
+// How an observed angular spectrum emerges from this file, before any
+// switch is read:
+//
+//   1. Radial weights. A probe sees the three-dimensional fields
+//      through a kernel W(chi) along the line of sight, chi the
+//      comoving distance. The normalized redshift distribution n(z)
+//      becomes W_gal = n(z) dz/dchi for galaxy density, and lensing
+//      gives the broad efficiency kernels W_kappa and W_mag
+//      (radial_weights.c - whose headers also say which factors, such
+//      as galaxy bias or the magnification amplitude, are applied by
+//      the callers rather than inside the kernel).
+//
+//   2. Limber projection. At high multipole l, the spectrum of two
+//      probes collapses to a single line-of-sight integral of their
+//      two kernels against the 3D power spectrum evaluated at
+//      k = (l + 1/2)/chi: the C_*_tomo_limber* families (ss, gs, gg,
+//      gk, ks, kk), with *_nointerp the direct quadratures and the
+//      plain names their interpolation tables.
+//
+//   3. Non-Limber correction. For the narrow galaxy kernels the
+//      Limber collapse fails at low l, so the gg and gs spectra keep
+//      the full double-Bessel radial projection there, evaluated with
+//      FFTLog - C_cl_tomo and C_cl_tomo_lowrank for gg, C_gs_tomo for
+//      gs - each spliced to the Limber value above its switch
+//      multipole.
+//
+//   4. Entry points. The Fourier data vectors call C_gg_tomo_ells,
+//      C_gs_tomo_ells and the *_nointerp_ells batches at their band
+//      centers; the real-space observables (w_gg_tomo, w_gammat_tomo,
+//      xi_pm_tomo, w_gk_tomo, w_ks_tomo) run Legendre sums over
+//      tabulated C_l.
+//
+// The switches below select the model inside this fixed route; each
+// one's comment says what it changes and where.
+// ---------------------------------------------------------------------------
+
 // Physics gates for the Limber integrands (0 or 1). include_HOD_GX is
 // runtime-switchable (set_include_HOD_GX); the RSD gates are
 // compile-time.
@@ -73,7 +113,9 @@ static int include_RSD_GY = 0; // 0 or 1
 // The low-rank path (C_cl_tomo_lowrank) instead SVD-factorizes
 // sqrt(P_g(k, z)) per lens bin and projects each rank with its own
 // FFTLog row, so the density-density term needs no Limber hand-off at
-// any multipole; RSD and magnification keep FKEM (velocities do not
+// any multipole below the path's cap lowrank_DD_GG_lmax (above it the
+// spectrum is Limber throughout); RSD and magnification keep FKEM
+// (velocities do not
 // grow like densities nonlinearly, and the broad magnification kernel
 // is Limber-safe).
 //
@@ -111,13 +153,17 @@ static int use_nonlinear_kaiser_GG = 0; // 0 or 1
 // ---------------------------------------------------------------------------
 // The k window of the gg engines: off unless the scale-cut driver of
 // cosmo2D_scuts.c turns it on (set_gg_kwindow), so every data-vector
-// evaluation runs without it.
+// evaluation runs without it. The window diagnoses which band powers
+// a cut keeps; the analysis then fixes the selected data and
+// covariance rows downstream and evaluates the full, unwindowed
+// theory on them. It is never applied to the observed catalogue.
 //
 // The UV-fraction scale cut (arXiv:2603.13031) splits each C_l into
 // the part sourced by modes below a cut, k <= k_max/D(z), and the
 // rest: the IR and UV parts. D is the linear growth factor with
-// D(0) = 1, so the cut grows with redshift, following the nonlinear
-// scale. The split multiplies the 3D power spectrum by a step
+// D(0) = 1, so the cut grows with redshift - the adopted growth-scaled
+// prescription for where the bias model degrades, not a derived law of
+// the nonlinear scale. The split multiplies the 3D power spectrum by a step
 // function, so every gg engine applies the step where its integrand
 // meets P(k).
 //
@@ -5670,6 +5716,9 @@ double C_gg_tomo_limber_nointerp(
 //
 // over the Gauss-Legendre nodes p of the bin (cn_all[bin], cn_all[bin].npts
 // of them; the count may differ between bins), with
+//   WGAL    = W_gal(a, bin) = n_i(z) dz/dchi = n_i(z) H/H0, the radial
+//             density kernel, and WMAG = W_mag the magnification kernel
+//             (radial_weights.c; chi in c/H0 units)
 //   ep      = l (l+1) / (l + 1/2)^2           (magnification ell prefactor)
 //   PK      = P_delta(k, a) for table, or (D(a)/D(a_piv))^2 *
 //             P_lin(k, a_piv) per lens bin for the linear term table_lin,
@@ -5722,16 +5771,25 @@ double C_gg_tomo_limber_nointerp(
 //   nell          - number of multipole values
 //   table         - output [clustering_nbin][nell], the full model
 //                   (NULL: not computed)
-//   table_lin     - output [clustering_nbin][nell], the linear term
-//                   C_cl_tomo subtracts: separable linear spectrum, no
-//                   one-loop bias (NULL: not computed)
+//   table_lin     - output [clustering_nbin][nell], the subtraction
+//                   template the non-Limber splice subtracts
+//                   (C_cl_tomo): the separable linear spectrum, no
+//                   one-loop galaxy bias. Its content follows the
+//                   flags: it carries the counterterm ct when alpha_2
+//                   is on, and the Limber limit of the loop velocity
+//                   rows when use_nonlinear_kaiser_GG is on (the nlk
+//                   gate below) - always exactly what the FFTLog term
+//                   carries, so the pair cancels at high l (NULL: not
+//                   computed)
 //   table_dd      - output [clustering_nbin][nell], the density-density
 //                   part of the full model alone: W_dd = W_gal*b1 against
 //                   P_delta plus the one-loop bias terms, no
 //                   magnification, no RSD (NULL: not computed); its
 //                   one-loop templates keep their low-k constants (no
 //                   sigma4 subtraction), to match the low-rank
-//                   factorization (C_gg_lowrank_decomp_work)
+//                   factorization (C_gg_lowrank_decomp_work) - so it
+//                   differs from the density part of table by that
+//                   constant (the DD branch below writes out the sign)
 //   table_dd_lin  - output [clustering_nbin][nell], the density-density
 //                   part of the linear term: W_dd against the separable
 //                   linear spectrum, b1 only (NULL: not computed)
@@ -6214,11 +6272,22 @@ static void C_gg_tomo_limber_work(
           // sigma4 subtractions. Only the low-rank split asks for it,
           // and it must match that split's factorization, which drops
           // the subtractions so sqrt(P_g) exists (see
-          // C_gg_lowrank_decomp_work). Unsubtracted minus subtracted is
-          // the constant (sigma4/2) D^4 (b2 + 2 bs2/3)^2, added back
-          // where the FPT tables cover k (KB slot 6). C_l(full) - C_l(DD)
-          // is then the magnification and RSD rows plus the Limber
-          // projection of that constant, which is exact.
+          // C_gg_lowrank_decomp_work). Writing the bookkeeping out,
+          // with A = (sigma4/2) D^4 (b2 + 2 bs2/3)^2 >= 0 on the FPT
+          // k range (KB slot 6 marks it; A = 0 outside):
+          //
+          //   P_unsub = P_sub + A.
+          //
+          // The full output sums the subtracted P_sub and this DD
+          // output the unsubtracted P_unsub, so C_l(full) - C_l(DD) is
+          // the magnification and RSD rows minus the Limber projection
+          // of A - minus, not plus, because the add-back sits here. A
+          // is a signed, deterministic renormalization constant, not a
+          // catalogue shot-noise variance. Its Limber and non-Limber
+          // projections agree for the full k integral (Bessel
+          // closure), which is what lets the splice restore it through
+          // its Limber terms; the IR k window breaks that identity,
+          // and C_gg_kwindow_white_noise_ells repairs it.
           const double* restrict growfac = cn->data[CN_GROWFAC];
           const double* restrict b2   = WO[0][zl];
           const double* restrict bs2  = WO[1][zl];
@@ -9588,6 +9657,18 @@ void cfftlog_ells_p2(
 // The nonlinear Kaiser rows (use_nonlinear_kaiser_GG): the loop part of
 // the RSD terms of one bin pair (a, b) at one FFTLog wavenumber.
 //
+// Orders and symbols, so the row map below stands on its own. The
+// density and velocity fields expand in powers of the initial
+// fluctuation, delta = sum_n D^n delta_n, with D the linear growth
+// factor and delta_n built from n powers of the linear field.
+// Theta = -div v/(a H) is the velocity divergence, f = dln D/dln a the
+// growth rate, and theta = Theta/f. A 22 spectrum correlates two
+// second-order fields; a 13 spectrum correlates a first-order with a
+// third-order field, and its two orderings (which leg carries the
+// third-order piece) are the separate templates A_d and A_t of
+// get_FPT_kaiser (pt_cfastpt.c), kept apart because their unequal-time
+// growth factors differ.
+//
 // va and vb hold a bin's transformed kernels {g1, R1, g2, R2, g3, R3}:
 // g_m the density kernel and R_m the RSD kernel carrying D^m (m = 1, the
 // linear rows; m = 2, 3, the loop rows of nl_kaiser_rows). t holds the
@@ -9619,11 +9700,19 @@ static inline double nl_kaiser_loop(
   return dt + tt;
 }
 
-// The four FPTkaiser templates at the FFTLog wavenumbers of one block of
-// multipoles, tmpl[m][k - ks][q] at k = y[k][q] (1/Mpc, times
-// real_coverH0 to H0/c units); zero outside the table's k range. The
-// wavenumber grid does not depend on the bin, so one block serves all.
-// get_FPT_kaiser must have run (serially) for this cosmology.
+// The four FPTkaiser templates at the FFTLog wavenumbers of one block
+// of multipoles. Axes of the output, with ell the multipole (the loop
+// index k below) and q the node of the reciprocal (wavenumber) grid:
+//
+//   tmpl[m][ell - ks][q],  m one of {P22_dt, P22_tt, A_d, A_t},
+//
+// evaluated at the physical wavenumber yk[ell][q] in 1/Mpc, which
+// times real_coverH0 = c/H0 in Mpc becomes the dimensionless internal
+// wavenumber of the table's ln k axis. The templates keep the table's
+// power-spectrum units, (c/H0)^3 at a = 1, and are zero outside its k
+// range. The wavenumber grid does not depend on the bin, so one block
+// serves all. get_FPT_kaiser must have run (serially) for this
+// cosmology.
 static void nl_kaiser_templates_block(
     double* const* const yk,    // wavenumbers [k][q] in 1/Mpc
     const int ks,               // first multipole of the block
@@ -9651,7 +9740,12 @@ static void nl_kaiser_templates_block(
 
 // The loop rows' kernels at one chi node j: rows r2 and r3 take bin i's
 // density and RSD kernels times D and D^2 (so D^2 and D^3 in all), the
-// magnification slot zero. Shared by the three gg engines.
+// magnification slot zero. The slots are the three FFTLog configs:
+// 0 = density (plain j_l transform), 1 = RSD (transformed with the
+// second Bessel derivative j_l''(k chi), differentiated with respect
+// to the whole argument; the RSD minus sign rides the kernel),
+// 2 = magnification. D is the linear growth factor at the node.
+// Shared by the three gg engines.
 static inline void nl_kaiser_rows(
     double*** const fx,              // kernels [rows][3][nchi]
     const int i,                     // the bin (its linear row)
@@ -9680,12 +9774,24 @@ static inline void nl_kaiser_rows(
 // integral using FFTLog, which recasts the double-Bessel integral as a
 // convolution evaluable via FFT.
 //
-// The result is combined with the Limber C_l to give the full answer:
-//   Cl[i][l] = Cl_fftlog(P_lin) + Cl_limber(P_delta) - Cl_limber(P_lin)
-// The last two terms correct for the difference between the linear power
-// spectrum used in FFTLog and the nonlinear power spectrum used in the
-// Limber integral. Both come from one batched call
-// (C_gg_tomo_limber_nl_lin_nointerp_ells at l = 0..LMAX_NOLIMBER-1).
+// The result is combined with the Limber C_l. With N[X] the FFTLog
+// (non-Limber) projection of a contribution X and L[X] its Limber
+// projection, the default (use_nonlinear_kaiser_GG = 0) combination is
+//
+//   Cl[i][l] = N[lin] + L[halofit] - L[lin].
+//
+// The last two terms correct for the difference between the linear
+// power spectrum used in FFTLog and the nonlinear power spectrum used
+// in the Limber integral; the subtracted L[lin] cancels N[lin] at high
+// l, leaving the nonlinear Limber value. With the nonlinear Kaiser
+// flag on, the FFTLog term also carries the one-loop velocity rows and
+// the subtracted linear term their Limber limit, so the combination
+// becomes N[lin + loop] + L[halofit] - L[lin + loop]
+// (nl_kaiser_limber derives it) while the inherited L[halofit]
+// baseline stays - the specified velocity-spectrum extension, not a
+// full nonlinear redshift-space model. Both Limber terms come from one
+// batched call (C_gg_tomo_limber_nl_lin_nointerp_ells at
+// l = 0..LMAX_NOLIMBER-1).
 //
 // The FFTLog term needs separable growth, P(k; z1, z2) = D(z1)*D(z2)*
 // P_lin(k, a_piv)/D(a_piv)^2 anchored per lens bin at
@@ -9726,11 +9832,19 @@ static inline void nl_kaiser_rows(
 //        Cl_fftlog = (2/pi) * dlnk * sum_q[ F^2 * (k*c/H0)^3 * P_lin(k) ]
 //      With a nonzero redshift-space counterterm alpha_2, F^2 gains
 //      alpha_2 k^2 (Fy_density + Fy_RSD) Fy_RSD (has_alpha2_galaxies).
-//   6. Combine: Cl = Cl_fftlog + Cl_limber(P_NL) - Cl_limber(P_lin)
-//   7. Convergence: after each block, check |Cl_nolimber/Cl_limber - 1| < tol
-//      at the block's last multipole. Once converged, fill the remaining
-//      multipoles below LMAX_NOLIMBER with the Limber values (the batch
-//      below LMIN_tab, the table C_gg_tomo_limber above).
+//      With the nonlinear Kaiser flag on, the sum also gains the loop
+//      velocity terms of nl_kaiser_loop, built from the extra D^2 and
+//      D^3 rows of nl_kaiser_rows.
+//   6. Combine: Cl = Cl_fftlog + Cl_limber(P_NL) - Cl_limber(P_lin),
+//      the flag-dependent combination written above (with the flag on,
+//      steps 5 and 6 carry the loop rows and their Limber limit).
+//   7. Early exit: after each block, check |Cl_nolimber/Cl_limber - 1| < tol
+//      at the block's last multipole. tol tests agreement with the
+//      Limber continuation at that one multipole; it is not a
+//      quadrature error estimate. Once a bin agrees, fill its
+//      remaining multipoles below LMAX_NOLIMBER with the Limber values
+//      (the batch below LMIN_tab, the table C_gg_tomo_limber above).
+//      The Fourier entry C_gg_tomo_ells disables this exit (tol = 0).
 //
 // Only auto-correlations (ni = nj) are supported.
 //
@@ -11087,13 +11201,22 @@ void C_gs_tomo_ells(
 //
 //   P_g(k; z1, z2) ~ sqrt(P_g(k, z1)) * sqrt(P_g(k, z2)).
 //
-// The geometric mean is exact at equal times. At unequal times it
+// The geometric mean is exact at equal times for a single tracer: at
+// z1 = z2 the product is the bin's own P_g. At unequal times it
 // assumes the two tracer fields are fully correlated - the method's
 // own physical approximation, and the reason the flag is off by
 // default.
 //
+// For a pair of different bins there is a second gap: the declared
+// cross spectrum is bilinear in the two bins' bias vectors (the
+// cross-pair header, C_gg_cross_tomo_limber_work), which the product
+// of two auto square roots does not reproduce. The pair's Limber
+// splice restores that difference; raising the rank improves the
+// geometric-mean projection, it does not change this model choice.
+//
 // With it, the projected density-density C_l becomes the square of
-// the rank sum, with no Limber hand-off at any multipole.
+// the rank sum, with no Limber hand-off at any multipole below the
+// engine's cap (lowrank_DD_GG_lmax).
 //
 // The weighted matrix:
 //
@@ -11103,7 +11226,16 @@ void C_gs_tomo_ells(
 //
 // into M = U Sigma V^T (gsl_linalg_SV_decomp). Keeping the first
 // nrank terms is the best rank-nrank fit to M in least squares
-// (Eckart-Young).
+// (Eckart-Young). In terms of S = sqrt(P_g), that means minimizing
+// the weighted grid sum
+//
+//   sum over (k, z) of  w(z) [S(k,z) - S_R(k,z)]^2 / sqrtPg_zref(k)^2,
+//
+// with S_R the kept rank-nrank sum: both extra factors enter the
+// norm. The truncation is optimal for this weighted fit of S on the
+// grid; it is not by itself a bound on the error of a C_l or of a
+// likelihood built from it (the nrank convergence sweep measures
+// those).
 //
 // The two extra factors steer where the truncation error lands.
 //
@@ -11111,10 +11243,12 @@ void C_gs_tomo_ells(
 // reconstruction: sqrt(w) enters M's columns and divides back out of
 // sqrtPg_zfactor below.
 //
-// Its only job is to tell the SVD which redshifts matter. The
-// rank-nrank error then lands at redshifts where the bin has no
-// galaxies - the ones that never enter C_l. The 1e-10 floor keeps
-// the division finite at the support edges.
+// Its only job is to tell the SVD which redshifts matter. The fit
+// then spends its ranks where n(z) is large, pushing the truncation
+// error toward redshifts with few galaxies - favoring, not
+// guaranteeing: a finite-rank fit can keep some error where the
+// galaxies are. The 1e-10 floor keeps the division finite at the
+// support edges.
 //
 // sqrtPg_zref(k) = |b1(zmean)| * sqrt(Pdelta(k, a_ref)) is a fixed,
 // k-only normalization: the same anchor idea as the FKEM pivot (see
@@ -11133,7 +11267,9 @@ void C_gs_tomo_ells(
 // FKEM picks its pivot to minimize a residual it then ignores. The
 // SVD measures that residual and corrects it rank by rank. That is
 // why the choice of z_ref barely matters: a different baseline moves
-// power between ranks 1 and 2, and the truncated sum compensates.
+// power between ranks 1 and 2, and the truncated sum compensates. At
+// finite rank a residual dependence on the baseline shape and the
+// weights remains - part of what the nrank sweep measures.
 //
 // a_ref follows the same macro as the FKEM pivot
 // (COSMO2D_FKEM_PIVOT_Z0 selects z = 0), so one build flag moves
@@ -11163,15 +11299,22 @@ void C_gs_tomo_ells(
 // negative and sqrt(P_g) stops existing.
 //
 // So the decomposition factorizes P_g - P_inf, the spectrum with the
-// unsubtracted templates, which stays positive. A constant power
-// projects exactly in Limber (Bessel orthogonality), so P_inf needs no
-// non-Limber term: the full Limber term carries it, and the DD term
-// the splice subtracts uses the unsubtracted templates too. C_l is
-// then the exact projection of the full one-loop model.
+// unsubtracted templates. Removing the subtraction is what makes the
+// square-root representation possible; the clamp below guards the
+// cases where one-loop terms still turn it negative. A constant power
+// has equal Limber and non-Limber projections for the full k integral
+// (the closure relation of the spherical Bessel functions), so P_inf
+// needs no non-Limber term: the full Limber term carries it, and the
+// DD term the splice subtracts uses the unsubtracted templates too.
+// (The IR k window breaks the closure identity;
+// C_gg_kwindow_white_noise_ells restores it.) C_l is then the
+// declared one-loop model - geometric-mean unequal times - evaluated
+// at finite rank on the numerical grids; the rank truncation is an
+// accuracy control on top of that model, not part of it.
 //
-// The clamp P_g = fmax(P_g, 1e-15 b1^2 Pdelta) remains as a guard
-// (large negative b1 b2 crosses could still do it); its count is
-// log_debug'd per build.
+// The clamp P_g = fmax(P_g, 1e-15 b1^2 Pdelta) is that guard (large
+// negative b1 b2 crosses can reach it); when it fires it changes the
+// represented spectrum, and its count is log_debug'd per build.
 //
 // The grids:
 //
@@ -11327,7 +11470,8 @@ static void C_gg_lowrank_decomp_work(
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches
   // them (the C_gg_tomo_limber_work prelude, trimmed to this function's
-  // needs).
+  // needs). The tables are process-global, so one outer evaluation at
+  // a time owns them (the ownership note at C_cl_tomo_lowrank_core).
   // -------------------------------------------------------------------------
   {
     (void) Pdelta(0.1, 0.9);
@@ -11484,13 +11628,14 @@ static void C_gg_lowrank_decomp_work(
           lnk <= limbias[1]) {
         const double* lb = limbias;
         const int N = FPTbias.N;
-        // The templates WITHOUT the sigma4 subtractions of the Limber gg
+        // The templates without the sigma4 subtractions of the Limber gg
         // integrand: this factorizes P_g - P_inf, where P_inf is the
         // constant those subtractions add (see the header comment). The
         // Limber DD term the splice subtracts uses the same unsubtracted
         // templates, and the full Limber term keeps the subtracted ones,
-        // so P_inf reaches C_l through Limber, which is exact for a
-        // constant power.
+        // so P_inf reaches C_l through Limber - exact for a constant
+        // power over the full k integral; under the IR k window
+        // C_gg_kwindow_white_noise_ells supplies the finite-k repair.
         fpt[0] = interpol1d(FPTbias.tab[0], N, lb[0], lb[1], lb[2], lnk);
         fpt[1] = interpol1d(FPTbias.tab[1], N, lb[0], lb[1], lb[2], lnk);
         fpt[2] = interpol1d(FPTbias.tab[2], N, lb[0], lb[1], lb[2], lnk);
@@ -11542,6 +11687,10 @@ static void C_gg_lowrank_decomp_work(
   // region, before any status could be read. So it is turned off
   // around the loop, failures come back as status codes, and the
   // codes are checked after the region, where log_fatal is safe.
+  //
+  // The handler is process-global state: while it is off, no
+  // concurrent caller may rely on it - covered by the one-evaluation
+  // ownership rule (C_cl_tomo_lowrank_core).
   // -------------------------------------------------------------------------
   gsl_error_handler_t* gsl_handler_saved = gsl_set_error_handler_off();
   int status[MAX_SIZE_ARRAYS];
@@ -11565,10 +11714,12 @@ static void C_gg_lowrank_decomp_work(
   //   sqrtPg_zfactor[bin][r](z) = V[iz][r] / sqrt(nz_weight(z))
   //
   // The zref division and the sqrt(w) weighting of M both undo here, so
-  // the product of the two factors reconstructs sqrt(P_g) itself (all
-  // ranks kept: exactly; truncated: best approximation in the w-weighted
-  // norm). The SVD fixes each pair (u_r, v_r) only up to a common sign;
-  // the product is sign-invariant, so C_l cannot depend on it.
+  // the product of the two factors reconstructs sqrt(P_g) itself: with
+  // all ranks kept, exactly, on the supplied grid; truncated, the best
+  // approximation in the weighted norm of the header (nz_weight and
+  // the zref shape both enter it). The SVD fixes each pair (u_r, v_r)
+  // only up to a common sign; the product is sign-invariant, so C_l
+  // cannot depend on it.
   // -------------------------------------------------------------------------
   #pragma omp parallel for collapse(2) schedule(static)
   for (int bin=0; bin<nbins; bin++) {
@@ -12094,15 +12245,22 @@ void cfftlog_ells_p2_lowrank(
 //
 //   Cl[i][l] = FFT(F^2 - F0^2)                        FKEM rows minus DD
 //            + (2/pi) sum_q dlnk k^3 G^2              low-rank DD
-//            + (CLnl - CLdd_nl) - (CLlin - CLdd_lin)  Limber corr.,
-//                                                     non-DD rows only
+//            + (CLnl - CLdd_nl) - (CLlin - CLdd_lin)  Limber corr.
+//                                                     (content below)
 //
 // with F0 the density slot alone, G = sum_r sqrtPg_kfactor_r(k) * I_lr
 // and I_lr the FFTLog transform of the rank-r kernel (the
 // decomposition lives in C_gg_lowrank_decomp_work above).
 //
+// The Limber correction is not purely non-density. Besides the RSD
+// and magnification rows it restores the density pieces the DD
+// reference leaves over: the sigma4 constant of the subtractions
+// (the CLdd tables use the unsubtracted templates; the DD branch of
+// C_gg_tomo_limber_work writes out the sign) and, in the pair pass
+// below, the bilinear-minus-geometric-mean density residual.
+//
 // The low-rank DD carries the complete one-loop P_g at every
-// multipole below the cap - no Limber DD hand-off at any ell.
+// multipole below the cap - no Limber DD hand-off at any ell there.
 //
 // Why do RSD and magnification keep FKEM? The velocity field does
 // not grow like the density field (the one-loop P_g says nothing
@@ -12113,6 +12271,11 @@ void cfftlog_ells_p2_lowrank(
 // The redshift-space counterterm alpha_2 (has_alpha2_galaxies) is a
 // linear-theory term built from the density and RSD rows, so it
 // keeps FKEM too: pass 1 adds it, and the pair pass its pair form.
+//
+// With use_nonlinear_kaiser_GG on, pass 1 also adds the loop velocity
+// terms (nl_kaiser_loop) and the subtraction template CLlin their
+// Limber limit, exactly as in C_cl_tomo_core: the "linear" tables'
+// content is flag-dependent (the nl_kaiser_rows note below).
 //
 // At high l, term 1 tends to CLlin - CLdd_lin and term 2 to CLdd_nl,
 // so Cl -> CLnl up to the rank truncation: the twin's convergence
@@ -12138,7 +12301,19 @@ void cfftlog_ells_p2_lowrank(
 // the static work arrays and the decomposition factor tables rebuild
 // when NULL or when (Ntable.random, nbins, nrank, lmax) change; their
 // contents, kernels and transforms are recomputed at every call (the
-// caller caches the output instead).
+// caller caches the output instead). Three separate layers: the
+// buffers persist across calls, the physical contents are recomputed
+// every call, and the finished output is cached by the caller.
+//
+// Ownership: the OpenMP safety documented in the passes below is
+// internal - each worker writes only its own rows of state this
+// function owns. The shared pieces are process-global: the static
+// workspaces here and in C_gg_lowrank_decomp_work, the lazily built
+// kernel and power tables, the gg_kwin.per_bin flag, the GSL error
+// handler, and the cross-pair stash. One outer evaluation owns them
+// from entry to return; internal worker safety does not make two
+// simultaneous outer evaluations safe (callers wanting concurrency
+// isolate processes instead).
 //
 // Parameters:
 //   Cl    - output [clustering_nbin][>= lowrank_DD_GG_lmax]: the
@@ -12437,15 +12612,31 @@ static double** C_cl_tomo_lowrank_core(
   }
   // readable names for the grouped Limber tables
   double** const CLnl     = CL4[0]; // full model
-  double** const CLlin    = CL4[1]; // separable linear model
-  double** const CLdd_nl  = CL4[2]; // DD part of the full model
-  double** const CLdd_lin = CL4[3]; // DD part of the linear model
+  double** const CLlin    = CL4[1]; // the subtraction template: separable
+                                    // linear base plus enabled extras
+                                    // (C_gg_tomo_limber_work's ledger)
+  double** const CLdd_nl  = CL4[2]; // DD reference of the full model
+  double** const CLdd_lin = CL4[3]; // DD reference of the linear model
   double** const CLnlx     = (npairs > 0) ? CLx4[0] : NULL;
   double** const CLlinx    = (npairs > 0) ? CLx4[1] : NULL;
   double** const CLdd_nlx  = (npairs > 0) ? CLx4[2] : NULL;
   double** const CLdd_linx = (npairs > 0) ? CLx4[3] : NULL;
 
-  // chi grid in Mpc, as in C_cl_tomo_core (the units note lives there)
+  // The chi grid in Mpc, as in C_cl_tomo_core (the units note lives
+  // there). A local dictionary for this core, with L = c/H0 in Mpc
+  // (real_coverH0):
+  //
+  //   x       physical comoving distance in Mpc (the FFTLog grid)
+  //   chi     x/L, the internal dimensionless distance
+  //   y, ty   wavenumbers in 1/Mpc (the transforms' reciprocal grid)
+  //   k1cH0   y*L, the internal dimensionless wavenumber
+  //
+  // The power readers return P/L^3, so a product like k1cH0^3 * P is
+  // dimensionless, as C_l must be. The logarithmic grids carry the
+  // measures: dchi = chi dlnchi puts one factor of distance into each
+  // radial kernel, and k^2 dk = k^3 dlnk gives the k^3 of the final
+  // sums. The integer loop variable k below labels the multipole,
+  // never a wavenumber.
   const double real_coverH0 = cosmology.coverH0/cosmology.h0;
   const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // Mpc
   const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // Mpc
@@ -12505,7 +12696,9 @@ static double** C_cl_tomo_lowrank_core(
   }
   {
     double*** t4 = (double***) malloc3d(4, nbins, nlx);
-    gg_kwin.per_bin = 1; // the bin's step, as the FFTLog sum (gg_kwin)
+    // the bin's step, as the FFTLog sum (gg_kwin); per_bin is global
+    // state the one running evaluation owns (the ownership note above)
+    gg_kwin.per_bin = 1;
     C_gg_tomo_limber_nl_lin_dd_nointerp_ells(lx, nlx, nbins,
                                              t4[0], t4[1], t4[2], t4[3]);
     gg_kwin.per_bin = 0;
@@ -12990,9 +13183,10 @@ static double** C_cl_tomo_lowrank_core(
           }
         }
       }
-      // The four-term Limber combination: the FKEM pair corrects only
-      // the rows the FFTLog term still carries (RSD, magnification),
-      // because the DD part of each Limber term is subtracted off. At
+      // The four-term Limber combination: the Limber pair corrects the
+      // rows the FFTLog term still carries (RSD, magnification) and
+      // restores the sigma4 constant the DD reference adds back (the
+      // header's note on the correction's content). At
       // high l, pass 1 tends to CLlin - CLdd_lin and pass 2 to CLdd_nl,
       // so Cl -> CLnl up to the rank truncation: the convergence test
       // below is the same test the twin runs.
@@ -13031,6 +13225,11 @@ static double** C_cl_tomo_lowrank_core(
     // G_i G_j expands into the geometric-mean unequal-time
     // P_g(k; z1, z2) = sqrt(P_g(k, z1)) sqrt(P_g(k, z2)), each factor
     // carrying its own bin's bias through its decomposition.
+    //
+    // That product is the pair's density reference, not its declared
+    // bilinear density spectrum: the pair's four-term Limber
+    // combination restores the difference (the cross-pair header,
+    // step 5, has the algebra).
     //
     // The sum over the wavenumber grid plus the pair four-term Limber
     // combination (the tables of the pair batch above) closes C_l of
@@ -13114,9 +13313,12 @@ static double** C_cl_tomo_lowrank_core(
     }
   }
 
-  // an under-ranked bin may never fire the early exit: correctness is
-  // unaffected (the splice still happens at the cap), but the bin pays
-  // full-cap FFTLog cost - worth knowing when tuning nrank
+  // an under-ranked bin may never fire the early exit: the evaluation
+  // still completes every multipole up to the cap and splices to
+  // Limber there, but the agreement test was never met - the log line
+  // records that - and the bin pays full-cap FFTLog cost. Worth
+  // knowing when tuning nrank; completing the range is not evidence
+  // that the chosen rank suffices.
   for (int i=0; i<nbins; i++) {
     if (!converged[i] && tol > 0) {
       log_debug("lowrank gg: bin %d reached the cap l = %d unconverged "
@@ -13230,8 +13432,15 @@ void C_cl_tomo_lowrank(
 // which the data-vector assembly calls first) leaves the band-center
 // corrections here, and C_gg_cross_tomo_ells consumes them.
 //
-// The keys (nonces, sizes) plus the fresh flag prove the stash
-// belongs to this evaluation; any other call order is fatal.
+// The supported sequence is a caller obligation: the auto entry
+// first, then the pair entry, in the same evaluation, with identical
+// band centers and unchanged pair list, model and window state, and
+// the stash consumed once. The keys (nonces, sizes, flags) plus the
+// fresh flag reject the mismatches they record - a changed cosmology,
+// table set, pair count, band count, window setting or Kaiser flag -
+// and any such call order is fatal. They do not compare the
+// band-center values themselves or every model input, so matching
+// those stays part of the obligation, not something the keys check.
 static double** ggx_stash = NULL;   // [npairs][nell] corrections
 static uint64_t ggx_stash_key[6];   // nonces, npairs, nell, window and
                                     // nonlinear Kaiser flag at fill time
@@ -13560,6 +13769,11 @@ void unset_gg_kwindow(void)
 // The white-noise constant of the one-loop galaxy spectrum under the
 // IR k window.
 //
+// White noise here names a power that is constant in k, introduced by
+// renormalizing the quadratic bias operators: a signed, deterministic
+// model term, not the catalogue's Poisson shot noise and not a fitted
+// stochastic amplitude.
+//
 // CosmoLike renormalizes the one-loop galaxy spectrum by subtracting
 // the k -> 0 limits of the quadratic-operator templates (the sigma4
 // subtractions of C_gg_tomo_limber_work). The subtracted spectrum is
@@ -13570,31 +13784,39 @@ void unset_gg_kwindow(void)
 //
 // where b2 and bs2 are the quadratic and tidal galaxy biases, D is the
 // linear growth factor with D(0) = 1, and sigma4 is half the k -> 0
-// plateau of P_d2d2 (pt_cfastpt.c). The raw loop sum carries a
-// white-noise plateau of exactly -P_wn at low k, so in 3D the two
-// cancel and the subtracted spectrum vanishes as k -> 0.
+// plateau of P_d2d2 (pt_cfastpt.c). For an auto spectrum c_i = c_j,
+// so P_wn <= 0; a cross pair's product c_i c_j can take either sign,
+// and the algebra below is signed throughout. The raw loop sum
+// carries a white-noise plateau of exactly -P_wn at low k, so in 3D
+// the two cancel and the subtracted spectrum vanishes as k -> 0.
 //
 // The low-rank engine cannot project the subtracted spectrum: its
 // factorization needs sqrt(P_gg), which exists only for the positive
-// raw sum (P_wn < 0 drives the subtracted spectrum through zero). The
+// raw sum (the factorization is per bin, where c_i = c_j makes
+// P_wn < 0 and the subtracted spectrum crosses zero at high k). The
 // engine therefore projects the raw sum non-Limber and restores P_wn
-// through its Limber splice. Without a window this is exact, because a
-// constant power projects locally: by the closure relation of the
-// spherical Bessel functions,
+// through its Limber splice. Without a window, restoring this one
+// k-independent term through Limber is exact, because a constant
+// power projects locally: by the closure relation of the spherical
+// Bessel functions,
 //
 //   int_0^inf dk k^2 j_l(k chi1) j_l(k chi2)
 //     = pi/(2 chi1^2) delta(chi1 - chi2),
 //
-// the non-Limber and Limber projections of a constant are equal.
+// the non-Limber and Limber projections of a constant are equal. The
+// identity covers the constant alone; it says nothing about the rest
+// of the unequal-time galaxy model.
 //
 // The IR k window cuts the k integral at K = kmax/D(zbar) and breaks
 // that equality. The raw sum is windowed inside the FFTLog sum, which
 // keeps only the finite-k part of its plateau. The constant rides the
 // Limber terms of the splice, whose node step keeps all (on a kept
 // band of a thin bin) or nearly all of its local projection. The two
-// plateau pieces then no longer cancel: C_l^IR comes out too negative
-// and C_l^UV = full - IR too positive, each by the plateau fraction
-// the finite-k kernel leaves above the cut.
+// plateau pieces then no longer cancel. With P_wn < 0 (every auto),
+// C_l^IR comes out too negative and C_l^UV = full - IR too positive,
+// each by the plateau fraction the finite-k kernel leaves above the
+// cut; a cross pair with c_i c_j < 0 flips both signs, and the signed
+// correction below covers either case.
 //
 // This function restores the cancellation. Per spectrum it replaces
 // the Limber-step IR projection of P_wn (called L_K below) by the
@@ -14278,11 +14500,14 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //    bilinear-minus-geometric-mean residual, second order in the two
 //    bins' bias differences, and the white-noise constant of the
 //    subtractions, -(sigma4/2) D^4 (b2_i + 2 bs2_i/3)(b2_j + 2 bs2_j/3),
-//    which Limber projects exactly.
+//    which Limber projects exactly over the full k integral (under
+//    the IR k window, C_gg_kwindow_white_noise_ells repairs it).
 //
-//    The linear-term outputs never carry one-loop terms, as in the
-//    auto. With linear-only galaxies, every output is the
-//    pre-one-loop sum bit for bit.
+//    The linear-term outputs never carry the one-loop galaxy-bias
+//    templates, as in the auto. With use_nonlinear_kaiser_GG on they
+//    do carry the Limber limit of the loop velocity rows (the nlk
+//    gate below), again as in the auto. With linear-only galaxies and
+//    that flag off, every output is the pre-one-loop sum bit for bit.
 //
 // Computes, for every pair n = (i, j) of the installed list and every
 // multipole in lx,
@@ -14313,11 +14538,16 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 //   lx            - multipole values (length nell)
 //   nell          - number of multipole values
 //   table         - output [npairs][nell], the full model  (or NULL)
-//   table_lin     - output [npairs][nell], the linear term (or NULL)
-//   table_dd      - output [npairs][nell], the density-density part of
-//                   the full model (or NULL)
-//   table_dd_lin  - output [npairs][nell], the density-density part of
-//                   the linear term (or NULL)
+//   table_lin     - output [npairs][nell], the Limber splice reference
+//                   the non-Limber pair term subtracts: the separable
+//                   linear base plus the enabled alpha_2 and
+//                   nonlinear-Kaiser pieces (or NULL)
+//   table_dd      - output [npairs][nell], the geometric-mean density
+//                   reference of the low-rank subtraction (step 5) -
+//                   not the density-only part of table (or NULL)
+//   table_dd_lin  - output [npairs][nell], its separable density
+//                   reference: the density kernels alone against the
+//                   separable linear spectrum (or NULL)
 // ---------------------------------------------------------------------------
 static void C_gg_cross_tomo_limber_work(
     const cosmo_nodes* cn_all,    // nodes per pair [gg_cross_npairs]
@@ -14338,8 +14568,10 @@ static void C_gg_cross_tomo_limber_work(
     log_fatal("gg cross pairs have no HOD implementation");
     exit(1);
   }
-  // the one-loop terms enter only the outputs of the full model (step 4
-  // and 5 above); a call that asks for the linear terms alone skips them
+  // the one-loop galaxy-bias templates enter only the outputs of the
+  // full model (steps 4 and 5 above); a call that asks for the linear
+  // terms alone skips them (the loop velocity terms of the nlk gate
+  // below are separate)
   int nonlinear_bias = 0;
   if (NULL != table || NULL != table_dd) {
     nonlinear_bias = has_b2_galaxies();
@@ -14754,10 +14986,16 @@ static void C_gg_cross_tomo_limber_work(
                   0.25*(b2i*bsj + bsi*b2j)*d2s2 + 0.25*bsi*bsj*s2s2 +
                   0.5*(b1i*b3j + b3i*b1j)*d1p3) +
               (b1i*bkj + bki*b1j)*k*k*PK;
-            // magnification enters through KM_i KM_j P_delta alone: the
-            // loop terms are density correlators, so crossing them with
-            // the lensing row would be beyond one loop (the auto work's
-            // tree-level magnification convention)
+            // Magnification keeps the adopted tree-level prescription
+            // (the auto work's convention): the galaxy-matter spectrum
+            // entering the lensing rows is b1 P_delta, so magnification
+            // appears in the KM_i KM_j PK product alone and the loop
+            // terms multiply only the density weights. One-loop bias
+            // corrections to galaxy-matter also exist at the retained
+            // order P_lin^2 - projecting along the line of sight does
+            // not raise their perturbative order - but this model does
+            // not evaluate them. A modeling choice, not a consequence
+            // of order counting.
             sum += wt*maskp*(KM_i*KM_j*PK + wg_i*wg_j*loop_ij);
           }
           if (NULL != table_lin) {
@@ -14942,8 +15180,9 @@ static double** C_cl_tomo_fkem_pairs_core(
   static double*** vres_pool = NULL;  // auto integrands [nbins][BLOCK][nchi]
   static double*** vresx_pool = NULL; // pair integrands [npairs][BLOCK][nchi]
   static double** CLnl = NULL;        // auto Limber, full model [nbins][LNL]
-  static double** CLlin = NULL;       // auto Limber, separable linear
-  static double** CLlinx = NULL;      // pair Limber, separable linear
+  static double** CLlin = NULL;       // auto Limber splice reference
+                                      // (separable base + enabled extras)
+  static double** CLlinx = NULL;      // pair Limber splice reference
   static double* lx = NULL;
   static config cfg[3];
 
@@ -15536,7 +15775,10 @@ void C_gg_cross_tomo_ells(
     // spectra and stashed by the Fourier auto entry (the low-rank or the
     // FKEM twin; the contract at ggx_stash). A missing or out-of-date
     // stash is a call order this path does not support - stopped, never
-    // papered over with a silent recomputation.
+    // papered over with a silent recomputation. The keys compare the
+    // recorded nonces, sizes and flags, not the band-center values:
+    // passing the same ells as the auto call is the caller's
+    // obligation (ggx_stash).
     if (0 == ggx_stash_fresh ||
         fdiff2(ggx_stash_key[0], cosmology.random) ||
         fdiff2(ggx_stash_key[1], Ntable.random) ||

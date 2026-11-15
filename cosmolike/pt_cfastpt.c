@@ -34,7 +34,9 @@
 // redshift_spline.c. The VALUE is splined, not its log: several FPT
 // spectra cross zero. The internal grid stops one internal spacing below
 // k_max, so the few output points past its last node evaluate clamped at
-// that node (nothing physical is read that close to k_max).
+// that node. That is harmless only while no consumer reads physically
+// meaningful values that close to k_max - a condition on the callers'
+// read ranges, which this helper cannot check itself.
 // ---------------------------------------------------------------------------
 static void fpt_regrid(
     double** restrict src,   // spectra on the internal grid [.][Nsrc]
@@ -42,7 +44,7 @@ static void fpt_regrid(
     double** restrict dst,   // output tables [.][Ndst]
     const long Ndst,         // output grid points
     const int* restrict rows,   // which table rows to move
-    const int nrows,            // number of entries in rows[] (5 or 10)
+    const int nrows,            // number of entries in rows[] (4, 5 or 10)
     double** restrict coeff,    // caller-owned spline scratch [nrows][Nsrc]
     const double lnk_span       // ln(k_max / k_min), shared by both grids
   )
@@ -50,13 +52,13 @@ static void fpt_regrid(
   const double dsrc = lnk_span / Nsrc;
   const double ddst = lnk_span / Ndst;
 
-  // phase 1, serial: the tridiagonal solves (nrows is 5 or 10; the work
-  // is microseconds and each row's solve is a sequential recursion)
+  // phase 1, serial: the tridiagonal solves (nrows is at most 10; the
+  // work is microseconds and each row's solve is a sequential recursion)
   for (int m = 0; m < nrows; m++) {
     spline_coeffs_uniform(src[rows[m]], (int) Nsrc, dsrc, coeff[m]);
   }
 
-  // phase 2: Horner evaluation. nrows alone (5 or 10) underfills the
+  // phase 2: Horner evaluation. nrows alone (at most 10) underfills the
   // thread team, so collapse(2) spreads nrows * Ndst iterations.
   // Local restrict pointers: without them the compiler cannot prove
   // that the rows reached through the double indirection never overlap,
@@ -342,6 +344,15 @@ void get_FPT_bias(void)
       }
     }
  
+    // sigma4 is the low-wavenumber constant of the quadratic-bias
+    // spectra: P_d2d2, P_d2s2 and P_s2s2 approach constants as k -> 0,
+    // and their consumers subtract those plateaus (2, 4/3 and 8/9 times
+    // sigma4; the subtraction is derived at the consumers in cosmo2D.c)
+    // so the bias operators add no constant, shot-noise-like power on
+    // large scales. The stored value is P_d2d2(k_min)/2 at a = 1: the
+    // finite-first-node estimate of the formal k -> 0 limit, with
+    // power-spectrum units (c/H0)^3 - despite the variance-like name,
+    // it is neither a density variance nor a velocity dispersion.
     FPTbias.sigma4 = tab_int[OUT_D2D2][0] / 2.; // both grids share k[0] = k_min
 
     if (tab_int != FPTbias.tab) {
@@ -391,10 +402,14 @@ void get_FPT_bias(void)
 //   E(r) = sum_p e_p r^(2p), p = 0..4 (the polynomial (r^2 - 1)^3 times
 //          7 r^2 + 2 for the density, r^2 + 2 for the velocity).
 //
-// Far from r = 1 the polynomial and the logarithm cancel to many digits,
-// so below R_LO and above R_HI the series of the logarithm,
+// Why two series branches: far from r = 1 the polynomial and the
+// logarithm cancel to many digits, and subtracting two large, nearly
+// equal numbers would destroy the accuracy of the small remainder. So
+// below R_LO and above R_HI the series of the logarithm,
 // ln|(1+r)/(1-r)| = 2 sum_n x^(2n+1)/(2n+1) with x = r or 1/r, is summed
-// term by term instead; the cancelling powers are dropped exactly.
+// term by term instead; the cancelling powers are dropped exactly. The
+// branches are a numerical reformulation only - the same B(r), with
+// nothing physical changed.
 // ---------------------------------------------------------------------------
 static double fpt_kaiser_bracket(const double r, const int which)
 {
@@ -461,6 +476,23 @@ static double fpt_kaiser_bracket(const double r, const int which)
 // Sitter, Bernardeau et al. 2002, arXiv:astro-ph/0112551) and theta the
 // velocity divergence in units of f.
 //
+// What the labels count: delta_n and theta_n are the order-n terms of
+// standard perturbation theory, delta = sum_n D(a)^n delta_n for the
+// matter density contrast delta and likewise for theta, with D the
+// linear growth factor (D = 1 at a = 1) and f = dln D/dln a the growth
+// rate. A "22" spectrum correlates two second-order fields; a "13"
+// spectrum correlates a first-order with a third-order field. At first
+// order theta_1 = delta_1, so the two orderings of the mixed
+// density-velocity 13 term reduce to the pure brackets: third order on
+// the velocity leg gives A_t, third order on the density leg gives A_d.
+// They stay separate rows because their unequal-time growth powers
+// differ - D1 D2^3 against D1^3 D2, with D_a the growth of leg a - even
+// though every loop term scales as D^4 at equal times. The outputs are
+// shapes at a = 1: the projection rows of the gg engines supply the
+// growth powers and one factor of f per velocity leg (see the
+// unequal-time formulas at get_FPT_kaiser below), so no f is applied
+// here.
+//
 // Both integrals run over q = k_j, the table's own nodes (r = q/k on the
 // same ln grid), with the trapezoid rule in ln q.
 //
@@ -470,9 +502,16 @@ static double fpt_kaiser_bracket(const double r, const int which)
 //   a_d = 3r + 7x - 10 r x^2 = 14 r y^2 F2,  a_t = 7x - r - 6 r x^2,
 //
 // symmetric under q <-> k - q: the half domain y >= r (x <= 1/(2r)),
-// doubled, keeps y >= 1/2, away from the kernels' pole at q = k. The x
-// integral uses NX Gauss-Legendre nodes; P(ky) is a cubic spline of ln P
-// in ln k (power laws past the table ends).
+// doubled, keeps y >= 1/2, away from the kernels' pole at q = k. Why y
+// stays above 1/2 there: the triangle inequality |q| + |k - q| >= |k|
+// gives r + y >= 1, and y >= r on this half, so 2y >= 1. The factor 2
+// restores the other half exactly through the exchange symmetry - no
+// squeezed configuration is dropped. The x integral uses NX
+// Gauss-Legendre nodes. Only q runs over the finite node grid; the
+// second spectrum P(ky) is read from a cubic spline of ln P in ln k,
+// extrapolated as power laws when ky falls past the table ends
+// (splining ln P requires P > 0 at every node, true of a linear
+// spectrum).
 //
 // P13: P13_X = pref_X k^3 P(k)/(4 pi^2) int dr P(kr) B_X(r), pref 1/252
 // (density) and 1/84 (velocity), B_X of fpt_kaiser_bracket.
@@ -599,10 +638,14 @@ static void fpt_kaiser_compute(
 // (c/H0)^3 at a = 1):
 //   [0] P22_dt, [1] P22_tt, [2] A_d, [3] A_t, [4] k, [5] P_lin
 //
-// The quadrature runs on an internal grid of N_int nodes, 100 per decade
-// (doubled per Ntable.FPTboost level), and fpt_regrid moves the four
-// templates onto the output table, four times denser, which the engines
-// read linearly. The k range covers every wavenumber the gg engines read
+// The quadrature runs on an internal grid of
+// N_int = 680*(1 + Ntable.FPTboost) nodes: 100 per decade at boost 0,
+// growing linearly with the boost. The x integral keeps its 32
+// Gauss-Legendre nodes at every boost. fpt_regrid then moves the four
+// templates onto the output table of N = 4*N_int nodes, which the
+// engines read linearly: the denser output supplies interpolated values
+// between computed nodes and adds no independent quadrature
+// evaluations. The k range covers every wavenumber the gg engines read
 // (the templates are zero outside it).
 //
 // Caching: rebuilt when cosmology.random or Ntable.random changes.
@@ -742,9 +785,25 @@ static int Nmax_from_terms(int N, int (*terms)[NCOLS]) {
 //
 // The one-loop intrinsic-alignment power spectra of the TATT model
 // (Blazek et al. 2019, arXiv:1708.09247), evaluated with FAST-PT from the
-// linear power spectrum at a = 1. The 184 FFTLog terms of eight J_table
-// expansions go through one J_abJ1J2Jk call; two P_13-like terms are
-// direct convolutions.
+// linear power spectrum at a = 1.
+//
+// The physics first: galaxy shapes are not random - they align with the
+// tidal field of the large-scale structure that formed them, so measured
+// shape correlations carry this intrinsic part on top of the
+// gravitational-lensing distortion. TATT (tidal alignment and tidal
+// torquing) expands the intrinsic shape field in the tidal field s: a
+// linear term (tidal alignment), its trace-free square (s s) (tidal
+// torquing) and the density-weighted field (delta s), with delta the
+// matter density contrast. A projected shape field is spin-2 - a shape
+// returns to itself under a half-turn, so its two components rotate
+// through twice the coordinate rotation angle - and splits into the
+// gradient-like parity component E and the curl-like one B. The tables
+// below are the one-loop spectra of these operators, split by E and B
+// where the distinction applies.
+//
+// Numerically, the 184 FFTLog terms of eight J_table expansions go
+// through one J_abJ1J2Jk call; two P_13-like terms are direct
+// convolutions.
 //
 // FPTIA.tab layout (12 rows x FPTIA.N columns; k in H0/c, spectra in
 // (c/H0)^3 at a = 1, which cosmo2D.c and covariances/ia_cov.c scale by
@@ -1311,9 +1370,12 @@ void get_FPT_IA(void)
     //          positive powers of r
     //
     // The cutoff Ncut = floor(3/dL) switches between the exact formula and
-    // the asymptotic expansions near |s| = 3, as FAST-PT does. The exact
-    // formula has a log singularity at r=1, so the midpoint f[Nk-1] is set
-    // analytically.
+    // the asymptotic expansions near |s| = 3, as FAST-PT does. At r = 1
+    // the closed form is an indeterminate product: the logarithm
+    // diverges while its polynomial prefactor vanishes, and the full
+    // kernel has a finite limit there. Direct evaluation cannot produce
+    // that limit, so the midpoint f[Nk-1] is assigned its analytic
+    // value (96, below); no physical divergence is being regulated.
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------

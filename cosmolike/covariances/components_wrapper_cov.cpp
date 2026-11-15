@@ -444,8 +444,10 @@ static void angles_cov(const arma::Col<double>& edges)
   }
 }
 
-// Supply the same precomputed GSL rule to Python-prepared integrals as to
-// the C radial, mass and angular kernels. Row 0 contains nodes on [-1,1];
+// Supply the same GSL Gauss-Legendre rule to Python-prepared integrals as
+// to the C radial, mass and angular kernels: GSL stores the rules through
+// 1024 nodes and generates the larger ladder sizes (2048, 4096, 8192) when
+// the descriptor is allocated. Row 0 contains nodes on [-1,1];
 // row 1 contains positive weights for integration over that interval.
 // Python maps these onto its physical panels without generating another
 // rule: on [lo,hi] the node x becomes (hi+lo)/2 + (hi-lo)/2 x and its

@@ -294,6 +294,13 @@ double amax_lens(int ni)
 // the midpoint of the bin's tabulated n(z) range,
 // z = (zdist_zmin[ni] + zdist_zmax[ni]) / 2.
 //
+// Two different criteria are called scale cuts in this code base: this
+// transverse test of one Limber wavenumber per (l, bin) against a fixed
+// comoving scale, and the selection machinery of cosmo2D_scuts.c (the
+// response-function cuts and the UV-fraction split of P(k) at
+// kmax/D(z), with D the linear growth factor). They are independent;
+// neither implies the other.
+//
 // Cache invalidation:
 // chiref is built on the first call (sentinel
 // chiref[0] = -1) and never rebuilt, so later cosmology changes do not
@@ -1268,12 +1275,15 @@ static double nz_histogram_akima(
 // Photometric redshift distribution n(z) for source tomographic bin nj.
 //
 // PHYSICS:
-//   Returns the normalized redshift distribution of source (background)
-//   galaxies in tomographic bin nj, evaluated at redshift zz. This
-//   function is called inside the Limber projection integrals for every
-//   probe involving source galaxies (shear-shear, galaxy-shear, CMB
-//   lensing × shear), where it enters through the radial weight
-//   functions W_kappa, W_source, and g_tomo.
+//   Returns the redshift distribution of source (background) galaxies
+//   in tomographic bin nj, evaluated at redshift zz: an interpolated
+//   density reconstructed from the normalized histogram. The histogram
+//   is normalized before the fit; the reconstructed curve itself is not
+//   renormalized, so its area can differ slightly from 1 (see the
+//   numerical scheme below). This function is called inside the Limber
+//   projection integrals for every probe involving source galaxies
+//   (shear-shear, galaxy-shear, CMB lensing × shear), where it enters
+//   through the radial weight functions W_kappa, W_source, and g_tomo.
 //
 // PHOTO-Z MODEL:
 //   The raw histogram n_raw(z, i) from the survey (accessed via
@@ -1336,7 +1346,9 @@ static double nz_histogram_akima(
 //   nj — source tomographic bin index (0 .. shear_nbin − 1)
 //
 // Returns:
-//   n(z − Δz_nj, nj). Returns 0 outside the tabulated range.
+//   n(z − Δz_nj, nj), the interpolated distribution at the shifted
+//   redshift (normalized-histogram input; the reconstructed area is not
+//   renormalized). Returns 0 outside the tabulated range.
 // ---------------------------------------------------------------------------
 double nz_source_photoz(double zz, const int nj)
 {
@@ -1738,12 +1750,16 @@ double pf_histo_n(double z, const int ni)
 // Photometric redshift distribution n(z) for lens tomographic bin nj.
 //
 // PHYSICS:
-//   Returns the normalized redshift distribution of lens (foreground)
-//   galaxies in tomographic bin nj, evaluated at redshift zz. This
-//   function is called inside the Limber projection integrals for every
-//   probe involving lens galaxies (galaxy-galaxy lensing, galaxy
-//   clustering, galaxy–CMB lensing), where it enters through the
-//   radial weight functions W_gal and g_lens.
+//   Returns the redshift distribution of lens (foreground) galaxies in
+//   tomographic bin nj, evaluated at redshift zz: an interpolated
+//   density reconstructed from the normalized histogram. The histogram
+//   is normalized before the fit; the reconstructed curve itself is not
+//   renormalized, so its area can differ slightly from 1 (see the
+//   numerical scheme below). This function is called inside the Limber
+//   projection integrals for every probe involving lens galaxies
+//   (galaxy-galaxy lensing, galaxy clustering, galaxy–CMB lensing),
+//   where it enters through the radial weight functions W_gal and
+//   g_lens.
 //
 // PHOTO-Z MODEL:
 //   The raw histogram n_raw(z, i) from the survey (accessed via
@@ -1759,8 +1775,14 @@ double pf_histo_n(double z, const int ni)
 //   σ_i = nuisance.photoz[1][1][nj] is the per-bin stretch, and
 //   z̄_i = redshift.clustering_zdist_z[ZDIST_MEAN][nj] is the fiducial mean
 //   redshift (the value zmean returns).
-//   The returned value is divided by σ_i to preserve normalization
-//   under the stretch (∫ n(z) dz = 1).
+//   The returned value is divided by σ_i, the Jacobian of the stretch:
+//   the change of variable preserves the area of the reconstructed
+//   curve over its full transformed support. It does not repair the
+//   interpolation-area changes noted above. The stretch σ_i is a
+//   dimensionless photo-z nuisance; it is not a physical velocity
+//   dispersion σ_v in km/s, which a likelihood may apply by convolving
+//   the input histogram before it is loaded here. The same Greek letter
+//   does not imply the same operation or unit.
 //
 // RECONSTRUCTION CHOICE:
 //   photoz_histogram_akima = 0 follows the midpoint path described below.
@@ -1808,8 +1830,9 @@ double pf_histo_n(double z, const int ni)
 //   nj — lens tomographic bin index (0 .. clustering_nbin − 1)
 //
 // Returns:
-//   n(z_transformed, nj) / σ_nj, the stretch-corrected normalized
-//   redshift distribution. Returns 0 outside the tabulated range.
+//   n(z_transformed, nj) / σ_nj, the stretch-corrected interpolated
+//   distribution (normalized-histogram input; the reconstructed area is
+//   not renormalized). Returns 0 outside the tabulated range.
 // ---------------------------------------------------------------------------
 double nz_lens_photoz(double zz, int nj)
 {

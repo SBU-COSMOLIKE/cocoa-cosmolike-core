@@ -1576,10 +1576,14 @@ void limber_spectra_cov(
 //
 // where S_j = W_kappa - C1 n_s H/H0 (windows 1 + 2) is the complete source
 // window and shear(ell) = sqrt((ell-1) ell (ell+1) (ell+2))/(ell+1/2)^2
-// the spin-2 factor of limber_spectra_cov. The loop terms are correlators
-// of the density, so they never multiply the magnification or RSD parts
-// of a lens field, as in the data vector. Source-source spectra are
-// unchanged.
+// the spin-2 factor of limber_spectra_cov. The loop terms multiply only
+// the lens density windows u2 and u3: the magnification and RSD parts
+// of a lens field keep the linear model, the same prescription as the
+// data vector. That restriction is a modeling choice, not an identity -
+// density operators do correlate with lensing and velocity fields, and
+// the one-loop corrections to those legs are of the same order in
+// P_lin - but this routine does not evaluate them. Source-source
+// spectra are unchanged.
 //
 // NUMERICAL CHOICES
 // The five templates are the core C-FAST-PT tables of get_FPT_bias

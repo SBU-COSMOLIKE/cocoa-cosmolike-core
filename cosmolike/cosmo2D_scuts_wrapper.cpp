@@ -1425,6 +1425,11 @@ py::tuple C_gg_kwindow_white_noise_cpp(
 // gg_scale_cuts_tomo_ells_work (cosmo2D_scuts.c, where the criterion
 // is explained); this wrapper validates, allocates and converts.
 //
+// The cuts are a diagnostic of that evaluated model: downstream
+// analysis fixes the selected data and covariance rows and evaluates
+// the full theory on them. The k window is never applied to measured
+// spectra, and ordinary data-vector evaluations run without it.
+//
 // Spectrum rows s: the autos 0 .. clustering_Npowerspectra - 1, then
 // the cross pairs in the order of the gg-cross block. Row s, column i
 // is therefore entry nell*s + i counted from the first entry of the gg

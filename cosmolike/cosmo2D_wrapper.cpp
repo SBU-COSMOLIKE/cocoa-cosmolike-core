@@ -599,13 +599,19 @@ double C_gg_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Galaxy-clustering C_l with the non-limber low multipoles the
-// likelihood uses (limber above limits.LMAX_NOLIMBER): starts from
-// C_gg_tomo_limber_cpp (same cube layout, diagonal only) and overwrites
-// every requested l < LMAX_NOLIMBER with the non-Limber C_cl_tomo value
-// (Limber-convergence tolerance 0.01) read at the integer multipole
-// (int)(l + 1e-13) - the requested low multipoles are expected to be
-// integer-valued.
+// Galaxy-clustering C_l with non-Limber low multipoles, as a
+// diagnostic: starts from C_gg_tomo_limber_cpp (same cube layout,
+// diagonal only) and overwrites every requested l < limits.LMAX_NOLIMBER
+// with the non-Limber C_cl_tomo value (Limber-convergence early-exit
+// tolerance 0.01) read at the integer multipole (int)(l + 1e-13) - the
+// requested low multipoles are expected to be integer-valued.
+//
+// This wrapper is not the Fourier data-vector route. That route
+// (generic_interface.hpp) dispatches through C_gg_tomo_ells, which
+// selects the low-rank and cross-pair paths and disables the early exit
+// (tolerance 0); the two share only the LMAX_NOLIMBER cap. The values
+// here are C_l point values at single multipoles - this wrapper does
+// not average over a band.
 //
 // Parameters:
 //   l - multipole values; an empty array aborts (spdlog::critical +

@@ -60,8 +60,9 @@ typedef simde__m128d v2d;
 //    tends to zero at high l and keeps the low-l correction to Limber of
 //    the linear field.
 // Code map:
-//    stage 1  matched = limber_spectra_cov(..., 2, 0, ...); radial inputs
-//             chi*W*D on the ln(chi) grid; forward FFTs saved once
+//    stage 1  matched = limber_spectra_cov(..., 2, include_rsd, ...);
+//             radial inputs chi*W*D on the ln(chi) grid; forward FFTs
+//             saved once
 //    stage 2  per block of 16 multipoles: component transfers
 //             (fftlog_execute_cov), the k weights (2/pi) dlnk k^3 P(k,1)
 //             and the observed-field transfers with their angular factors
@@ -166,7 +167,9 @@ void nonlimber_spectra_cov(
   const int npair = nfield*(nfield+1)/2;
 
   // matched[p][l-2]: the Limber projection at l = 2..lmax of the same
-  // separable field, power mode 2 = D(a)^2 p_lin(k,1), without RSD (0).
+  // separable field, power mode 2 = D(a)^2 p_lin(k,1). It receives the
+  // same include_rsd as the exact term below: both terms must project
+  // the same field, or exact - matched stops cancelling at high l.
   double* multipoles = (double*) malloc1d(lmax-1);
   for (int index=0; index<lmax-1; index++) {
     multipoles[index] = index+2.0;

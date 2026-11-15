@@ -162,6 +162,16 @@ static void legendre_sums_filtered(
 // normalization explicit. The absolute value counts the k ranges where
 // the integrand is negative (xi_+ has some) as response too.
 //
+// What the derivative notation means here: at fixed l or theta the
+// observable is a k integral, X = int I_X(k) dlnk, each logarithmic
+// k interval contributing a piece of the projected signal. dX/dlnk
+// denotes that contribution density I_X - not the spectral slope
+// dlnP/dlnk of the 3D power spectrum - and dlnX/dlnk abbreviates
+// I_X/X where X is nonzero. The absolute value is applied to this
+// density before integrating; the gg UV fraction further down this
+// file instead splits already-integrated signed spectra, so the two
+// criteria treat cancellations differently.
+//
 // A data point's scale cut is the kk solving RF(kk) = alpha for a chosen
 // threshold alpha: the modes beyond kk carry the remaining fraction
 // 1 - alpha of the response. 2011.06469 keeps a point when kk <= kmax,
@@ -176,7 +186,8 @@ static void legendre_sums_filtered(
 // Pipeline:
 //
 //   CAMB P(k)
-//     -> dC_X/dlnk tables, one Limber node per (k, l) entry
+//     -> dC_X/dlnk tables, one Limber node per (k, l) entry: the
+//        contribution density I_C defined above
 //        (filled by the _work functions in cosmo2D.c; cached here)
 //     -> dlnC_X/dlnk = (dC_X/dlnk)/C_X (Fourier space) and, through
 //        the Legendre sums below, dlnxi_pm/dlnk and dlnw_ks/dlnk
@@ -2616,8 +2627,10 @@ void RF_w_ks_tomo_limber_work(
 // where C_l^IR is computed with the 3D power spectrum multiplied by a
 // step that keeps k <= kmax/D(z), and C_l^UV is the rest. D is the
 // linear growth factor, normalized to D(0) = 1, and kmax is quoted at
-// z = 0 in h/Mpc, so the cut grows with redshift as 1/D(z), following
-// the nonlinear scale.
+// z = 0 in h/Mpc, so the cut grows with redshift as 1/D(z). The 1/D
+// scaling is the adopted prescription for where nonlinearity sets in -
+// a modeling choice motivated by the growth of structure, not a derived
+// property of the nonlinear scale.
 //
 // A band power is kept while its UV part is a small fraction alpha of
 // the signal,
@@ -2627,11 +2640,15 @@ void RF_w_ks_tomo_limber_work(
 // with alpha = 0.05 as the paper's baseline (0.01 as the tighter
 // choice).
 //
-// Because the split is a step on P(k), it does not depend on how the
-// projection is done: the k window of cosmo2D.c (gg_kwin) applies it
-// inside every gg engine - Limber, FKEM and the low-rank non-Limber
-// path - so a thin bin's radial modes, which Limber misses, count
-// toward its UV part.
+// Every gg engine implements the same split through the k window of
+// cosmo2D.c (gg_kwin) - Limber, FKEM and the low-rank non-Limber path -
+// so a thin bin's radial modes, which Limber misses, count toward its
+// UV part. The radial realization of the threshold differs by engine,
+// though: the Limber sums apply each line-of-sight node's own
+// kmax/D(a), while the non-Limber sums - and the Limber terms that must
+// cancel them at high l - use one pivot threshold per bin or pair,
+// kmax/D at the bin's mean redshift. The gg_kwin contract in cosmo2D.c
+// explains why.
 //
 // One term needs care beyond the step: the one-loop white-noise
 // constant that the sigma4 subtractions introduce, which the low-rank
@@ -2741,6 +2758,18 @@ void C_gg_kwindow_tomo_ells(
 //
 // and the bands each kmax keeps, uvfrac < alpha.
 //
+// C_l^IR and C_l^UV are signed, already-projected spectra: the absolute
+// values are taken after the projection integrals, so cancellations
+// inside either sector have already happened (C_l^IR = 1 with
+// C_l^UV = -1 gives a zero total spectrum and a UV fraction of 1/2).
+// For the same reason a zero denominator means both sectors vanish; a
+// zero total alone does not imply it. The fractions diagnose the model
+// at its evaluated cosmology and nuisances - they bound neither
+// arbitrary omitted contributions nor derivatives of terms whose
+// fiducial value is zero. Downstream analyses use them to decide which
+// data and covariance rows enter a likelihood; the selected rows are
+// then fixed, and the full theory is evaluated on them with no window.
+//
 // Spectra are numbered s = 0 .. NSIZE - 1 for the autos and NSIZE + n
 // for cross pair n: the order of the gg and gg-cross blocks of the data
 // vector, so row s of the outputs lines up with spectrum s there.
@@ -2837,7 +2866,8 @@ void gg_scale_cuts_tomo_ells_work(
         const double cuv = full[s][i] - cir;
         const double den = fabs(cuv) + fabs(cir);
         ir[m][s][i] = cir;
-        // a band with no signal at all has nothing to contaminate
+        // den = 0 means both sectors vanish (see the header): a band
+        // with no signal at all has nothing to contaminate
         uvfrac[m][s][i] = (den > 0.0) ? fabs(cuv)/den : 0.0;
       }
     }
