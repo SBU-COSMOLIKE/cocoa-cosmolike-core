@@ -163,6 +163,16 @@ magnification-times-magnification foreground. With b_mag = 0
 everywhere the nodes are bitwise those of a build without
 magnification.
 
+All three pair integrals (the pair Limber batch, its FKEM twin and
+the low-rank core) draw one cached Gauss-Legendre rule per panel,
+`gg_pair_glrule`: 128 nodes plus 64 per level of
+`integration_accuracy` (magnitude only, capped at 8192 like every
+other ladder), rebuilt when `Ntable.random` changes. The ladder grows
+more slowly than the auto batches' doubling because each panel is one
+short, smooth stretch; `pair_quadrature_suite`
+(`cocoa_testing_suites.py`) sweeps it against a converged reference
+per project.
+
 ### Pair Limber batch
 
 `C_gg_cross_tomo_limber_work` fills up to four outputs per pair:
@@ -211,7 +221,8 @@ baseline 512, scaled by `nonlimber_accuracyboost` times the global
 boost. The grid spans fixed endpoints (dlnchi = log(chi_max/chi_min) /
 (NL_Nchi - 1)), so only interval doubling nests its nodes: for a
 combined factor above 1, `set_nl_nchi` rounds it up to a power of two
-and sets NL_Nchi - 1 = 511 m. Thin radial kernels alias on the
+m and multiplies NL_Nchi - 1 by it (511 m at the shipped baseline).
+Thin radial kernels alias on the
 baseline grid - a thin-bin configuration measured delta chi2 of order
 1e5 between boost 1 and boost 16 (2026-11) and settled on
 `nonlimber_accuracyboost: 8` - so convergence in this knob must be

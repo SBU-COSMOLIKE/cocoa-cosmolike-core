@@ -798,7 +798,7 @@ void init_ggl_exclude(
   );
 
 void init_gg_cross_pairs(
-	arma::Col<int> pairs_flat
+    arma::Col<int> pairs_flat
   );
 
 // omega_nu_h2 = omega_nu h^2 of the massive neutrinos (CAMB's omnuh2);

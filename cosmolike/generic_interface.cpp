@@ -425,6 +425,9 @@ static void reset_boost_baselines(void);
 // family (redshift, nuisance, cosmology, tomo, Ntable, like, cmb), and
 // sets the defaults like.adopt_limber[LIMBER_GG] = 0,
 // like.adopt_limber[LIMBER_GS] = 1 and pdeltaparams.runmode = "Halofit".
+// Module state outside the structs is cleared too: the accuracy-boost
+// baselines (reset_boost_baselines), the gg cross-pair list and the k
+// window of cosmo2D.c.
 // The cluster probe flags (cluster.probe[]) are reset by reset_cluster
 // (generic_interface_cluster.cpp), not here.
 //
@@ -1361,10 +1364,12 @@ void init_accuracy_boost(
   }
   
   if (0 == boost_base[1]) boost_base[1] = Ntable.N_ell[NODES_DENSE];
-  Ntable.N_ell[NODES_DENSE] = static_cast<int>(ceil(boost_base[1]*accuracy_boost));
+  Ntable.N_ell[NODES_DENSE] =
+      static_cast<int>(ceil(boost_base[1]*accuracy_boost));
 
   if (0 == boost_base[2]) boost_base[2] = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-  Ntable.dCX_dlnk_nlnk[NODES_DENSE] = static_cast<int>(ceil(boost_base[2]*accuracy_boost));
+  Ntable.dCX_dlnk_nlnk[NODES_DENSE] =
+      static_cast<int>(ceil(boost_base[2]*accuracy_boost));
 
   // NL_Nchi: the baseline shared with init_nonlimber_accuracy_boost (see
   // nl_nchi_base); the combined boost refines by nested interval
@@ -1377,24 +1382,28 @@ void init_accuracy_boost(
   debug("{}: NL_Nchi = {}", fname, Ntable.NL_Nchi);
 
   if (0 == boost_base[4]) boost_base[4] = Ntable.nz_fine_sampling_factor;
-  Ntable.nz_fine_sampling_factor = 
-                                static_cast<int>(ceil(boost_base[4]*accuracy_boost));
+  Ntable.nz_fine_sampling_factor =
+      static_cast<int>(ceil(boost_base[4]*accuracy_boost));
 
   if (0 == boost_base[5]) boost_base[5] = Ntable.N_ell[NODES_COARSE];
-  Ntable.N_ell[NODES_COARSE] = static_cast<int>(ceil(boost_base[5]*accuracy_boost));
+  Ntable.N_ell[NODES_COARSE] =
+      static_cast<int>(ceil(boost_base[5]*accuracy_boost));
 
   if (0 == boost_base[6]) boost_base[6] = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
   Ntable.dCX_dlnk_nlnk[NODES_COARSE] =
       static_cast<int>(ceil(boost_base[6]*accuracy_boost));
 
   if (0 == boost_base[7]) boost_base[7] = Ntable.N_M[NODES_COARSE];
-  Ntable.N_M[NODES_COARSE] = static_cast<int>(ceil(boost_base[7]*accuracy_boost));
+  Ntable.N_M[NODES_COARSE] =
+      static_cast<int>(ceil(boost_base[7]*accuracy_boost));
 
   if (0 == boost_base[8]) boost_base[8] = Ntable.halo_uks_n[UKS_N_LNC];
-  Ntable.halo_uks_n[UKS_N_LNC] = static_cast<int>(ceil(boost_base[8]*accuracy_boost));
+  Ntable.halo_uks_n[UKS_N_LNC] =
+      static_cast<int>(ceil(boost_base[8]*accuracy_boost));
 
   if (0 == boost_base[9]) boost_base[9] = Ntable.halo_uks_n[UKS_N_LNZ];
-  Ntable.halo_uks_n[UKS_N_LNZ] = static_cast<int>(ceil(boost_base[9]*accuracy_boost));
+  Ntable.halo_uks_n[UKS_N_LNZ] =
+      static_cast<int>(ceil(boost_base[9]*accuracy_boost));
 
   if (0 == boost_base[10]) boost_base[10] = Ntable.halo_nfw_n;
   Ntable.halo_nfw_n = static_cast<int>(ceil(boost_base[10]*accuracy_boost));

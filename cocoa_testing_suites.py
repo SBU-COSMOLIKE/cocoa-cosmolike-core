@@ -1987,7 +1987,7 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
         self._run_sweep()
     test.__name__ = "test_nonlimber_lowrank_gg"
     test.__doc__ = ("FKEM vs low-rank SVD clustering: the five "
-                    "checks of the factory docstring.\n        ")
+                    "checks of the factory docstring.")
     setattr(TestLowrank, test.__name__, test)
     TestLowrank.__name__ = name
     TestLowrank.__qualname__ = name
@@ -1997,10 +1997,10 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
 # ---- the pair-quadrature accuracy checks ------------------------------------
 
 # The cross-pair Gauss-Legendre rule (gg_pair_glrule in cosmo2D.c) has
-# 128 + 64*abs(level) nodes per panel, where level is the likelihood
-# key integration_accuracy. These tolerances judge the pair block (the
-# appended gg-cross entries of the data vector) against a converged
-# reference.
+# 128 + 64*abs(level) nodes per panel, capped at 8192 nodes from level
+# 126 on, where level is the likelihood key integration_accuracy. These
+# tolerances judge the pair block (the appended gg-cross entries of the
+# data vector) against a converged reference.
 #
 # The default level is an MCMC setting, so it must pass the reference
 # rule of every frozen test, |delta chi2| < CHI2_TOLERANCE (0.2). A
@@ -2013,8 +2013,8 @@ PAIR_QUADRATURE_FISHER_DCHI2 = 1.0e-3
 PAIR_QUADRATURE_FISHER_BAND = 1.0e-2
 # The reference must agree with a rule twice as fine to this level, far
 # below every other tolerance here, so that the errors measured against
-# it are the tested level's own (measured 2026-11-14: at most 1e-9 on
-# the four DESI layouts).
+# it are the tested level's own (measured at or below 1e-9 on thin- and
+# wide-bin layouts).
 PAIR_QUADRATURE_REFERENCE_DCHI2 = 1.0e-8
 # Above this delta chi2 the pair-block error falls as nodes are added;
 # below it the error oscillates from one rule to the next (the nodes
@@ -2022,8 +2022,8 @@ PAIR_QUADRATURE_REFERENCE_DCHI2 = 1.0e-8
 # compared only when one of them is above it.
 PAIR_QUADRATURE_FLOOR = 1.0e-6
 # Set this environment variable to 1 to run the full ladder sweep
-# (test_pair_quadrature_ladder), which builds eight models per layout;
-# the routine check builds four.
+# (test_pair_quadrature_ladder). At the factory's default arguments the
+# sweep builds eight models per layout; the routine check builds four.
 PAIR_QUADRATURE_DEEP_FLAG = "COCOA_PAIR_QUADRATURE_DEEP"
 
 
@@ -2063,7 +2063,8 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
     and compares the appended gg-cross block (the cross-bin pair
     spectra) with the same block at `reference_level`.
 
-    test_pair_quadrature (always runs; four models) asserts:
+    test_pair_quadrature (always runs; four models at the default
+    arguments) asserts:
       1. the level reaches the pair rule: the pair block at level 0
          differs from the reference;
       2. the sign of the level is ignored: level -1 reproduces level 1
@@ -2079,7 +2080,8 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
          pair band within PAIR_QUADRATURE_FISHER_BAND of its error.
 
     test_pair_quadrature_ladder (runs when the environment variable
-    COCOA_PAIR_QUADRATURE_DEEP is 1; eight models) adds:
+    COCOA_PAIR_QUADRATURE_DEEP is 1; eight models at the default
+    arguments) adds:
       6. the reference is converged: it agrees with `check_level` to
          PAIR_QUADRATURE_REFERENCE_DCHI2 in the pair block;
       7. every level of the sweep passes the MCMC rule, and every level
@@ -2144,6 +2146,9 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
                 vectors[level] = np.array(masked_vector())
                 if icov is None:
                     icov = np.array(ci.get_inv_cov_masked())
+                    # masked rows of the covariance are zero; the clip
+                    # keeps a round-off negative diagonal entry out of
+                    # the square root (the kept mask drops sigma = 0)
                     sigma = np.sqrt(np.clip(np.diag(
                         np.array(ci.get_cov_masked())), 0.0, None))
                     if not hasattr(ci, "compute_data_vector_3x2pt_fourier_sizes"):
@@ -2151,6 +2156,8 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
                             f"{example}: the pair quadrature suite needs a Fourier "
                             "project (compute_data_vector_3x2pt_fourier_sizes)")
                     sizes = ci.compute_data_vector_3x2pt_fourier_sizes()
+                    # the cross-pair list is installed by the first
+                    # model build, so this check cannot run earlier
                     ggx = _ggx_len(ci)
                     if ggx == 0:
                         raise ValueError(

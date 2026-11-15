@@ -9883,6 +9883,50 @@ static void C_gg_tomo_lowrank_ells(const double* ells, const int nell,
 static void C_gg_tomo_fkem_pairs_ells(const double* ells, const int nell,
                                       const int NSIZE, double** out);
 
+// ---------------------------------------------------------------------------
+// Galaxy clustering C_l^gg (auto spectra) at arbitrary multipoles, with
+// the non-Limber correction below the active engine's cap. The
+// Fourier-space data vectors call it (generic_interface.hpp,
+// like.adopt_limber[LIMBER_GG] = 0): their multipoles like.ell are band
+// centers, not integers. The gg counterpart of C_gs_tomo_ells.
+//
+// The function dispatches first - the low-rank twin, or the FKEM twin
+// with cross pairs, both at the end of the file - and the twins document
+// only their differences. The protocol all three share: at a band center
+// l the result is the exact Limber value at l plus the non-Limber
+// correction interpolated linearly between the two integers around l,
+//
+//   C(l)  = C^limber(l) + (1 - t)*dC(l0) + t*dC(l0 + 1)
+//   dC(n) = C^nonlimber(n) - C^limber(n),   l0 = floor(l),  t = l - l0.
+//
+// Everything is computed at the multipoles it is needed, never
+// tabulated: C^limber at the band centers
+// (C_gg_tomo_limber_nointerp_ells), and C^nonlimber and C^limber at the
+// integers l0, l0 + 1 only, through the non-Limber core (its Limber
+// P_delta values there are exact too).
+//
+// No early exit: the core runs with tol = 0, so every bin gets its exact
+// dC at every needed integer. The real-space early exit (freeze a bin
+// once |dC/C^limber| < tol and take Limber from there) is a truncation
+// error of that size, and at the band centers it is visible: with
+// tol = 0.01 it moved the roman_kl 3x2pt chi2 by 1.9 and roman_fourier's
+// by 0.10 (delta^T C^-1 delta). With ~2 integers per band center below
+// the cap, computing them all costs little.
+//
+// Band centers with l < 1 or l >= cap - 1 keep the Limber value (the
+// cap: limits.LMAX_NOLIMBER here, lowrank_DD_GG_lmax in the low-rank
+// twin).
+//
+// Parameters:
+//   ells  - multipole values, length nell (band centers; need not be
+//           integers)
+//   nell  - number of multipole values
+//   NSIZE - number of gg power spectra (= clustering_nbin)
+//   out   - output [NSIZE][nell], indexed out[nz][i]
+//
+// Returns:
+//   nothing; the result is written into out
+// ---------------------------------------------------------------------------
 void C_gg_tomo_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
@@ -10546,9 +10590,9 @@ void C_gs_tomo(
 // C_gs_tomo_core (its Limber P_delta values there are exact too).
 //
 // No early exit: the core runs with tol = 0, so every pair gets its exact
-// dC at every needed integer (see C_gg_tomo_ells's protocol header,
-// beside the low-rank section at the end of the file, for why: the
-// real-space early exit is a truncation error that the band centers see).
+// dC at every needed integer (see C_gg_tomo_ells's protocol header for
+// why: the real-space early exit is a truncation error that the band
+// centers see).
 //
 // Example: l = 35.4 gives l0 = 35, t = 0.4 and
 //   C(35.4) = C^limber(35.4) + 0.6*dC(35) + 0.4*dC(36).
@@ -11223,11 +11267,10 @@ static void C_gg_lowrank_decomp_work(
 // Gamma recurrence, the inverse FFT and its normalization, the
 // thread safety, the cache invalidation and the full parameter
 // list - is documented at cfftlog_ells_p2, which this copy matches
-// argument for argument. Only the differences are documented here:
-//
-//   - aliased y rows are filled once (the y-grid comment below);
-//   - the per-row parallel regions become one flattened worklist
-//     region per block (the scheduling banner below).
+// argument for argument. The shared aliased-y fill (the y-grid
+// comment below) is in both bodies; the one difference documented
+// here is the per-row parallel regions becoming one flattened
+// worklist region per block (the scheduling banner below).
 // ---------------------------------------------------------------------------
 void cfftlog_ells_p2_lowrank(
     double* const x,                        // chi grid, length Nx, from p1
@@ -11771,8 +11814,9 @@ void cfftlog_ells_p2_lowrank(
 //   CLnl, the Limber C_l(P_delta) at the run multipoles, indexed
 //   CLnl[i][l] (static: valid until the next call)
 // ---------------------------------------------------------------------------
-// the cross-pair quadrature and Limber batch live in the cross-bin
-// section further down this file; the core above them needs both
+// the cross-pair rule, quadrature nodes and Limber batch live in the
+// cross-bin section further down this file; the core above them needs
+// all three
 static const gsl_integration_glfixed_table* gg_pair_glrule(void);
 
 static cosmo_nodes create_cosmo_nodes_lens_pair(
@@ -13246,6 +13290,12 @@ void C_gg_kwindow_white_noise_ells(
   // the same masks, or the correction would move power the Limber terms
   // never carried. Serial warm-up, before the parallel loops (the FPT
   // tables are owned elsewhere when IA_code != 0).
+  //
+  // N_K's k integral starts at zero, not at the tables' k_min where
+  // the constant really begins: each j_l rises from zero as
+  // (k chi)^l, so the piece below k_min is many orders below the
+  // correction itself, and cutting it would cost a second Bessel
+  // table (the closed form at k_min as well as at K).
   if (0 == nuisance.IA_code) {
     get_FPT_bias();
   }
@@ -14532,8 +14582,10 @@ static double** C_cl_tomo_fkem_pairs_core(
   // longer than the pools
   int nlx = 0;
   for (int r=0; r<nruns; r++) {
-    if (runs[2*r] < 0 || runs[2*r+1] > LNL ||
-        runs[2*r+1] <= runs[2*r] || runs[2*r+1] - runs[2*r] > BLOCK ||
+    if (runs[2*r] < 0 ||
+        runs[2*r+1] > LNL ||
+        runs[2*r+1] <= runs[2*r] ||
+        runs[2*r+1] - runs[2*r] > BLOCK ||
         (r > 0 && runs[2*r] < runs[2*r-1])) {
       log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
       exit(1);
@@ -14874,7 +14926,8 @@ static void C_gg_tomo_fkem_pairs_ells(
   int nruns = 0;
   for (int l=0; l<LNL; l++) {
     if (!need[l]) continue;
-    if (nruns > 0 && runs[2*nruns-1] == l &&
+    if (nruns > 0 &&
+        runs[2*nruns-1] == l &&
         runs[2*nruns-1] - runs[2*nruns-2] < BLOCK) {
       runs[2*nruns-1] = l + 1;  // extends the open run
     }

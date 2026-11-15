@@ -345,9 +345,10 @@ void nonlimber_spectra_cov(
         // angular factor. This loop overwrites only rows 0..nfield-1,
         // and every distortion row index nbase+field is at least
         // nbase = nlens+nfield, so the row read here is still intact.
-        // Without distortions the statement is the two-part sum it
-        // always was.
-        if (include_rsd && field < radial->nlens) {
+        // Without distortions a field keeps the two-part
+        // density-plus-spin sum.
+        if (include_rsd
+            && field < radial->nlens) {
           const double* velocity = transfer[index][nbase+field];
           for (int node=0; node<nk; node++) {
             output[node] = output[node]+factor*spin[node]+velocity[node];

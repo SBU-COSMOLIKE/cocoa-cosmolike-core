@@ -530,6 +530,8 @@ who knows one suite knows them all:
 | `test_baryons.py` | the [baryonic-feedback drift tests](#dv_baryons) BD1-BD7 |
 | `test_photoz_conventions.py` | the [photo-z convention checks](#dv_photoz) |
 | `test_nonlimber_ggl.py`, `test_nonlimber_gg.py` | the [non-Limber checks](#dv_nonlimber) |
+| `test_nonlimber_lowrank_gg.py` | the [low-rank engine comparison](#dv_thin_bins), where the project measures thin-bin clustering |
+| `test_pair_quadrature.py` | the [pair-quadrature ladder](#dv_thin_bins), where the project measures cross-bin pair spectra |
 | `test_cache_consistency.py` | the [sector-ladder cache check](#dv_cache_ladder) |
 | `test_nz_cache_roundtrip.py` | the shared [n(z) selection cache round trips](cocoa_nz_cache_testing.py) |
 | `test_scale_cut_diagnostics.py` | the notebook scale-cut diagnostics, where the project ships them |
@@ -860,13 +862,38 @@ and the frozen-reference check on the default evaluation. The lens
 distributions are narrow, so Limber fails at low multipoles for the
 clustering auto spectra; each project records its measured deltas.
 
+### Thin-bin clustering checks <a name="dv_thin_bins"></a>
+
+Projects that measure clustering in thin lens bins use the
+[thin-bin extensions](cosmolike/README.md#thin_bins) of the angular
+calculation and add two test families for them.
+
+`test_nonlimber_lowrank_gg.py` compares the two non-Limber clustering
+engines - the default FKEM split above and the low-rank engine - by
+evaluating the frozen fiducial with each in one process. The
+assertions follow the non-Limber family: a dead-flag floor on the
+engine delta chi2, only clustering entries change, a bit-identical
+round trip back to the default engine, agreement with the project's
+recorded delta, and the frozen-reference check on the default.
+
+`test_pair_quadrature.py` sweeps the likelihood key
+`integration_accuracy` over the quadrature ladder of the cross-bin
+pair integrals and compares the appended gg-cross block with a
+converged reference: the rule must engage (level 0 differs from the
+reference), the level's sign is ignored bit for bit, the default
+level passes the MCMC rule and the Fisher level its tighter
+tolerances, and the next level is no worse than the default. A deep
+opt-in ladder (`COCOA_PAIR_QUADRATURE_DEEP=1`) extends this to every
+level, checks the reference against a still finer rule and prints the
+full table.
+
 ### The sector-ladder cache check <a name="dv_cache_ladder"></a>
 
 cosmolike caches every expensive stage behind its own key, and a
 partial-invalidation bug - one sector's update path leaving behind an
 out-of-date static another sector consumes - produces wrong data
-vectors only in
-MIXED update sequences, which the per-point checks never exercise.
+vectors only in mixed update sequences, which the per-point checks
+never exercise.
 The test walks a deterministic ladder in one process (cosmology-only
 steps, then IA-only, source-photo-z, lens-photo-z and
 shear-calibration steps), evaluating after every step, then scrambles

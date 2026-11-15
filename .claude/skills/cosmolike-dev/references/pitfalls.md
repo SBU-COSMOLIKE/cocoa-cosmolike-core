@@ -152,3 +152,8 @@ preprocessor-guard fallback path.
   A new static setter must add its reset there in the same patch.
   Validate by building a model with the feature, then one without it,
   in one process.
+- **Second instance (2026-11-14):** the accuracy-boost baselines of
+  `init_accuracy_boost` (generic_interface.cpp) were captured once per
+  process, so a second likelihood kept the first one's internal FAST-PT
+  boost. They are now forgotten in `initial_setup`
+  (`reset_boost_baselines`) and re-captured per setup.

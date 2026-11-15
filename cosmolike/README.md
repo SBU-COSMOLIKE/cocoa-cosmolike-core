@@ -348,13 +348,13 @@ renormalizes the model by subtracting those $`k\to 0`$ limits
 adding to the raw sum the negative constant power
 
 ```math
-P_{\rm wn}=-\frac{\sigma_4}{2}\,c_i\,c_j\,D^4,
+P_{\rm wn}=-\frac{\sigma_4}{2}\,c_i\,c_j\,D^2(z_i)\,D^2(z_j),
 \qquad c_b\equiv b_{2,b}+\tfrac{2}{3}\,b_{s^2,b},
 \qquad \sigma_4=\int\frac{d^3q}{(2\pi)^3}\,P_{\rm lin}^2(q),
 ```
 
-for bins $`i`$ and $`j`$, with one factor $`D^2`$ per galaxy field at
-the redshift of the modes: the plateau and $`P_{\rm wn}`$ cancel
+for bins $`i`$ and $`j`$ — one factor $`D^2`$ per galaxy field, at the
+redshift of its modes: the plateau and $`P_{\rm wn}`$ cancel
 exactly as $`k\to 0`$. The low-rank non-Limber engine of the next
 section must project the raw, positive sum — its factorization takes a
 square root — and restores $`P_{\rm wn}`$ through a Limber term. That

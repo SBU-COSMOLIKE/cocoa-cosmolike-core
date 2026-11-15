@@ -368,7 +368,6 @@ void**** malloc3d_ptr(
     const long nz   // double* slots per (i, j)
   );
 
-
 // ---------------------------------------------------------------------------
 // Allocate a 3D array of double complex as a single 64-byte-aligned
 // contiguous block with pointer indirection for convenient multi-index

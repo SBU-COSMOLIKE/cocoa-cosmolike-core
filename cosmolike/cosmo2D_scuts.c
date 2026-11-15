@@ -2655,7 +2655,8 @@ void C_gg_kwindow_tomo_ells(
     // window would not see that correction, and IR + UV would miss the
     // full spectra by it. Computing UV = full - IR instead hands the UV
     // part the opposite shift by construction, so the split stays an
-    // exact partition; the price is a second windowed engine run.
+    // exact partition; the price is a second engine run (one without the
+    // window for the full spectra, one windowed for the IR parts).
     double** ia = (double**) malloc2d(NSIZE, nell);
     double** ix = (npairs > 0) ? (double**) malloc2d(npairs, nell) : NULL;
     C_gg_kwindow_tomo_ells(-1.0, 1, ells, nell, out, outx);

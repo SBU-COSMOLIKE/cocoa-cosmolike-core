@@ -123,7 +123,11 @@ split:
   On a kept band the node step keeps (nearly) all of the constant's
   local projection, the finite-k kernel keeps only a fraction of the
   raw plateau, and the IR part comes out too negative - the UV part
-  too positive - by the difference. The spurious UV excess grows as
+  too positive - by the difference. (That is the auto case; an
+  adjacent cross pair's kernels correlate at low k and anticorrelate
+  at high k, so its finite-k fraction can exceed the node-step one
+  and flip the sign. The repair below adds the signed difference
+  either way.) The spurious UV shift grows as
   c^2 and moved kept bands at the paper settings, where many bands sit
   within 1e-3 of alpha.
 

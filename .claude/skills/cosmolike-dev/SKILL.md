@@ -429,6 +429,10 @@ evidence are in `references/covariance_defaults.md` and
 Keep this level unchanged under global table refinements. Multiply interval
 counts in likelihoods too: `nonlimber_accuracyboost: 2` and
 `pk_z_refinement: 3` mean effective factors 4 and 6 at `accuracyboost: 2`.
+The non-Limber chi grid spans fixed endpoints, so `set_nl_nchi` rounds a
+combined factor above 1 up to a power of two and multiplies `NL_Nchi - 1`
+by it: lower boosts' nodes stay a subset of higher ones, keeping boost
+comparisons node-by-node (`references/lowrank_gg_cross_pairs.md`).
 For covariance interpolation, multiply interval
 counts, preserving existing interpolation nodes under doubling; divide
 finite-difference step sizes by the boost. Do not multiply fixed physical
