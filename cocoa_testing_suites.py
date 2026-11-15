@@ -1865,6 +1865,10 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
     Returns:
       a unittest.TestCase subclass named `name`.
     """
+    if default not in (0, 1):
+        raise ValueError(
+            f"lowrank_gg_suite: default = {default!r}; the project's "
+            "nonlimber_lowrank_gg default is 0 (FKEM) or 1 (low-rank SVD)")
     names = {0: "FKEM", 1: "low-rank SVD"}
     settings = (
         (f"{names[default]} (default)", default),
@@ -2107,7 +2111,23 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
 
     Returns:
       a unittest.TestCase subclass named `name`.
+
+    Raises:
+      ValueError unless 0 <= fisher_level < reference_level <
+      check_level and every deep level lies below reference_level (the
+      reference must be the finest rule but the check level).
     """
+    if not (0 <= fisher_level < reference_level < check_level):
+        raise ValueError(
+            f"pair_quadrature_suite: fisher_level = {fisher_level}, "
+            f"reference_level = {reference_level}, check_level = "
+            f"{check_level}; they must satisfy 0 <= fisher_level < "
+            "reference_level < check_level")
+    for level in deep_levels:
+        if not (0 <= level < reference_level):
+            raise ValueError(
+                f"pair_quadrature_suite: deep level {level} must lie in "
+                f"[0, reference_level = {reference_level})")
 
     class TestPairQuadrature(unittest.TestCase):
         """The cross-pair Gauss-Legendre ladder on one frozen layout."""
@@ -2131,6 +2151,11 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
             """
             import numpy as np
             ci = _interface(u)
+            # the interface alone decides this: check it before any build
+            if not hasattr(ci, "compute_data_vector_3x2pt_fourier_sizes"):
+                raise ValueError(
+                    f"{example}: the pair quadrature suite needs a Fourier "
+                    "project (compute_data_vector_3x2pt_fourier_sizes)")
             masked_vector = _masked_vector_fn(u, ci)
             lk_name = u.EXAMPLES[example]["likelihood"]
             vectors = {}
@@ -2151,10 +2176,6 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
                     # the square root (the kept mask drops sigma = 0)
                     sigma = np.sqrt(np.clip(np.diag(
                         np.array(ci.get_cov_masked())), 0.0, None))
-                    if not hasattr(ci, "compute_data_vector_3x2pt_fourier_sizes"):
-                        raise ValueError(
-                            f"{example}: the pair quadrature suite needs a Fourier "
-                            "project (compute_data_vector_3x2pt_fourier_sizes)")
                     sizes = ci.compute_data_vector_3x2pt_fourier_sizes()
                     # the cross-pair list is installed by the first
                     # model build, so this check cannot run earlier
