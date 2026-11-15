@@ -533,6 +533,7 @@ who knows one suite knows them all:
 | `test_nonlimber_lowrank_gg.py` | the [low-rank engine comparison](#dv_thin_bins), where the project measures thin-bin clustering |
 | `test_pair_quadrature.py` | the [pair-quadrature ladder](#dv_thin_bins), where the project measures cross-bin pair spectra |
 | `test_cache_consistency.py` | the [sector-ladder cache check](#dv_cache_ladder) |
+| `test_setting_sequences.py` | the [setting-sequence checks](#dv_sequences): settings changed in one process against a fresh process |
 | `test_nz_cache_roundtrip.py` | the shared [n(z) selection cache round trips](cocoa_nz_cache_testing.py) |
 | `test_scale_cut_diagnostics.py` | the notebook scale-cut diagnostics, where the project ships them |
 | `test_emul2.py` | the hybrid-emulator advisories, where the project ships trained emulators |
@@ -904,6 +905,23 @@ land on the same vector. The shear-calibration steps must equal the
 analytic (1+m_i)(1+m_j) block rescale to 1e-12, a no-op update must
 change nothing, and both intrinsic-alignment models run (the TATT
 ladder exercises the FAST-PT rebuild machinery).
+
+### Setting sequences <a name="dv_sequences"></a>
+
+A notebook changes cosmolike settings between evaluations - bin
+counts, pair lists, the intrinsic-alignment or bias model, the run
+mode, a baryon scenario, non-Limber multipole caps - without
+restarting the kernel. Each setting-sequence test applies one such
+sequence of changes in a single process, evaluating after every step,
+and compares each result bit for bit with a separate process that saw
+only the final settings: a cached table that did not follow a change
+fails the comparison. A change the loaded data layout cannot follow
+(the binning or the probe selection after the data files are loaded)
+must instead stop with a message naming the re-initialization to run,
+and the test asserts that message. Every project binds the shared
+sequences in `test_setting_sequences.py` and appends the sequences of
+its own features (CMB lensing, cluster probes, the gg cross-bin
+pairs and the non-Limber caps).
 
 # Appendix <a name="appendix"></a>
 

@@ -60,8 +60,6 @@ One rule, three clauses, plus one safety net:
 tomography change passes through - additionally bumps
 `Ntable.random`, so a future cache that forgets a tomography size in
 clause 1 still rebuilds. The bump never substitutes for clause 1.
-(The bump is part of the restoration sweep below; until it lands,
-clause 1 is the only protection.)
 
 The cost is an integer compare per call or one nonce draw per setup;
 nothing rebuilds per MCMC step. The two failure directions are
@@ -72,6 +70,9 @@ safety-net bump. Either alone leaves one direction open, which is
 exactly how the audited gaps arose.
 
 ## The failure classes, with one example each
+
+Each example is written as the audit found it; the Status section
+lists the commit that closed it.
 
 - **An allocation keyed on `Ntable.random` but sized by a bin
   count.** The lensing-efficiency tables `g_tomo`, `g2_tomo` and
@@ -126,15 +127,21 @@ exactly how the audited gaps arose.
 ## How to test it
 
 The test design is the **setting-sequence suite**: a shared factory
-(`setting_sequence_suite` in `cocoa_testing_suites.py`, planned next
-to `accuracy_suite` and `pair_quadrature_suite`) that each project
-binds with its catalog of sequences. For each sequence, one fresh
-worker process builds the base configuration and applies the setting
-changes step by step, evaluating after each; a second worker builds
-the base plus the cumulative final settings in one pass. The final
-in-process vector must equal the fresh one bit for bit (float64
-equality, no tolerance) - or, for sequences whose contract is
-refusal, the in-process worker must abort with the named message.
+(`setting_sequence_suite` in `cocoa_testing_suites.py`, next to
+`accuracy_suite` and `pair_quadrature_suite`) that each project binds
+in `tests/data_vector/test_setting_sequences.py` with the shared
+catalog (`common_sequences`) plus its own sequences. For each
+sequence, one worker process builds the base configuration and
+applies the setting changes step by step, evaluating after each; one
+fresh worker per compared step applies the same operations and
+evaluates once, so its tables never saw an earlier setting. Each
+compared in-process vector must equal its fresh twin bit for bit
+(float64 equality, no tolerance) - or, for sequences whose contract
+is refusal, the in-process worker must abort with the named message.
+The operations, evaluators and reach checks are the `SEQUENCE_OPS`,
+`SEQUENCE_EVALUATORS` and `SEQUENCE_CHECKS` tables of
+`cocoa_testing.py`, next to `_sequence_worker`, which documents the
+two legs.
 
 **A sequence must reach the faulty path.** A sequence that does not
 reach the broken code passes on broken code: the low-rank cap-raise
@@ -148,17 +155,21 @@ pass, so a later yaml edit cannot silently defuse a reproducer.
 The catalog covers both directions of every switch: sample grow and
 shrink (with and without `init_ntomo_powerspectra`), ggl-exclusion
 swaps at fixed list length, cap raises with a band center in the
-raised range, accuracy-boost round trips, IA/bias model round trips
-at identical amplitudes, run-mode and baryon round trips, the
-two-model `initial_setup` round trip, and the layout-change refusals
-after `init_data`. Heavier variants (the full probe matrix, an
-AddressSanitizer leg for overflows that do not change the numbers,
-a repeated-`initial_setup` leak loop) are studies behind environment
-keys, in the style of the existing deep suites.
+raised range, IA/bias model round trips, run-mode and baryon round
+trips, the two-model `initial_setup` round trip, and the
+layout-change refusals after `init_data` (and, in the cluster
+projects, after `init_data_cluster`). Heavier variants (the full
+probe matrix, an AddressSanitizer leg for overflows that do not
+change the numbers, a repeated-`initial_setup` leak loop) remain
+future studies behind environment keys, in the style of the existing
+deep suites.
 
 ## Status
 
-Landed (cosmolike_core, branch `lowrank_fftlog`):
+Every restoration of the audit is in the tree. Landed
+(cosmolike_core, branch `lowrank_fftlog`), by clause:
+
+Earlier fixes:
 
 - `4f9739d` - the low-rank cross-pair storage of
   `C_cl_tomo_lowrank_core` keys every size its allocations use
@@ -171,14 +182,128 @@ Landed (cosmolike_core, branch `lowrank_fftlog`):
 - `82e0e3b` - `initial_setup` clears the gg cross-pair list
   (pitfall 13's first instance).
 
-Open: the remaining restorations of the audit - the per-cache size
-keys of the classic projection and interpolation caches, the
-`init_IA`/`init_bias`/baryon/run-mode nonces, the `initial_setup`
-reset batch (low-rank trio, `limits.LMAX_NOLIMBER`, the baryon
-scenario, `PointMass`/`IPCMB`), the evaluation-time layout checks,
-the `init_ntomo_powerspectra` safety-net bump, and the
-setting-sequence suite itself - are being implemented from the
-review's fix plan; treat any path above as unprotected until its fix
-is in the tree. The n(z) change-detection scan's out-of-bounds read
-(`set_lens_sample`/`set_source_sample`) and the RSD-masked pair-node
-initialization are in the same open list.
+Sizes (clause 1) and memory safety:
+
+- `d27a502` - the masked branch of the pair Limber batch
+  (`C_gg_cross_tomo_limber_work`) zero-fills the RSD pair nodes it
+  skips, removing an uninitialized read.
+- `99758e9` - `C_cl_tomo_core` keys the lens-bin count; `w_gg_tomo`
+  refuses a pair count that disagrees with the bin count, naming
+  `init_ntomo_powerspectra`.
+- `0f94f4e` - `C_ks_tomo_limber` keys the source-bin count; its fill
+  stops on a NULL table.
+- `e4d3665` - `g_tomo`, `g2_tomo` and `g_lens` key their bin count as
+  a cache slot compared in both the allocation and the refill.
+- `ed895ff` - the pair-count size slot in `xi_pm_tomo`,
+  `w_gammat_tomo`, `w_gg_tomo`, `w_gk_tomo`, `w_ks_tomo`,
+  `C_ss_tomo_limber`, `C_gs_tomo_limber`, `C_gk_tomo_limber`,
+  `C_gg_tomo_limber` and the six derivative tables of
+  `cosmo2D_scuts.c`.
+- `9dfbf7e` - the kernel-pointer maps (`Z1`, `Z2`, `N_shear`, `ZCL1`,
+  `ZCL2`, `N_CL`) record their bin count and rebuild when it changes;
+  `init_ntomo_powerspectra` warms them serially.
+- `0b66516` - `set_source_sample`/`set_lens_sample` store the bin
+  count of the saved n(z) table, so the change-detection scan never
+  reads past it; a reload with a changed count stops with a message.
+- `18fa2e5` - `p_gm`/`p_gg` compare the OpenMP thread count in their
+  rebuild condition.
+- `5e4cd6d` - `reset_cosmology_struct` frees `chi`, `G`, `lnPL` and
+  `lnP` before NULLing them (no leak across `initial_setup` loops).
+
+Values (clause 2):
+
+- `73aab04` - `init_cosmo_runmode` resets the `Pdelta` dispatch latch
+  (`reset_pdelta_dispatch`) and bumps `cosmology.random` on a
+  run-mode change.
+- `0a09c24` - `init_IA_fastpt` compares the stored IA selectors and
+  bumps `nuisance.random_ia` on a model switch.
+- `c5b6c3c` - `init_bias` compares the stored bias codes and bumps
+  `nuisance.random_galaxy_bias` on a change.
+- `7d9d56b` - the baryon scenario loaders draw a fresh key and
+  `reset_bary_struct` steps `cosmology.random` when a scenario was
+  loaded.
+- `5ca65ca` - `w_gammat_tomo` and the cached ggl path key
+  `tomo.random_ggl`, so an exclusion-list swap at equal length
+  rebuilds.
+- `421ffa5` - `init_binning_fourier_ells` bumps `Ntable.random` when
+  any stored multipole changes.
+- `1540cd7` - the Python FAST-PT tables carry a producer flag; after
+  a covariance call rebuilds C-FAST-PT, the `IA_code = 1` read paths
+  stop with "call set_IA_PS again".
+- `56b21df` - the safety net: `init_ntomo_powerspectra` bumps
+  `Ntable.random`.
+- `518eab7` - `init_ggl_exclude` recounts the ggl spectra itself once
+  both samples are loaded.
+
+Resets (clause 3) and layout checks:
+
+- `9c4581c` - the `initial_setup` reset batch: the low-rank trio,
+  `limits.LMAX_NOLIMBER`, the baryon scenario, the `Pdelta` latch,
+  `PointMass` cleared, `IPCMB::reset`, and the nuisance/like struct
+  resets of the bias codes and nonces.
+- `89553d3` - `IP::set_mask` records the probe blocks' total;
+  the masked compute refuses a layout that no longer matches,
+  naming `init_data`.
+- `30c874a` - `IP::set_mask` stores the probe string; a probe change
+  after `init_data` is refused the same way.
+- `dc9bd17` - `like.Ndata` is assigned, not accumulated, so
+  `init_data` runs twice in one process (project half: lssty1xdesi
+  `cd3285c`).
+- `60868da` - `IPCluster::set_mask` stores the enabled-probe flags
+  and the Y transform; the cluster compute refuses a change, naming
+  `init_data_cluster`.
+- des_cluster `5cf3492` - the project binds `initial_setup` to a
+  lambda that also calls `reset_cluster`.
+
+Named stops and hardenings:
+
+- `36f615a` - `PointMass::get_pm` refuses a lens bin without a set
+  point mass.
+- `495e404` - the non-Limber chi-grid boost cap is a named stop, not
+  a silent clamp.
+- `e1f710e` - the covariance entry points refuse RSD with a nonzero
+  alpha_2 (the counterterm is not implemented there).
+- `094920d` - cluster lensing refuses TATT second-order amplitudes
+  (it implements the NLA A_1 term only).
+- `8e031b7` - the run-validation guard sits above the `lx` fill in
+  the non-Limber cores (mechanical move).
+- `c155815` - `get_binning_fourier_space` returns the stored
+  `like.ell` verbatim and stops when none is loaded.
+- `45df237` - the white-noise chi grid clamps its lowest node to
+  qa >= 1 (the chi = 0 node carries no volume).
+- `7926262` - `IP::set_inv_cov` checks every variance of the
+  covariance file before the squeeze.
+- `43779ed` - three latent index hazards became named stops
+  (`set_gg_cross_pairs` under an active k window, the IP/IPCMB index
+  getters, `set_nuisance_IA`'s power-law branch).
+
+The suite and the Python side:
+
+- `d3d5b80` - the setting-sequence factory (`setting_sequence_suite`,
+  `common_sequences`, the worker and its op/evaluator/check tables),
+  plus `518eab7` (the "sizes" evaluator) and `34e7178` (the lens-bins
+  op passes the photo-z stretch where the binding requires it).
+- `eec2c60` - `lowrank_gg_suite` and `pair_quadrature_suite` validate
+  their arguments with named errors.
+- `cc8a4c0` - `freeze_main --overwrite` keeps only the N-models files
+  of the current `NMODELS_EXAMPLES` keys and prints each dropped
+  file.
+- `daee920` - `covariance/survey.py` refuses a stored Gaussian model
+  without the `rsd` choice.
+- `24ba5c9` - the Fisher triangles use the Okabe-Ito palette with
+  per-forecast line widths.
+- Every project binds the suite in
+  `tests/data_vector/test_setting_sequences.py`: lsst_y1 `3f74146`,
+  des_y3 `54b8db1`, desy1xplanck `505d0c7`, roman_real `a8f00ec`,
+  roman_fourier `5ab23d8`, roman_kl `aba76ce`, des_cluster `1a80f0e`,
+  lssty1xdesi `c32b877`.
+
+Open:
+
+- P-33 (a user decision): hashing the frozen data files into
+  `nmodels_config_hash` would change every stored N-models
+  fingerprint and force the `--nmodels` refreeze of every project.
+- The group-boundary full data-vector runs (lsst_y1 and lssty1xdesi,
+  behind the heavy lock) are queued and running; every bound setting
+  sequence, fast regression and quick frozen-reference test has
+  passed on the final tree.

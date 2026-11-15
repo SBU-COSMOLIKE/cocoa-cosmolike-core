@@ -41,7 +41,9 @@ with a clear message on mismatch. Every file-scope static outside
 the reset structs has a reset invoked by `initial_setup`. See
 pitfalls 13 and 14, and `references/state_invalidation.md` for the
 full rule, the audited failure classes, the setting-sequence test
-suite and the state of the restoration sweep.
+suite (every project binds it in
+`tests/data_vector/test_setting_sequences.py`) and the landed fixes,
+commit by commit.
 
 Before writing or reviewing any Python — a plotting function, a notebook
 wrapper, a notebook cell, a likelihood method, a test, a script — read

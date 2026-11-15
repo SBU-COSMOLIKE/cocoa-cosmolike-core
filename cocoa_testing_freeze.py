@@ -811,10 +811,10 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
     # depend on anything the full freeze rewrites unless the
     # high-accuracy configuration changes, which the check's
     # fingerprint detects; they are read before frozen/ is removed and
-    # written back afterwards
-    # Only the files of the current NMODELS_EXAMPLES keys are kept: the
-    # file of an example removed from the table would otherwise be pinned
-    # again by every refreeze.
+    # written back afterwards. Only the files of the current
+    # NMODELS_EXAMPLES keys survive: the file of an example removed
+    # from that table would otherwise be pinned into the manifest
+    # again by every refreeze, with no test left that reads it.
     current_files = set()
     for nm_example, _label in getattr(u, "NMODELS_EXAMPLES", ()):
         current_files.add(f"nmodels_{nm_example}.npz")

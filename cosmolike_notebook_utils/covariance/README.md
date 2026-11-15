@@ -415,11 +415,14 @@ directly. These named results replace packed `single` and `pair` role axes.
 selects non-Limber gg/gs and a constant per-bin NLA amplitude. The CLI reads
 the same mapping from `covariance.gaussian`. Use `ia: none` to omit IA;
 `ia: TATT` additionally accepts `A2` and `B_TA`. Each amplitude may be a
-scalar or a list with one value per source bin. `rsd: true` (default
-false) adds the lens redshift-space-distortion window to every Gaussian
-spectrum with a lens field; the non-Limber correction then carries the
-matching exact distortion transfer. TATT requires `rsd: false`, and
-SSC/cNG never include RSD.
+scalar or a list with one value per source bin. `rsd: true` adds the
+lens redshift-space-distortion window to every Gaussian spectrum with a
+lens field; the non-Limber correction then carries the matching exact
+distortion transfer. A mapping that omits `rsd` resolves to `rsd: false`
+when the configuration is built, and the resolved choice is written into
+the saved settings; a stored Gaussian model without an `rsd` entry is
+refused with an error naming the missing key, never read as false. TATT
+requires `rsd: false`, and SSC/cNG never include RSD.
 
 The C kernels own the model calculation. `forecast.py` validates and
 installs the amplitudes; `survey.py` selects Gaussian spectra and passes

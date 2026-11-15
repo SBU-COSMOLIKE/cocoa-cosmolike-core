@@ -2114,8 +2114,10 @@ def pair_quadrature_suite(u, name, example, fisher_level=1,
 
     Raises:
       ValueError unless 0 <= fisher_level < reference_level <
-      check_level and every deep level lies below reference_level (the
-      reference must be the finest rule but the check level).
+      check_level and every deep level lies below reference_level: a
+      higher level is a finer quadrature rule, every assertion measures
+      a level against the reference, and only the check level (which
+      certifies the reference itself) may sit above it.
     """
     if not (0 <= fisher_level < reference_level < check_level):
         raise ValueError(
@@ -2828,8 +2830,11 @@ def common_sequences(space, shear_example=None, lens_example=None,
                 "evaluate": "masked", "compare": [1, 2],
                 "expect": "bitwise"})
         if rebuild_example is not None:
-            # model A: linear P(k) and a baryon scenario; model B is built
-            # after it in the same process
+            # the first model turns settings on (linear P(k), a baryon
+            # scenario); the rebuild then constructs a second model in
+            # the same process, whose initialize runs initial_setup, so
+            # any first-model state that survives the reset shows up
+            # against a fresh build of the second model
             setup = [("call", {"name": "init_cosmo_runmode",
                                "is_linear": True})]
             if baryons is not None:

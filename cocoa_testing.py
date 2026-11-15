@@ -1701,8 +1701,10 @@ def _sequence_op_lens_bins(ctx, nbin, b1=1.5, recount=True):
     try:
         ci.set_nuisance_clustering_photoz(bias=np.zeros(n))
     except TypeError:
-        # interfaces with a photo-z stretch take it too: a width
-        # factor, 1 = no stretch
+        # some interfaces bind the setter with a second required
+        # argument, the photo-z stretch (a width factor per bin, 1 =
+        # unstretched); calling their binding without it raises
+        # TypeError before any C++ runs, so the retry below is safe
         ci.set_nuisance_clustering_photoz(bias=np.zeros(n),
                                           stretch=np.ones(n))
     if hasattr(ci, "set_point_mass"):
@@ -4031,8 +4033,9 @@ class CocoaTestHarness:
                 # point's printed vector against the CFASTPT
                 # fiducial vector, which IS the chi2 against a
                 # dataset whose data vector is that fiducial (the
-                # likelihood's own chi2 rides the stale frozen-mask
-                # data vector and is discarded)
+                # likelihood's own chi2 is measured against the
+                # frozen dataset's data vector, not this baseline,
+                # and is discarded)
                 own = _load_datavector(
                     os.path.join(vectors_dir,
                                  f"{label}_point{i:02d}.modelvector"))
