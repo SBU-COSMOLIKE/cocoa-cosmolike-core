@@ -2829,7 +2829,10 @@ double p_gm(
   // malloc3d, so one free each (header, Cache invalidation)
   if (NULL == table ||
       fdiff2(cache[1], Ntable.random) ||
-      fdiff2(cache[3], redshift.random_clustering))
+      fdiff2(cache[3], redshift.random_clustering) ||
+      // one scratch block per thread: a new thread count
+      // (set_omp_threads) reallocates, then refills below
+      cache[6] != (uint64_t) omp_get_max_threads())
   {
     if (table != NULL) {
       free(table);
@@ -2882,7 +2885,7 @@ double p_gm(
     gl      = (double**) malloc2d(2, nnode);
     bin_tab = (double***) malloc3d(nbin, 5, nnode);
     // one scratch block per thread (the thread count of this rebuild;
-    // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
+    // cache[6] keys it)
     a_tab   = (double***) malloc3d(omp_get_max_threads(), 10, nnode);
     k_tab   = (double***) malloc3d(omp_get_max_threads(), 3,
                                    Ntable.N_k_nlin + n_coarse);
@@ -2912,7 +2915,8 @@ double p_gm(
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
       fdiff2(cache[3], redshift.random_clustering)  ||
       fdiff2(cache[4], nuisance.random_photoz_clustering) ||
-      fdiff2(cache[5], redshift.random_shear))
+      fdiff2(cache[5], redshift.random_shear) ||
+      cache[6] != (uint64_t) omp_get_max_threads())
   {
     // a grid of bin l over its lens range, node i at lim[l][0] + i
     // lim[l][2], both ends included. Set at every refill, not in the
@@ -3234,6 +3238,7 @@ double p_gm(
     cache[3] = redshift.random_clustering;
     cache[4] = nuisance.random_photoz_clustering;
     cache[5] = redshift.random_shear;
+    cache[6] = (uint64_t) omp_get_max_threads();
   }
 
   // --- 3. BILINEAR TABLE READ ---
@@ -3358,7 +3363,10 @@ double p_gg(
   // malloc3d, so one free each (header, Cache invalidation)
   if (NULL == table ||
       fdiff2(cache[1], Ntable.random) ||
-      fdiff2(cache[3], redshift.random_clustering))
+      fdiff2(cache[3], redshift.random_clustering) ||
+      // one scratch block per thread: a new thread count
+      // (set_omp_threads) reallocates, then refills below
+      cache[6] != (uint64_t) omp_get_max_threads())
   {
     if (table != NULL) {
       free(table);
@@ -3411,7 +3419,7 @@ double p_gg(
     mass_tab = (double**) malloc2d(4, nnode);
     occ_tab  = (double***) malloc3d(nbin, 2, nnode);
     // one scratch block per thread (the thread count of this rebuild;
-    // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
+    // cache[6] keys it)
     a_tab    = (double***) malloc3d(omp_get_max_threads(), 6, nnode);
     k_tab    = (double***) malloc3d(omp_get_max_threads(), 3,
                                     Ntable.N_k_nlin + n_coarse);
@@ -3448,7 +3456,8 @@ double p_gg(
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
       fdiff2(cache[3], redshift.random_clustering)  ||
       fdiff2(cache[4], nuisance.random_photoz_clustering) ||
-      fdiff2(cache[5], redshift.random_shear))
+      fdiff2(cache[5], redshift.random_shear) ||
+      cache[6] != (uint64_t) omp_get_max_threads())
   {
     // a grid of bin l over its lens range, node i at lim[l][0] + i
     // lim[l][2], both ends included. Set at every refill, not in the
@@ -3677,6 +3686,7 @@ double p_gg(
     cache[3] = redshift.random_clustering;
     cache[4] = nuisance.random_photoz_clustering;
     cache[5] = redshift.random_shear;
+    cache[6] = (uint64_t) omp_get_max_threads();
   }
 
   // --- 3. BILINEAR TABLE READ ---
