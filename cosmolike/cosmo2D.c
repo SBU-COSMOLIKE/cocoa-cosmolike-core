@@ -9640,6 +9640,17 @@ static double** C_cl_tomo_core(
     (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
   }
 
+  // the runs, validated before they index lx and the pools
+  const int BLOCK = 16;
+  for (int r=0; r<nruns; r++) {
+    if (runs[2*r] < 0 || runs[2*r+1] > limits.LMAX_NOLIMBER ||
+        runs[2*r+1] <= runs[2*r] || runs[2*r+1] - runs[2*r] > BLOCK ||
+        (r > 0 && runs[2*r] < runs[2*r-1])) {
+      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
+      exit(1);
+    }
+  }
+
   // Limber terms at the multipoles of the runs, batched in one pass: full
   // model (P_delta) and the linear counterpart of the FFTLog term. They
   // share the nodes, the radial weights and the RSD kernel (the a_chi and
@@ -9776,15 +9787,6 @@ static double** C_cl_tomo_core(
                   nbins, 
                   SIZE2);
 
-  const int BLOCK = 16;
-  for (int r=0; r<nruns; r++) {
-    if (runs[2*r] < 0 || runs[2*r+1] > limits.LMAX_NOLIMBER ||
-        runs[2*r+1] <= runs[2*r] || runs[2*r+1] - runs[2*r] > BLOCK ||
-        (r > 0 && runs[2*r] < runs[2*r-1])) {
-      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
-      exit(1);
-    }
-  }
   int converged[nbins];
   for (int i=0; i<nbins; i++) {
     converged[i] = 0;
@@ -10311,6 +10313,17 @@ static double** C_gs_tomo_core(
     (void) ZS(0);
   }
 
+  // the runs, validated before they index lx and the pools
+  const int BLOCK = 16;
+  for (int r=0; r<nruns; r++) {
+    if (runs[2*r] < 0 || runs[2*r+1] > LNL || runs[2*r+1] <= runs[2*r] ||
+        runs[2*r+1] - runs[2*r] > BLOCK ||
+        (r > 0 && runs[2*r] < runs[2*r-1])) {
+      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
+      exit(1);
+    }
+  }
+
   // Limber terms at the multipoles of the runs, in one pass: full model
   // (P_delta) and the linear counterpart of the FFTLog term (P_lin), which
   // share the nodes, the weights and the RSD kernel. Indexed CLnl[nz][l],
@@ -10437,15 +10450,6 @@ static double** C_gs_tomo_core(
                   SIZE1,
                   SIZE2);
 
-  const int BLOCK = 16;
-  for (int r=0; r<nruns; r++) {
-    if (runs[2*r] < 0 || runs[2*r+1] > LNL || runs[2*r+1] <= runs[2*r] ||
-        runs[2*r+1] - runs[2*r] > BLOCK ||
-        (r > 0 && runs[2*r] < runs[2*r-1])) {
-      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
-      exit(1);
-    }
-  }
   double*** PK = (double***) malloc3d(redshift.clustering_nbin, BLOCK,
                                       nchi); // per lens bin (pivot spectrum)
   // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
@@ -12166,6 +12170,18 @@ static double** C_cl_tomo_lowrank_core(
     (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
   }
 
+  // the runs, validated before they index lx and the pools
+  for (int r=0; r<nruns; r++) {
+    if (runs[2*r] < 0 ||
+        runs[2*r+1] > LNL ||
+        runs[2*r+1] <= runs[2*r] ||
+        runs[2*r+1] - runs[2*r] > BLOCK ||
+        (r > 0 && runs[2*r] < runs[2*r-1])) {
+      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
+      exit(1);
+    }
+  }
+
   // Limber terms at the multipoles of the runs, batched in one pass:
   // the two FKEM terms and the DD part of each, from the four-output
   // batch engine C_gg_tomo_limber_nl_lin_dd_nointerp_ells.
@@ -12450,16 +12466,6 @@ static double** C_cl_tomo_lowrank_core(
                   SIZE1,
                   SIZE2);
 
-  for (int r=0; r<nruns; r++) {
-    if (runs[2*r] < 0 ||
-        runs[2*r+1] > LNL ||
-        runs[2*r+1] <= runs[2*r] ||
-        runs[2*r+1] - runs[2*r] > BLOCK ||
-        (r > 0 && runs[2*r] < runs[2*r-1])) {
-      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
-      exit(1);
-    }
-  }
   // Scratch for the rank sum G(k_q) of pass 2 below.
   //
   // Each multipole accumulates its G over the ranks before squaring,
