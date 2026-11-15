@@ -1256,6 +1256,25 @@ static void compute_cs_block_masked(
 
 
 // ---------------------------------------------------------------------------
+// The on/off flag of each block of the joint vector: like.* for ss/gs/gg,
+// cluster.probe_* for cg/N/cc/cs (IPCluster::set_mask zeroes the blocks
+// that are off).
+// ---------------------------------------------------------------------------
+static arma::Col<int>::fixed<cluster_block::count> cluster_enabled_blocks()
+{
+  arma::Col<int>::fixed<cluster_block::count> enabled;
+  enabled(cluster_block::ss) = like.probe[PROBE_SS];
+  enabled(cluster_block::gs) = like.probe[PROBE_GS];
+  enabled(cluster_block::gg) = like.probe[PROBE_GG];
+  enabled(cluster_block::cg) = cluster.probe[CLUSTER_PROBE_CG];
+  enabled(cluster_block::N)  = cluster.probe[CLUSTER_PROBE_N];
+  enabled(cluster_block::cc) = cluster.probe[CLUSTER_PROBE_CC];
+  enabled(cluster_block::cs) = cluster.probe[CLUSTER_PROBE_CS];
+  return enabled;
+}
+
+
+// ---------------------------------------------------------------------------
 // The cobaya-facing theory vector of the joint analysis, full layout
 // (zeros off-mask), to be compared with IPCluster's data by get_chi2.
 //
@@ -1284,6 +1303,14 @@ vector compute_data_vector_cluster_masked()
   if (ndata != ipc.get_ndata()) [[unlikely]] {
     critical("{}: {} (data vector size {} != mask size {})",
       fname, errleii, ndata, ipc.get_ndata());
+    exit(1);
+  }
+  // the mask zeroed the blocks of the probes off at init_data_cluster, and
+  // the Y transform decides which cs entries exist
+  if (arma::any(cluster_enabled_blocks() != ipc.get_enabled()) ||
+      cluster.ytransform != ipc.get_ytransform()) [[unlikely]] {
+    critical("{}: the probe flags or the Y transform changed after "
+      "init_data_cluster: call init_data_cluster again", fname);
     exit(1);
   }
 
@@ -1348,6 +1375,8 @@ void IPCluster::reset()
   this->is_inv_cov_set_ = false;
   this->ndata_ = 0;
   this->ndata_sqzd_ = 0;
+  this->enabled_.zeros();
+  this->ytransform_ = 0;
   this->mask_filename_.clear();
   this->cov_filename_.clear();
   this->data_filename_.clear();
@@ -1417,14 +1446,10 @@ void IPCluster::set_mask(std::string mask_filename)
 
   // --- 2. ZERO THE BLOCKS OF DISABLED PROBES ---
 
-  arma::Col<int>::fixed<cluster_block::count> enabled;
-  enabled(cluster_block::ss) = like.probe[PROBE_SS];
-  enabled(cluster_block::gs) = like.probe[PROBE_GS];
-  enabled(cluster_block::gg) = like.probe[PROBE_GG];
-  enabled(cluster_block::cg) = cluster.probe[CLUSTER_PROBE_CG];
-  enabled(cluster_block::N)  = cluster.probe[CLUSTER_PROBE_N];
-  enabled(cluster_block::cc) = cluster.probe[CLUSTER_PROBE_CC];
-  enabled(cluster_block::cs) = cluster.probe[CLUSTER_PROBE_CS];
+  const arma::Col<int>::fixed<cluster_block::count> enabled =
+    cluster_enabled_blocks();
+  this->enabled_ = enabled;
+  this->ytransform_ = cluster.ytransform;
   for (int b=0; b<cluster_block::count; b++) {
     if (0 == enabled(b)) {
       for (int i=start(b); i<start(b) + sizes(b); i++) {

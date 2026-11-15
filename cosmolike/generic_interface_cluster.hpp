@@ -179,6 +179,13 @@ class IPCluster
     int get_ndata_sqzd() const {
       return this->ndata_sqzd_;
     }
+    // the probe flags and the Y transform the mask was built with
+    arma::Col<int>::fixed<cluster_block::count> get_enabled() const {
+      return this->enabled_;
+    }
+    int get_ytransform() const {
+      return this->ytransform_;
+    }
     arma::Col<int> get_mask() const {
       return this->mask_;
     }
@@ -206,6 +213,9 @@ class IPCluster
     bool is_inv_cov_set_ = false;
     int ndata_ = 0;
     int ndata_sqzd_ = 0;
+    arma::Col<int>::fixed<cluster_block::count> enabled_ =
+      arma::Col<int>::fixed<cluster_block::count>(arma::fill::zeros);
+    int ytransform_ = 0;
     std::string mask_filename_;
     std::string cov_filename_;
     std::string data_filename_;
