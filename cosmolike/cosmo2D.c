@@ -8104,7 +8104,11 @@ double C_ks_tomo_limber(
   static double** tabc = NULL; // coarse C_ell values
   static double** cspl = NULL; // natural-cubic-spline c coefficients
 
-  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
+  // the tables have one row per source bin: cache[5] holds the bin count
+  // they were sized and filled with
+  if (NULL == table ||
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) redshift.shear_nbin) {
     nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
@@ -8190,7 +8194,8 @@ double C_ks_tomo_limber(
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      cache[5] != (uint64_t) redshift.shear_nbin)
   {
     if (ncoarse > 0) {
       // ---------------------------------------------------------------
@@ -8271,6 +8276,7 @@ double C_ks_tomo_limber(
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
+    cache[5] = (uint64_t) redshift.shear_nbin;
   }
   
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
@@ -8317,6 +8323,10 @@ void C_ks_tomo_limber_fill(
     const int nz, const int lmin, const int lmax,
     const double* restrict ln_ell, double* restrict out)
 {
+  if (NULL == ks_.tab) {
+    log_fatal("the ks table is not built: call C_ks_tomo_limber first");
+    exit(1);
+  }
   const double* tab[1] = { ks_.tab[nz] };
   double* dst[1] = { out };
   limber_fill_interp(1, tab, dst, lmin, lmax, ln_ell,
