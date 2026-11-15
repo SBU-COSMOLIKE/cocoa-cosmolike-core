@@ -1013,8 +1013,14 @@ static void set_nl_nchi(void)
 {
   const double f = nl_accuracy_boost*Ntable.NL_Nchi_boost;
   if (f > 1.0) {
-    const int m = (int) fmin(pow(2.0, ceil(log2(f))), 1024.0);
-    Ntable.NL_Nchi = (nl_nchi_base - 1)*m + 1;
+    const double m = pow(2.0, ceil(log2(f)));
+    if (m > 1024.0) {
+      critical("set_nl_nchi: the non-Limber chi-grid factor {} (the "
+               "accuracy and non-Limber boosts, rounded up to a power of "
+               "two) exceeds the cap 1024", m);
+      exit(1);
+    }
+    Ntable.NL_Nchi = (nl_nchi_base - 1)*((int) m) + 1;
   }
   else {
     Ntable.NL_Nchi = (int) ceil(nl_nchi_base*f);
