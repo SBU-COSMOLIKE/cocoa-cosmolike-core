@@ -38,7 +38,8 @@ struct fftlog_workspace_cov {
   int nfield;                  // number of radial functions
   int nthreads;                // allocated worker count
   int* inverse_power;          // [field], kernel selector: density 0,
-                               // lensing 2, redshift distortions 3
+                               // lensing 2, redshift distortions
+                               // FFTLOG_RSD_COV
   double chi_min;              // first physical distance
   double dlnchi;               // uniform logarithmic spacing
   double** real;               // [thread][nfft], input or inverse output
@@ -90,7 +91,7 @@ struct fftlog_workspace_cov {
 //   padding, nfft         - zero guard below chi_min; padded FFT length
 //   extra                 - reciprocal samples read beyond each end
 //   nfield, inverse_power - number of inputs; kernel selector 0, 2 or
-//                           3 each (fftlog_cov.h)
+//                           FFTLOG_RSD_COV each (fftlog_cov.h)
 //   radial                - [field][nchi] values f = chi*W, copied
 // Returns a heap-owned workspace; release it with fftlog_free_cov.
 // -----------------------------------------------------------------------
@@ -205,8 +206,8 @@ struct fftlog_workspace_cov* fftlog_create_cov(
 #endif
     if (inverse_power[field] != 0
         && inverse_power[field] != 2
-        && inverse_power[field] != 3) {
-      log_fatal("fftlog_create_cov: kernel selector must be 0, 2 or 3");
+        && inverse_power[field] != FFTLOG_RSD_COV) {
+      log_fatal("fftlog_create_cov: kernel must be power 0, 2 or FFTLOG_RSD_COV");
       exit(1);
     }
     work->inverse_power[field] = inverse_power[field];
@@ -283,6 +284,11 @@ struct fftlog_workspace_cov* fftlog_create_cov(
 // M_l(s-2) = M_l(s)/[(l+s-2)(l+3-s)], again from Gamma(z+1)=z Gamma(z).
 // This avoids amplifying the observer endpoint by chi^-2 (N5K,
 // arXiv:2212.04291, Eq. 24).
+// For redshift space the kernel is j_l''(t). Integrating by parts twice
+// (both boundary terms vanish inside the convergence strip),
+//   integral dt t^(s-1) j_l''(t) = (s-1)(s-2) integral dt t^(s-3) j_l(t)
+//                                = (s-1)(s-2) M_l(s-2),
+// the lensing kernel times (s-1)(s-2). The radial input is again f = chi*W.
 //
 // The two padded origins set the Fourier phase. FFT index padding is
 // anchored at k0=(ell+1)/chi_max; reading extra earlier/later indices
@@ -312,7 +318,8 @@ struct fftlog_workspace_cov* fftlog_create_cov(
 // 5. Sign. FFTW's c2r inverse sums exp(+2 pi i j n/N). The sum of step 4
 //    is real, so it equals the FFTW inverse of conjugated coefficients:
 //      scratch_j = conj(X_j * kernel_j * phase_j),
-//    kernel_j = M_l(s_j) for p = 0, M_l(s_j-2) for p = 2.
+//    kernel_j = M_l(s_j) for p = 0, M_l(s_j-2) for p = 2 and
+//    (s_j-1)(s_j-2) M_l(s_j-2) for FFTLOG_RSD_COV.
 // 6. Normalization: transfer = inverse/(N k). FFTW does not divide by
 //    N, and 1/k = k^(-Re s) is the non-oscillating factor of k^(-s); its
 //    oscillating factor k^(-i eta) went into the phase of step 4.
@@ -457,7 +464,7 @@ void fftlog_execute_cov(
         // (p = 2) divides by (l+s-2)(l+3-s), which turns it into
         // M_l(s-2), the Mellin integral of j_l(t)/t^2.
         //
-        // Redshift distortions (selector 3) need the second-derivative
+        // Redshift distortions (FFTLOG_RSD_COV) need the second-derivative
         // kernel. Integrating by parts twice, with boundary terms that
         // vanish inside the Mellin convergence strip,
         //   integral dt t^(s-1) j_l''(t) = (s-1)(s-2) M_l(s-2),
@@ -465,13 +472,12 @@ void fftlog_execute_cov(
         // (s-1)(s-2) - the same factors the data-vector FFTLog carries
         // in its derivative-2 configuration.
         double complex kernel = work->kernel[index][node];
-        if (work->inverse_power[field] == 2) {
+        if (work->inverse_power[field] != 0) {
           const double complex s = 1.0+I*(2.0*M_PI*node/period);
           kernel /= (ell+s-2.0)*(ell+3.0-s);
-        }
-        else if (work->inverse_power[field] == 3) {
-          const double complex s = 1.0+I*(2.0*M_PI*node/period);
-          kernel *= (s-1.0)*(s-2.0)/((ell+s-2.0)*(ell+3.0-s));
+          if (work->inverse_power[field] == FFTLOG_RSD_COV) {
+            kernel *= (s-1.0)*(s-2.0);
+          }
         }
 
         // Step 5: the conjugate lets FFTW's exp(+i...) inverse evaluate

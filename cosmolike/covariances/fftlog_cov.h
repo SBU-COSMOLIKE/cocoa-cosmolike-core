@@ -10,11 +10,17 @@ extern "C" {
 // scratch row per OpenMP worker (members documented in fftlog_cov.c).
 struct fftlog_workspace_cov;
 
+// The inverse_power value of a redshift-space input: its kernel is the
+// second derivative j_l''(t) instead of a power of j_l(t).
+#define FFTLOG_RSD_COV 4
+
 // Prepare F_l(k) = integral dlnchi f(chi) j_l(k chi)/(k chi)^p.
 // chi[i] = chi_min*exp(i*dlnchi); p is 0 (density) or 2 (lensing).
 // f already includes the dchi -> dlnchi Jacobian: f = chi*W for a radial
 // weight W per unit distance (growth included), so
 // F = integral dchi W j_l(k chi)/(k chi)^p.
+// p = FFTLOG_RSD_COV selects F = integral dchi W j_l''(k chi), the
+// Kaiser term of a density field in redshift space.
 // No spin factor is supplied here; the caller multiplies F by its angular
 // factor. Distances and inverse wavenumbers use the same units.
 //
@@ -39,7 +45,8 @@ struct fftlog_workspace_cov* fftlog_create_cov(
     const int* inverse_power,        // [field], kernel selector:
                                      // 0 = j_l (density),
                                      // 2 = j_l/(k chi)^2 (lensing),
-                                     // 3 = j_l'' (redshift distortions)
+                                     // FFTLOG_RSD_COV = j_l''
+                                     // (redshift distortions)
     const double* const* radial      // [field][nchi], finite signed f
   );
 

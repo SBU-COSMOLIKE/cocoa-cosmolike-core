@@ -17,8 +17,10 @@ namespace cosmolike_interface {
 // pcm_1h_richness; the project interface binds its own data-vector
 // versions of those readers on module itself.
 //
-// The four notebook bindings below share the production names; their
-// docstrings drop only the contiguity requirement. Each lambda checks the
+// The five notebook bindings below share the production names; their
+// docstrings drop only the contiguity requirement (the non-Limber
+// correction takes one short vector, so both layers share one docstring
+// verbatim). Each lambda checks the
 // rank of every array argument and copies it with notebook_input_cov into
 // an owning Armadillo container (float64, or int32 for richness),
 // whatever the dtype and memory layout of the NumPy input. It forwards
@@ -180,6 +182,26 @@ Model:
       py::arg("window"), py::arg("bias"),
       py::arg("power"), py::arg("profile"),
       py::arg("richness"), py::arg("nlens"));
+
+  module.def("covariance_cluster_nonlimber", [](
+          const py::object& a_edges,
+          const int nquad,
+          const int nwindow,
+          const bool include_rsd,
+          const int nonlimber_lmax,
+          const int nonlimber_nchi,
+          const double nonlimber_chi_min) {
+        const arma::Col<double> edges_input =
+            notebook_input_cov<arma::Col<double>>(a_edges, 1);
+        return covariance_cluster_nonlimber_cpp(
+            edges_input, nquad, nwindow, include_rsd, nonlimber_lmax,
+            nonlimber_nchi, nonlimber_chi_min);
+      },
+      CLUSTER_NONLIMBER_DOC,
+      py::arg("a_edges"), py::arg("nquad"), py::arg("nwindow"),
+      py::arg("include_rsd"), py::arg("nonlimber_lmax"),
+      py::arg("nonlimber_nchi") = 4097,
+      py::arg("nonlimber_chi_min") = 1.0e-6);
 
   module.def("covariance_counts_shell", [](
           const py::object& distance,

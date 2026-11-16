@@ -59,8 +59,8 @@ typedef simde__m128d v2d;
 //    limber_spectra_cov(linear=2) is that matched term, so exact-matched
 //    tends to zero at high l and keeps the low-l correction to Limber of
 //    the linear field.
-// Code map:
-//    stage 1  matched = limber_spectra_cov(..., 2, include_rsd, ...);
+// Code map (stages 1-3 in nonlimber_pairs_cov):
+//    stage 1  matched = limber_spectra_cov(..., 2, limber_rsd, ...);
 //             radial inputs chi*W*D on the ln(chi) grid; forward FFTs
 //             saved once
 //    stage 2  per block of 16 multipoles: component transfers
@@ -78,7 +78,9 @@ typedef simde__m128d v2d;
 // magnification, linear/NLA alignment and, with include_rsd, the lens
 // redshift-distortion transfer (the j_l'' kernel): the linear term
 // f mu^2 delta of the redshift-space density alone, with no counterpart
-// of the core's alpha_2 counterterm (galpha2, bias.c).
+// of the core's alpha_2 counterterm (galpha2, bias.c). The cluster
+// forecast adds the same transfer to its lenses and clusters through
+// nonlimber_pairs_cov below.
 // It returns ss as a diagnostic too; callers choosing gg/gs corrections
 // may leave their shear-shear model Limber. SSC and cNG never call this
 // routine.
@@ -151,38 +153,117 @@ void nonlimber_spectra_cov(
     }
   }
 
+  // The same windows at chi_i = chi_min*exp(i*dlnchi), i = 0..nchi-1, up
+  // to chi(amin).
+  struct radial_cov* logarithmic = radial_logchi_cov(
+      amin, chi_min, nchi, nwindow, include_ia);
+
+  // With distortions, the redshift-space input of lens f is the unbiased
+  // galaxy weight W_gal per unit distance (no b1 - the velocity field
+  // traces matter) at each logarithmic node; nonlimber_pairs_cov
+  // multiplies it by f(a) D(a) and subtracts its j_l'' transfer, the
+  // plane-parallel delta_s = (b + f mu^2) delta. The galaxy forecast's
+  // Limber spectra carry the Limber distortion window, so the matched
+  // term receives it too (limber_rsd = include_rsd). Filled serially:
+  // W_gal's photo-z reader builds a lazy table on first use.
+  double** rsd = NULL;
+  if (include_rsd) {
+    rsd = (double**) malloc2d(radial->nlens, nchi);
+    for (int field=0; field<radial->nlens; field++) {
+      for (int node=0; node<nchi; node++) {
+        const double a = logarithmic->geometry[0][node];
+        rsd[field][node] = W_gal(a, field, hoverh0(a));
+      }
+    }
+  }
+  nonlimber_pairs_cov(radial, logarithmic, (const double* const*) rsd,
+      include_rsd, amin, lmax, nchi, chi_min, exact, matched);
+  free(rsd);
+  free_radial_cov(logarithmic);
+}
+
+
+// -----------------------------------------------------------------------
+// The exact and matched spectra of nonlimber_spectra_cov for two snapshots
+// the caller supplies, with an optional redshift-space term.
+//
+// radial is the Limber quadrature snapshot and logarithmic the same fields
+// on the ln(chi) grid chi_min*exp(i*dlnchi), i = 0..nchi-1, up to
+// chi(amin): radial_inputs_cov and radial_logchi_cov, or extensions of
+// them with more lens-type fields (nonlimber_cluster_cov.c inserts the
+// selected cluster catalogs). A lens-type field is any field with index
+// below nlens: a density window[0] (bias included) and a magnification
+// window[1], which may be zero.
+//
+// rsd = NULL leaves out redshift-space distortions. Otherwise rsd[f][i]
+// is the unbiased density per unit distance of lens-type field f at
+// logarithmic node i, and each lens-type transfer gains the Kaiser term
+// of linear theory,
+//   F_f += -integral dchi rsd_f f(a) D(a) j_l''(k chi),
+// with f(a) = dln D/dln a (f_growth). Each field keeps one transfer in
+// every pair, so the exact spectra remain a Gram matrix.
+//
+// limber_rsd selects the matched Limber term, which must project the
+// same field as the caller's Limber spectra. 1 (the galaxy forecasts with
+// include_rsd): the matched term carries the Limber distortion window of
+// limber_spectra_cov, as their Limber spectra do. 0 (the cluster forecast,
+// and every call without rsd): the matched term stays without RSD, so
+// below lmax the hybrid spectrum contains the exact RSD contribution and
+// above it none, as the likelihood's non-Limber clustering spectra
+// (cosmo2D_cluster.c, section NON-LIMBER).
+//
+// The caller has validated the model (nonlimber_spectra_cov's checks).
+// Call outside OpenMP regions; outputs as in nonlimber_spectra_cov.
+// -----------------------------------------------------------------------
+void nonlimber_pairs_cov(
+    const struct radial_cov* radial,      // quadrature snapshot
+    const struct radial_cov* logarithmic, // same fields on ln(chi)
+    const double* const* rsd,             // [lens-type field][nchi] or NULL
+    const int limber_rsd,                 // matched term with Limber RSD
+    const double amin,                    // far radial boundary
+    const int lmax,                       // last integer multipole
+    const int nchi,                       // physical logarithmic samples
+    const double chi_min,                 // near radial boundary in c/H0
+    double* const* exact,                 // exact-linear triangular rows
+    double* const* matched                // matched-Limber triangular rows
+  )
+{
+  const int intervals = nchi-1;
+  if (logarithmic->nnode != nchi
+      || logarithmic->nlens != radial->nlens
+      || logarithmic->nsource != radial->nsource) {
+    log_fatal("nonlimber_pairs_cov: the two snapshots hold different fields");
+    exit(1);
+  }
+
   // --- 1. PREPARE THE MATCHING LINEAR FIELD ON TWO RADIAL GRIDS ---
 
   // The quadrature grid supplies the Limber subtraction. FFTLog samples
   // the same physical windows on log distance, independently of that
   // integration rule. Forward transforms are computed only once below.
   // nfield observed fields, lenses then sources; ncomponent radial
-  // inputs, one density per lens plus one spin input per field, plus -
-  // with distortions - one distortion input per lens, appended after
-  // the spin inputs; npair unordered field pairs, crosses included.
+  // inputs, one density per lens plus one spin input per field, plus one
+  // redshift-space input per lens with rsd, appended after the spin
+  // inputs; npair unordered field pairs, crosses included.
   const int nfield = radial->nlens+radial->nsource;
-  const int nbase = radial->nlens+nfield; // density plus spin rows; any
-                                          // distortion rows come after
-  const int ncomponent = nbase+(include_rsd ? radial->nlens : 0);
+  const int nrsd = rsd == NULL ? 0 : radial->nlens;
+  const int ncomponent = radial->nlens+nfield+nrsd;
   const int npair = nfield*(nfield+1)/2;
 
   // matched[p][l-2]: the Limber projection at l = 2..lmax of the same
-  // separable field, power mode 2 = D(a)^2 p_lin(k,1). It receives the
-  // same include_rsd as the exact term below: both terms must project
-  // the same field, or exact - matched stops cancelling at high l.
+  // separable field, power mode 2 = D(a)^2 p_lin(k,1), with the Limber
+  // distortion window when limber_rsd is 1 (see the header above).
   double* multipoles = (double*) malloc1d(lmax-1);
   for (int index=0; index<lmax-1; index++) {
     multipoles[index] = index+2.0;
   }
-  limber_spectra_cov(radial, lmax-1, multipoles, 2, include_rsd, matched);
+  limber_spectra_cov(radial, lmax-1, multipoles, 2, limber_rsd, matched);
   free(multipoles);
 
-  // The same windows at chi_i = chi_min*exp(i*dlnchi), i = 0..nchi-1, up
-  // to chi(amin); dlnchi is the step radial_logchi_cov used for them.
+  // dlnchi is the step radial_logchi_cov used for the logarithmic nodes.
   // inputs[component][node] receives chi*W*D and powers[component] the
-  // kernel selector: 0 (density), 2 (spin) or 3 (distortion).
-  struct radial_cov* logarithmic = radial_logchi_cov(
-      amin, chi_min, nchi, nwindow, include_ia);
+  // kernel selector: 0 (density), 2 (spin) or FFTLOG_RSD_COV
+  // (redshift space).
   const double dlnchi = log(chi(amin)/chi_min)/intervals;
   double** inputs = (double**) malloc2d(ncomponent, nchi);
   int* powers = (int*) malloc1d_int(ncomponent);
@@ -193,64 +274,45 @@ void nonlimber_spectra_cov(
   // only reads the tables installed by the cosmology interface, so this
   // call is a safeguard rather than a required initialization.
   (void) p_lin(1.0, 1.0);
-  if (include_rsd) {
-    // The distortion fill below calls W_gal inside its parallel loop.
-    // W_gal's photo-z reader builds a lazy table on first use, so touch
-    // it once serially; radial_logchi_cov has already read it at every
-    // node, which makes this another safeguard, like p_lin above.
-    // growfac_all and hoverh0 keep no static state (cosmo3D.c).
-    (void) growfac_all(0.9);
-    (void) hoverh0(0.9);
-    (void) W_gal(0.9, 0, hoverh0(0.9));
-  }
 
-  // Components are lens densities first, then one spin kernel per field.
-  // A spin kernel means magnification for a lens and lensing+IA for a
-  // source. Multiplying by chi converts dchi to FFTLog's dlnchi measure.
-  // D(a) carries the time dependence of the separable field, so the k
-  // integral later needs only the a=1 power. Component c < nlens is the
-  // density of lens c; component nlens+f is the spin input of field f;
-  // with distortions, component nbase+c is the distortion input of
-  // lens c. One iteration fills one component's radial input;
-  // components are independent.
+  // Components are lens densities first, then one spin kernel per field,
+  // then (with rsd) one redshift-space input per lens. A spin kernel means
+  // magnification for a lens and lensing+IA for a source. Multiplying by
+  // chi converts dchi to FFTLog's dlnchi measure. D(a) carries the time
+  // dependence of the separable field, so the k integral later needs only
+  // the a=1 power. Component c < nlens is the density of lens c;
+  // component nlens+f is the spin input of field f; component
+  // nlens+nfield+f is the redshift-space input of lens f, rsd_f f(a).
+  // One iteration fills one component's radial input; components are
+  // independent.
   #pragma omp parallel for schedule(static)
   for (int component=0; component<ncomponent; component++) {
     const int density = component < radial->nlens;
-    const int distortion = component >= nbase;
-    const int field = density ? component
-        : (distortion ? component-nbase : component-radial->nlens);
-    powers[component] = density ? 0 : (distortion ? 3 : 2);
+    const int redshift_space = component >= radial->nlens+nfield;
+    int field = density ? component : component-radial->nlens;
+    powers[component] = density ? 0 : 2;
+    if (redshift_space) {
+      field = component-radial->nlens-nfield;
+      powers[component] = FFTLOG_RSD_COV;
+    }
     for (int node=0; node<nchi; node++) {
       const double a = logarithmic->geometry[0][node];
       const double distance = chi_min*exp(node*dlnchi);
 
-      if (distortion) {
-        // The distortion input of lens field: the unbiased galaxy
-        // weight W_gal (no b1 - the velocity field traces matter)
-        // times the growth rate f, against the j_l'' kernel.
-        //
-        // The sign follows the plane-parallel expansion
-        // delta_s = (b + f mu^2) delta: the mu^2 projection brings
-        // -j_l'', carried as a negative input against the positive
-        // kernel, the data-vector FFTLog's convention.
-        const struct growths both = growfac_all(a);
-        inputs[component][node] = -distance
-            *W_gal(a, field, hoverh0(a))*both.D*both.f;
-        continue;
-      }
-
       // window[0]: b1 times the lens distribution per unit distance.
       // window[1]+window[2]: the lensing window (times b_mag for a lens)
-      // plus the signed NLA term, which is zero for lenses.
+      // plus the signed NLA term, which is zero for lenses. rsd: the
+      // unbiased distribution times the growth rate f(z).
       double window = logarithmic->window[0][field][node];
-      if (!density) {
+      if (redshift_space) {
+        window = rsd[field][node]*f_growth(1.0/a-1.0);
+      } else if (!density) {
         window = logarithmic->window[1][field][node]
                  +logarithmic->window[2][field][node];
       }
       inputs[component][node] = distance*window*growfac(a);
     }
   }
-  free_radial_cov(logarithmic);
 
   // The zero guard below chi_min is as wide in ln(chi) as the physical
   // interval (padding = intervals samples). The FFT length 4*intervals
@@ -340,14 +402,15 @@ void nonlimber_spectra_cov(
       }
 
       // Combine the parts of each observed field before pairing fields:
-      //   lens f:   F = F_density + l(l+1) F_magnification,
+      //   lens f:   F = F_density + l(l+1) F_magnification [- F_rsd],
       //   source f: F = sqrt((l-1)l(l+1)(l+2)) F_lensing+IA,
       // so density-magnification and lensing-IA cross terms are kept.
       // Field f's result overwrites row f. Row f < nlens is lens f's own
       // density, read and replaced node by node. Row f >= nlens is the
       // spin input of field f-nlens, already used at iteration
       // f-nlens < f. The spin input read now, row nlens+f > f, has not
-      // been overwritten yet.
+      // been overwritten yet; the redshift-space rows, nlens+nfield+f,
+      // are never overwritten.
       for (int field=0; field<nfield; field++) {
         const double* spin = transfer[index][radial->nlens+field];
         double* output = transfer[index][field];
@@ -356,21 +419,21 @@ void nonlimber_spectra_cov(
           factor = sqrt((ell-1.0)*ell*(ell+1.0)*(ell+2.0));
         }
 
-        // With distortions, a lens field also receives its j_l''
-        // transfer, at unit weight: that kernel already carries every
-        // angular factor. This loop overwrites only rows 0..nfield-1,
-        // and every distortion row index nbase+field is at least
-        // nbase = nlens+nfield, so the row read here is still intact.
-        // Without distortions a field keeps the two-part
-        // density-plus-spin sum.
-        if (include_rsd
+        // With rsd, a lens field also receives its j_l'' transfer, at
+        // unit weight: that kernel already carries every angular factor.
+        // The minus sign follows the plane-parallel expansion
+        // delta_s = (b + f mu^2) delta, whose mu^2 projection brings
+        // -j_l''. This loop overwrites only rows 0..nfield-1, and every
+        // redshift-space row index nlens+nfield+field is at least
+        // nlens+nfield, so the row read here is still intact. Without
+        // rsd a field keeps the two-part density-plus-spin sum.
+        if (nrsd > 0
             && field < radial->nlens) {
-          const double* velocity = transfer[index][nbase+field];
+          const double* redshift = transfer[index][radial->nlens+nfield+field];
           for (int node=0; node<nk; node++) {
-            output[node] = output[node]+factor*spin[node]+velocity[node];
+            output[node] = output[node]+factor*spin[node]-redshift[node];
           }
-        }
-        else {
+        } else {
           for (int node=0; node<nk; node++) {
             const double density = field < radial->nlens ? output[node] : 0;
             output[node] = density+factor*spin[node];
