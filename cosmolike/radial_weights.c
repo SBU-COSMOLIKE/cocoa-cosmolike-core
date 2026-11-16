@@ -243,6 +243,37 @@ double W_RSD(double l, double a0, double a1, int ni)
 }
 
 // ---------------------------------------------------------------------------
+// W_RSD with a unit growth rate: the same two-point Limber
+// approximation for a density term c mu^2 delta with c = 1 instead of
+// the growth rate f. The orientation-dependent selection (gsel in
+// bias.c) is such a term; its caller multiplies by A_sel.
+//
+// Parameters and units as W_RSD.
+//
+// Returns:
+//   the kernel value.
+// ---------------------------------------------------------------------------
+double W_RSD_unit(double l, double a0, double a1, int ni)
+{
+  if (!(a0>0) || !(a0<1)) {
+    log_fatal("a>0 and a<1 not true"); exit(1);
+  }
+  if (!(a1>0) || !(a1<1)) {
+    log_fatal("a>0 and a<1 not true"); exit(1);
+  }
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("invalid bin input ni = %d", ni); exit(1);
+  }
+  double w = (1 + 8. * l) / ((2. * l + 1.) * (2. * l + 1.)) *
+    nz_lens_photoz(1. / a0 - 1., ni) * hoverh0(a0);
+
+  w -= 4. / (2 * l + 3.) * sqrt((2 * l + 1.) / (2 * l + 3.)) *
+    nz_lens_photoz(1./a1 - 1., ni) * hoverh0(a1);
+
+  return w;
+}
+
+// ---------------------------------------------------------------------------
 // CMB lensing convergence kernel.
 //
 //   W_k(a) = 1.5 * Omega_m * fK(chi(a))/a * g_cmb(a)

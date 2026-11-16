@@ -22,6 +22,9 @@ double f_rsd(double aa);
 
 double W_RSD(double l, double a0, double a1, int nz);
 
+// W_RSD with the growth rate set to 1 (the selection term, gsel)
+double W_RSD_unit(double l, double a0, double a1, int nz);
+
 double W_k(double a, double fK);
 
 double W_y(double a); // efficiency weight function for Compton-y

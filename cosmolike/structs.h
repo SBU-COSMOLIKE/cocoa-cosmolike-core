@@ -380,6 +380,8 @@ typedef struct
   //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   //            b[6][i]: redshift-space counterterm alpha_2 in clustering
   //                     bin i, in units of (c/H0)^2 (galpha2, bias.c)
+  //            b[7][i]: orientation-dependent selection A_sel in
+  //                     clustering bin i, dimensionless (gsel, bias.c)
   double gb[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS]; // galaxy bias
   // hod[i][0..5]: HOD of the galaxies in clustering bin i, the five
   // parameters of Zehavi et al. 2011 (log10 M_min, sigma_lgM, log10 M_1,

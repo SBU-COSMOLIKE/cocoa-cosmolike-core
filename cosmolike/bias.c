@@ -241,3 +241,33 @@ double galpha2(const int ni)
   }
   return nuisance.gb[6][ni];
 }
+
+// ---------------------------------------------------------------------------
+// The orientation-dependent selection coefficient A_sel of clustering
+// bin ni (Hirata 2009, arXiv:0903.4929).
+//
+// Galaxy orientations follow the tidal field, and a selection that
+// depends on orientation (an aperture flux cut, for example) then
+// keeps more galaxies where the tidal field stretches them along the
+// line of sight. At leading order the selected density gains
+//
+//   delta_g += A_sel (mu^2 - 1/3) delta_m,
+//
+// with mu the cosine between the wavevector and the line of sight.
+// The term acts like b1 -> b1 - A_sel/3 and f -> f + A_sel in the
+// linear redshift-space density; A_sel > 0 raises the apparent growth
+// rate. cosmo2D.c projects it (has_selection_galaxies there).
+//
+// A_sel is one dimensionless number per bin, with no redshift
+// dependence inside the bin; set_nuisance_bias_selection
+// (generic_interface.cpp) sets it.
+// ---------------------------------------------------------------------------
+double gsel(const int ni)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni);
+    exit(1);
+  }
+  return nuisance.gb[7][ni];
+}
+

@@ -616,6 +616,66 @@ static int has_alpha2_galaxies(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Check whether any lens bin has a nonzero orientation-dependent
+// selection coefficient A_sel (gsel in bias.c, the convention of
+// Hirata 2009, arXiv:0903.4929: the selected density gains
+// A_sel (mu^2 - 1/3) delta_m).
+//
+// The projection reuses the two rows of the Kaiser term. A mu^2 factor
+// becomes -j_l'' in the exact projection, so with W_i the radial
+// kernel of bin i and D the growth factor the selection transfer is
+//
+//   Delta_sel,i(k) = - A_sel,i INT dchi W_i D [j_l''(k chi)
+//                                              + j_l(k chi)/3].
+//
+// No new transform is needed: the RSD row takes f + A_sel in place of
+// f, and the density row b1 - A_sel/3 in place of b1. The stored b1 is
+// never changed, so the one-loop bias terms keep it. In the Limber
+// sums the same roles go to W_RSD + A_sel W_RSD_unit and
+// W_gal (b1 - A_sel/3), so the FKEM pair still cancels at high l. Both
+// legs of every gg spectrum carry the term, autos and cross pairs.
+//
+// The low-rank engine keeps b1 - A_sel/3 in its density part (the
+// linear-bias term of the factorized P_g and the DD references), the
+// one-loop terms on b1.
+//
+// The term needs the RSD row: with HOD galaxies or the RSD gate off it
+// would vanish without a trace, so that combination is fatal. The
+// one-loop velocity rows (use_nonlinear_kaiser_GG) and the alpha_2
+// counterterm read the same two rows; carrying A_sel into them is not
+// part of this model, so a nonzero A_sel with either is fatal too.
+//
+// Returns:
+//   1 if at least one bin has A_sel != 0, 0 otherwise
+// ---------------------------------------------------------------------------
+static int has_selection_galaxies(void) {
+  int res = 0;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (0.0 != nuisance.gb[7][i]) {
+      res = 1;
+    }
+  }
+  if (1 == res && (0 == include_RSD_GG || 1 == include_HOD_GX)) {
+    log_fatal("A_sel != 0 needs the RSD row of the galaxy kernel "
+              "(include_RSD_GG = 1 and include_HOD_GX = 0)");
+    exit(1);
+  }
+  if (1 == res && 1 == use_nonlinear_kaiser_GG) {
+    log_fatal("A_sel != 0 is not implemented with the nonlinear Kaiser "
+              "rows: set nonlinear_kaiser = 0 or A_sel = 0");
+    exit(1);
+  }
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (1 == res && 0.0 != nuisance.gb[6][i]) {
+      log_fatal("A_sel != 0 is not implemented with the alpha_2 "
+                "counterterm (bin %d): set alpha_2 = 0 or A_sel = 0", i);
+      exit(1);
+    }
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
 // SIMD type aliases for readability.
 //
 // All SIMD code goes through SIMDe (SIMD Everywhere), which provides
@@ -5734,6 +5794,9 @@ double C_gg_tomo_limber_nointerp(
 //             in table_lin; the DD outputs never carry it
 //   mask_p  = 0 where the RSD kernel would reach beyond chi(limits.a_min)
 //             (chi_1 > chi(a_min)), 1 elsewhere.
+// With a nonzero selection coefficient (has_selection_galaxies), b1
+// becomes b1 - A_sel/3 in WGAL*b1 (the DD outputs included) and WRSD
+// becomes W_RSD + A_sel W_RSD_unit; the one-loop terms keep b1.
 // The scalar C_gg_tomo_limber_linpsopt_nointerp reads one entry of one
 // batch call, so scalar and batch agree exactly by construction.
 //
@@ -5894,6 +5957,8 @@ static void C_gg_tomo_limber_work(
   if (NULL != table_lin && 1 == rsd && 1 == use_nonlinear_kaiser_GG) {
     nlk = 1;
   }
+  // the selection term enters every output (has_selection_galaxies)
+  const int sel = has_selection_galaxies();
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
@@ -5948,7 +6013,9 @@ static void C_gg_tomo_limber_work(
   // -----------------------------------------------------------------------
   // Allocate precomputed arrays (padded to npts_max)
   // -----------------------------------------------------------------------
-  double*** WB  = (double***) malloc3d(4, nbin, npts_max);
+  // WB[4], the density coefficient b1 - A_sel/3, only with the selection
+  // term on
+  double*** WB  = (double***) malloc3d((1 == sel) ? 5 : 4, nbin, npts_max);
   // KG[3], the separable linear spectrum, exists only when a linear-term
   // output asked for it; KG[4], the linear spectrum P_lin(k, a) of the
   // counterterm in the full model, only when alpha_2 is on
@@ -6017,6 +6084,9 @@ static void C_gg_tomo_limber_work(
         WB[1][zl][p] = W_mag(a, cn->data[CN_FK][p], zl);
         WB[2][zl][p] = gb1(z, zl);
         WB[3][zl][p] = gbmag(z, zl);
+        if (1 == sel) {
+          WB[4][zl][p] = WB[2][zl][p] - gsel(zl)/3.0;
+        }
         if (1 == nonlinear_bias) {
           WO[0][zl][p] = gb2(z, zl);
           WO[1][zl][p] = gbs2(z, zl);
@@ -6123,6 +6193,10 @@ static void C_gg_tomo_limber_work(
               const double a_0 = a_chi(chi_0);
               const double a_1 = a_chi(chi_1);
               KG[1][zl][i][p] = W_RSD(ell, a_0, a_1, zl);
+              if (1 == sel) {
+                // the selection's mu^2 part rides the RSD kernel
+                KG[1][zl][i][p] += gsel(zl)*W_RSD_unit(ell, a_0, a_1, zl);
+              }
             }
           }
           if (1 == gg_kwin.active) {
@@ -6195,6 +6269,10 @@ static void C_gg_tomo_limber_work(
       const double* restrict bmag   = WB[3][zl];
       const double* restrict WRSD   = KG[1][zl][i];
       const double* restrict mask   = KG[2][zl][i];
+      // the density coefficient of the linear rows: b1 - A_sel/3 with the
+      // selection term on, b1 itself otherwise (the one-loop terms keep
+      // b1 either way)
+      const double* restrict b1e    = (1 == sel) ? WB[4][zl] : WB[2][zl];
 
       // o = 0: the full model into table (PK = P_delta);
       // o = 1: the linear term into table_lin (PK = the separable P_lin;
@@ -6256,7 +6334,7 @@ static void C_gg_tomo_limber_work(
           // 2*(1/2)*(1/2) = 1/2, operator-b1 crosses get 2*(1/2) = 1.
           #pragma omp simd reduction(+:sum)
           for (int p=0; p<npts; p++) {
-            const double W = WGAL[p]*b1[p] + WMAG[p]*ep*bmag[p] + WRSD[p];
+            const double W = WGAL[p]*b1e[p] + WMAG[p]*ep*bmag[p] + WRSD[p];
             const double k = ell/fK[p];
             const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
             const double oneloop = (WGAL[p]*WGAL[p])*
@@ -6312,7 +6390,7 @@ static void C_gg_tomo_limber_work(
           const double* restrict inr  = KB[6][zl][i];
           #pragma omp simd reduction(+:sum)
           for (int p=0; p<npts; p++) {
-            const double Wdd = WGAL[p]*b1[p];
+            const double Wdd = WGAL[p]*b1e[p];
             const double k = ell/fK[p];
             const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
             const double c2 = b2[p] + (2.0/3.0)*bs2[p];
@@ -6329,7 +6407,7 @@ static void C_gg_tomo_limber_work(
         else if (o < 2) {
           #pragma omp simd reduction(+:sum)
           for (int p=0; p<npts; p++) {
-            const double W = WGAL[p]*b1[p] + WMAG[p]*ep*bmag[p] + WRSD[p];
+            const double W = WGAL[p]*b1e[p] + WMAG[p]*ep*bmag[p] + WRSD[p];
             sum += mask[p]*((W*W*PK[p])*dchida[p]/(fK[p]*fK[p]))*wt[p];
           }
         }
@@ -6339,7 +6417,7 @@ static void C_gg_tomo_limber_work(
           // this output's PK, under the same mask.
           #pragma omp simd reduction(+:sum)
           for (int p=0; p<npts; p++) {
-            const double Wdd = WGAL[p]*b1[p];
+            const double Wdd = WGAL[p]*b1e[p];
             sum += mask[p]*((Wdd*Wdd*PK[p])*dchida[p]/(fK[p]*fK[p]))*wt[p];
           }
         }
@@ -9796,6 +9874,8 @@ static inline void nl_kaiser_rows(
 //      The magnification component is skipped when bmag = 0 for all bins.
 //      The RSD component is zero unless include_RSD_GG = 1 and the HOD is
 //      off, the gate of the Limber terms it is paired with.
+//      A nonzero selection coefficient turns b1 into b1 - A_sel/3 and f
+//      into f + A_sel (has_selection_galaxies).
 //      All three are nonzero on the Limber integration range of the lens
 //      bin, z in [1/amax_lens - 1, 1/amin_lens - 1], the range of the two
 //      Limber terms of step 6. With bmag != 0 that range reaches down to
@@ -10040,6 +10120,12 @@ static double** C_cl_tomo_core(
   for (int i=0; i<nbins; i++) {
     alpha2_bin[i] = (1 == alpha2) ? galpha2(i) : 0.0;
   }
+  // the selection term and each bin's A_sel (has_selection_galaxies)
+  const int sel = has_selection_galaxies();
+  double sel_bin[nbins];
+  for (int i=0; i<nbins; i++) {
+    sel_bin[i] = (1 == sel) ? gsel(i) : 0.0;
+  }
 
   #pragma omp parallel for schedule(static)
   for (int j=0; j<nchi; j++) {
@@ -10061,8 +10147,16 @@ static double** C_cl_tomo_core(
       else {
         const double pf = nz_lens_photoz(z,i);
         const double WM = W_mag(a, fK, i);
-        fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
-        fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
+        if (1 == sel) {
+          // the selection term (has_selection_galaxies): b1 - A_sel/3 in
+          // the density row, f + A_sel in the RSD row
+          fx[i][0][j] =  chi*pf*D*hoverh0_a*(gb1(z,i) - sel_bin[i]/3.0);
+          fx[i][1][j] = -chi*pf*D*hoverh0_a*(f + sel_bin[i]);
+        }
+        else {
+          fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
+          fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
+        }
         fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2]
       }
       if (1 == nlk) {
@@ -11447,6 +11541,9 @@ static void C_gg_lowrank_decomp_work(
   gsl_vector** const svd_work   = svd_vecs[1]; // GSL scratch
 
   const int nonlinear_bias = has_b2_galaxies();
+  // the selection term moves the linear-bias part of P_g to
+  // b1 - A_sel/3 (has_selection_galaxies); the one-loop terms keep b1
+  const int sel = has_selection_galaxies();
 
   // -------------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
@@ -11634,7 +11731,8 @@ static void C_gg_lowrank_decomp_work(
         const double a = 1.0/(1.0 + z);
         const double PK = Pdelta(k, a);
         const double b1 = gb1(z, bin);
-        double Pg = b1*b1*PK;
+        const double b1e = (1 == sel) ? b1 - gsel(bin)/3.0 : b1;
+        double Pg = b1e*b1e*PK;
         if (1 == nonlinear_bias) {
           const double gf = growfac(a);
           const double g4 = gf*gf*gf*gf;
@@ -12771,6 +12869,12 @@ static double** C_cl_tomo_lowrank_core(
   for (int i=0; i<nbins; i++) {
     alpha2_bin[i] = (1 == alpha2) ? galpha2(i) : 0.0;
   }
+  // the selection term and each bin's A_sel (has_selection_galaxies)
+  const int sel = has_selection_galaxies();
+  double sel_bin[nbins];
+  for (int i=0; i<nbins; i++) {
+    sel_bin[i] = (1 == sel) ? gsel(i) : 0.0;
+  }
 
   // The FFTLog inputs: every radial kernel sampled on the log-spaced
   // chi grid. One iteration owns one chi node j, so the background
@@ -12804,8 +12908,16 @@ static double** C_cl_tomo_lowrank_core(
       else {
         const double pf = nz_lens_photoz(z,i);
         const double WM = W_mag(a, fK, i);
-        fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
-        fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
+        if (1 == sel) {
+          // the selection term (has_selection_galaxies): b1 - A_sel/3 in
+          // the density row, f + A_sel in the RSD row
+          fx[i][0][j] =  chi*pf*D*hoverh0_a*(gb1(z,i) - sel_bin[i]/3.0);
+          fx[i][1][j] = -chi*pf*D*hoverh0_a*(f + sel_bin[i]);
+        }
+        else {
+          fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
+          fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
+        }
         fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2]
       }
       if (1 == nlk) {
@@ -14523,6 +14635,11 @@ static cosmo_nodes create_cosmo_nodes_lens_pair(
 // the linear kernel W_gal*b1 + W_RSD without the magnification row, as
 // in the auto work and in the FFTLog counterterm (F0 + R).
 //
+// With a nonzero selection coefficient (has_selection_galaxies), each
+// bin's W_gal*b1 becomes W_gal (b1 - A_sel/3), in the DD outputs and in
+// the geometric mean's linear-bias part too, and its W_RSD becomes
+// W_RSD + A_sel W_RSD_unit; the one-loop terms keep b1.
+//
 // Parameters:
 //   cn_all        - quadrature nodes per pair [gg_cross_npairs]
 //   lx            - multipole values (length nell)
@@ -14589,6 +14706,8 @@ static void C_gg_cross_tomo_limber_work(
   if (NULL != table_lin && 1 == rsd && 1 == use_nonlinear_kaiser_GG) {
     nlk = 1;
   }
+  // the selection term enters every output (has_selection_galaxies)
+  const int sel = has_selection_galaxies();
 
   // the magnification row is formed when any bin of the pair list has
   // b_mag != 0; it then exists for every pair (a bin with b_mag = 0
@@ -14793,6 +14912,13 @@ static void C_gg_cross_tomo_limber_work(
               const double a_1 = a_chi(chi_1);
               KG[0][n][i][p] = W_RSD(ell, a_0, a_1, gg_cross_i[n]);
               KG[1][n][i][p] = W_RSD(ell, a_0, a_1, gg_cross_j[n]);
+              if (1 == sel) {
+                // the selection's mu^2 part rides each RSD kernel
+                KG[0][n][i][p] += gsel(gg_cross_i[n])*
+                    W_RSD_unit(ell, a_0, a_1, gg_cross_i[n]);
+                KG[1][n][i][p] += gsel(gg_cross_j[n])*
+                    W_RSD_unit(ell, a_0, a_1, gg_cross_j[n]);
+              }
             }
           }
           if (1 == gg_kwin.active) {
@@ -14841,6 +14967,9 @@ static void C_gg_cross_tomo_limber_work(
         double sumnlk   = 0.0;
         const double alpha2_i = (1 == alpha2) ? galpha2(gg_cross_i[n]) : 0.0;
         const double alpha2_j = (1 == alpha2) ? galpha2(gg_cross_j[n]) : 0.0;
+        // each side's A_sel/3, the selection's shift of b1
+        const double dsel_i = (1 == sel) ? gsel(gg_cross_i[n])/3.0 : 0.0;
+        const double dsel_j = (1 == sel) ? gsel(gg_cross_j[n])/3.0 : 0.0;
         for (int p=0; p<cn->npts; p++) {
           // the Limber measure at this node: the Gauss-Legendre weight
           // (already scaled to its panel by the node builder) times
@@ -14854,11 +14983,17 @@ static void C_gg_cross_tomo_limber_work(
           // multiplying by it keeps the node count and summation order
           // fixed instead of branching per node
           const double maskp = MASKP[n][i][p];
+          // each side's density coefficient: b1 (WB row 1), or
+          // b1 - A_sel/3 with the selection term on - side 0 is bin i,
+          // side 1 is bin j, each with its own bias
+          const double b1e_i = (1 == sel) ?
+            WB[1][0][n][p] - dsel_i : WB[1][0][n][p];
+          const double b1e_j = (1 == sel) ?
+            WB[1][1][n][p] - dsel_j : WB[1][1][n][p];
           // each side's density kernel: the lens weight W_gal (WB row
-          // 0) times that bin's own linear bias b1 (WB row 1) - side 0
-          // is bin i, side 1 is bin j, each with its own bias
-          const double dd_i = WB[0][0][n][p]*WB[1][0][n][p];
-          const double dd_j = WB[0][1][n][p]*WB[1][1][n][p];
+          // 0) times that coefficient
+          const double dd_i = WB[0][0][n][p]*b1e_i;
+          const double dd_j = WB[0][1][n][p]*b1e_j;
           // each side's RSD kernel, tabulated by stage 2; with RSD off
           // KG is NULL, and the ternary keeps the read unreachable
           const double rsd_i = (1 == rsd) ? KG[0][n][i][p] : 0.0;
@@ -15009,8 +15144,10 @@ static void C_gg_cross_tomo_limber_work(
                   0.5*b2j*bsj*d2s2 + 0.25*bsj*bsj*s2s2 + b1j*b3j*d1p3 +
                   (in ? 0.5*s4*cj*cj : 0.0)) +
               2.0*b1j*bkj*k*k*PK;
-            const double Pg_i = fmax(b1i*b1i*PK + loop_ii, 1.0e-15*b1i*b1i*PK);
-            const double Pg_j = fmax(b1j*b1j*PK + loop_jj, 1.0e-15*b1j*b1j*PK);
+            const double Pg_i = fmax(b1e_i*b1e_i*PK + loop_ii,
+                                     1.0e-15*b1i*b1i*PK);
+            const double Pg_j = fmax(b1e_j*b1e_j*PK + loop_jj,
+                                     1.0e-15*b1j*b1j*PK);
             sumdd += wt*maskp*wg_i*wg_j*sqrt(Pg_i*Pg_j);
           }
           if (NULL != table_dd_lin) {
@@ -15361,6 +15498,12 @@ static double** C_cl_tomo_fkem_pairs_core(
   for (int i=0; i<nbins; i++) {
     alpha2_bin[i] = (1 == alpha2) ? galpha2(i) : 0.0;
   }
+  // the selection term and each bin's A_sel (has_selection_galaxies)
+  const int sel = has_selection_galaxies();
+  double sel_bin[nbins];
+  for (int i=0; i<nbins; i++) {
+    sel_bin[i] = (1 == sel) ? gsel(i) : 0.0;
+  }
 
   #pragma omp parallel for schedule(static)
   for (int j=0; j<nchi; j++) {
@@ -15382,8 +15525,16 @@ static double** C_cl_tomo_fkem_pairs_core(
       else {
         const double pf = nz_lens_photoz(z,i);
         const double WM = W_mag(a, fK, i);
-        fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
-        fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
+        if (1 == sel) {
+          // the selection term (has_selection_galaxies): b1 - A_sel/3 in
+          // the density row, f + A_sel in the RSD row
+          fx[i][0][j] =  chi*pf*D*hoverh0_a*(gb1(z,i) - sel_bin[i]/3.0);
+          fx[i][1][j] = -chi*pf*D*hoverh0_a*(f + sel_bin[i]);
+        }
+        else {
+          fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
+          fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
+        }
         fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2]
       }
       if (1 == nlk) {

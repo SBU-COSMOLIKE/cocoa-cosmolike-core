@@ -944,6 +944,11 @@ void set_nuisance_bias_alpha2(
     arma::Col<double> A2
   );
 
+// per-bin orientation-dependent selection A_sel, dimensionless
+void set_nuisance_bias_selection(
+    arma::Col<double> ASEL
+  );
+
 void set_nuisance_shear_calib(
     arma::Col<double> M
   );

@@ -43,6 +43,8 @@ double gbK(const double z, const int ni);
 
 double galpha2(const int ni); // redshift-space counterterm alpha_2
 
+double gsel(const int ni); // orientation-dependent selection A_sel
+
 #ifdef __cplusplus
 }
 #endif

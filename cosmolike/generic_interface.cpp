@@ -4265,6 +4265,54 @@ void set_nuisance_bias_alpha2(vector A2)
 }
 
 // ---------------------------------------------------------------------------
+// Set the per-bin orientation-dependent selection coefficient
+// A_sel = nuisance.gb[7][i] (gsel in bias.c states the convention, that
+// of Hirata 2009, arXiv:0903.4929; cosmo2D.c projects the term).
+//
+// A_sel is dimensionless. A_sel = 0 in every bin switches the term off:
+// the spectra are then bitwise those of a build without it.
+//
+// Cache invalidation:
+// bumps nuisance.random_galaxy_bias when any value changed (fdiff);
+// unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set, the input of that size, no NaN
+// entries, else critical() + exit(1).
+//
+// Parameters:
+//   ASEL - per-bin A_sel (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void set_nuisance_bias_selection(vector ASEL)
+{
+  static constexpr std::string_view fname = "set_nuisance_bias_selection"sv;
+  debug("{}: {}", fname, errbegins);
+  if (0 == redshift.clustering_nbin) [[unlikely]] {
+    critical(errorns2, fname, "clustering_Nbin", 0); exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(ASEL.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, ASEL.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  int cache_update = 0;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (std::isnan(ASEL(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    if (fdiff(nuisance.gb[7][i], ASEL(i))) {
+      cache_update = 1;
+      nuisance.gb[7][i] = ASEL(i);
+    }
+  }
+  if (1 == cache_update || 1 == force_cache_update_test) {
+    nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
