@@ -271,3 +271,21 @@ double gsel(const int ni)
   return nuisance.gb[7][ni];
 }
 
+// ---------------------------------------------------------------------------
+// Stop when any bin has A_sel != 0 in a path whose galaxy kernel has no
+// selection term (the gs, gk and cluster-galaxy spectra and the
+// covariance). The term needs the RSD row, which those paths do not
+// carry; dropping it there would leave the spectra inconsistent with
+// the gg ones.
+// ---------------------------------------------------------------------------
+void selection_unsupported(const char* where)
+{
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (0.0 != nuisance.gb[7][i]) {
+      log_fatal("A_sel != 0 (bin %d) is implemented in the gg spectra "
+                "only, not in %s: set A_sel = 0 or leave these "
+                "spectra out", i, where);
+      exit(1);
+    }
+  }
+}

@@ -4511,6 +4511,8 @@ static void C_gs_tomo_limber_work(
     double** table_lin          // output [ggl_Npowerspectra][nell], linear term (or NULL)
   )
 {
+  // the lens kernel has no selection term (has_selection_galaxies)
+  selection_unsupported("the gs spectra (C_gs_tomo_limber_work)");
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
@@ -6962,6 +6964,8 @@ static void C_gk_tomo_limber_work(
     double** table                // output [clustering_nbin][nell]
   )
 {
+  // the lens kernel has no selection term (has_selection_galaxies)
+  selection_unsupported("the gk spectra (C_gk_tomo_limber_work)");
   if (1 == include_HOD_GX) {
     log_fatal("HOD not implemented in the batched gk path"); exit(1);
   }
@@ -10688,6 +10692,8 @@ static double** C_gs_tomo_core(
     const int nruns           // number of runs
   )
 {
+  // the lens rows have no selection term (has_selection_galaxies)
+  selection_unsupported("the non-Limber gs spectra (C_gs_tomo)");
   halo_IA_unsupported("C_gs_tomo");
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* x = NULL;

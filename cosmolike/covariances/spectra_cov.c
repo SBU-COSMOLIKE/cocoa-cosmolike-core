@@ -728,6 +728,9 @@ static void fill_radial_cov(
 {
   const int nfield = radial->nlens+radial->nsource;
 
+  // the lens windows carry b1 and no selection term (gsel, bias.c)
+  selection_unsupported("the covariance spectra (fill_radial_cov)");
+
   // --- 1. WARM THE CORE READERS BEFORE PARALLEL SAMPLING ---
 
   // Some core readers build lazy tables on their first call (the photo-z

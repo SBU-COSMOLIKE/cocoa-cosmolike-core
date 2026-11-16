@@ -1952,6 +1952,8 @@ static void check_cluster_setup_cg(void)
       redshift.clustering_nbin);
     exit(1);
   }
+  // the galaxy leg carries b1 and no selection term (gsel, bias.c)
+  selection_unsupported("the cluster-galaxy spectra");
 }
 
 
@@ -2700,6 +2702,10 @@ static void C_cluster_nonlimber_core(
     zhi[ng] = 1./amin_lens(ng) - 1.;
   }
   const int with_lens = (CLUSTER_NL_CG == stat);
+  if (1 == with_lens) {
+    // the lens row carries b1 and f, no selection term (gsel, bias.c)
+    selection_unsupported("the non-Limber cluster-galaxy spectra");
+  }
 
   #pragma omp parallel for schedule(static)
   for (int j = 0; j < nchi; j++) {

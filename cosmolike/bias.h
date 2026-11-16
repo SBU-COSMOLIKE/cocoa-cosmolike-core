@@ -45,6 +45,9 @@ double galpha2(const int ni); // redshift-space counterterm alpha_2
 
 double gsel(const int ni); // orientation-dependent selection A_sel
 
+// refuse a nonzero A_sel in a path that has no selection term
+void selection_unsupported(const char* where);
+
 #ifdef __cplusplus
 }
 #endif
