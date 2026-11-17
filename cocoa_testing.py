@@ -1548,10 +1548,9 @@ def report_emul2_advisory(label, chi2, frozen_ref, exact_ref, limit):
     drift = chi2 - frozen_ref
     delta_exact = abs(chi2 - exact_ref)
     if delta_exact < limit:
-        verdict = "RECOMMENDED for actual data analysis"
+        verdict = f"agrees at this configuration (|delta chi2| < {limit})"
     else:
-        verdict = ("NOT recommended for actual data analysis "
-                   f"(|delta chi2| >= {limit})")
+        verdict = f"does NOT agree at this configuration (|delta chi2| >= {limit})"
     # one multi-line f-string; the drift prints at :+.6f (fixed six
     # decimals, sign always shown)
     print(f"""
