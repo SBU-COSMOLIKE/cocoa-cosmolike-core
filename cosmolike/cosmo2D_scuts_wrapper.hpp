@@ -21,9 +21,12 @@ namespace cosmolike_interface
 //
 //   dlnX/dlnk  = (dX/dlnk)/X, the log-response of X to the power at
 //                wavenumber k - where the signal comes from
-//   RF(kmax)   = int_{-inf}^{ln kmax} |dlnX/dlnk| dlnk over the full
-//                integral (RF = response function): the fraction of
-//                the response below kmax - the scale-cut statistic
+//   RF(kmax)   = S(kmax)/S(k_hi), with S(K) the integral of
+//                |dlnX/dlnk| dlnk from the bottom of the tabulated
+//                k range up to K and k_hi that range's upper end
+//                (RF = response function): the fraction of the
+//                response below kmax - the scale-cut statistic,
+//                rising from 0 to 1
 //
 // Scalar overloads = point diagnostics (full batch cost per call);
 // array overloads = the batch tools.

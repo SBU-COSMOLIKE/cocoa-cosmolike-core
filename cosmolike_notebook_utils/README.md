@@ -172,7 +172,7 @@ changed:
 | Function | Without a reference it draws | y axis |
 | --- | --- | --- |
 | `plot_C_ss_tomo_limber` | ell(ell+1) C_ell / 2 pi | log |
-| `plot_C_gs_tomo_limber` | the signed C_ell (no absolute value is taken; the log axis draws only its positive values, although the default label reads \|C^gs\|) | log |
+| `plot_C_gs_tomo_limber` | the absolute value \|C_ell\| (a sign crossing, e.g. from magnification, shows as a dip) | log |
 | `plot_C_gg_tomo` | C_ell itself | log; linear with `forcelinearyscale` |
 | `plot_xi` | theta xi 10^4, keeping the sign | linear |
 | `plot_gammat_tomo_limber`, `plot_wtheta_tomo` | the absolute value | log |
@@ -222,9 +222,10 @@ matrix first and then select parameters:
 $`\sqrt{(F^{-1})_{ii}}`$ marginalizes over the others, while
 $`1/\sqrt{F_{ii}}`$ holds them fixed. `get_FoM` returns
 $`1/\sqrt{\det C_{ij}}`$ with $`C_{ij}`$ the marginalized 2x2 block of
-the pair $`(i, j)`$; an infinite return signals a numerically
-indefinite block ([fisher.py](fisher.py)'s docstrings state this
-limit), not unlimited information.
+the pair $`(i, j)`$; a block that is not positive definite (any
+eigenvalue $`\le 0`$) bounds no error ellipse, so `get_FoM` raises a
+`ValueError` instead of returning a number for it
+([fisher.py](fisher.py)'s docstrings state this contract).
 
 A two-measurement example shows why more curves alone are not more
 information. Measure one parameter $`p`$ twice, each with variance

@@ -1515,23 +1515,25 @@ def report_random_model_summary(deltas):
 
 
 def report_emul2_advisory(label, chi2, frozen_ref, exact_ref, limit):
-    """Print one EMUL2 accuracy check: measurements and a recommendation.
+    """Print one EMUL2 accuracy check: measurements and an agreement verdict.
 
     There is no pass/fail here. An emulator is an approximation, so
     the useful outputs are the numbers themselves: the change against
     the frozen emulator reference (nonzero: the installed emulator no
     longer reproduces the chi2 it gave at freeze time), the
     difference against the non-emulated reference calculation at the
-    same cosmology, and the recommendation derived from that
-    difference. The non-emulated counterpart is itself a numerical
-    model (the frozen pipeline without the emulator), so the number
-    measures agreement between two calculations at this one
-    configuration, mask and covariance - not a general accuracy
-    certificate. Emulated configuration and non-emulated counterpart
-    both evaluate the counterpart's synthetic NLA vector (see
-    load_frozen_info), and the counterpart's own reference is
-    0.000000 there by construction, so |emulator - reference| is the
-    disagreement at the same data and nothing else.
+    same cosmology, and a verdict saying whether that difference
+    stays below the threshold. The non-emulated counterpart is itself
+    a numerical model (the frozen pipeline without the emulator), so
+    the number measures agreement between two calculations at this
+    one configuration, mask and covariance - not a general accuracy
+    certificate - and the printed verdict claims agreement or
+    disagreement at this configuration only. Emulated configuration
+    and non-emulated counterpart both evaluate the counterpart's
+    synthetic NLA vector (see load_frozen_info), and the
+    counterpart's own reference is 0.000000 there by construction, so
+    |emulator - non-emulated| is the disagreement at the same data
+    and nothing else.
 
     Arguments:
       label      = one line naming the emulated configuration.
@@ -1539,18 +1541,18 @@ def report_emul2_advisory(label, chi2, frozen_ref, exact_ref, limit):
       frozen_ref = the frozen emulator reference chi2.
       exact_ref  = the non-emulated reference chi2 (from the matching
                    example's frozen reference).
-      limit      = the recommendation threshold on |chi2 - exact_ref|.
+      limit      = the threshold on |chi2 - exact_ref| that separates
+                   the two printed verdicts.
 
     Returns:
-      |chi2 - exact_ref|, the accuracy difference the recommendation
-      is based on.
+      |chi2 - exact_ref|, the difference the printed verdict reports.
     """
     drift = chi2 - frozen_ref
     delta_exact = abs(chi2 - exact_ref)
     if delta_exact < limit:
         verdict = f"agrees at this configuration (|delta chi2| < {limit})"
     else:
-        verdict = f"does NOT agree at this configuration (|delta chi2| >= {limit})"
+        verdict = f"does not agree at this configuration (|delta chi2| >= {limit})"
     # one multi-line f-string; the drift prints at :+.6f (fixed six
     # decimals, sign always shown)
     print(f"""
@@ -2370,11 +2372,12 @@ class CocoaTestHarness:
 
         An EXAMPLES entry carrying the "emulator" flag gets two more
         adjustments, both serving the accuracy measurement of
-        test_emul2.py: its data_file becomes the exact counterpart's
-        synthetic vector (so |emulator - exact| is the emulator error
-        and nothing else), and the counterpart's ggl_exclude is
-        copied in, because cosmolike only accepts a mask whose length
-        equals the data-vector layout it computes from ggl_exclude.
+        test_emul2.py: its data_file becomes the non-emulated
+        counterpart's synthetic vector (so |emulator - non-emulated|
+        is the disagreement at the same data and nothing else), and
+        the counterpart's ggl_exclude is copied in, because cosmolike
+        only accepts a mask whose length equals the data-vector
+        layout it computes from ggl_exclude.
 
         Arguments:
           example = a key of the project's EXAMPLES table.

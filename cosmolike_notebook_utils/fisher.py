@@ -69,19 +69,20 @@ def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
     with the standard five-point-stencil weights (the center point
     has weight zero, so it is never evaluated). The step is relative
     (p0 * (1 + s)) so one h suits parameters of any magnitude; a
-    parameter whose fiducial is zero (|p0| <= 1e-12) falls back to
-    an absolute step. Fiducials with 0 < |p0| <= 1e-12 are outside
-    the contract: the evaluations take absolute steps there while
-    the final division still uses the relative scale h * p0 (the
-    comment at the return records the mismatch), so place a fiducial
-    at exactly 0.0 or well above 1e-12, never in between.
+    parameter whose fiducial is zero at the 1e-12 absolute tolerance
+    (|p0| <= 1e-12) takes absolute steps instead. One test,
+    np.isclose(p0, 0.0, atol=1e-12), selects both the steps and the
+    final divisor (h for absolute steps, h * p0 for relative ones),
+    so every fiducial gets a consistent five-point derivative: a
+    tiny nonzero fiducial below the tolerance is differentiated with
+    absolute steps, exactly as a fiducial at 0.0 is.
 
     Arguments:
       dv    = the data-vector function, called as
               dv(param=<1D array>, AccuracyBoost=AccuracyBoost).
       index = position of the differentiated parameter inside CV.
       h     = relative step size (0.02 = two percent); the absolute
-              step when the fiducial is zero. Must be > 0 (assert).
+              step when |p0| <= 1e-12. Must be > 0 (assert).
       CV    = 1D array of fiducial parameter values (required; the
               None default is a placeholder). Never modified: each
               evaluation works on a copy.
@@ -110,9 +111,9 @@ def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
         # accumulate c * vec; the first turn initializes result
         result = c*vec if result is None else result + c*vec
     # divide by the step scale: h for absolute steps, h * p0 for
-    # relative ones. This test is exact (p0 == 0.0) while the loop
-    # takes absolute steps for |p0| <= 1e-12, so the two agree for
-    # every fiducial except 0 < |p0| <= 1e-12.
+    # relative ones. absolute_step is the same test the loop used to
+    # pick the steps, so divisor and steps always describe one and
+    # the same stencil.
     return result / (h if absolute_step else h * p0)
 
 
@@ -291,13 +292,18 @@ def get_FoM(i, j, F):
       F    = Fisher matrix.
 
     Returns:
-      the figure of merit as a float; inf (or a very large value)
-      when det C_ij <= 0, instead of an error. Such a return signals
-      a numerically indefinite covariance block, not an unbounded
-      constraint: it is not a usable forecast. A block with two
-      negative eigenvalues has det C_ij > 0 and passes unnoticed, so
-      a finite positive determinant alone does not establish a
-      positive-definite block.
+      the figure of merit as a float. A returned value always comes
+      from a positive-definite covariance block: the eigenvalue
+      check raises before anything else is computed.
+
+    Raises:
+      ValueError when the marginalized 2x2 block is not positive
+      definite (any eigenvalue <= 0): such a block bounds no error
+      ellipse, so no figure of merit exists for it. The test is on
+      the eigenvalues, not on the determinant, because a block with
+      two negative eigenvalues also has det C_ij > 0: a positive
+      determinant alone does not establish a positive-definite
+      block.
     """
     # 0.5 * (F + F^T) symmetrizes away numerical asymmetry before
     # inverting; np.ix_([i, j], [i, j]) selects the 2x2 block with
@@ -314,11 +320,13 @@ def get_FoM(i, j, F):
             "derivatives, priors and parameter list")
     detC = np.linalg.det(C)
     if detC <= 0:
-        # a numerically indefinite block: clip negative eigenvalues
-        # to zero (eigvalsh = eigenvalues of a symmetric matrix) and
-        # use the product of the clipped ones as the determinant. The
-        # product is then zero (or tiny), so the FoM returned below is
-        # inf (or very large): this branch reports no error
+        # both eigenvalues are positive here (the check above raised
+        # otherwise), so a nonpositive np.linalg.det can only be
+        # round-off of its LU factorization on a nearly singular
+        # block. Recompute the determinant as the product of the
+        # eigvalsh eigenvalues (eigvalsh = eigenvalues of a symmetric
+        # matrix); the clip is a no-op on this all-positive spectrum
+        # and merely keeps the product nonnegative
         w = np.clip(np.linalg.eigvalsh(C), 0, None)
         detC = w.prod()
     return float(1.0/np.sqrt(detC))

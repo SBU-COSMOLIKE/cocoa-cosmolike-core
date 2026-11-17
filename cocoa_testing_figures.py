@@ -378,11 +378,12 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
     Omega_m panel only.
 
     Models flagged in `held` are drawn as black-edged diamonds. The
-    legend text is fixed and names the usual hold list - Omega_m,
-    A_s and the biases; a run whose hold list differs should name it
-    in `label`, because the legend will not. With the usual list the
-    diamonds stack at Omega_m = fiducial and amplitude ratio 1, and
-    the height of the stack is the error the other parameters cause.
+    fixed legend says only what was done - the hold list was reset to
+    the frozen point - and names no parameters, so the actual hold
+    list belongs in `label`. With the usual hold list (Omega_m, A_s
+    and the biases) the diamonds stack at Omega_m = fiducial and
+    amplitude ratio 1, and the height of the stack is the error the
+    other parameters cause.
 
     Arguments:
       points        = the drawn points, one {parameter name: value}

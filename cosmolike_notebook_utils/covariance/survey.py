@@ -503,6 +503,9 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         positive, malformed rows or bands, xi- rows in Fourier space,
         nonzero lens magnification, or noise or field IDs that do not
         match the initialized fields.
+        KeyError when a supplied settings['gaussian'] mapping omits its
+        rsd, nonlimber or ia entry; each message names the missing entry
+        and the accepted values.
     """
     # The halo matter model is defined only for mnu=0, and the centered
     # response derivative needs a positive step.
@@ -591,10 +594,10 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     # without redshift-space distortions.
     model = settings.get("gaussian",
                          {"nonlimber": False, "ia": "none", "rsd": False})
-    # A supplied model states the RSD choice: a missing key is an error,
-    # not a silent "no RSD". Only rsd has this dedicated message; a
-    # mapping missing nonlimber or ia fails below with a bare KeyError
-    # when that key is first read.
+    # A supplied model states all three choices: a missing key is an
+    # error, not a silent default. Each check names the missing entry
+    # and the accepted values, so the three messages replace the bare
+    # KeyError a first read of the mapping would raise.
     if "rsd" not in model:
         raise KeyError(
             "settings['gaussian'] has no 'rsd' entry; the Gaussian model "

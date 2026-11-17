@@ -239,9 +239,9 @@ def run_covariance(interface, survey, default_space="real", joint=False,
         OMP_NUM_THREADS and saves G/SSC/cNG/total. Prepends theory.camb.path
         to sys.path when given and prints the saved size, plus timings
         unless the YAML sets timing to false. No plots or eigenproblems run.
-        A disabled build or invalid output options exit through argparse
-        (status 2), and a rejected YAML setting raises ValueError, all before
-        numerical setup.
+        A disabled build, an unset or non-positive OMP_NUM_THREADS, or
+        invalid output options exit through argparse (status 2), and a
+        rejected YAML setting raises ValueError, all before numerical setup.
     """
     # --- 1. COMMAND-LINE ARGUMENTS ---
 
@@ -257,8 +257,12 @@ def run_covariance(interface, survey, default_space="real", joint=False,
 
     # getattr returns False when the compiled module lacks the
     # has_covariance flag. parser.error prints the usage and message, then
-    # exits with status 2 without a Python traceback; a rejected YAML
-    # setting raises ValueError inside load_run_configuration instead.
+    # exits with status 2 without a Python traceback: first the build
+    # check, then OMP_NUM_THREADS (the command takes its OpenMP team only
+    # from the environment, so an unset or non-positive value is refused
+    # before the YAML is read; load_run_configuration keeps its own
+    # ValueError for direct callers). A rejected YAML setting raises
+    # ValueError inside load_run_configuration instead.
     if not getattr(interface, "has_covariance", False):
         parser.error("enable covariance generation and recompile; "
                      "see this project's README")

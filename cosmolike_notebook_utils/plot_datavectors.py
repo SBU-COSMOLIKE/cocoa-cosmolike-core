@@ -834,14 +834,14 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
 
     One panel per (lens, source) bin pair: rows are source bins,
     columns are lens bins, and the panel label reads (lens, source).
-    Without C_gs_ref each curve is the signed C_ell itself (no
-    ell(ell+1)/2 pi factor) handed to a log scale, which draws only
-    positive values: no absolute value is taken, so where
-    magnification drives C_gs negative the curve is simply absent,
-    although the default axis labels read |C^gs|
-    (plot_gammat_tomo_limber and the cluster plotters plot |value|
-    instead). With C_gs_ref each curve is the fractional difference
-    C / C_ref - 1.
+    Without C_gs_ref each curve is the magnitude |C_ell| (no
+    ell(ell+1)/2 pi factor) on a log scale, the convention of
+    plot_gammat_tomo_limber and the cluster plotters and what the
+    default axis labels read: where magnification drives C_gs
+    negative the curve stays visible, with a dip at each sign
+    crossing (the sign itself is not shown). With C_gs_ref each
+    curve is the fractional difference C / C_ref - 1 of the signed
+    spectra.
 
     Arguments:
       ell      = 1D array of multipoles, shared by every C_gs entry.
@@ -1073,8 +1073,9 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             for x, Cl in enumerate(C_gs):
                 if C_gs_ref is None:
                     # 10**alpha = 1 unless rescale is on for this panel.
-                    # The spectrum stays signed: the log axis then
-                    # omits any nonpositive stretch (docstring).
+                    # The magnitude is drawn (docstring): a log axis
+                    # cannot show the sign, so a sign crossing appears
+                    # as a dip of |C| instead of a gap in the curve.
                     tmp = np.abs(Cl[:,i,j]) * 10.0**alpha[i,j]
                 else:
                     tmp = Cl[:,i,j] / C_gs_ref[:,i,j] - 1
