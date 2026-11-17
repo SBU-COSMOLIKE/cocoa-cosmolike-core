@@ -993,8 +993,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             # the per-panel y-range is [ylim[0]*min, ylim[1]*max]
             clmin = []
             clmax = []
-            for Cl in C_gs:  
-                tmp = Cl[:,i,j]
+            for Cl in C_gs:
+                tmp = np.abs(Cl[:,i,j])
                 clmin.append(np.min(tmp))
                 clmax.append(np.max(tmp))
  
@@ -1075,7 +1075,7 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                     # 10**alpha = 1 unless rescale is on for this panel.
                     # The spectrum stays signed: the log axis then
                     # omits any nonpositive stretch (docstring).
-                    tmp = Cl[:,i,j] * 10.0**alpha[i,j]
+                    tmp = np.abs(Cl[:,i,j]) * 10.0**alpha[i,j]
                 else:
                     tmp = Cl[:,i,j] / C_gs_ref[:,i,j] - 1
                 if marker is None:
