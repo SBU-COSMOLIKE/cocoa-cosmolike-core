@@ -1559,8 +1559,8 @@ def report_emul2_advisory(label, chi2, frozen_ref, exact_ref, limit):
 EMUL2 ADVISORY: {label}
   chi2 (this run, emulator)   = {chi2:.6f}
   frozen emulator reference   = {frozen_ref:.6f}  (drift {drift:+.6f})
-  exact-physics reference     = {exact_ref:.6f}
-  |emulator - exact| chi2     = {delta_exact:.6f}   (threshold: {limit})
+  non-emulated reference      = {exact_ref:.6f}
+  |emulator - non-emulated|   = {delta_exact:.6f}   (threshold: {limit})
   -> {verdict}
 {'-' * 66}""", flush=True)
     return delta_exact
