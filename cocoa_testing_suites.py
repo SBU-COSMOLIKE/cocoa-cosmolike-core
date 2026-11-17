@@ -515,7 +515,7 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
         points=points, deltas=deltas,
         fiducial=u.load_frozen_point(example), path=path, limit=limit,
         held=held, label=label,
-        colorbarlabel=r"$\Delta\chi^2$ (pushed settings $-$ default)")
+        colorbarlabel="squared model distance\nin the fixed covariance")
     return path
 
 
