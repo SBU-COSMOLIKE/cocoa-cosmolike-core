@@ -600,6 +600,16 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             "settings['gaussian'] has no 'rsd' entry; the Gaussian model "
             "must say whether its spectra include redshift-space "
             "distortions: add 'rsd': True or 'rsd': False")
+    if "nonlimber" not in model:
+        raise KeyError(
+            "settings['gaussian'] has no 'nonlimber' entry; the Gaussian model "
+            "must say whether its low multipoles use the non-Limber "
+            "projection: add 'nonlimber': True or 'nonlimber': False")
+    if "ia" not in model:
+        raise KeyError(
+            "settings['gaussian'] has no 'ia' entry; the Gaussian model "
+            "must name its intrinsic-alignment model: add 'ia': 'none', "
+            "'ia': 'NLA' or 'ia': 'TATT'")
     rsd = model["rsd"]
     # One-loop galaxy bias in the Gaussian spectra: on when any lens bin has
     # a nonzero quadratic or tidal bias (initialize_forecast installed them
