@@ -97,6 +97,7 @@ def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
     coeffs = np.array([-1.0/12.0, 8.0/12.0, -8.0/12.0, +1.0/12.0], dtype=np.float64)
     steps  = np.array([2*h, h, -h, -2*h], dtype=np.float64)
     p0 = float(CV[index])
+    absolute_step = np.isclose(p0, 0.0, atol=1e-12)
     result = None
     for s, c in zip(steps, coeffs):
         # copy=True: p is an independent copy, so writing p[index]
@@ -104,7 +105,7 @@ def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
         p = np.array(CV, dtype = np.float64, copy=True)
         # ternary a if cond else b: absolute step when the fiducial
         # is (numerically) zero, relative step otherwise
-        p[index] = p0 + s if np.isclose(p0, 0.0, atol=1e-12) else p0 * (1.0 + s)
+        p[index] = p0 + s if absolute_step else p0 * (1.0 + s)
         vec = dv(param=p, AccuracyBoost=AccuracyBoost)
         # accumulate c * vec; the first turn initializes result
         result = c*vec if result is None else result + c*vec
@@ -112,7 +113,7 @@ def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
     # relative ones. This test is exact (p0 == 0.0) while the loop
     # takes absolute steps for |p0| <= 1e-12, so the two agree for
     # every fiducial except 0 < |p0| <= 1e-12.
-    return result / (h if p0 == 0.0 else h * p0)
+    return result / (h if absolute_step else h * p0)
 
 
 def get_ddv_dkit(dv, index=0, CV=None, AccuracyBoost=1.0,
