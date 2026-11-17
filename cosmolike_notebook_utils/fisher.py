@@ -304,6 +304,14 @@ def get_FoM(i, j, F):
     # rows and columns (i, j)
     C = np.linalg.inv(0.5 * (F + F.T))
     C = C[np.ix_([i, j], [i, j])]
+    eigenvalues = np.linalg.eigvalsh(C)
+    if np.any(eigenvalues <= 0):
+        raise ValueError(
+            "get_FoM: the marginalized covariance block of parameters "
+            f"({i}, {j}) has eigenvalues {eigenvalues}; a figure of merit "
+            "needs a positive-definite block (both eigenvalues > 0). The "
+            "Fisher matrix is singular or indefinite: check its "
+            "derivatives, priors and parameter list")
     detC = np.linalg.det(C)
     if detC <= 0:
         # a numerically indefinite block: clip negative eigenvalues
