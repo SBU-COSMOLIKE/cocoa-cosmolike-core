@@ -205,7 +205,9 @@ def selected_windows(interface, geometry):
         left=density, right=unity, weight=geometry[2]**2*geometry[3],
     )[:, 0]
     if np.any(per_sr <= 0.0):
-        raise ValueError("a selected catalog is empty: check its bins and radial coverage")
+        raise ValueError(
+            "a selected catalog is empty: check its bins and radial coverage"
+        )
     # q_i = f_K^2 n_i/nbar_i, so each window integrates to one over dchi.
     window = density*geometry[2]**2/per_sr[:, None]
 
