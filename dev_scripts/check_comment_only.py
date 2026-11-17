@@ -60,7 +60,9 @@ def strip(src):
 a = strip(open(sys.argv[1]).read())
 b = strip(open(sys.argv[2]).read())
 if a == b:
-    print(f"OK: {sys.argv[2]} is comment/whitespace-only vs {sys.argv[1]}")
+    print(f"OK: {sys.argv[2]} and {sys.argv[1]} have identical text after "
+          "removing comments and collapsing whitespace (a text comparison, "
+          "not a proof of behavioral equivalence)")
     sys.exit(0)
 k = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
 print("DIFF at token-stream offset", k)
