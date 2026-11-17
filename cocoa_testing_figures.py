@@ -459,9 +459,8 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
     # smallest delta to the largest, so the largest land on top.
     kinds = []
     for mask, marker, edge, kind_label in (
-            (~held_mask, "o", "white", "drawn across the prior"),
-            (held_mask, "D", "black",
-             r"$\Omega_\mathrm{m}$, $A_\mathrm{s}$, $b$ at the fiducial")):
+            (~held_mask, "o", "white", "all box-prior parameters drawn"),
+            (held_mask, "D", "black", "hold list reset to the frozen point")):
         indices = np.nonzero(mask)[0]
         if len(indices) == 0:
             continue
