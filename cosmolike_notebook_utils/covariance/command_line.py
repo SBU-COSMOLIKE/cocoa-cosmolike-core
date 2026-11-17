@@ -262,6 +262,13 @@ def run_covariance(interface, survey, default_space="real", joint=False,
     if not getattr(interface, "has_covariance", False):
         parser.error("enable covariance generation and recompile; "
                      "see this project's README")
+    try:
+        threads = int(os.environ.get("OMP_NUM_THREADS", ""))
+    except ValueError:
+        parser.error("set OMP_NUM_THREADS to a positive integer "
+                     "before running the covariance command")
+    if threads < 1:
+        parser.error("OMP_NUM_THREADS must be a positive integer")
     settings, run = load_run_configuration(
         filename=args.input, survey=survey, default_space=default_space,
         joint=joint,
