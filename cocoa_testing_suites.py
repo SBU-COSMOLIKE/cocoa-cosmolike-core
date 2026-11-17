@@ -220,12 +220,13 @@ def _chi2_method(u, example, number, label, tatt):
             "        that the frozen point names exactly the\n"
             "        parameters the model samples, and returns\n"
             "        chi2 = -2 ln L at that point. The pass limit\n"
-            "        CHI2_TOLERANCE = 0.2 is the project's bound for\n"
-            "        every frozen chi2: compiler and library-version\n"
-            "        noise stays below it, and no physics change is\n"
-            "        detectable below a chi2 shift of 0.2, so a\n"
-            "        failure means the code or the frozen inputs\n"
-            "        changed the prediction.\n        ")
+            "        CHI2_TOLERANCE = 0.2 is a chosen regression\n"
+            "        tolerance for every frozen chi2: wide enough for\n"
+            "        compiler and library-version noise, tight enough\n"
+            "        that a code or input change is unlikely to hide\n"
+            "        under it; it is not a physical detectability\n"
+            "        limit. A failure means the code or the frozen\n"
+            "        inputs changed the prediction.\n        ")
     return test
 
 
