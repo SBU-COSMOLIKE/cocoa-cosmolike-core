@@ -1456,6 +1456,9 @@ void init_nonlinear_kaiser_gg(const int flag)
 //   Ntable.halo_nfw_n              -> ceil(baseline * boost)
 //   Ntable.halo_na_lens            -> ceil(baseline * boost)
 //   Ntable.halo_ia_na              -> ceil(baseline * boost)
+//   Ntable.sigma_gauss_nr          -> (baseline - 1) * m + 1 (nested,
+//   Ntable.sigma_gauss_na             like N_a; interpolation grids of
+//   Ntable.sigma_gauss_ninv           the Gaussian variance tables)
 //   Ntable.NL_Nchi                 -> nested interval doubling of the
 //                                     combined boost * NL_Nchi_boost
 //                                     (the rule at set_nl_nchi)
@@ -1573,6 +1576,31 @@ void init_accuracy_boost(
 
   if (0 == boost_base[12]) boost_base[12] = Ntable.halo_ia_na;
   Ntable.halo_ia_na = static_cast<int>(ceil(boost_base[12]*accuracy_boost));
+
+  // The Gaussian variance tables of cosmo3D.c are interpolation grids
+  // with fixed endpoints (the lnR window, [a_min, 1], and each row's
+  // ln sigma_G^2 span), so they refine with the N_a nested-doubling
+  // scheme: node counts (baseline - 1)*m + 1 keep every coarser grid's
+  // nodes a subset of every finer grid's, and a boost comparison sees
+  // only added resolution, never re-placed nodes.
+  if (0 == boost_base[13]) boost_base[13] = Ntable.sigma_gauss_nr;
+  if (0 == boost_base[14]) boost_base[14] = Ntable.sigma_gauss_na;
+  if (0 == boost_base[15]) boost_base[15] = Ntable.sigma_gauss_ninv;
+  if (accuracy_boost > 1.0) {
+    const int m = static_cast<int>(
+      fmin(pow(2.0, ceil(log2(accuracy_boost))), 16.0));
+    Ntable.sigma_gauss_nr = (boost_base[13] - 1)*m + 1;
+    Ntable.sigma_gauss_na = (boost_base[14] - 1)*m + 1;
+    Ntable.sigma_gauss_ninv = (boost_base[15] - 1)*m + 1;
+  }
+  else {
+    Ntable.sigma_gauss_nr =
+        static_cast<int>(ceil(boost_base[13]*accuracy_boost));
+    Ntable.sigma_gauss_na =
+        static_cast<int>(ceil(boost_base[14]*accuracy_boost));
+    Ntable.sigma_gauss_ninv =
+        static_cast<int>(ceil(boost_base[15]*accuracy_boost));
+  }
 
   if (0 == fpt_boost_base) fpt_boost_base = Ntable.FPT_internal_accuracy_boost;
   Ntable.FPT_internal_accuracy_boost = fpt_boost_base*accuracy_boost;
