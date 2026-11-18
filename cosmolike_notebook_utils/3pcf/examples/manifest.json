@@ -23,5 +23,7 @@
   ],
   "renderer": "../tests/render_examples.py",
   "blas_threads": 1,
-  "omp_threads": 1
+  "omp_threads": 1,
+  "plot_module": "../plots.py",
+  "plot_module_sha256": "f9dc470aeb8608aa389b84533e49eac0ba9aaec6b340f7a25d9079de51f4f27f"
 }

@@ -139,7 +139,12 @@ def _styles(count, param, cmap, legend, marker, linestyle, linewidth):
     if legend is not None and len(legend) != count:
         raise ValueError("legend needs one label per curve")
     if param is None:
-        palette = [plt.get_cmap("tab10")(index % 10) for index in range(count)]
+        category_colors = (
+            "#0072B2", "#E69F00", "#CC79A7", "#56B4E9", "#D55E00", "black",
+        )
+        palette = []
+        for index in range(count):
+            palette.append(category_colors[index % len(category_colors)])
         mapping = None
     else:
         parameters = np.asarray(param, dtype=float)
@@ -159,7 +164,8 @@ def _styles(count, param, cmap, legend, marker, linestyle, linewidth):
     for index in range(count):
         line = {
             "color": palette[index],
-            "linewidth": 1.8,
+            "linewidth": (2.4, 1.8, 1.3, 0.9)[index % 4],
+            "marker": ("o", "s", "D", "^")[index % 4],
             "linestyle": ["solid", "dashed", "dashdot", "dotted"][index % 4],
             "label": None if legend is None else legend[index],
         }
@@ -799,6 +805,11 @@ def plot_parameter_errors(
     when the supplied errors have an agreed common unit or normalization.
     Ratios compare the same parameter and prior definition. Conditional
     errors 1/sqrt(F_aa) must not be labeled marginalized errors here.
+    Lines join categorical positions only to identify a calculation; they
+    do not interpolate between different physical parameters. Colors, marker
+    shapes and widths distinguish calculations. An outside legend is checked
+    against the whole axes rectangle after layout, which also excludes all
+    clipped data and reference lines from its bounding rectangle.
     """
     try:
         if (not isinstance(names, (list, tuple)) or not names
@@ -829,10 +840,35 @@ def plot_parameter_errors(
         figure, axis = plt.subplots(figsize=figsize, constrained_layout=True)
         locations = np.arange(len(names))
         width = 0.7 / len(values)
+        colors = (
+            "#0072B2",
+            "#E69F00",
+            "#CC79A7",
+            "#56B4E9",
+            "#D55E00",
+            "#000000",
+        )
+        markers = (
+            "o",
+            "s",
+            "D",
+            "^",
+            "v",
+            "P",
+        )
+        widths = (
+            2.4,
+            1.8,
+            1.3,
+            0.9,
+        )
         for index, row in enumerate(values):
             shifted = locations + (index - (len(values)-1)/2) * width
-            axis.plot(shifted, row, "o", markersize=6,
-                      color=plt.get_cmap("tab10")(index % 10), label=legend[index])
+            axis.plot(
+                shifted, row, markersize=6, marker=markers[index % 6],
+                linewidth=widths[index % 4], color=colors[index % 6],
+                label=legend[index],
+            )
         if errors_ref is not None:
             axis.axhline(y=1.0, color="0.4", linestyle="dashed", linewidth=1)
         axis.set_xticks(locations, labels=labels, rotation=35, ha="right")
@@ -842,8 +878,22 @@ def plot_parameter_errors(
         if errors_ref is not None:
             displayed = np.concatenate((displayed, np.array([1.0])))
         axis.set_ylim(_range(values=displayed))
-        figure.legend(loc="outside upper center", ncol=len(values), frameon=False,
-                      fontsize=13)
+        key = figure.legend(
+            loc="outside upper center", ncol=min(len(values), 2),
+            frameon=False, fontsize=13,
+        )
+        figure.canvas.draw()
+        renderer = figure.canvas.get_renderer()
+        key_box = key.get_window_extent(renderer=renderer).padded(2.0)
+        axes_box = axis.get_tightbbox(renderer=renderer)
+        if key_box.overlaps(axes_box):
+            plt.close(fig=figure)
+            raise ValueError("Outside legend overlaps the parameter axes.")
+        if (key_box.x0 < figure.bbox.x0 or key_box.x1 > figure.bbox.x1
+                or key_box.y0 < figure.bbox.y0
+                or key_box.y1 > figure.bbox.y1):
+            plt.close(fig=figure)
+            raise ValueError("Increase figsize to contain the outside legend.")
         if show is not None:
             plt.show()
             return None

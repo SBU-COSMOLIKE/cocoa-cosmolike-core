@@ -18,7 +18,10 @@ core changes and commit only the paths owned by this work.
 | Project `interface/cosmolike_des_3pcf_fisher_wrappers.py` | YAML workflow and bounded IA teaching calculation |
 | Project `EXAMPLE_COMPARE_CODES.ipynb` | Live original-source comparisons and separate stored physical references |
 | Project `EXAMPLE_FISHER_IA.ipynb` | IA response explanation, public-input audit and explicit survey forecast commands |
+| Project `EXAMPLE_FISHER_ACCURACY.ipynb` | Default-accuracy Fisher weights, selected noise stencils and full derivative checks |
+| Project `EXAMPLE_COVARIANCE_PME.ipynb` | Precision expansion with independent controlled simulation vectors |
 | Project `configs/des_y3_*_fisher.yaml` | Declared NLA or TATT forecast design, rows, covariance, priors and numerical controls |
+| Project `EXAMPLE_NAUTILUS*.yaml` and `.py` | Joint fixed-Gaussian inference with explicit synthetic or observed data |
 
 Notebook cells call wrappers and shared plotters. They must not contain a
 second implementation of a transform, covariance contraction or Fisher
@@ -162,3 +165,141 @@ its integration grids or finite-difference steps. Likewise, the existing
 bispectrum-only feedback parameter does not define a joint two-/three-point
 feedback model. No new physical parameter should be varied in only one probe
 while its forecast is described as a consistent joint feedback constraint.
+
+## Reuse the shared Fisher-noise estimator
+
+The expensive full derivative base and its marginalized parameter covariance
+are computed once at default accuracy. Use the existing shared functions
+`get_stencil_noise`, `get_fom_noise_weights`, and `predict_fom_noise` in
+`cosmolike_notebook_utils/fisher.py`. Do not implement a second version of the
+formula in this project or in a notebook. The project adapter
+`python/des3pcf/fisher_accuracy.py` supplies saved vectors and absolute
+parameter offsets only; `scripts/run_fisher_accuracy.py` owns candidate inputs
+and output provenance.
+
+`python/des3pcf/provenance.py` shares file and implementation fingerprints
+with inference. A new Fisher archive records physical input bytes, project
+Python files, both used native extensions and the CAMB implementation when
+cosmology is varied. The CLI checks these identities before derivatives
+and immediately before saving. Screening refuses a baseline with missing
+or mismatched identity; never assign today's hash to an older calculation.
+Disk hashes do not inspect already-loaded executable memory or make
+concurrent writes atomic. Freeze calculation inputs and implementation
+while a scientific run is active.
+
+For a partial `--only` scan, reconstruct the summary from every existing
+current-plan case whose saved identity still matches. Compute means only
+for requested missing cases. Never discard earlier validated results merely
+because the latest invocation requested a smaller subset, and never merge
+old summary values without checking their numerical archives.
+
+The project's fourth-order steps are absolute YAML values. Supply zero-valued
+offset coordinates to the shared estimator, and add those offsets to the
+physical fiducial inside the adapter. This avoids treating an absolute step
+as a fraction of a negative or nonzero fiducial. The core estimator's
+`AccuracyBoost` argument remains one when a candidate predictor already owns
+its numerical controls; construct that predictor with the desired settings.
+
+The full Fisher CLI saves `stencil_values_h` and `stencil_values_h2`, each
+ordered [parameter, five offsets, data row]. Offsets are [-2,-1,0,1,2]. All
+these vectors already exist in its exact mean cache, so retaining them adds
+no physical evaluations. Score every baseline column from those saved arrays,
+rank its measured contribution, and evaluate a few selected columns at each
+candidate setting. A shared center plus four displaced vectors per selected
+column gives the reduced evaluation count.
+
+The estimate assumes approximately independent evaluation jitter. Smooth
+fourth derivatives can contaminate it; odd coherent errors and correlated
+stencil errors can escape it. Report the omitted columns and measured
+baseline contribution fraction, rather than treating a small correlation
+weight as a bound on unknown noise. Replacing selected derivative columns
+and recomputing the FoM is an additional partial test. Final acceptance still
+requires full derivatives at selected settings and both step sizes, together
+with integration-range, angular-truncation and external-table checks.
+
+The two-point Fourier transform also needs refinement. Its oscillating
+Bessel functions are not resolved merely because the input power spectrum
+is smooth. `tests/studies/xi_refinement.py` changes ell and within-bin angular
+quadratures and support separately. The Python fixed Gauss-Legendre rule
+uses SciPy's tridiagonal root preparation, avoiding a dense count-by-count
+companion matrix at large orders. This is a fixed quadrature, not adaptive
+integration. Numerical rule checks and physical integral convergence are
+different tests.
+
+## Source support before a new Fisher baseline
+
+The configured source FITS is part of the physical target. The Y3 final
+midpoint feature can be missed by the old coarse background grid. An
+independent `source_nz` separates source resolution from CAMB redshifts.
+`source_boost`, `kernel_boost` and `chi_boost` test source sampling,
+prepared windows and radial quadrature separately.
+
+The explicit `pchip_midpoint` choice has two endpoint policies. The
+`zero_at_measured_edges` policy preserves supplied `Z_LOW/Z_HIGH`, takes
+their outer support intersected with nonnegative redshift, and adds a zero
+plateau to the larger background limit. The
+`zero_at_observer_and_background_edge` alternative changes the curve all
+the way to that limit. Neither is an implicit histogram-cell probability
+reconstruction. Record original edges, the selected FITS hash, the SciPy
+version, and unshifted support before comparing photo-z derivatives.
+
+The linear midpoint curve can jump to zero at a nonzero endpoint. Products
+of differently shifted source curves can then have overlap boundaries
+that create a deterministic cusp. A nonzero fourth difference is not
+automatically random numerical noise. The project's
+`tests/studies/source_policy_convergence.py` compares saved full joint
+means, one-sided slopes and three derivative step sizes without new CAMB
+solves. Its sampled IA-kernel minima do not prove continuous positivity.
+Use that evidence to distinguish a reconstruction assumption from refinement
+of one fixed physical target before recomputing a full Fisher base.
+
+## Observed inputs and inference examples
+
+The pinned integrator repository contains real unblinded Y3 measurements in
+addition to its simulated analysis inputs. The project's separate
+`data/y3_observed_manifest.json` records the matched observed two-point and
+aperture files, joint covariance, upstream INI files and Git blob hashes.
+`scripts/fetch_y3_observed.py` verifies those identities. Do not describe the
+twelve-file simulation selection as proof that observed data are unavailable.
+The observational companion, arXiv:2508.14018, is distinct from the simulation
+methods paper arXiv:2503.03964.
+
+The matched row definitions contain 400 xi and 80 Map3 entries. Their source
+columns match the selected simulated reference, including twelve negative
+samples in the first bin. The explicitly authorized demonstration processing
+clips and normalizes a derived file with a separate record; it is not an
+official recalibration. Use the separately paired joint covariance. Extra
+headers in the observed two-point file's own covariance do not define a
+joint matrix with the aperture vector.
+
+`python/des3pcf/likelihood.py` selects matching data/mean rows and both
+covariance axes before a Cholesky factorization. It includes the Gaussian
+normalization and no prior penalties. The inference YAML supplies normalized
+priors to Nautilus once. A synthetic example generates its data with the exact
+declared fiducial model; it does not relabel a different public simulated
+mean as its own prediction. An observed example remains a declared Gaussian
+demonstration until estimator, cuts, compression and finite-mock likelihood
+choices match the publication. A retained checkpoint requires verified target
+identity before resuming.
+
+## Distinguish the precision-expansion simulation designs
+
+The project `precision.py` exposes three statistical constructions. The
+full-covariance Wishart estimator requires independent Gaussian summary
+vectors with an unbiased sample covariance. The known-component estimator
+uses C=A+B and M=A+Bm, where simulations measure B with the A-generating
+random contribution absent. Its quadratic correction must act on Bhat, not
+on A+Bhat: adding a deterministic A does not produce a Wishart full sample.
+The independent-group construction uses two independent unbiased covariance
+estimates to remove the Gaussian assumption from the quadratic product's
+expectation. None of these removes Taylor truncation error.
+
+For Map3, shape-noise covariance includes mixed signal/noise terms. A diagonal
+white-noise matrix or a two-point block is not automatically a valid known
+component A. Check the same estimator, mask, row order and cross covariance,
+and establish the simulation decomposition. Independent parent skies must
+not be counted as independent patches merely because many patch vectors were
+stored. The PME notebook uses controlled Gaussian vectors with a known true
+covariance to teach these requirements; it does not manufacture DES mock
+catalogues or claim a calibrated survey correction. Report nonpositive
+precision estimates without eigenvalue repair or a pseudoinverse.

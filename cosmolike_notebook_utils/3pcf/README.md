@@ -10,6 +10,7 @@
 6. [Covariance blocks and parameter errors](#covariance)
 7. [Style, errors, and reproducible figure files](#style)
 8. [Relationship to Rafael's figures and original code](#sources)
+9. [Reading Fisher accuracy diagnostics](#fisher-accuracy)
 
 <a name="loading"></a>
 
@@ -386,3 +387,50 @@ also follow this repository's existing
 upstream scientific kernel; the original-code comparison belongs to the
 [DES three-point project](../../../../../projects/des_3pcf/README.md), with its
 pinned source and input records.
+
+<a name="fisher-accuracy"></a>
+
+## 9. Reading Fisher accuracy diagnostics
+
+The separate `fisher_accuracy` module draws saved numerical checks. Load
+it through the same explicit import mechanism:
+
+```python
+accuracy_plots = importlib.import_module(
+    "cosmolike_notebook_utils.3pcf.fisher_accuracy"
+)
+```
+
+A Fisher calculation uses derivatives of every observable with respect
+to the model parameters. A small error in a mean can become a large error
+in a derivative because a finite difference divides by a small parameter
+step. Apparent extra information can then be a numerical artifact. The
+project starts from one full derivative calculation and uses selected
+columns to screen numerical settings before paying for another full one.
+The plotting functions keep those different checks separately labeled.
+
+| Function | Supplied arrays and interpretation |
+|---|---|
+| `plot_noise_contributions` | One measured baseline contribution per parameter and a Boolean selection mask; heights show percentage shares of their sum |
+| `plot_accuracy_screen` | Two ratios per setting: diagonal-noise expectation relative to the baseline expectation, and FoM after replacing only selected derivative columns |
+| `plot_full_checks` | FoMs from complete derivative recalculations at h and h/2, divided by the same fixed baseline FoM |
+| `plot_xi_preflight` | Covariance-weighted differences of fiducial xi vectors under changed quadrature settings |
+
+The ratio figures display `100*(ratio-1)`. Their horizontal zero line means
+agreement with the stated baseline; it is not a chosen scientific tolerance.
+An unavailable or rank-unresolved ratio remains a gap. Exact-zero xi
+differences are reported and omitted from the logarithmic plot rather than
+replaced by an arbitrary positive floor. Invalid numerical input prints a
+named message and returns zero. As for the other plotting families,
+`show=None` returns the figure and axes without saving or displaying them.
+
+The noise estimate assumes approximately independent evaluation errors.
+Interpolation kinks and coherent derivative changes need different checks.
+A small omitted-column share at the baseline does not bound that column's
+error at a new setting, and replacing selected columns does not calculate
+a full finer-grid Fisher matrix. The
+[project accuracy notebook](../../../../../projects/des_3pcf/EXAMPLE_FISHER_ACCURACY.ipynb)
+reads those distinctions from saved results; the
+[accuracy guide](../../../../../projects/des_3pcf/ACCURACY.md)
+explains the estimator and its assumptions. None of these plotters imports
+a compiled physical model or estimates an unmeasured FoM.
