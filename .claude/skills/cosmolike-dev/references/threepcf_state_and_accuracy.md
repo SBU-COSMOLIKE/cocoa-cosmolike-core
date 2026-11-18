@@ -151,6 +151,24 @@ extra retained order, then requires the existing coefficients to keep
 their float64 bits. The test holds the physical grid and weights fixed;
 changing a quadrature resolution would not justify that exact comparison.
 
+The physical projection has the same requirement. Its paired source triplets,
+Legendre orders, NLA power reads and aperture filters must agree with their
+unpaired tails. `test_physics_lane_invariance.py` moves existing outputs between
+those positions with the physical nodes and weights held fixed. A mixed pair
+with one extrapolated coordinate must preserve the valid coordinate's prepared
+linear interpolation. For a final unpaired NLA coordinate, duplicate its
+prepared cell and fraction into both SIMD lanes and retain the first result;
+this reuses both the interpolation and accumulation operations. These tests
+exercise both adapters and both power-reader conventions.
+
+Skip a prepared covariance table only after tracing every consumer. In the
+large-area branch, quadratic halo responses use their direct Fourier dot
+product; displaced shear profiles and finite-window response transforms have
+no reader. The cubic halo response and PT term still need radial profiles.
+The real-space bispectrum table is used only by finite-window BB. Preserve
+those distinctions when reducing work, and compare all six terms separately
+across both window branches, mixed rows and quadratic-only rows.
+
 Read [NUMERICS.md](../../../../cosmolike/3pcf/NUMERICS.md) for the production
 cubic-preparation/linear-read strategy and
 [COVARIANCE.md](../../../../cosmolike/3pcf/COVARIANCE.md) for the physical scope.

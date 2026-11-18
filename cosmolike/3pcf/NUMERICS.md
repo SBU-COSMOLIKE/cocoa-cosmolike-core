@@ -177,6 +177,14 @@ extra query or Legendre order moves it between those paths. The covariance
 checks similarly add zero-weight nodes that change lane placement without
 changing the mathematical integral.
 
+The same condition applies to physical triplet batches, direct angular
+multipoles, NLA power reads and aperture-filter batches. An additional output
+can move the previous final scalar output into a paired lane. Its physical
+weights have not changed, so its arithmetic should not change either. The
+unpaired NLA read uses a duplicated prepared coordinate in the two-lane
+reader, retaining the first result. The mixed interpolation/extrapolation
+branch also keeps the valid lane's original rounding boundaries.
+
 FFTW uses the plans prepared for the outer calculation. Independent
 angular modes can run on separate OpenMP workers, each with private
 Fourier scratch. Starting an additional FFT thread team inside each such

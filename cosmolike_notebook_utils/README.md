@@ -8,7 +8,8 @@
 6. [CAMB input and Fisher forecasts](#fisher)
 7. [Units and array conventions](#units)
 8. [The covariance subpackage](#covariance)
-9. [Appendix](#appendix)
+9. [Three-point figures](#threepcf)
+10. [Appendix](#appendix)
    1. [How do I plot a quantity for a new probe?](#new_probe)
    2. [Why do the Fisher helpers take my function as an argument?](#why_dv)
    3. [Why is one panel empty and marked "excluded"?](#excluded)
@@ -107,6 +108,7 @@ flowchart TB
 | [plot_nz_reconstruction.py](plot_nz_reconstruction.py) | `plot_nz_four_reconstructions`: regenerate the manual study’s two-panel figure from saved compiled-reader samples and bin-area measurements; no cosmology calculation. |
 | [plot_covariances.py](plot_covariances.py) | Covariance figures from supplied arrays: split correlation triangles, component maps and histograms, and standard deviations per angular or multipole bin. |
 | [covariance/](covariance/README.md) | Preparation and assembly of Gaussian, super-sample and connected non-Gaussian covariance forecasts, with accuracy controls, eigenvalue diagnostics and independent test oracles. |
+| [3pcf/](3pcf/README.md) | Three-point shear, aperture and joint covariance figures from supplied arrays, with the component conventions and interpretation of the paper comparisons. |
 
 Each module's docstrings carry the complete argument lists, shapes and
 units; `help(cnu.plot_xi)` in a notebook prints them.
@@ -313,6 +315,28 @@ likelihood covariance never requires it.
 matrices: split correlation triangles comparing two matrices, G/SSC/cNG
 component maps and histograms, and per-bin standard deviations. It
 receives arrays only; every mask it applies is display-only.
+
+# Three-point figures <a name="threepcf"></a>
+
+The [three-point plotting guide](3pcf/README.md) connects natural shear
+components, aperture moments and covariance blocks to the observables in
+the papers by Gomes and collaborators. The plotting functions receive
+calculated arrays; they do not import a compiled project interface or
+choose a physical model. The [three-point physics guide](../cosmolike/3pcf/README.md)
+defines the shear rotations, source labels and finite-triangle estimator.
+
+**Step :one:**: import the plotting module in a configured Cocoa notebook.
+
+```python
+import importlib
+
+threepcf_plots = importlib.import_module("cosmolike_notebook_utils.3pcf")
+```
+
+The directory name starts with a digit, which Python cannot place directly
+after `import`. Passing the module name as a string preserves the requested
+folder name. This explicit import leaves the package's ordinary notebook
+imports unchanged. Examples and input shapes are in the linked guide.
 
 # Appendix <a name="appendix"></a>
 

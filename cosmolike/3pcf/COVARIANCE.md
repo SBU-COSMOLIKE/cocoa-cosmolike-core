@@ -418,6 +418,36 @@ Unequal-radius aperture pairs retain their ordered Fourier-leg assignment.
 A request with no cubic rows skips bispectrum and aperture-partition tables
 while retaining the full selected Gaussian and halo two-point terms.
 
+The large-area halo route also omits displaced xi profiles and their
+spline readers. A quadratic estimator's zero-mode halo response is already
+the direct integral of its binned Fourier kernel against the squared NFW
+profile. Computing that same response through displaced real-space shears
+would add an unused quadrature and interpolation. This omission retains the
+existing Fourier sum, including its node order. Cubic responses still
+integrate products of filtered radial profiles, and the $`P\times T`$
+term still transforms the required profile pairs. The finite survey
+window in the halo-abundance response is retained in both routes.
+
+Transforms of a halo response onto the window multipoles are prepared only
+for the finite-window route, where they enter the connected term and the
+internal $`P\times T`$ partitions. They are absent in the large-area route,
+whose connected term uses $`H_IH_J/A`$ directly. A purely quadratic,
+large-area request consequently needs neither the halo-offset Bessel
+tables nor the shear-profile interpolation arrays. Changing those unused
+profile and offset settings must leave its output bitwise unchanged;
+changing the window multipoles may still change its abundance response.
+These omissions do not select a new physical approximation: they remove
+calculations whose values do not enter the already chosen large-area
+operator.
+
+The same consumer check applies to the filtered three-field correlation
+$`B_{ab|c}(r)`$. Its real-space table is needed by finite-window $`BB`$.
+Large-area $`BB`$ contracts the existing Fourier $`S_{ab|c}(\ell)`$ tables
+directly and never reads $`B_{ab|c}(r)`$. Omitting that unused transform
+saves $`n_{\rm field}^3n_r`$ stored doubles and its
+$`n_{\rm field}^3n_rn_\ell`$ node contractions. These are operation and
+storage counts for this stage, not total runtime estimates.
+
 Halo nodes are visited in a fixed order. Output rows, distinct profile
 shapes and upper-triangle cells have exclusive worker ownership. The
 ordered dot products, xi spectrum contraction and displaced-endpoint reads

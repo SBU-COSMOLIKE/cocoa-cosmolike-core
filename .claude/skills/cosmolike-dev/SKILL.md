@@ -135,6 +135,10 @@ For numerical controls, cache invalidation or notebook reuse, also read
 `references/threepcf_state_and_accuracy.md`: it maps allocation sizes,
 refill values and reset behavior onto the model/plan owners, documents the
 global and stage-specific boosts, and names the fresh-process state tests.
+For shared plots, original-source comparisons or DES Fisher notebooks, read
+`references/threepcf_notebooks.md`: it separates array presentation from
+physical calculations, specifies BLAS/OpenMP ownership, and identifies the
+survey and estimator assumptions a comparison must retain.
 Preserve the distinction between upstream finite-operator comparisons,
 independent physical references and survey-level reproduction claims.
 

@@ -2011,12 +2011,16 @@ void physics_projected_batch_3pcf(
     if (triplet < nprojection) {
       const double* restrict weights = projections[triplet]->weights;
       if (component != 2) {
-        out[triplet] += weights[node]*baseline;
+        // Match the vector lane's rounded product before accumulation.
+        // Adding another triplet must not change this triplet's value.
+        volatile double term = weights[node]*baseline;
+        out[triplet] += term;
       }
       if (component != 1) {
         for (int term=0; term<7; term++) {
-          out[triplet] += weights[(size_t)(term + 1)*count + node]
-            *intrinsic[term];
+          volatile double contribution =
+            weights[(size_t)(term + 1)*count + node]*intrinsic[term];
+          out[triplet] += contribution;
         }
       }
     }
@@ -2160,7 +2164,11 @@ void physics_multipoles_3pcf(
         if (order <= lmax) {
           double sum = 0.0;
           for (int node=0; node<nmu; node++) {
-            sum += legendre[(size_t)order*nmu + node]*values[node];
+            // The same L keeps its bits when a higher requested order
+            // moves this scalar tail into a two-lane accumulation.
+            volatile double term =
+              legendre[(size_t)order*nmu + node]*values[node];
+            sum += term;
           }
           output[(size_t)order*nell*nell] = sum;
         }
@@ -2235,11 +2243,21 @@ static physics_v2d nla_power_pair(
       } else {
         const int index = indices[lane];
         const double fraction = fractions[lane];
-        const double first = row->lower->y[index]
-          + fraction*(row->lower->y[index + 1] - row->lower->y[index]);
-        const double second = row->upper->y[index]
-          + fraction*(row->upper->y[index + 1] - row->upper->y[index]);
-        values[lane] = exp(first + row->fraction*(second - first));
+        // The other lane's extrapolation must not alter this valid
+        // cell's interpolation. Round the same subtraction, product
+        // and addition as the vector reader below, without scalar FMA.
+        volatile double lower_delta = row->lower->y[index + 1]
+          - row->lower->y[index];
+        volatile double upper_delta = row->upper->y[index + 1]
+          - row->upper->y[index];
+        volatile double lower_term = fraction*lower_delta;
+        volatile double upper_term = fraction*upper_delta;
+        volatile double first = row->lower->y[index] + lower_term;
+        volatile double second = row->upper->y[index] + upper_term;
+        volatile double redshift_delta = second - first;
+        volatile double redshift_term = row->fraction*redshift_delta;
+        volatile double logarithm = first + redshift_term;
+        values[lane] = exp(logarithm);
       }
     }
     // The first argument goes in the high lane (ell index + 1).
@@ -2363,13 +2381,24 @@ void physics_nla_power_batch_3pcf(
     }
     if (length%2 != 0) {
       const int index = length - 1;
-      double sum = 0.0;
+      // Duplicate the final coordinate into both lanes. Reusing the
+      // prepared reader preserves its interpolation arithmetic as well
+      // as its radial sum; a separate scalar spline read would differ.
+      physics_v2d sum = simde_mm_setzero_pd();
       for (int node=0; node<count; node++) {
-        sum += radial_weight[node]*read_power_row_log(
-          model->los_power + (size_t)2*count + node,
-          logell[start + index] - logchi[node]);
+        const size_t cell = (size_t)node*capacity + index;
+        const int pair_indices[2] = {indices[cell], indices[cell]};
+        const double pair_fractions[2] = {fractions[cell], fractions[cell]};
+        const physics_power_row* row = model->los_power + (size_t)2*count
+          + node;
+        const physics_v2d power = nla_power_pair(row, pair_indices,
+          pair_fractions);
+        const physics_v2d weight = simde_mm_set1_pd(radial_weight[node]);
+        sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, power));
       }
-      out[start + index] = sum;
+      double result[2];
+      simde_mm_storeu_pd(result, sum);
+      out[start + index] = result[0];
     }
   }
   free(indices);
@@ -2544,7 +2573,10 @@ void physics_aperture_integrate_3pcf(
             *table[((size_t)filter*2 + 1)*nell + second]
             *aperture_filter_physics(closure[offset],
               filters[(size_t)3*filter + 2]);
-          sum += values[offset]*weight;
+          // Retain the vector path's product/addition rounding when
+          // this is the last unpaired filter in the request.
+          volatile double term = values[offset]*weight;
+          sum += term;
         }
         output[0] = sum;
       }

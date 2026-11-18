@@ -1,0 +1,27 @@
+{
+  "figures": [
+    {
+      "file": "map3_absolute.png",
+      "title": "Public simulated Y3 aperture moment",
+      "source": "Pinned public simulated Y3 Map3 input; no C prediction."
+    },
+    {
+      "file": "ia_residual_scaled.png",
+      "title": "Original nonlinear minus linear IA choice: scaled",
+      "source": "Saved original fastnc 7b2336 IA kernels on six declared test triangles; linear versus nonlinear P(k,0)D(z)^2 is a physical input choice. SHA256 of saved record: cad94e4f8e79ad03af93f957fd2b1beb73d97edeb20e34edbebcc6f29d8ef00e"
+    },
+    {
+      "file": "gamma_map_imag.png",
+      "title": "Analytic Gaussian shear: imag component1",
+      "source": "Exact Cartesian Gaussian moments for B=(ell1 ell2 ell3)^2 exp[-a sum ell_i^2]; a=0.5 or0.7 arcmin^2; no DES model or C calls."
+    },
+    {
+      "file": "correlation.png",
+      "title": "Public joint Y3 correlation matrix",
+      "source": "Pinned public joint Y3 sample covariance; no new analytic covariance."
+    }
+  ],
+  "renderer": "../tests/render_examples.py",
+  "blas_threads": 1,
+  "omp_threads": 1
+}

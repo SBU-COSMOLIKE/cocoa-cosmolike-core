@@ -500,9 +500,10 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     work->bspec = covariance_allocate_3pcf(covariance_product_3pcf(
       field_pairs, covariance_product_3pcf(ns, nl)),
       sizeof(double));
-    work->breal = covariance_allocate_3pcf(covariance_product_3pcf(
-      field_pairs, covariance_product_3pcf(nf, nr)),
-      sizeof(double));
+    if (!in->large_area) {
+      work->breal = covariance_allocate_3pcf(covariance_product_3pcf(
+        field_pairs, covariance_product_3pcf(nf, nr)), sizeof(double));
+    }
     work->pair = covariance_allocate_3pcf(
       covariance_product_3pcf(field_pairs, nr), sizeof(double));
     work->pair_zero = covariance_allocate_3pcf(field_pairs, sizeof(double));
@@ -548,14 +549,18 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     }
   }
   const size_t radial_fourier = covariance_product_3pcf(nr, nl);
-  work->j0_radial = covariance_allocate_3pcf(radial_fourier, sizeof(double));
-  work->j0_fourier = covariance_allocate_3pcf(radial_fourier, sizeof(double));
-  work->j0_window = covariance_allocate_3pcf(
-    covariance_product_3pcf(in->nwindow, nr),
-    sizeof(double));
-  work->j2_profile = covariance_allocate_3pcf(
-    covariance_product_3pcf(in->nprofile, nl),
-    sizeof(double));
+  if (work->has_cubic || !in->large_area) {
+    work->j0_radial = covariance_allocate_3pcf(radial_fourier,
+      sizeof(double));
+    work->j0_fourier = covariance_allocate_3pcf(radial_fourier,
+      sizeof(double));
+  }
+  if (!in->large_area) {
+    work->j0_window = covariance_allocate_3pcf(
+      covariance_product_3pcf(in->nwindow, nr), sizeof(double));
+    work->j2_profile = covariance_allocate_3pcf(
+      covariance_product_3pcf(in->nprofile, nl), sizeof(double));
+  }
   work->quadratic_zero = covariance_allocate_3pcf(
     covariance_product_3pcf(in->nrow, nl),
     sizeof(double));
@@ -566,20 +571,26 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   // The duplicated small matrix avoids a strided read in either direction.
   for (int r=0; r<nr; r++) {
     work->radial_volume[r] = 2.0*COV_PI*in->radius[r]*in->dr[r];
-    for (int l=0; l<nl; l++) {
-      const double value = gsl_sf_bessel_J0(in->ell[l]*in->radius[r]);
-      work->j0_radial[(size_t)r*nl + l] = value;
-      work->j0_fourier[(size_t)l*nr + r] = value;
+    if (work->has_cubic || !in->large_area) {
+      for (int l=0; l<nl; l++) {
+        const double value = gsl_sf_bessel_J0(in->ell[l]*in->radius[r]);
+        work->j0_radial[(size_t)r*nl + l] = value;
+        work->j0_fourier[(size_t)l*nr + r] = value;
+      }
     }
-    for (int q=0; q<in->nwindow; q++) {
-      work->j0_window[(size_t)q*nr + r] =
-        gsl_sf_bessel_J0(in->window_ell[q]*in->radius[r]);
+    if (!in->large_area) {
+      for (int q=0; q<in->nwindow; q++) {
+        work->j0_window[(size_t)q*nr + r] =
+          gsl_sf_bessel_J0(in->window_ell[q]*in->radius[r]);
+      }
     }
   }
-  for (int r=0; r<in->nprofile; r++) {
-    for (int l=0; l<nl; l++) {
-      work->j2_profile[(size_t)r*nl + l] =
-        gsl_sf_bessel_Jn(2, in->ell[l]*in->profile_radius[r]);
+  if (!in->large_area) {
+    for (int r=0; r<in->nprofile; r++) {
+      for (int l=0; l<nl; l++) {
+        work->j2_profile[(size_t)r*nl + l] =
+          gsl_sf_bessel_Jn(2, in->ell[l]*in->profile_radius[r]);
+      }
     }
   }
   for (int row=0; row<in->nrow; row++) {
@@ -821,17 +832,21 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
         }
         work->pair_window[pair*nl + l] = value*work->fourier_measure[l];
       }
-      for (int c=0; c<nf; c++) {
-        const int sc = in->field_source[c];
-        for (int r=0; r<nr; r++) {
-          double value = 0.0;
-          for (int l=0; l<nl; l++) {
-            value += work->fourier_measure[l]
-              *work->filters[(size_t)c*nl + l]
-              *work->bspec[covariance_bspec_3pcf(work, a, b, sc, l)]
-              *work->j0_radial[(size_t)r*nl + l];
+      // Finite-window BB reads B_ab|c(r). Its large-area expression
+      // contracts S_ab|c(ell) directly, so no real-space B table enters.
+      if (!in->large_area) {
+        for (int c=0; c<nf; c++) {
+          const int sc = in->field_source[c];
+          for (int r=0; r<nr; r++) {
+            double value = 0.0;
+            for (int l=0; l<nl; l++) {
+              value += work->fourier_measure[l]
+                *work->filters[(size_t)c*nl + l]
+                *work->bspec[covariance_bspec_3pcf(work, a, b, sc, l)]
+                *work->j0_radial[(size_t)r*nl + l];
+            }
+            work->breal[covariance_breal_3pcf(in, a, b, c, r)] = value;
           }
-          work->breal[covariance_breal_3pcf(in, a, b, c, r)] = value;
         }
       }
     }
@@ -1224,6 +1239,7 @@ static void covariance_halo_terms_3pcf(
   const int no = in->nrow;
   const int nw = in->nwindow;
   const int nm = in->nmass;
+  const int need_profiles = work->has_cubic || !in->large_area;
   const size_t matrix = covariance_product_3pcf(no, no);
   const size_t nodes = covariance_product_3pcf(work->nz, nm);
   const double rho = 2.77536627e11*physics_omega_m_3pcf(work->model);
@@ -1271,7 +1287,8 @@ static void covariance_halo_terms_3pcf(
     if (kind <= 1) {
       for (int a=0; a<nleg; a++) {
         radii[a] = radius_index[fields[a]];
-        radius_needed[radii[a]] = 1;
+        radius_needed[radii[a]] = radius_needed[radii[a]]
+          || kind == 1 || !in->large_area;
       }
       for (int a=0; a<nleg; a++) {
         for (int b=a + 1; b<nleg; b++) {
@@ -1323,51 +1340,58 @@ static void covariance_halo_terms_3pcf(
     row_shape[row] = s;
   }
   covariance_profile_plan_3pcf profile_plan;
-  covariance_profile_plan_3pcf_prepare(in, nshape, representative, xi_shape,
-    nxi, &profile_plan);
+  memset(&profile_plan, 0, sizeof(profile_plan));
+  if (!in->large_area) {
+    covariance_profile_plan_3pcf_prepare(in, nshape, representative,
+      xi_shape, nxi, &profile_plan);
+  }
+  // Large-area connected terms use only each estimator's zero-mode
+  // response H. Quadratic H has a direct Fourier expression below, so
+  // no displaced xi profiles or profile interpolation enter that branch.
+  // Cubic H and P*T still need aperture profiles and their pair products.
+  // A finite center window additionally needs every response at window q.
   const size_t radius_fourier = covariance_product_3pcf(nrad, nl);
-  double* unique_filter = covariance_allocate_3pcf(radius_fourier,
-    sizeof(double));
-  double* window_filter = covariance_allocate_3pcf(
-    covariance_product_3pcf(nrad, nw),
-    sizeof(double));
+  double* unique_filter = need_profiles
+    ? covariance_allocate_3pcf(radius_fourier, sizeof(double)) : NULL;
+  double* window_filter = !in->large_area ? covariance_allocate_3pcf(
+    covariance_product_3pcf(nrad, nw), sizeof(double)) : NULL;
   for (int a=0; a<nrad; a++) {
-    for (int l=0; l<nl; l++) {
-      unique_filter[(size_t)a*nl + l] =
-        covariance_filter_3pcf(in->ell[l], unique_radius[a]);
+    if (need_profiles) {
+      for (int l=0; l<nl; l++) {
+        unique_filter[(size_t)a*nl + l] =
+          covariance_filter_3pcf(in->ell[l], unique_radius[a]);
+      }
     }
-    for (int q=0; q<nw; q++) {
-      window_filter[(size_t)a*nw + q] =
-        covariance_filter_3pcf(in->window_ell[q], unique_radius[a]);
+    if (!in->large_area) {
+      for (int q=0; q<nw; q++) {
+        window_filter[(size_t)a*nw + q] =
+          covariance_filter_3pcf(in->window_ell[q], unique_radius[a]);
+      }
     }
   }
 
-  double* profile_fourier = covariance_allocate_3pcf(radius_fourier,
-    sizeof(double));
-  double* profile_real = covariance_allocate_3pcf(
-    covariance_product_3pcf(nrad, nr),
-    sizeof(double));
-  double* profile_window = covariance_allocate_3pcf(
-    covariance_product_3pcf(nf, nw),
-    sizeof(double));
-  double* shear = covariance_allocate_3pcf(in->nprofile, sizeof(double));
+  double* profile_fourier = need_profiles
+    ? covariance_allocate_3pcf(radius_fourier, sizeof(double)) : NULL;
+  double* profile_real = need_profiles ? covariance_allocate_3pcf(
+    covariance_product_3pcf(nrad, nr), sizeof(double)) : NULL;
+  double* profile_window = !in->large_area ? covariance_allocate_3pcf(
+    covariance_product_3pcf(nf, nw), sizeof(double)) : NULL;
+  double* shear = !in->large_area && nxi > 0
+    ? covariance_allocate_3pcf(in->nprofile, sizeof(double)) : NULL;
   double* nfw = covariance_allocate_3pcf(nl, sizeof(double));
   double* nfw_square = covariance_allocate_3pcf(nl, sizeof(double));
-  double* nfw_window = covariance_allocate_3pcf(nw, sizeof(double));
+  double* nfw_window = !in->large_area
+    ? covariance_allocate_3pcf(nw, sizeof(double)) : NULL;
   double* field_lens = covariance_allocate_3pcf(nf, sizeof(double));
   double* row_lens = covariance_allocate_3pcf(no, sizeof(double));
-  double* product_pair = covariance_allocate_3pcf(
-    covariance_product_3pcf(npair, nl),
-    sizeof(double));
-  double* product_real = covariance_allocate_3pcf(
-    covariance_product_3pcf(npair, nr),
-    sizeof(double));
-  double* response_real = covariance_allocate_3pcf(
-    covariance_product_3pcf(nshape, nr),
-    sizeof(double));
-  double* response_fourier = covariance_allocate_3pcf(
-    covariance_product_3pcf(nshape, nw),
-    sizeof(double));
+  double* product_pair = work->has_cubic ? covariance_allocate_3pcf(
+    covariance_product_3pcf(npair, nl), sizeof(double)) : NULL;
+  double* product_real = work->has_cubic ? covariance_allocate_3pcf(
+    covariance_product_3pcf(npair, nr), sizeof(double)) : NULL;
+  double* response_real = need_profiles ? covariance_allocate_3pcf(
+    covariance_product_3pcf(nshape, nr), sizeof(double)) : NULL;
+  double* response_fourier = !in->large_area ? covariance_allocate_3pcf(
+    covariance_product_3pcf(nshape, nw), sizeof(double)) : NULL;
   double* shape_zero = covariance_allocate_3pcf(nshape, sizeof(double));
   double* response_zero = covariance_allocate_3pcf(no, sizeof(double));
   double* window_measure = covariance_allocate_3pcf(nw, sizeof(double));
@@ -1406,11 +1430,14 @@ static void covariance_halo_terms_3pcf(
           r200, work->concentration[node]);
         nfw_square[l] = nfw[l]*nfw[l];
       }
-      for (int q=0; q<nw; q++) {
-        nfw_window[q] = amplitude*covariance_nfw_3pcf(
-          in->window_ell[q]/chi, r200, work->concentration[node]);
+      if (!in->large_area) {
+        for (int q=0; q<nw; q++) {
+          nfw_window[q] = amplitude*covariance_nfw_3pcf(
+            in->window_ell[q]/chi, r200, work->concentration[node]);
+        }
       }
-      #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
+      #pragma omp parallel for \
+        if(need_profiles && !omp_in_parallel()) schedule(static)
       for (int a=0; a<nrad; a++) {
         if (!radius_needed[a]) {
           continue;
@@ -1425,13 +1452,15 @@ static void covariance_halo_terms_3pcf(
             work->j0_radial + (size_t)r*nl);
         }
       }
-      for (int a=0; a<nf; a++) {
-        for (int q=0; q<nw; q++) {
-          profile_window[(size_t)a*nw + q] = field_lens[a]*nfw_window[q]
-            *window_filter[(size_t)radius_index[a]*nw + q];
+      if (!in->large_area) {
+        for (int a=0; a<nf; a++) {
+          for (int q=0; q<nw; q++) {
+            profile_window[(size_t)a*nw + q] = field_lens[a]*nfw_window[q]
+              *window_filter[(size_t)radius_index[a]*nw + q];
+          }
         }
       }
-      if (nxi > 0) {
+      if (nxi > 0 && !in->large_area) {
         #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
         for (int r=0; r<in->nprofile; r++) {
           shear[r] = covariance_dot_3pcf(nl, work->fourier_measure, nfw,
@@ -1444,6 +1473,11 @@ static void covariance_halo_terms_3pcf(
       for (int s=0; s<nshape; s++) {
         const int row = representative[s];
         const int kind = in->row_kind[row];
+        if (in->large_area && kind != 1) {
+          shape_zero[s] = covariance_dot_3pcf(nl, work->fourier_measure,
+            work->quadratic_zero + (size_t)row*nl, nfw_square);
+          continue;
+        }
         for (int r=0; r<nr; r++) {
           double value;
           if (kind <= 1) {
@@ -1471,10 +1505,12 @@ static void covariance_halo_terms_3pcf(
             work->quadratic_zero + (size_t)row*nl, nfw_square);
         }
         shape_zero[s] = zero;
-        for (int q=0; q<nw; q++) {
-          response_fourier[(size_t)s*nw + q] = covariance_dot_3pcf(nr,
-            work->radial_volume, response_real + (size_t)s*nr,
-            work->j0_window + (size_t)q*nr);
+        if (!in->large_area) {
+          for (int q=0; q<nw; q++) {
+            response_fourier[(size_t)s*nw + q] = covariance_dot_3pcf(nr,
+              work->radial_volume, response_real + (size_t)s*nr,
+              work->j0_window + (size_t)q*nr);
+          }
         }
       }
       for (int row=0; row<no; row++) {
@@ -1487,7 +1523,8 @@ static void covariance_halo_terms_3pcf(
       // one-halo four-field function. One unordered radius pair supplies
       // every source pair with those radii; W factors are attached below.
       // Skip pairs absent from the requested cubic rows.
-      #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
+      #pragma omp parallel for \
+        if(work->has_cubic && !omp_in_parallel()) schedule(static)
       for (int a=0; a<nrad; a++) {
         for (int b=a; b<nrad; b++) {
           const size_t pair = covariance_radius_pair_3pcf(nrad, a, b);

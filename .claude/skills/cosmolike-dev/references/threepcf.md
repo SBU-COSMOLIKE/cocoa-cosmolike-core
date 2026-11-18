@@ -1,6 +1,6 @@
 # Three-point predictions and covariance
 
-The numerical port lives in `cosmolike/3pcf/`. It now predicts the physical
+The numerical port lives in `cosmolike/3pcf/`. It predicts the physical
 three-point mean and a specified joint two-/three-point covariance. The
 companion Cocoa project owns survey input, optional CAMB preparation and
 Fisher orchestration. Existing two-point C files are unchanged. This is an
@@ -12,6 +12,10 @@ For cache changes, accuracy controls or notebook reuse, read
 [state and resolution](threepcf_state_and_accuracy.md). It maps the ordinary
 core's allocation/refill/reset rules onto the isolated owners and identifies
 the fresh-process setting-sequence tests, including the outer Fisher cache.
+For plotting, original-code comparisons and YAML-driven forecasts, read
+[notebook workflows](threepcf_notebooks.md). Shared plotters belong in
+`cosmolike_notebook_utils/3pcf/`; physical and survey choices stay with the
+core calculation and companion project, respectively.
 
 The [archived study](threepcf_study/index.md) contains 24 chapters and an
 index, with mathematical derivations, pinned source comparisons and proposed
