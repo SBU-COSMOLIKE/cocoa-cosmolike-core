@@ -417,6 +417,35 @@ demonstration until estimator, cuts, compression and finite-mock likelihood
 choices match the publication. A retained checkpoint requires verified target
 identity before resuming.
 
+The optional project `compression.py` owns a fixed matrix and exact input
+labels. Selection precedes T; data and every mean use T, and covariance
+uses T C T^T including cross terms. `conditional_xi` uses the Schur
+covariance S=Cxx-Cxz Czz^-1 Czx and derivative J=Dx-Cxz Czz^-1 Dz,
+then retains the whitened response span while keeping all Map3 rows.
+Ordinary `xi_moped` can lose joint information even when it preserves xi
+alone. `joint` compresses both probes. Preserve numerical rank under
+parameter-unit changes by max-scaling columns before Euclidean norms.
+Saved metadata names training parameters, fiducial and input identity;
+adding an untrained nuisance parameter loses the preservation guarantee.
+
+`EXAMPLE_COMPRESSION.ipynb` teaches these alternatives with historical
+saved derivatives, not a current physical-accuracy claim. The Gaussian
+local Fisher identity does not preserve nonlinear posteriors or absolute
+goodness of fit. The independent diagonal teaching pilot is distinct from
+the sample-covariance-trained demonstration; only the former has the
+declared independence needed by `EXAMPLE_NAUTILUS4.yaml`.
+
+`FiniteSimulationLikelihood` uses Percival arXiv:2108.10402 equations
+52,54,55 with raw unbiased sample S and no Hartlap factor. Require named
+Gaussian-mock, independent-mock/data, and, when relevant, independent-basis
+assumptions. Nd is the final statistic dimension and Np counts varied
+continuous mean parameters including nuisance parameters. Require Ns>Nd+4
+and m>Nd for the normalized data density; do not silently compress to
+achieve either. Recomputing m after compression defines a different
+analysis, not the marginal of the original t density. PME or analytical
+covariances cannot be described as sample S. The 796-footprint count does
+not establish independence when four footprints share a sky.
+
 ## Match the estimator before claiming a paper reproduction
 
 The project's `tests/studies/estimator_conventions.md` distinguishes the
@@ -428,6 +457,29 @@ to the area-weighted representative side; a geometric midpoint does not
 reproduce that convention. The 63-angle description in the paper and the
 100-angle active pinned configuration remain different choices. State
 each one rather than infer it from the 80 packed aperture labels.
+
+`Map3Engine.side_keep` masks both side axes of the aperture weights while
+retaining the original FFT grid. `side_min_arcmin` in the driver uses
+lower_edge>=minimum; 0.5–80 in 20 logarithmic bins with minimum 8 keeps
+indices 11..19. `representative_rule` chooses geometric or area-weighted
+sides. `representative_offset` adds to the dimensionless side factor,
+not to an angle; -0.015226 is the archived Y3 empirical value for its
+original radial width. Representatives must remain inside their bins.
+The same representative enters kernel geometry and radial measure.
+These settings are immutable for an engine and resolved into run metadata.
+The archived-geometry example includes the pinned scalar HEALPix window:
+TEMPERATURE column, nside=1024, ell=0..3071, linear reads, zero above.
+`pixel_window.py` reads the verified local FITS, never downloads at runtime.
+Models and prepared grids own independent samples. W3 is inside the mu
+integral; W1W2 multiply after b_L interpolation, preserving exact support.
+Cached query geometry owns ell but never W or physical b_L, so a reused
+transform reads each replacement grid. Raw B/projected queries and xi
+remain unsmoothed. The native analytic covariance refuses smoothed models.
+The independent direct and piecewise-linear prepared angular oracles,
+constant-factor full-filter checks and retained-plan A/B/A sequence test
+these distinctions. A sharp W3 cutoff still requires survey convergence.
+Neither the scalar convention nor matching aperture labels establishes
+catalogue weighting, retained-bin selection or smoothing agreement.
 
 The project's `ia_figure9_workflows` holds configured inputs fixed and supplies
 a common no-IA mean plus opposite-sign NLA and TATT means. Its finite

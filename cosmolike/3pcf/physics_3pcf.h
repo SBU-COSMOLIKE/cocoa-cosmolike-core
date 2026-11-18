@@ -45,6 +45,8 @@ typedef struct {
   int nsource;
   const double* source_z;
   const feedback_input_3pcf* feedback; // optional paired response; copied
+  int nwindow; // zero disables the angular pixel window
+  const double* window; // W(ell) at integers 0..nwindow-1; copied
 } physics_input_3pcf;
 
 typedef struct {
@@ -80,6 +82,15 @@ physics_model_3pcf* physics_create_3pcf(
 );
 void physics_destroy_3pcf(physics_model_3pcf* model);
 void physics_default_ia_3pcf(physics_ia_3pcf* parameters);
+
+// Angular smoothing is applied to observables, never to logged matter
+// interpolation tables. Integer ell samples use linear reads and a zero
+// upper extension, matching the declared archived pixel-window convention.
+double physics_window_value_3pcf(int count, const double* window, double ell);
+const double* physics_window_samples_3pcf(
+  const physics_model_3pcf* model,
+  int* count
+);
 
 double physics_power_3pcf(
   const physics_model_3pcf* model,

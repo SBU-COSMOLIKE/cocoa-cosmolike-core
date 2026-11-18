@@ -70,7 +70,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   int table_boost,
   int fit_nz,
   const arma::Col<double>& source_z = arma::Col<double>(),
-  const physics_feedback_tables_cpp_3pcf* feedback = nullptr
+  const physics_feedback_tables_cpp_3pcf* feedback = nullptr,
+  const arma::Col<double>* pixel_window = nullptr
 );
 
 arma::Mat<double> physics_points_cpp_3pcf(

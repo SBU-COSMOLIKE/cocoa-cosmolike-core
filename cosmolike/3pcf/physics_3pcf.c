@@ -123,6 +123,8 @@ typedef struct {
 
 struct physics_model_3pcf {
   feedback_3pcf* feedback; // immutable paired matter response, NULL for DMO
+  int nwindow;
+  double* window; // owned integer-ell samples; NULL disables smoothing
   int nk;
   int nz;
   int nbin;
@@ -934,6 +936,19 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     && source_z[nsource - 1] <= input->z[input->nz - 1],
     "source grid lies outside the background range");
   physics_model_3pcf* model = allocate_physics(1, sizeof(*model));
+  require_physics(input->nwindow == 0
+    || (input->nwindow >= 2 && input->window != NULL),
+    "pixel window needs at least two integer-ell samples or count zero");
+  model->nwindow = input->nwindow;
+  if (model->nwindow > 0) {
+    model->window = allocate_physics((size_t)model->nwindow, sizeof(double));
+    for (int index=0; index<model->nwindow; index++) {
+      require_physics(isfinite(input->window[index])
+        && input->window[index] >= 0.0,
+        "pixel window samples must be finite and nonnegative");
+      model->window[index] = input->window[index];
+    }
+  }
   model->feedback = feedback_create_3pcf(input->feedback);
   model->nk = input->nk;
   model->nz = input->nz;
@@ -1084,6 +1099,7 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
   free(model->los_bh);
   free(model->los_power);
   feedback_destroy_3pcf(model->feedback);
+  free(model->window);
   free(model);
 }
 
@@ -1096,6 +1112,44 @@ void physics_default_ia_3pcf(physics_ia_3pcf* parameters)
   parameters->c1rho = 0.0134;
   parameters->power_mode = 1;
   parameters->intrinsic_legs = -1;
+}
+
+
+// These reads need no search: array index j represents ell=j. The zero
+// extension above the final sample is deliberate, even when that sample
+// is nonzero. Do not interpolate that boundary into a gradual taper.
+double physics_window_value_3pcf(
+  const int count,
+  const double* window,
+  const double ell
+)
+{
+  if (count == 0) {
+    return 1.0;
+  }
+  if (ell < 0.0) {
+    return 1.0;
+  }
+  if (ell > count - 1) {
+    return 0.0;
+  }
+  if (ell == count - 1) {
+    return window[count - 1];
+  }
+  const int index = (int)ell;
+  const double fraction = ell - index;
+  return (1.0 - fraction)*window[index] + fraction*window[index + 1];
+}
+
+
+const double* physics_window_samples_3pcf(
+  const physics_model_3pcf* model,
+  int* count
+)
+{
+  require_physics(model && count, "missing window model or count output");
+  *count = model->nwindow;
+  return model->window;
 }
 
 
@@ -2485,6 +2539,14 @@ void physics_multipoles_3pcf(
             + 2.0*ell[first]*ell[second]*(1.0 - nodes[node]));
           values[node] = physics_projected_3pcf(projection,
             ell[first], ell[second], third, component);
+          if (model->nwindow > 0) {
+            values[node] *= physics_window_value_3pcf(model->nwindow,
+              model->window, ell[first])
+              *physics_window_value_3pcf(model->nwindow,
+              model->window, ell[second])
+              *physics_window_value_3pcf(model->nwindow,
+              model->window, third);
+          }
         }
         int order = 0;
         for (; order + 1<=lmax; order += 2) {
@@ -2963,7 +3025,15 @@ static double direct_aperture_reader(
   const double ell3
 )
 {
-  return physics_projected_3pcf(context, ell1, ell2, ell3, 0);
+  const physics_projection_3pcf* projection = context;
+  const physics_model_3pcf* model = projection->model;
+  double value = physics_projected_3pcf(context, ell1, ell2, ell3, 0);
+  if (model->nwindow > 0) {
+    value *= physics_window_value_3pcf(model->nwindow, model->window, ell1)
+      *physics_window_value_3pcf(model->nwindow, model->window, ell2)
+      *physics_window_value_3pcf(model->nwindow, model->window, ell3);
+  }
+  return value;
 }
 
 

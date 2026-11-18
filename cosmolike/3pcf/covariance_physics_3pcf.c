@@ -2102,6 +2102,10 @@ void covariance_physical_3pcf(
   double* terms
 )
 {
+  int pixel_count;
+  physics_window_samples_3pcf(model, &pixel_count);
+  covariance_require_3pcf(pixel_count == 0,
+    "pixel-smoothed means require a separately matched covariance");
   covariance_require_3pcf(input->estimator == 0,
     "finite-triangle or catalogue-mask covariance is not this estimator");
   covariance_require_3pcf(input->ia_model == 0,

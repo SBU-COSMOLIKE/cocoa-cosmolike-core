@@ -278,7 +278,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const int table_boost,
   const int fit_nz,
   const py::object& source_z,
-  const py::dict& feedback
+  const py::dict& feedback,
+  const py::object& pixel_window
 )
 {
   shape_physics(k, 1);
@@ -387,6 +388,18 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
     response.clamp = py::cast<int>(feedback["clamp"]);
     input.feedback = &response;
   }
+  physics_array window;
+  if (!pixel_window.is_none()) {
+    require_physics_interface(physics_array::check_(pixel_window),
+      "production pixel window must be a contiguous float64 vector");
+    window = py::reinterpret_borrow<physics_array>(pixel_window);
+    shape_physics(window, 1);
+    require_physics_interface(window.size() >= 2,
+      "pixel window needs at least two integer-ell samples");
+    finite_physics(window);
+    input.nwindow = static_cast<int>(window.size());
+    input.window = window.data();
+  }
   return std::make_shared<physics_owner_3pcf>(input);
 }
 
@@ -412,7 +425,8 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const int table_boost,
   const int fit_nz,
   const py::object& source_z,
-  const py::dict& feedback
+  const py::dict& feedback,
+  const py::object& pixel_window
 )
 {
   const arma::Col<double> wave = copy_column_physics(k);
@@ -454,10 +468,15 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
     response.boost = py::cast<int>(feedback["boost"]);
     response.clamp = py::cast<int>(feedback["clamp"]);
   }
+  arma::Col<double> window;
+  if (!pixel_window.is_none()) {
+    window = copy_column_physics(py::cast<physics_notebook_array>(pixel_window));
+  }
   return physics_model_cpp_3pcf(wave, linear, redshift, nonlinear, distance,
     jacobian, normalized_growth, density, omega_m, omega_de, w0, wa, ns,
     sigma8, los, kernel_nz, source_readers, table_boost, fit_nz, source_axis,
-    feedback.empty() ? nullptr : &response);
+    feedback.empty() ? nullptr : &response,
+    pixel_window.is_none() ? nullptr : &window);
 }
 
 
@@ -814,9 +833,11 @@ void bind_threepcf_physics(py::module_& module)
     std::shared_ptr<physics_grid_owner_3pcf>> grid(module, "ProjectionGrid",
     "Immutable RUV baseline, ordered PUV residual and two-chart b_L tables.");
   grid.def("projected", &projected_grid_physics,
-    py::arg("sides").noconvert(), py::arg("component") = 0);
+    py::arg("sides").noconvert(), py::arg("component") = 0,
+    "Unsmoothed B[point]; configured pixel factors enter angular observables.");
   grid.def("multipoles", &multipoles_grid_physics,
-    py::arg("ell").noconvert(), py::arg("component") = 0);
+    py::arg("ell").noconvert(), py::arg("component") = 0,
+    "b_L[L,ell1,ell2], including all three configured pixel-window factors.");
   grid.def("projected_notebook", [](const physics_grid_owner_3pcf& owner,
       const physics_notebook_array& sides, int component) {
     const arma::Mat<double> triangles = copy_matrix_physics(sides);
@@ -827,7 +848,8 @@ void bind_threepcf_physics(py::module_& module)
       static_cast<size_t>(values.n_elem)*sizeof(double));
     finite_physics(output);
     return output;
-  }, py::arg("sides"), py::arg("component") = 0);
+  }, py::arg("sides"), py::arg("component") = 0,
+    "Unsmoothed B[point], copied through the notebook adapter.");
   grid.def("multipoles_notebook", [](const physics_grid_owner_3pcf& owner,
       const physics_notebook_array& ell, int component) {
     const arma::Col<double> nodes = copy_column_physics(ell);
@@ -846,12 +868,13 @@ void bind_threepcf_physics(py::module_& module)
     }
     finite_physics(output);
     return output;
-  }, py::arg("ell"), py::arg("component") = 0);
+  }, py::arg("ell"), py::arg("component") = 0,
+    "b_L[L,ell1,ell2] including the configured three-leg pixel window.");
   grid.def("aperture_full", &aperture_grid_physics,
     py::arg("ell").noconvert(), py::arg("dell").noconvert(),
     py::arg("phi").noconvert(), py::arg("dphi").noconvert(),
     py::arg("filters").noconvert(),
-    "Full-filter Fourier mean from prepared ordered B; no b_L needed.");
+    "Full-filter Fourier mean including the configured three-leg pixel window.");
   grid.def("aperture_full_notebook", [](const physics_grid_owner_3pcf& owner,
       const physics_notebook_array& ell, const physics_notebook_array& dell,
       const physics_notebook_array& phi, const physics_notebook_array& dphi,
@@ -866,7 +889,8 @@ void bind_threepcf_physics(py::module_& module)
     finite_physics(output);
     return output;
   }, py::arg("ell"), py::arg("dell"), py::arg("phi"), py::arg("dphi"),
-    py::arg("filters"));
+    py::arg("filters"),
+    "Full-filter mean including the configured three-leg pixel window.");
   grid.def("axes", [](const physics_grid_owner_3pcf& owner) {
     py::dict result;
     const char* names[8] = {"log_r", "log_u", "v", "log_p", "pu",
@@ -906,7 +930,8 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("source_readers") = false,
     py::arg("table_boost") = 8,
     py::arg("fit_nz") = 33,
-    py::arg("source_z") = py::none(), py::arg("feedback") = py::dict());
+    py::arg("source_z") = py::none(), py::arg("feedback") = py::dict(),
+    py::arg("pixel_window") = py::none());
   module.def("physics_model_notebook", &model_notebook_physics,
     py::arg("k"),
     py::arg("p_linear0"),
@@ -928,6 +953,7 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("table_boost") = 8,
     py::arg("fit_nz") = 33,
     py::arg("source_z") = py::none(), py::arg("feedback") = py::dict(),
+    py::arg("pixel_window") = py::none(),
     "Copy sliced or Fortran-order arrays through the Armadillo adapter.");
 
   model.def("matter", [](const physics_owner_3pcf& owner,
@@ -973,24 +999,26 @@ void bind_threepcf_physics(py::module_& module)
       parameters_physics(parameters), 2, component, false);
   }, py::arg("sides").noconvert(), py::arg("bins").noconvert(),
     py::arg("parameters") = py::dict(), py::arg("component") = 0,
-    "Unshifted flat-Limber E bispectrum; 0=total,1=NLA baseline,2=residual.");
+    "Unsmoothed flat-Limber E bispectrum; 0=total,1=NLA baseline,2=residual.");
   model.def("multipoles", &multipoles_physics,
     py::arg("ell").noconvert(), py::arg("bins").noconvert(),
     py::arg("parameters"), py::arg("lmax"), py::arg("nmu"),
     py::arg("component") = 0,
-    "Direct LOS/Gauss-Legendre b_L[L,ell1,ell2]; refine both node grids.");
+    "Direct b_L[L,ell1,ell2] including all three pixel factors; refine nodes.");
   model.def("multipoles_notebook", &multipoles_notebook_physics,
     py::arg("ell"), py::arg("bins"), py::arg("parameters"),
-    py::arg("lmax"), py::arg("nmu"), py::arg("component") = 0);
+    py::arg("lmax"), py::arg("nmu"), py::arg("component") = 0,
+    "Direct b_L including the configured three-leg pixel window.");
   model.def("aperture_full", &aperture_full_physics,
     py::arg("ell").noconvert(), py::arg("dell").noconvert(),
     py::arg("phi").noconvert(), py::arg("dphi").noconvert(),
     py::arg("filters").noconvert(), py::arg("bins").noconvert(),
     py::arg("parameters") = py::dict(),
-    "Full-filter Map3 from explicit Fourier quadratures, angles in radians.");
+    "Full-filter Map3 including three-leg pixel smoothing; angles in radians.");
   model.def("aperture_full_notebook", &aperture_full_notebook_physics,
     py::arg("ell"), py::arg("dell"), py::arg("phi"), py::arg("dphi"),
-    py::arg("filters"), py::arg("bins"), py::arg("parameters") = py::dict());
+    py::arg("filters"), py::arg("bins"), py::arg("parameters") = py::dict(),
+    "Full-filter Map3 including the configured three-leg pixel window.");
   model.def("projection_grid", [](
       const std::shared_ptr<physics_owner_3pcf>& owner,
       const physics_int_array& bins, const py::dict& parameters,
@@ -1085,7 +1113,8 @@ void bind_threepcf_physics(py::module_& module)
     return points_notebook_physics(owner, sides, physics_notebook_array(),
       bins, parameters_physics(parameters), 2, component, false);
   }, py::arg("sides"), py::arg("bins"),
-    py::arg("parameters") = py::dict(), py::arg("component") = 0);
+    py::arg("parameters") = py::dict(), py::arg("component") = 0,
+    "Unsmoothed flat-Limber E bispectrum, copied through the notebook adapter.");
 
   model.def("power", [](const physics_owner_3pcf& owner,
       const physics_array& k, const physics_array& z, int mode) {

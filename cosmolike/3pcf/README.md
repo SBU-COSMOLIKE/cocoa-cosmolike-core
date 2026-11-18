@@ -389,6 +389,24 @@ finite-triangle mean need an estimator comparison before they are used
 together. An aperture radius is a smoothing scale; it is not an angular
 cut on each side of a galaxy triangle.
 
+The [project estimator guide](../../../../../projects/des_3pcf/ESTIMATOR.md)
+exposes the original side-bin bank, explicit cuts and representative-side
+choices. The optional `pixel_window` array supplies scalar W(ell) at
+consecutive integers from zero. Multipoles and aperture means include
+one factor per Fourier leg. Raw projected B and ordinary xi remain
+unsmoothed building blocks. A physical model and each prepared grid own
+independent copies, so a grid remains valid after its model is released.
+
+The archived scalar HEALPix convention uses the TEMPERATURE column at
+nside=1024 through ell=3071, with linear reads and zero above. W3 enters
+the angular integral; W1 and W2 are applied after prepared-multipole
+interpolation to prevent support leaking across their hard cutoff. This
+scalar convention requires comparison with the actual shear estimator.
+The analytic covariance does not apply these pixel factors and refuses
+a pixel-smoothed model; any supplied covariance needs its own matching
+estimator definition. Refinement of the third-leg cutoff inside the
+angular integral remains part of a survey-accuracy study.
+
 The two paths share the physical bispectrum and separate at the observable:
 
 ```mermaid
@@ -1111,3 +1129,12 @@ published-analysis comparisons. The inspected Y6 repository provides its
 pipeline but keeps measured vectors, joint covariance and trained networks
 external. A forecast configuration must therefore identify its source
 curves and noise inputs rather than silently borrowing Y3 values.
+
+The project's [compression guide](../../../../../projects/des_3pcf/COMPRESSION.md)
+explains optional fixed linear statistics and the normalized Percival
+finite-simulation likelihood. Conditional xi compression retains the joint
+local Gaussian response information while keeping each Map3 measurement;
+ordinary xi-only compression can lose information from the cross-covariance.
+Finite-simulation inference requires a raw sample covariance and declared
+Gaussian-mock and independence assumptions. It is a separate statistical
+choice from precision-matrix expansion.

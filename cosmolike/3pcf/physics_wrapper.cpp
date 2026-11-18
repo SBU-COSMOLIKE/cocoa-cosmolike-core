@@ -89,7 +89,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const int table_boost,
   const int fit_nz,
   const arma::Col<double>& source_z,
-  const physics_feedback_tables_cpp_3pcf* feedback
+  const physics_feedback_tables_cpp_3pcf* feedback,
+  const arma::Col<double>* pixel_window
 )
 {
   const arma::uword nsource = source_z.n_elem ? source_z.n_elem : z.n_elem;
@@ -173,6 +174,13 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     response.boost = feedback->boost;
     response.clamp = feedback->clamp;
     input.feedback = &response;
+  }
+  if (pixel_window != nullptr) {
+    require_physics_cpp(pixel_window->n_elem >= 2
+      && pixel_window->n_elem <= INT_MAX && pixel_window->is_finite(),
+      "pixel window requires a finite vector with at least two samples");
+    input.nwindow = static_cast<int>(pixel_window->n_elem);
+    input.window = pixel_window->memptr();
   }
   return std::make_shared<physics_owner_3pcf>(input);
 }

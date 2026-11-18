@@ -62,6 +62,8 @@ typedef simde__m128d grid_v2d;
 
 struct physics_grid_3pcf {
   physics_grid_settings_3pcf settings;
+  int nwindow;
+  double* window; // owned, because a prepared grid can outlive its model
   int nr;
   int nu;
   int nv;
@@ -86,7 +88,9 @@ struct physics_grid_3pcf {
   double* baseline_ratio; // optional [nr,nu,nv], signed NLA/GGG
   double* residual; // [np,npu,npu], signed value or scaled signed ratio
   double* log_residual_scale; // optional [np], log GGG(p/3,p/3,p/3)
-  double* multipoles; // [baseline/residual,chart,L,nell,npsi]
+  // [baseline/residual,chart,L,nell,npsi], including W3 inside the mu
+  // integral. W1*W2 is applied at query time after interpolation.
+  double* multipoles;
 };
 
 // This owner retains geometry only: no sampled bispectrum or b_L value.
@@ -96,6 +100,7 @@ struct physics_grid_3pcf {
 // No pointer to the constructing grid, model or caller ell array survives.
 struct physics_grid_query_3pcf {
   int nell; // requested Fourier values per leg, fixed for this query
+  double* ell; // owned query axis; physical windows are read from each grid
   int grid_nell; // interpolation log_ELL axis size
   int grid_npsi; // angular interpolation axis size
   int lmax; // sets the physical table's L stride and output row count
@@ -693,10 +698,18 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
             if (chart == 0) {
               baseline[node] = physics_grid_projected_3pcf(grid,
                 first, second, third, 1);
+              if (grid->nwindow > 0) {
+                baseline[node] *= physics_window_value_3pcf(grid->nwindow,
+                  grid->window, third);
+              }
             }
             if (grid->has_residual) {
               residual[node] = physics_grid_projected_3pcf(grid,
                 first, second, third, 2);
+              if (grid->nwindow > 0) {
+                residual[node] *= physics_window_value_3pcf(grid->nwindow,
+                  grid->window, third);
+              }
             }
           }
           // Pure NLA has exactly zero residual. Its calloc-initialized
@@ -1019,6 +1032,12 @@ void physics_grid_create_many_3pcf(
   gravity_parameters.feedback_amplitude = 0.0;
   for (int triplet=0; triplet<ntriplet; triplet++) {
     out[triplet] = allocate_grid(settings, has_residual);
+    physics_grid_3pcf* grid = out[triplet];
+    const double* window = physics_window_samples_3pcf(model, &grid->nwindow);
+    if (grid->nwindow > 0) {
+      grid->window = grid_allocate((size_t)grid->nwindow, sizeof(double));
+      memcpy(grid->window, window, (size_t)grid->nwindow*sizeof(double));
+    }
     projections[triplet] = physics_projector_create_3pcf(model, parameters,
       bins + (size_t)triplet*3);
     if (needs_gravity) {
@@ -1187,7 +1206,14 @@ static double grid_aperture_reader(
   const double ell3
 )
 {
-  return physics_grid_projected_3pcf(context, ell1, ell2, ell3, 0);
+  const physics_grid_3pcf* grid = context;
+  double value = physics_grid_projected_3pcf(grid, ell1, ell2, ell3, 0);
+  if (grid->nwindow > 0) {
+    value *= physics_window_value_3pcf(grid->nwindow, grid->window, ell1)
+      *physics_window_value_3pcf(grid->nwindow, grid->window, ell2)
+      *physics_window_value_3pcf(grid->nwindow, grid->window, ell3);
+  }
+  return value;
 }
 
 
@@ -1231,6 +1257,7 @@ void physics_grid_destroy_3pcf(physics_grid_3pcf* grid)
   free(grid->residual);
   free(grid->log_residual_scale);
   free(grid->multipoles);
+  free(grid->window);
   free(grid);
 }
 
@@ -1260,6 +1287,8 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
   }
   physics_grid_query_3pcf* query = grid_allocate(1, sizeof(*query));
   query->nell = nell;
+  query->ell = grid_allocate((size_t)nell, sizeof(double));
+  memcpy(query->ell, ell, (size_t)nell*sizeof(double));
   query->grid_nell = grid->nell;
   query->grid_npsi = grid->npsi;
   query->lmax = lmax;
@@ -1436,6 +1465,17 @@ void physics_grid_query_evaluate_3pcf(
         }
         output[second] = sum;
       }
+      if (grid->nwindow > 0) {
+        // W1 and W2 are outside the mu integral. Apply them AFTER b_L
+        // interpolation, so its stencil cannot leak across the hard
+        // upper cutoff. The table already includes W3 inside that integral.
+        const double first_window = physics_window_value_3pcf(grid->nwindow,
+          grid->window, query->ell[first]);
+        for (int index=0; index<nell; index++) {
+          output[index] *= first_window*physics_window_value_3pcf(grid->nwindow,
+            grid->window, query->ell[index]);
+        }
+      }
     }
   }
 }
@@ -1454,6 +1494,7 @@ void physics_grid_query_destroy_3pcf(
   free(query->charts);
   free(query->cells);
   free(query->fractions);
+  free(query->ell);
   free(query);
 }
 
