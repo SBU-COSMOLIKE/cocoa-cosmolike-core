@@ -10174,12 +10174,12 @@ static double** C_cl_tomo_core(
   // chi() returns comoving distance in c/H0 units and real_coverH0 =
   // coverH0/h0 = 2997.92458/h0 is c/H0 in Mpc, so chi_min/chi_max are
   // in Mpc (matching the [Mpc^-2] kernels below). The fixed
-  // z = 0.002..4.0 window defines the log-spaced FFTLog chi grid; it
+  // z = 0.002..4.5 window defines the log-spaced FFTLog chi grid; it
   // covers the radial kernels' support from z ~ 0 up to the highest
   // lens redshifts.
   const double real_coverH0 = cosmology.coverH0/cosmology.h0;
   const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // Mpc
-  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // Mpc
+  const double chi_max = chi(1./(1.0 + 4.5))*real_coverH0;   // Mpc
   const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
   const double dlnk    = dlnchi;
   { // INIT: make sure static init variables inside the funcs are defined
@@ -10913,11 +10913,11 @@ static double** C_gs_tomo_core(
     cache[2] = (uint64_t) NSIZE;
   }
   // chi in c/H0 units times real_coverH0 = c/H0 in Mpc gives Mpc; the
-  // z = 0.002..4.0 window is the same FFTLog chi grid as C_cl_tomo
+  // z = 0.002..4.5 window is the same FFTLog chi grid as C_cl_tomo
   // (the units note lives there).
   const double real_coverH0 = cosmology.coverH0/cosmology.h0;
   const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // Mpc
-  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // Mpc
+  const double chi_max = chi(1./(1.0 + 4.5))*real_coverH0;   // Mpc
   const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
   const double dlnk    = dlnchi;
   { // INIT: make sure static init variables inside the funcs are defined
@@ -12910,7 +12910,7 @@ static double** C_cl_tomo_lowrank_core(
   // never a wavenumber.
   const double real_coverH0 = cosmology.coverH0/cosmology.h0;
   const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // Mpc
-  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // Mpc
+  const double chi_max = chi(1./(1.0 + 4.5))*real_coverH0;   // Mpc
   const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
   const double dlnk    = dlnchi;
 
@@ -15593,10 +15593,10 @@ static double** C_cl_tomo_fkem_pairs_core(
     cache[4] = (uint64_t) SIZE1;
   }
 
-  // the chi grid of C_cl_tomo_core: z = 0.002 to 4, log-spaced, in Mpc
+  // the chi grid of C_cl_tomo_core: z = 0.002 to 4.5, log-spaced, in Mpc
   const double real_coverH0 = cosmology.coverH0/cosmology.h0;
   const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // Mpc
-  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // Mpc
+  const double chi_max = chi(1./(1.0 + 4.5))*real_coverH0;   // Mpc
   const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
   const double dlnk    = dlnchi;
   { // INIT: make sure static init variables inside the funcs are defined
