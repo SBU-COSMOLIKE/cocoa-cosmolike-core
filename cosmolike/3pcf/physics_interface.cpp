@@ -27,7 +27,7 @@ namespace cosmolike_interface {
 using physics_array = py::array_t<double, py::array::c_style>;
 using physics_int_array = py::array_t<int, py::array::c_style>;
 using physics_notebook_array = py::array_t<double, py::array::forcecast>;
-using physics_notebook_int = py::array_t<int, py::array::forcecast>;
+using physics_notebook_int = py::array;
 
 static void require_physics_interface(
   const bool condition,
@@ -123,6 +123,42 @@ static arma::Mat<Number> copy_matrix_physics(
     }
   }
   return result;
+}
+
+
+// Inspect source labels before asking NumPy to convert their dtype.
+// A force-cast parameter would already have truncated fractional values
+// or wrapped wide integers by the time this function received them.
+// Match the aperture adapter: labels have integer dtype, may be sliced,
+// and must fit in int32 before being copied into Armadillo storage.
+static py::array_t<int, py::array::forcecast> integer_notebook_physics(
+  const py::array& values,
+  const int rank
+)
+{
+  shape_physics(values, rank);
+  require_physics_interface(values.dtype().kind() == 'i'
+    || values.dtype().kind() == 'u',
+    "notebook source bins must have integer dtype");
+  const double minimum = py::cast<double>(values.attr("min")());
+  const double maximum = py::cast<double>(values.attr("max")());
+  require_physics_interface(minimum >= INT_MIN && maximum <= INT_MAX,
+    "notebook source bins exceed int32 range");
+  return py::array_t<int, py::array::forcecast>(values);
+}
+
+
+static arma::Col<int> copy_column_physics(const py::array& values)
+{
+  const auto integers = integer_notebook_physics(values, 1);
+  return copy_column_physics<int>(integers);
+}
+
+
+static arma::Mat<int> copy_matrix_physics(const py::array& values)
+{
+  const auto integers = integer_notebook_physics(values, 2);
+  return copy_matrix_physics<int>(integers);
 }
 
 

@@ -169,11 +169,21 @@ outputs avoid changing an integration sum into an unordered reduction;
 where lane products must be summed, the code restores their scalar order.
 Odd output counts use an explicit scalar tail.
 
+A scalar tail must round at the same points as a vector lane. Strict
+floating-point flags can still permit a scalar fused multiply-add, which
+rounds once, while the explicit SIMD product and sum round separately.
+Local rounding boundaries keep an existing multipole unchanged when an
+extra query or Legendre order moves it between those paths. The covariance
+checks similarly add zero-weight nodes that change lane placement without
+changing the mathematical integral.
+
 FFTW uses the plans prepared for the outer calculation. Independent
 angular modes can run on separate OpenMP workers, each with private
 Fourier scratch. Starting an additional FFT thread team inside each such
 worker would multiply the active workers and compete for the same cores.
 Thread-count changes must respect the capacity owned by the plan.
+BLAS remains at one thread. Parallel CPU work belongs to OpenMP; a BLAS
+thread team inside an OpenMP worker would oversubscribe that allocation.
 
 ## What a numerical comparison establishes <a name="validation"></a>
 

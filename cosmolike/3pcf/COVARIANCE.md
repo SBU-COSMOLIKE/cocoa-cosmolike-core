@@ -423,7 +423,16 @@ shapes and upper-triangle cells have exclusive worker ownership. The
 ordered dot products, xi spectrum contraction and displaced-endpoint reads
 use explicit two-lane SIMD. Lanes evaluate adjacent nodes; their values are
 added in low-then-high order, and an odd final node is scalar. Allocations
-occur before worker loops. No adaptive integration, lazy initialization or
+check each dimension product before computing the requested byte count;
+source-triplet indices must also fit their integer representation. The
+scalar dot-product tail evaluates the same $`w(ab)`$ grouping as each SIMD
+lane, because $`(wa)b`$ can differ by rounding even in a strict build.
+The strict flags still permit fused multiply-add instructions. Scalar-tail
+interpolation steps and weighted products therefore have explicit rounded
+temporaries before their additions, matching the SIMD operation sequence.
+These local boundaries leave the ordinary core's compiler settings intact.
+Allocations occur before worker loops. No adaptive integration, lazy
+initialization or
 shared reduction appears in this covariance calculation. The C routine
 releases its working tables on return; it has no persistent cosmology cache
 across separate calls. This lifetime matches an offline covariance call.
@@ -441,6 +450,19 @@ ownership. The project's validation record identifies the executed build
 and tests. These are implementation checks. Agreement with an external
 survey covariance, Fourier/radial convergence, and the accuracy of the
 chosen halo model are separate scientific checks.
+
+The radial-padding check inserts $`r=0`$ with a positive $`dr`$ into an
+odd-length rule. Its measure $`2\pi r\,dr`$ is exactly zero, so the physical
+integral and summation order stay fixed while the old scalar-tail node
+moves into a SIMD lane. Both adapters are required to return identical bits
+for every covariance term in the finite-window and large-area routes.
+Two further checks add a zero-power Fourier node to `xi_from_power`, or a
+zero-weight separation to the finite-window xi profile rule. They move the
+old scalar tail into a SIMD lane without changing the physical integrand.
+During this audit, correcting parentheses alone did not pass the radial
+check: the optimized ARM64 object still contained a scalar `fmadd` where
+the vector path had two multiplications followed by addition. The local
+rounding boundary addresses that measured compiler behavior.
 
 For the direct-endpoint xi test, the measured relative Frobenius-norm error
 in the finite-window connected two-row xi block was as follows. The positive

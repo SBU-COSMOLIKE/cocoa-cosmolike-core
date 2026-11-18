@@ -96,12 +96,15 @@ typedef struct {
 // but leaves these dimensionless triangle factors unchanged. They are
 // prepared once per angular triangle before the radial integration.
 typedef struct {
+  double sides[3];
   double gravity[3];
+  double pair_cosine[3];
   double first_x[3];
   double first_y[3];
   double second_x[3];
   double second_y[3];
   double dot[3];
+  double sine_squared[3];
   double minimum_ratio;
   double flattened_ratio;
 } physics_triangle_geometry;
@@ -1115,16 +1118,61 @@ double physics_power_3pcf(
 }
 
 
+// The two wavevectors add to a vector whose length is opposite. Factor
+// the difference of the two large squared lengths before subtracting
+// the small side. For (epsilon,1,1), this retains mu=-epsilon/2 even
+// when epsilon squared is below the precision of a number near one.
+static double pair_cosine_physics(
+  const double first,
+  const double second,
+  const double opposite
+)
+{
+  const double small = fmin(first, second);
+  const double large = fmax(first, second);
+  return (((opposite - large)*(opposite + large))/small - small)
+    /(2.0*large);
+}
+
+
 static double f2_physics(
   const double first,
   const double second,
   const double opposite
 )
 {
-  const double cosine = (opposite*opposite - first*first - second*second)
-    /(2.0*first*second);
-  return 5.0/7.0 + 0.5*cosine*(first/second + second/first)
-    + 2.0/7.0*cosine*cosine;
+  const double small = fmin(first, second);
+  const double large = fmax(first, second);
+  const double cosine = pair_cosine_physics(small, large, opposite);
+  if (cosine < -0.5) {
+    // Near antiparallel equal sides F2 tends to zero. Its usual three
+    // terms cancel at order unity. Write t=1+mu using another factored
+    // side difference, then keep the unequal-side correction with its
+    // physical sign. F2 can be negative for unequal antiparallel sides.
+    const double difference = large - small;
+    const double one_plus = 0.5*((opposite - difference)/small)
+      *((opposite + difference)/large);
+    return one_plus*(3.0 + 2.0*one_plus)/7.0
+      + 0.5*cosine*(difference/small)*(difference/large);
+  }
+  return 5.0/7.0 + 0.5*(cosine*(small/large)
+    + (cosine/small)*large) + 2.0/7.0*cosine*cosine;
+}
+
+
+// Cosine of the angle between a side and the closing vector. This has
+// the opposite sign convention to pair_cosine_physics. Either argument
+// can be the short side, so choose the factored subtraction accordingly.
+static double closing_cosine_physics(
+  const double first,
+  const double closing,
+  const double opposite
+)
+{
+  const double small = fmin(first, closing);
+  const double large = fmax(first, closing);
+  return (((large - opposite)*(large + opposite))/small + small)
+    /(2.0*large);
 }
 
 
@@ -1133,27 +1181,112 @@ static physics_triangle_geometry triangle_geometry(const double* sides)
   physics_triangle_geometry geometry;
   const double minimum = fmin(sides[0], fmin(sides[1], sides[2]));
   const double maximum = fmax(sides[0], fmax(sides[1], sides[2]));
+  // A power-of-two rescaling is exact for ordinary binary numbers. It
+  // avoids overflow in side products without rounding away the small
+  // difference between two nearly equal long sides.
+  int exponent;
+  frexp(maximum, &exponent);
+  for (int leg=0; leg<3; leg++) {
+    geometry.sides[leg] = scalbn(sides[leg], -exponent);
+    require_physics(geometry.sides[leg] > 0.0,
+      "triangle side ratio underflows double precision");
+  }
+  const double small = fmin(geometry.sides[0],
+    fmin(geometry.sides[1], geometry.sides[2]));
+  const double large = fmax(geometry.sides[0],
+    fmax(geometry.sides[1], geometry.sides[2]));
+  // The median uses comparisons only, so (epsilon,1,1) retains 1.
+  const double middle = fmax(fmin(geometry.sides[0], geometry.sides[1]),
+    fmin(fmax(geometry.sides[0], geometry.sides[1]), geometry.sides[2]));
+  const double gap = large - middle;
+  const int physical = gap <= small;
+  double twice_area = 0.0;
+  if (physical) {
+    // Kahan's ordered form of Heron's formula gives 16*area squared.
+    // Taking each square root separately avoids underflow from first
+    // multiplying the two factors proportional to the shortest side.
+    twice_area = 0.5*sqrt(large + (middle + small))*sqrt(small - gap)
+      *sqrt(small + gap)*sqrt(large + (middle - small));
+  }
   geometry.minimum_ratio = minimum/maximum;
-  geometry.flattened_ratio = (sides[0] + sides[1] + sides[2] - 2.0*maximum)
-    /maximum;
+  geometry.flattened_ratio = (small - gap)/large;
   for (int cyclic=0; cyclic<3; cyclic++) {
-    const double first = sides[cyclic];
-    const double second = sides[(cyclic + 1)%3];
-    const double third = sides[(cyclic + 2)%3];
-    double cosine = (first*first + third*third - second*second)
-      /(2.0*first*third);
-    cosine = fmax(-1.0, fmin(1.0, cosine));
-    geometry.first_x[cyclic] = -cosine;
-    geometry.first_y[cyclic] = -sqrt(fmax(0.0, 1.0 - cosine*cosine));
-    geometry.second_x[cyclic]
-      = (-third - first*geometry.first_x[cyclic])/second;
-    geometry.second_y[cyclic] = -first*geometry.first_y[cyclic]/second;
-    geometry.dot[cyclic]
-      = geometry.first_x[cyclic]*geometry.second_x[cyclic]
-      + geometry.first_y[cyclic]*geometry.second_y[cyclic];
+    const double first = geometry.sides[cyclic];
+    const double second = geometry.sides[(cyclic + 1)%3];
+    const double third = geometry.sides[(cyclic + 2)%3];
+    geometry.pair_cosine[cyclic]
+      = pair_cosine_physics(first, second, third);
+    if (physical) {
+      geometry.first_x[cyclic]
+        = -closing_cosine_physics(first, third, second);
+      geometry.second_x[cyclic]
+        = -closing_cosine_physics(second, third, first);
+      geometry.first_y[cyclic] = -(twice_area/first)/third;
+      geometry.second_y[cyclic] = (twice_area/second)/third;
+      geometry.dot[cyclic] = geometry.pair_cosine[cyclic];
+      const double sine = (twice_area/first)/second;
+      geometry.sine_squared[cyclic] = sine*sine;
+    } else {
+      // Rectangular PUV interpolation includes off-triangle corners.
+      // The source's clipped angle defines that continuation. It also
+      // handles closure errors within the direct validator's roundoff
+      // tolerance. A valid triangle uses its area and both cosines.
+      const double cosine = fmax(-1.0, fmin(1.0,
+        closing_cosine_physics(first, third, second)));
+      geometry.first_x[cyclic] = -cosine;
+      geometry.first_y[cyclic] = -sqrt(fmax(0.0, 1.0 - cosine*cosine));
+      geometry.second_x[cyclic]
+        = (-third - first*geometry.first_x[cyclic])/second;
+      geometry.second_y[cyclic] = -first*geometry.first_y[cyclic]/second;
+      geometry.dot[cyclic]
+        = geometry.first_x[cyclic]*geometry.second_x[cyclic]
+        + geometry.first_y[cyclic]*geometry.second_y[cyclic];
+      geometry.sine_squared[cyclic]
+        = 1.0 - geometry.dot[cyclic]*geometry.dot[cyclic];
+    }
     geometry.gravity[cyclic] = f2_physics(first, second, third);
   }
   return geometry;
+}
+
+
+// The two F2 terms containing a short side can separately grow as 1/s,
+// although their weighted sum is finite. Combine their opposite large
+// pieces before multiplication. With b,c the other sides,
+// F2(s,b,c)=13/28+2*mu_sb^2/7+mu_sb*s/(2*b)+(c^2-b^2)/(4*s^2).
+// The last piece therefore multiplies P(b)-P(c), not two large products
+// that are subsequently subtracted. This also applies to the effective
+// powers in BiHalofit's three-halo term.
+static double tree_sum_physics(
+  const physics_triangle_geometry* geometry,
+  const double* power
+)
+{
+  int shortest = 0;
+  for (int leg=1; leg<3; leg++) {
+    if (geometry->sides[leg] < geometry->sides[shortest]) {
+      shortest = leg;
+    }
+  }
+  const int next = (shortest + 1)%3;
+  const int last = (shortest + 2)%3;
+  const double small = geometry->sides[shortest];
+  const double first = geometry->sides[next];
+  const double second = geometry->sides[last];
+  const double cosine1 = geometry->pair_cosine[shortest];
+  const double cosine2 = geometry->pair_cosine[last];
+  const double regular1 = 13.0/28.0 + 2.0*cosine1*cosine1/7.0
+    + 0.5*cosine1*(small/first);
+  const double regular2 = 13.0/28.0 + 2.0*cosine2*cosine2/7.0
+    + 0.5*cosine2*(small/second);
+  double difference = 0.0;
+  if (first != second) {
+    difference = 0.25*((second - first)/small)
+      *(((second + first)/small)*(power[next] - power[last]));
+  }
+  return 2.0*(power[shortest]*(regular1*power[next]
+    + regular2*power[last] + difference)
+    + geometry->gravity[next]*power[next]*power[last]);
 }
 
 
@@ -1224,18 +1357,12 @@ static double matter_prepared(
   double linear[3];
   double effective[3];
   double scaled[3];
-  double tree = 0.0;
   for (int leg=0; leg<3; leg++) {
     linear[leg] = read_power_row(&row, sides[leg]);
     scaled[leg] = sides[leg]*coefficients->radius;
   }
   if (component == 1) {
-    for (int leg=0; leg<3; leg++) {
-      const int next = (leg + 1)%3;
-      tree += 2.0*geometry.gravity[leg]
-        *linear[leg]*linear[next];
-    }
-    return tree;
+    return tree_sum_physics(&geometry, linear);
   }
   const double ratio1 = geometry.minimum_ratio;
   const double ratio2 = geometry.flattened_ratio;
@@ -1257,12 +1384,12 @@ static double matter_prepared(
       *(1.0 + pow(coefficients->p*q, -3.0)));
     damping /= 1.0 + coefficients->e*q;
   }
-  double three_halo = 0.0;
+  double three_halo = tree_sum_physics(&geometry, effective);
   for (int leg=0; leg<3; leg++) {
     const int next = (leg + 1)%3;
     const int opposite = (leg + 2)%3;
-    three_halo += 2.0*(geometry.gravity[leg]
-      + coefficients->d*scaled[opposite])*effective[leg]*effective[next];
+    three_halo += 2.0*coefficients->d*scaled[opposite]
+      *effective[leg]*effective[next];
   }
   three_halo *= damping;
   return component == 2 ? one_halo
@@ -1334,9 +1461,10 @@ static physics_ia_coefficients ia_coefficients(
 // A shape tensor has three helicity projections here, labelled 0,1,2.
 // For each cyclic ordering put the output wavevector on the positive
 // x axis and construct the two input vectors from triangle closure. F[m]
-// is the second-order shape vertex for that ordering; tree is its density
-// counterpart. Preparing three vertices replaces repeated constructions
-// in the source while keeping each leg and its orientation explicit.
+// is the second-order shape vertex for that ordering after removing the
+// linear-alignment part. Gravity is collected into a common tree sum
+// later, avoiding cancellation between large squeezed cyclic terms.
+// Preparing three vertices keeps each leg and orientation explicit.
 static void ia_vertices(
   const physics_triangle_geometry* geometry,
   const double* power,
@@ -1354,8 +1482,6 @@ static void ia_vertices(
     const double second_y = geometry->second_y[cyclic];
     const double dot = geometry->dot[cyclic];
     const double pair_power = power[cyclic]*power[next];
-    const double gravity = geometry->gravity[cyclic];
-    const double linear = coefficients->linear*gravity;
     const double quadratic = coefficients->quadratic
       *(0.25*(first_x*first_x - first_y*first_y
       + second_x*second_x - second_y*second_y)
@@ -1363,9 +1489,10 @@ static void ia_vertices(
     const double density = 0.25*coefficients->density
       *(2.0*first_x*first_x - first_y*first_y
       + 2.0*second_x*second_x - second_y*second_y);
-    const double velocity = coefficients->velocity*5.0/7.0*(1.0 - dot*dot);
+    const double velocity = coefficients->velocity*5.0/7.0
+      *geometry->sine_squared[cyclic];
     vertices[cyclic][0] = 2.0*root_two_thirds*pair_power
-      *(linear + quadratic + density + velocity);
+      *(quadratic + density + velocity);
     vertices[cyclic][1] = -pair_power
       *(coefficients->quadratic + coefficients->density)
       *(first_x*first_y + second_x*second_y);
@@ -1373,7 +1500,7 @@ static void ia_vertices(
       *(0.5*coefficients->quadratic*dot*first_y*second_y
       + 0.25*coefficients->density
       *(first_y*first_y + second_y*second_y));
-    tree[cyclic] = 2.0*gravity*pair_power;
+    tree[cyclic] = 0.0;
   }
 }
 
@@ -1503,22 +1630,18 @@ static void ia_prepared(
     - tensor222(vertices, linear, 0, 0, 0, 2)
     - tensor222(vertices, linear, 0, 2, 0, 0)
     - tensor222(vertices, linear, 0, 0, 2, 0));
-  if (remove_alignment) {
-    const double total_tree = tree[0] + tree[1] + tree[2];
+  if (!remove_alignment) {
+    // Linear shapes have only helicity zero. Their contribution to an
+    // all-E correlator is C1 to the number of shapes times B_tree.
+    // Adding this once is algebraically equal to its three placements.
+    // The requested TATT residual never subtracts these large terms.
+    const double total_tree = tree_sum_physics(&geometry, power);
     const double c1 = coefficients->c1;
     for (int index=0; index<3; index++) {
-      out[index] -= c1*total_tree;
-      out[index + 3] -= c1*c1*total_tree;
+      out[index] += c1*total_tree;
+      out[index + 3] += c1*c1*total_tree;
     }
-    out[6] -= c1*c1*c1*total_tree;
-    if (coefficients->quadratic == 0.0 && coefficients->density == 0.0
-        && coefficients->velocity == 0.0) {
-      // The residual is analytically zero for a purely linear shape.
-      // Avoid turning subtraction roundoff into a spurious Fisher column.
-      for (int index=0; index<7; index++) {
-        out[index] = 0.0;
-      }
-    }
+    out[6] += c1*c1*c1*total_tree;
   }
 }
 

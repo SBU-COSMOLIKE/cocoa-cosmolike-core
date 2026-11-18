@@ -42,6 +42,14 @@ Mutating one public array while retaining old weights is a named refusal.
 
 ## Setting sequences, with independent references
 
+BLAS is always serial: set `OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,
+`VECLIB_MAXIMUM_THREADS=1` and `BLIS_NUM_THREADS=1` before Python imports.
+Parallel cores belong to OpenMP. On the shared development laptop, run one
+test process at a time and cap OpenMP at four workers with
+`OMP_THREAD_LIMIT=4`; ordinary cases request one. Child processes inherit
+these settings. FFTW uses serial plans executed by outer OpenMP workers,
+so it must not start another thread team inside those loops.
+
 The tests live in `Cocoa/projects/des_3pcf/tests/`. They follow the ordinary
 data-vector setting-sequence design, using their own workers because these
 objects do not use the ordinary global initialization API:
@@ -127,6 +135,21 @@ underflow or overflow. An odd/even padding comparison can isolate a tail
 without changing the mathematical sum. Dimension products must enter checked
 size_t arithmetic before multiplication. A guard after an overflowing int
 product does not protect an allocation.
+
+Strict flags do not universally disable scalar fused multiply-add. A compiler
+can contract a tail's multiplication and addition while explicit SIMD calls
+retain two rounded operations. The covariance tails use local `volatile`
+temporaries at the same rounding boundaries as their vector lanes. The public
+checks prepend a zero-measure radius or add zero-weight angular/power samples:
+the physical sum stays fixed while the same output moves between a vector
+lane and a scalar tail. Preserve these tests and local boundaries instead of
+changing unrelated compiler flags.
+
+The Legendre preparation and bilinear multipole reader need the same
+boundary. `test_multipole_lane_invariance.py` adds an unused query or an
+extra retained order, then requires the existing coefficients to keep
+their float64 bits. The test holds the physical grid and weights fixed;
+changing a quadrature resolution would not justify that exact comparison.
 
 Read [NUMERICS.md](../../../../cosmolike/3pcf/NUMERICS.md) for the production
 cubic-preparation/linear-read strategy and

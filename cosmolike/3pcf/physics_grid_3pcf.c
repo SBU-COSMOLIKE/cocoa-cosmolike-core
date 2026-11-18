@@ -562,7 +562,12 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
             if (order <= lmax) {
               double sum = 0.0;
               for (int node=0; node<count; node++) {
-                sum += weights[(size_t)order*count + node]*values[node];
+                // Match the vector product's rounding before addition.
+                // Otherwise extending lmax moves this L from a fused
+                // scalar tail to a separately rounded vector lane.
+                volatile double term =
+                  weights[(size_t)order*count + node]*values[node];
+                sum += term;
               }
               grid->multipoles[multipole_grid_index(grid, component,
                 chart, order, scale, angle)] = sum;
@@ -986,7 +991,12 @@ void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
           const size_t base = ((size_t)(part*2 + charts[point])*(lmax + 1)
             + order)*plane + cells[point];
           for (int corner=0; corner<4; corner++) {
-            sum += fractions[point*4 + corner]*tables[base + offsets[corner]];
+            // An added query must not change earlier values when their
+            // former scalar tail becomes a vector lane. Strict flags
+            // alone do not forbid scalar multiply-add contraction.
+            volatile double term =
+              fractions[point*4 + corner]*tables[base + offsets[corner]];
+            sum += term;
           }
         }
         output[second] = sum;

@@ -44,10 +44,19 @@ static inline void covariance_require_3pcf(int condition, const char* text)
   }
 }
 
+// Check each multiplication before forming a multidimensional extent.
+// Checking only count*sizeof(element) is too late if count already wrapped.
+// Prepared extents then bound the flattened offsets in all worker loops.
+static size_t covariance_product_3pcf(size_t first, size_t second)
+{
+  covariance_require_3pcf(second > 0 && first <= (size_t)-1/second,
+    "workspace dimensions overflow the address range");
+  return first*second;
+}
+
 static void* covariance_allocate_3pcf(size_t count, size_t size)
 {
-  covariance_require_3pcf(size > 0 && count <= (size_t)-1/size,
-    "workspace dimensions overflow the address range");
+  covariance_product_3pcf(count, size);
   void* memory = calloc(count, size);
   covariance_require_3pcf(memory != NULL, "cannot allocate covariance tables");
   return memory;
@@ -55,7 +64,8 @@ static void* covariance_allocate_3pcf(size_t count, size_t size)
 
 // This ordered dot product uses SIMD for two adjacent nodes. Lanes never
 // replace the scalar accumulation order: weighted nodes are added first
-// from the low lane, then from the high lane. Scalar meaning is sum w*a*b.
+// from the low lane, then from the high lane. Every node evaluates w*(a*b),
+// including the scalar tail, so changing lane assignment preserves bits.
 static inline double covariance_dot_3pcf(
   int count, const double* weights, const double* first, const double* second
 )
@@ -80,7 +90,11 @@ static inline double covariance_dot_3pcf(
     sum += value[1];
   }
   if (node < count) {
-    sum += weights[node]*first[node]*second[node];
+    // Strict core flags still allow fused multiply-add contraction.
+    // Round this one tail product before addition, as each SIMD lane is
+    // rounded above. Volatile prevents contraction across that boundary.
+    volatile double weighted = weights[node]*(first[node]*second[node]);
+    sum += weighted;
   }
   return sum;
 }
@@ -134,8 +148,10 @@ static inline double covariance_nfw_3pcf(
     + cos(x)*(gsl_sf_Ci(y) - gsl_sf_Ci(x)) - sin(x*c)/y)/normalization;
 }
 
-// Halo preparation from P_linear(k,z), with no assumed scale-independent
-// growth inside this routine. sigma^2 integrates k^2 dk P W^2/(2*pi^2).
+// Halo preparation uses the model's P_linear(k,0)*D(z)^2 provider. This is
+// one scale-independent growth law; it does not supply the separate cold
+// matter+baryon halo spectrum needed for a massive-neutrino extension.
+// sigma^2 integrates k^2 dk P W^2/(2*pi^2).
 // Since R is proportional to M^(1/3), d sigma^2/d ln M has the factor 2/3.
 // The Sheth-Tormen multiplicity converts this derivative to dn/dM. The
 // separate bias is the response of halo abundance to a long density mode.
@@ -159,7 +175,16 @@ void covariance_halos_3pcf(
 {
   const double rho = 2.77536627e11*physics_omega_m_3pcf(model);
   const int nm = input->nmass;
-  double* power = covariance_allocate_3pcf((size_t)nz*input->nk,
+  covariance_require_3pcf(nz > 0 && nm > 0 && input->nk > 0
+    && nk_profile >= 0, "invalid halo-table dimensions");
+  const size_t halo_count = covariance_product_3pcf(nz, nm);
+  covariance_product_3pcf(halo_count, sizeof(double));
+  if (nk_profile > 0) {
+    covariance_product_3pcf(covariance_product_3pcf(halo_count, nk_profile),
+      sizeof(double));
+  }
+  const size_t power_count = covariance_product_3pcf(nz, input->nk);
+  double* power = covariance_allocate_3pcf(power_count,
     sizeof(double));
 
   // One worker owns a redshift's linear-power row, shared by every mass.
@@ -225,6 +250,7 @@ typedef struct {
   int ns;
   int nz;
   int nt;
+  size_t ngeometry;
   int has_cubic;
   int nquadratic;
   int* quadratic_index;
@@ -437,32 +463,51 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   const int nf = in->nfield;
   const int nl = in->nell;
   const int nr = in->nr;
-  const size_t ng = (size_t)nl*nl*in->nphi;
+  const size_t source_pairs = covariance_product_3pcf(ns, ns);
+  const size_t field_pairs = covariance_product_3pcf(nf, nf);
+  const size_t source_triples = covariance_product_3pcf(
+    covariance_product_3pcf(ns, (size_t)ns + 1), (size_t)ns + 2)/6;
+  covariance_require_3pcf(source_triples <= INT_MAX,
+    "source-triplet count exceeds the integer index range");
+  work->nt = (int)source_triples;
+  work->ngeometry = covariance_product_3pcf(
+    covariance_product_3pcf(nl, nl), in->nphi);
+  const size_t ng = work->ngeometry;
   for (int row=0; row<in->nrow; row++) {
     work->has_cubic = work->has_cubic || in->row_kind[row] == 1;
   }
-  work->nt = ns*(ns + 1)*(ns + 2)/6;
-  work->lens = covariance_allocate_3pcf((size_t)ns*nz, sizeof(double));
-  work->triples = covariance_allocate_3pcf((size_t)work->nt*3, sizeof(int));
-  work->triple_index = covariance_allocate_3pcf((size_t)ns*ns*ns,
+  work->lens = covariance_allocate_3pcf(covariance_product_3pcf(ns, nz),
+    sizeof(double));
+  work->triples = covariance_allocate_3pcf(
+    covariance_product_3pcf(work->nt, 3), sizeof(int));
+  work->triple_index = covariance_allocate_3pcf(
+    covariance_product_3pcf(source_pairs, ns),
     sizeof(int));
-  work->filters = covariance_allocate_3pcf((size_t)nf*nl, sizeof(double));
-  work->power = covariance_allocate_3pcf((size_t)ns*ns*nl, sizeof(double));
+  work->filters = covariance_allocate_3pcf(covariance_product_3pcf(nf, nl),
+    sizeof(double));
+  work->power = covariance_allocate_3pcf(
+    covariance_product_3pcf(source_pairs, nl), sizeof(double));
   // A purely quadratic request has no B, S or three-field correlation.
   // Keep its Gaussian and connected halo terms, without constructing
   // unused matter triangles or aperture-partition tables.
   if (work->has_cubic) {
-    work->closure_filters = covariance_allocate_3pcf((size_t)nf*ng,
+    work->closure_filters = covariance_allocate_3pcf(
+      covariance_product_3pcf(nf, ng),
       sizeof(double));
-    work->bispectrum = covariance_allocate_3pcf((size_t)work->nt*ng,
+    work->bispectrum = covariance_allocate_3pcf(
+      covariance_product_3pcf(work->nt, ng),
       sizeof(double));
-    work->bspec = covariance_allocate_3pcf((size_t)nf*nf*ns*nl,
+    work->bspec = covariance_allocate_3pcf(covariance_product_3pcf(
+      field_pairs, covariance_product_3pcf(ns, nl)),
       sizeof(double));
-    work->breal = covariance_allocate_3pcf((size_t)nf*nf*nf*nr,
+    work->breal = covariance_allocate_3pcf(covariance_product_3pcf(
+      field_pairs, covariance_product_3pcf(nf, nr)),
       sizeof(double));
-    work->pair = covariance_allocate_3pcf((size_t)nf*nf*nr, sizeof(double));
-    work->pair_zero = covariance_allocate_3pcf((size_t)nf*nf, sizeof(double));
-    work->pair_window = covariance_allocate_3pcf((size_t)nf*nf*nl,
+    work->pair = covariance_allocate_3pcf(
+      covariance_product_3pcf(field_pairs, nr), sizeof(double));
+    work->pair_zero = covariance_allocate_3pcf(field_pairs, sizeof(double));
+    work->pair_window = covariance_allocate_3pcf(
+      covariance_product_3pcf(field_pairs, nl),
       sizeof(double));
   }
   work->radial_measure = covariance_allocate_3pcf(nr, sizeof(double));
@@ -494,19 +539,25 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     }
     work->geometry_window = covariance_allocate_3pcf(ng, sizeof(double));
     if (work->nquadratic > 0) {
-      work->quadratic = covariance_allocate_3pcf((size_t)work->nquadratic*ng,
+      const size_t quadratic_count = covariance_product_3pcf(
+        work->nquadratic, ng);
+      work->quadratic = covariance_allocate_3pcf(quadratic_count,
         sizeof(double));
-      work->quadratic_mixed = covariance_allocate_3pcf(
-        (size_t)work->nquadratic*ng, sizeof(double));
+      work->quadratic_mixed = covariance_allocate_3pcf(quadratic_count,
+        sizeof(double));
     }
   }
-  work->j0_radial = covariance_allocate_3pcf((size_t)nr*nl, sizeof(double));
-  work->j0_fourier = covariance_allocate_3pcf((size_t)nl*nr, sizeof(double));
-  work->j0_window = covariance_allocate_3pcf((size_t)in->nwindow*nr,
+  const size_t radial_fourier = covariance_product_3pcf(nr, nl);
+  work->j0_radial = covariance_allocate_3pcf(radial_fourier, sizeof(double));
+  work->j0_fourier = covariance_allocate_3pcf(radial_fourier, sizeof(double));
+  work->j0_window = covariance_allocate_3pcf(
+    covariance_product_3pcf(in->nwindow, nr),
     sizeof(double));
-  work->j2_profile = covariance_allocate_3pcf((size_t)in->nprofile*nl,
+  work->j2_profile = covariance_allocate_3pcf(
+    covariance_product_3pcf(in->nprofile, nl),
     sizeof(double));
-  work->quadratic_zero = covariance_allocate_3pcf((size_t)in->nrow*nl,
+  work->quadratic_zero = covariance_allocate_3pcf(
+    covariance_product_3pcf(in->nrow, nl),
     sizeof(double));
   work->radial_volume = covariance_allocate_3pcf(nr, sizeof(double));
 
@@ -553,9 +604,9 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   for (int a=0; a<ns; a++) {
     for (int b=a; b<ns; b++) {
       for (int c=b; c<ns; c++) {
-        work->triples[3*count] = a;
-        work->triples[3*count + 1] = b;
-        work->triples[3*count + 2] = c;
+        work->triples[(size_t)3*count] = a;
+        work->triples[(size_t)3*count + 1] = b;
+        work->triples[(size_t)3*count + 2] = c;
         count++;
       }
     }
@@ -563,7 +614,7 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   // Scalar matter projection depends on a source-label multiset. Store
   // the six permutations through this map, without changing field radii.
   for (int index=0; index<work->nt; index++) {
-    const int* t = work->triples + 3*index;
+    const int* t = work->triples + (size_t)3*index;
     const int orders[6][3] = {{0,1,2},{0,2,1},{1,0,2},
       {1,2,0},{2,0,1},{2,1,0}};
     for (int p=0; p<6; p++) {
@@ -621,7 +672,8 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     }
   }
 
-  double* power_z = covariance_allocate_3pcf((size_t)nz*nl, sizeof(double));
+  double* power_z = covariance_allocate_3pcf(
+    covariance_product_3pcf(nz, nl), sizeof(double));
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int iz=0; iz<nz; iz++) {
     for (int l=0; l<nl; l++) {
@@ -660,7 +712,8 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   // Leave a cache-line-sized gap between mutable worker slices even when
   // calloc's base is not cache-line aligned. Workers never allocate scratch.
   const size_t bstride = ((size_t)nz + 7)/8*8 + 8;
-  double* local_b = covariance_allocate_3pcf((size_t)nworker*bstride,
+  double* local_b = covariance_allocate_3pcf(
+    covariance_product_3pcf(nworker, bstride),
     sizeof(double));
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (size_t g=0; g<ng; g++) {
@@ -685,7 +738,7 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
       }
     }
     for (int t=0; t<work->nt; t++) {
-      const int* sources = work->triples + 3*t;
+      const int* sources = work->triples + (size_t)3*t;
       double value = 0.0;
       for (int iz=0; iz<nz; iz++) {
         value += bz[iz]*work->lens[(size_t)sources[0]*nz + iz]
@@ -827,7 +880,8 @@ void covariance_xi_from_power_3pcf(
     }
     row_kernel[row] = k;
   }
-  double* kernels = covariance_allocate_3pcf((size_t)nkernel*nell,
+  double* kernels = covariance_allocate_3pcf(
+    covariance_product_3pcf(nkernel, nell),
     sizeof(double));
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int k=0; k<nkernel; k++) {
@@ -872,7 +926,10 @@ void covariance_xi_from_power_3pcf(
       sum += lanes[1];
     }
     if (l < nell) {
-      sum += kernel[l]*(ce[l] + sign[row]*cb[l]);
+      // Preserve the SIMD product's rounding before the scalar addition;
+      // the strict build otherwise permits fusing this tail into an FMA.
+      volatile double weighted = kernel[l]*(ce[l] + sign[row]*cb[l]);
+      sum += weighted;
     }
     out[row] = sum;
   }
@@ -940,7 +997,8 @@ static void covariance_profile_plan_3pcf_prepare(
   plan->fine = (nc - 1)*in->profile_upsample + 1;
   plan->per_radius = in->ntheta*in->nphi;
   const int nfine = plan->fine;
-  const size_t endpoints = (size_t)nxi*in->nr*plan->per_radius;
+  const size_t endpoints = covariance_product_3pcf(
+    covariance_product_3pcf(nxi, in->nr), plan->per_radius);
   plan->x = covariance_allocate_3pcf(nc, sizeof(double));
   plan->inverse = covariance_allocate_3pcf(nc, sizeof(double));
   plan->upper = covariance_allocate_3pcf(nc, sizeof(double));
@@ -1114,11 +1172,17 @@ static inline double covariance_profile_response_3pcf(
     const size_t p = start + a;
     const int m = plan->minus_cell[p];
     const int u = plan->plus_cell[p];
-    const double minus = plan->values[m] + plan->minus_fraction[p]
+    // Each SIMD interpolation uses a separately rounded multiply and
+    // add. Force the same boundaries for this single endpoint, where
+    // compiler contraction would otherwise introduce scalar-only FMAs.
+    volatile double minus_step = plan->minus_fraction[p]
       *(plan->values[m + 1] - plan->values[m]);
-    const double plus = plan->values[u] + plan->plus_fraction[p]
+    volatile double plus_step = plan->plus_fraction[p]
       *(plan->values[u + 1] - plan->values[u]);
-    sum += plan->endpoint_weight[p]*minus*plus;
+    const double minus = plan->values[m] + minus_step;
+    const double plus = plan->values[u] + plus_step;
+    volatile double weighted = plan->endpoint_weight[p]*(minus*plus);
+    sum += weighted;
   }
   return sum;
 }
@@ -1160,14 +1224,15 @@ static void covariance_halo_terms_3pcf(
   const int no = in->nrow;
   const int nw = in->nwindow;
   const int nm = in->nmass;
-  const size_t matrix = (size_t)no*no;
-  const size_t nodes = (size_t)work->nz*nm;
+  const size_t matrix = covariance_product_3pcf(no, no);
+  const size_t nodes = covariance_product_3pcf(work->nz, nm);
   const double rho = 2.77536627e11*physics_omega_m_3pcf(work->model);
   work->sigma2 = covariance_allocate_3pcf(nodes, sizeof(double));
   work->abundance = covariance_allocate_3pcf(nodes, sizeof(double));
   work->bias = covariance_allocate_3pcf(nodes, sizeof(double));
   work->concentration = covariance_allocate_3pcf(nodes, sizeof(double));
-  work->response_bias = covariance_allocate_3pcf((size_t)work->nz*no,
+  work->response_bias = covariance_allocate_3pcf(
+    covariance_product_3pcf(work->nz, no),
     sizeof(double));
   covariance_halos_3pcf(work->model, in, work->nz, work->z, 0, NULL,
     work->sigma2, work->abundance, work->bias, work->concentration, NULL);
@@ -1188,11 +1253,12 @@ static void covariance_halo_terms_3pcf(
     }
     radius_index[a] = index;
   }
-  const size_t npair = (size_t)nrad*(nrad + 1)/2;
+  const size_t npair = covariance_product_3pcf(nrad, (size_t)nrad + 1)/2;
   int* pair_needed = covariance_allocate_3pcf(npair, sizeof(int));
   int* radius_needed = covariance_allocate_3pcf(nrad, sizeof(int));
   int* representative = covariance_allocate_3pcf(no, sizeof(int));
-  int* shape_radius = covariance_allocate_3pcf((size_t)no*3, sizeof(int));
+  int* shape_radius = covariance_allocate_3pcf(
+    covariance_product_3pcf(no, 3), sizeof(int));
   int* row_shape = covariance_allocate_3pcf(no, sizeof(int));
   int* xi_shape = covariance_allocate_3pcf(no, sizeof(int));
   int nshape = 0;
@@ -1232,7 +1298,7 @@ static void covariance_halo_terms_3pcf(
       int equal = 1;
       if (kind <= 1) {
         for (int a=0; a<nleg; a++) {
-          equal = equal && radii[a] == shape_radius[3*s + a];
+          equal = equal && radii[a] == shape_radius[(size_t)3*s + a];
         }
       } else {
         for (int t=0; t<in->ntheta; t++) {
@@ -1249,7 +1315,7 @@ static void covariance_halo_terms_3pcf(
     if (s == nshape) {
       representative[s] = row;
       for (int a=0; a<3; a++) {
-        shape_radius[3*s + a] = radii[a];
+        shape_radius[(size_t)3*s + a] = radii[a];
       }
       xi_shape[s] = kind >= 2 ? nxi++ : -1;
       nshape++;
@@ -1259,9 +1325,11 @@ static void covariance_halo_terms_3pcf(
   covariance_profile_plan_3pcf profile_plan;
   covariance_profile_plan_3pcf_prepare(in, nshape, representative, xi_shape,
     nxi, &profile_plan);
-  double* unique_filter = covariance_allocate_3pcf((size_t)nrad*nl,
+  const size_t radius_fourier = covariance_product_3pcf(nrad, nl);
+  double* unique_filter = covariance_allocate_3pcf(radius_fourier,
     sizeof(double));
-  double* window_filter = covariance_allocate_3pcf((size_t)nrad*nw,
+  double* window_filter = covariance_allocate_3pcf(
+    covariance_product_3pcf(nrad, nw),
     sizeof(double));
   for (int a=0; a<nrad; a++) {
     for (int l=0; l<nl; l++) {
@@ -1274,11 +1342,13 @@ static void covariance_halo_terms_3pcf(
     }
   }
 
-  double* profile_fourier = covariance_allocate_3pcf((size_t)nrad*nl,
+  double* profile_fourier = covariance_allocate_3pcf(radius_fourier,
     sizeof(double));
-  double* profile_real = covariance_allocate_3pcf((size_t)nrad*nr,
+  double* profile_real = covariance_allocate_3pcf(
+    covariance_product_3pcf(nrad, nr),
     sizeof(double));
-  double* profile_window = covariance_allocate_3pcf((size_t)nf*nw,
+  double* profile_window = covariance_allocate_3pcf(
+    covariance_product_3pcf(nf, nw),
     sizeof(double));
   double* shear = covariance_allocate_3pcf(in->nprofile, sizeof(double));
   double* nfw = covariance_allocate_3pcf(nl, sizeof(double));
@@ -1286,13 +1356,17 @@ static void covariance_halo_terms_3pcf(
   double* nfw_window = covariance_allocate_3pcf(nw, sizeof(double));
   double* field_lens = covariance_allocate_3pcf(nf, sizeof(double));
   double* row_lens = covariance_allocate_3pcf(no, sizeof(double));
-  double* product_pair = covariance_allocate_3pcf(npair*nl,
+  double* product_pair = covariance_allocate_3pcf(
+    covariance_product_3pcf(npair, nl),
     sizeof(double));
-  double* product_real = covariance_allocate_3pcf(npair*nr,
+  double* product_real = covariance_allocate_3pcf(
+    covariance_product_3pcf(npair, nr),
     sizeof(double));
-  double* response_real = covariance_allocate_3pcf((size_t)nshape*nr,
+  double* response_real = covariance_allocate_3pcf(
+    covariance_product_3pcf(nshape, nr),
     sizeof(double));
-  double* response_fourier = covariance_allocate_3pcf((size_t)nshape*nw,
+  double* response_fourier = covariance_allocate_3pcf(
+    covariance_product_3pcf(nshape, nw),
     sizeof(double));
   double* shape_zero = covariance_allocate_3pcf(nshape, sizeof(double));
   double* response_zero = covariance_allocate_3pcf(no, sizeof(double));
@@ -1373,10 +1447,11 @@ static void covariance_halo_terms_3pcf(
         for (int r=0; r<nr; r++) {
           double value;
           if (kind <= 1) {
-            value = profile_real[(size_t)shape_radius[3*s]*nr + r]
-              *profile_real[(size_t)shape_radius[3*s + 1]*nr + r];
+            const int* radii = shape_radius + (size_t)3*s;
+            value = profile_real[(size_t)radii[0]*nr + r]
+              *profile_real[(size_t)radii[1]*nr + r];
             if (kind == 1) {
-              value *= profile_real[(size_t)shape_radius[3*s + 2]*nr + r];
+              value *= profile_real[(size_t)radii[2]*nr + r];
             }
           } else {
             const size_t start = ((size_t)xi_shape[s]*nr + r)
@@ -1552,7 +1627,7 @@ static double covariance_gaussian_two_3pcf(
 {
   const covariance_input_3pcf* in = work->in;
   const int nl = in->nell;
-  const size_t ng = (size_t)nl*nl*in->nphi;
+  const size_t ng = work->ngeometry;
   const int* ai = in->row_fields + (size_t)i*3;
   const int* aj = in->row_fields + (size_t)j*3;
   const int a = in->field_source[ai[0]];
@@ -1676,7 +1751,7 @@ static double covariance_pb_3pcf(
   const int nf = in->nfield;
   const int nl = in->nell;
   const int ns = work->ns;
-  const size_t ng = (size_t)nl*nl*in->nphi;
+  const size_t ng = work->ngeometry;
   const int* a = in->row_fields + (size_t)quadratic*3;
   const int* b = in->row_fields + (size_t)cubic*3;
   double value = 0.0;
@@ -1865,8 +1940,9 @@ void covariance_physical_3pcf(
     "invalid covariance dimensions or area");
   const int no = input->nrow;
   const int nl = input->nell;
-  const size_t matrix = (size_t)no*no;
-  memset(terms, 0, 6*matrix*sizeof(double));
+  const size_t matrix = covariance_product_3pcf(no, no);
+  const size_t term_count = covariance_product_3pcf(6, matrix);
+  memset(terms, 0, covariance_product_3pcf(term_count, sizeof(double)));
 
   // Observable roles are checked before constructing any field offsets.
   // xi needs unfiltered shear legs; the aperture response needs R>0.
@@ -1976,4 +2052,3 @@ void covariance_physical_3pcf(
   }
   covariance_release_3pcf(&work);
 }
-

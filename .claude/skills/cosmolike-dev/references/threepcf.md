@@ -181,6 +181,11 @@ rounding a cosmology before comparison changes the derivative.
 
 The ordinary two-point module has one mutable calculation per process.
 `CoreTwoPoint` construction stores its choices without changing that state.
+Its public settings are immutable, so an outer mean cache cannot silently
+retain a vector after a numerical-control edit. Construct a new adapter for
+new controls; no kernel restart is needed. Its supported integration levels
+are 0 through 7, the eight distinct shear quadrature orders from 96 to 8192
+nodes. Larger raw-core values are not accepted by this adapter.
 Every `spectra` call performs `initial_setup()` and reinstalls its declared
 numerical resolution, worker count, nonlinear runmode, TATT selectors,
 source/lens counts, photo-z convention, zero internal nuisance shifts and
