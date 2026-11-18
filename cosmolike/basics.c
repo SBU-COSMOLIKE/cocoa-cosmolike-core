@@ -2013,3 +2013,34 @@ int next_even_fft_size(const int minimum)
   }
   return (int) found;
 }
+
+
+// ---------------------------------------------------------------------------
+// exp(value) - 1 at full double precision for a complex exponent.
+//
+// The C standard library has expm1 for real arguments but no complex
+// counterpart. One is needed wherever a quantity of the form
+// exp(value) - 1 appears with a small exponent: exp is then close to
+// one and the subtraction cancels the leading digits. At the
+// threshold magnitude 1.0e-4 a direct cexp(value) - 1.0 keeps about
+// twelve of the sixteen double-precision digits, and the loss grows
+// as the exponent shrinks further. Below the threshold the truncated
+// Taylor series builds the difference without any subtraction; its
+// first dropped term, value^9/9!, is smaller than 1.0e-37 relative to
+// the sum, so the series result is exact to machine precision there.
+// Above the threshold the direct form is accurate enough.
+// ---------------------------------------------------------------------------
+double complex expm1_complex(const double complex value)
+{
+  if (cabs(value) < 1.0e-4) {
+    double complex term = value;
+    double complex sum = value;
+    for (int order=2; order<=8; order++) {
+      term *= value/order;
+      sum += term;
+    }
+    return sum;
+  }
+
+  return cexp(value)-1.0;
+}

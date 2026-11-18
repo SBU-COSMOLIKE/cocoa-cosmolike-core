@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include "simde/x86/sse2.h"
 #include "fftlog_3pcf.h"
+#include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 
 // Two-dimensional FFTLog for the double-Bessel projection integrals of
@@ -111,38 +112,6 @@ struct fftlog_workspace_3pcf {
 
 
 // ---------------------------------------------------------------------------
-// exp(value) - 1 at full double precision for a complex exponent.
-//
-// Purpose: keep the radial bin-average numerator exp(z*w) - 1 accurate
-// for every Fourier mode. When the exponent is small, exp is close to
-// one and the subtraction cancels the leading digits: at the threshold
-// magnitude 1.0e-4 a direct cexp(value) - 1.0 keeps about twelve of
-// the sixteen double-precision digits, and the loss grows as the
-// exponent shrinks further. Below the threshold the truncated Taylor
-// series builds the difference without any subtraction; its first
-// dropped term, value^9/9!, is smaller than 1.0e-37 relative to the
-// sum, so the series result is exact to machine precision there.
-// Above the threshold the direct form is accurate enough.
-// ---------------------------------------------------------------------------
-static double complex expm1_complex_3pcf(
-  const double complex value // exponent of a bin-average numerator
-)
-{
-  if (cabs(value) < 1.0e-4) {
-    double complex term = value;
-    double complex sum = value;
-    for (int order=2; order<=8; order++) {
-      term *= value/order;
-      sum += term;
-    }
-    return sum;
-  }
-
-  return cexp(value)-1.0;
-}
-
-
-// ---------------------------------------------------------------------------
 // Smooth window for one Fourier coefficient of the forward transform.
 //
 // The FFT treats the tilted input as periodic in ln(ell), so any
@@ -235,7 +204,7 @@ static double taper_fftlog_3pcf(
 //
 // because the measure adds two powers of theta to the numerator and
 // to the normalizing bin area alike. In the code slope = 2 - s =
-// 2.5 - exponent, expm1_complex_3pcf builds the numerator of S
+// 2.5 - exponent, expm1_complex (basics.c) builds the numerator of S
 // without cancellation, and denominator holds S(2, dlnt) =
 // expm1(2.0*dlnt)/2.0.
 //
@@ -278,7 +247,7 @@ static double complex kernel_fftlog_3pcf(
     // the header; slope holds 2 - s written through exponent = s + 1/2.
     const double complex slope = 2.5-exponent;
     const double denominator = expm1(2.0*dlnt)/2.0;
-    value *= expm1_complex_3pcf(slope*dlnt)/(slope*denominator);
+    value *= expm1_complex(slope*dlnt)/(slope*denominator);
   }
 
   if (!(isfinite(creal(value)) && isfinite(cimag(value)))) {

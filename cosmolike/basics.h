@@ -775,6 +775,25 @@ int next_even_fft_size(
     const int minimum   // smallest acceptable even transform length
   );
 
+#ifndef __cplusplus
+// ---------------------------------------------------------------------------
+// exp(value) - 1 at full double precision for a complex exponent: the
+// complex counterpart the C standard library's expm1 lacks. A small
+// exponent puts exp(value) close to one, so the direct cexp(value) -
+// 1.0 cancels leading digits; below a threshold magnitude the
+// implementation switches to a truncated Taylor series that is exact
+// to machine precision (basics.c tells the quantitative story).
+//
+// double _Complex is the built-in C99 spelling of double complex;
+// using it keeps <complex.h>, with its one-letter macro I, out of
+// every file that includes this header. The declaration is hidden
+// from C++, which has no _Complex type; the callers are C files.
+// ---------------------------------------------------------------------------
+double _Complex expm1_complex(
+    const double _Complex value  // exponent whose exp - 1 is needed
+  );
+#endif
+
 #ifdef __cplusplus
 }
 #endif
