@@ -2084,7 +2084,9 @@ double w_gg_tomo(
       // still differs from Limber by up to the tolerance. That
       // difference is real beyond-Limber and RSD power (it scales as
       // the extended-Limber correction (chi0/sigma_chi)^2/(l + 0.5)^2
-      // of each lens kernel), so the tolerance bounds a physical
+      // of each lens kernel, where chi0 is the comoving distance to
+      // the center of the lens bin and sigma_chi the radial width of
+      // its kernel), so the tolerance bounds a physical
       // modeling step at l_s, not a numerical one: at 0.01 the step
       // reaches 0.25-0.96% of C_l at l_s = 32-80 (lsst_y1) and
       // l_s = 32-112 (des_y3). The default 0.002 keeps the step at the
