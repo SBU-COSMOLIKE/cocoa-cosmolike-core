@@ -292,6 +292,13 @@ The project tests include an analytic quintic whose derivative error
 decreases by sixteen on halving the spacing, as well as malformed-node
 and provenance refusals. None of these implementation checks certifies
 physical convergence of the chosen integration grids.
+The first complete triangle-grid follow-up required 30 NLA and 36 TATT
+new means after four reused points per model. Its full h/4-to-h/2 w0-wa
+FoM changes were -0.844% and -0.653%, compared with the preceding
+6.08% and 5.64% h-to-h/2 changes. Both old derivative matrices were
+reconstructed bitwise, and completed preflights needed zero new means.
+Record this improvement at its tested grid, rather than declaring a
+general step tolerance or silently changing the default notebook bases.
 
 The estimate assumes approximately independent evaluation jitter. Smooth
 fourth derivatives can contaminate it; odd coherent errors and correlated
