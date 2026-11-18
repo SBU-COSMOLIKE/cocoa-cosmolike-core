@@ -201,7 +201,7 @@ This suffices for ideal E-mode aperture moments. A finite-SAS aperture
 integral can mix E and B contributions, and leakage from the omitted
 single-B bispectra has not been quantified. Those bispectra exist at the
 retained tree order. Bispectra with two B legs first enter at higher order
-under the model's Gaussian-initial-field assumptions.
+under the deterministic model's Gaussian-initial-field assumptions.
 The companion joint mean obtains two-point TATT E/B spectra from the
 ordinary CFASTPT routines, which evaluate the perturbative convolution
 integrals for that two-point model. Those two statements concern different

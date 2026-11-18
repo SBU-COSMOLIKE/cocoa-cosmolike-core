@@ -257,6 +257,14 @@ coordinates; another FoM pair is refused. The independent array studies
 `analyze_des3pcf_fisher_amplification.py` and
 `analyze_des3pcf_fisher_step_blocks.py` inspect nuisance projection and
 two-point/three-point sensitivity without evaluating another physical mean.
+`full_triangle_report.py` compares completed all-column refinements with
+selected-column and complementary substitutions, including fixed/free
+dark-energy IA and S8 summaries. It first compares the shared screening
+stencils with the full run bit for bit. A partial replacement mixes two
+numerical grids and can miss compensating changes in nuisance directions;
+its FoM shift is not a prediction of the all-column shift. Establish the
+shared-stencil agreement before assigning that difference to omitted
+columns rather than model state or evaluation order.
 
 The estimate assumes approximately independent evaluation jitter. Smooth
 fourth derivatives can contaminate it; odd coherent errors and correlated
@@ -272,6 +280,21 @@ tables. It leaves Lmax and Mmax fixed. A historical xi quadrature plot
 using linear-midpoint sources motivates the Fourier-node increase but
 does not certify the later measured-edge PCHIP baseline. Each numerical
 evidence record must identify its source reconstruction and actual controls.
+
+The companion project's `tests/studies/angular_order_study.py` separates
+Legendre truncation, Fourier truncation and prepared angular integration.
+Its `angular_order_validation.md` protocol starts from an explicit completed
+triangle-refined Fisher archive, reuses its mean and launches no models
+without `--execute`. The prepared angular counts are `nmu_log/nmu_linear`,
+not the direct route's `nmu`. Both lmax fields must agree. Coupling `npsi=0`
+removes the historical interpolation of the analytic coupling; it does
+not refine the physical multipole table's separate `npsi` coordinate.
+The protocol compares L50/M20 and L50/M50, then angular-only, coupling-only
+and combined refinements at L50/M50. The 63-angle point estimator aliases signed Fourier modes separated
+by 126, so an M100 comparison on those points is not a resolved continuous
+angular integral. A successful fiducial comparison is not derivative
+convergence. Recalculate allocation estimates before raising several
+three-dimensional interpolation counts together.
 
 Compare each derivative column in the full covariance metric. A maximum
 raw-component difference can hide aperture errors because xi and Map3
