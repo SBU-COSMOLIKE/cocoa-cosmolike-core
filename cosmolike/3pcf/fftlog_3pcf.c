@@ -143,7 +143,7 @@ static double taper_fftlog_3pcf(
     return 1.0;
   }
 
-  const int cutoff = (int)floor(width*length/2.0);
+  const int cutoff = (int)floor(width*length*0.5);
   const int absolute = abs(frequency);
   const int edge = length/2;
   if (cutoff == 0 || absolute <= edge-cutoff) {
@@ -227,10 +227,10 @@ static double complex kernel_fftlog_3pcf(
   gsl_sf_result denominator_log;
   gsl_sf_result denominator_phase;
 
-  const int status1 = gsl_sf_lngamma_complex_e((order-0.5+nu)/2.0,
-      eta/2.0, &numerator_log, &numerator_phase);
-  const int status2 = gsl_sf_lngamma_complex_e((order+2.5-nu)/2.0,
-      -eta/2.0, &denominator_log, &denominator_phase);
+  const int status1 = gsl_sf_lngamma_complex_e((order-0.5+nu)*0.5,
+      eta*0.5, &numerator_log, &numerator_phase);
+  const int status2 = gsl_sf_lngamma_complex_e((order+2.5-nu)*0.5,
+      -eta*0.5, &denominator_log, &denominator_phase);
 
   if (!(status1 == GSL_SUCCESS && status2 == GSL_SUCCESS)) {
     log_fatal("fftlog_3pcf: complex gamma evaluation failed");
@@ -246,7 +246,7 @@ static double complex kernel_fftlog_3pcf(
     // Multiply the bin-average factor S(2-s,dlnt)/S(2,dlnt) derived in
     // the header; slope holds 2 - s written through exponent = s + 1/2.
     const double complex slope = 2.5-exponent;
-    const double denominator = expm1(2.0*dlnt)/2.0;
+    const double denominator = expm1(2.0*dlnt)*0.5;
     value *= expm1_complex(slope*dlnt)/(slope*denominator);
   }
 

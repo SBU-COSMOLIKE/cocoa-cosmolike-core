@@ -131,8 +131,8 @@ static double coupling_value_3pcf(
   const double psi // opening angle arctan(ell2/ell1), in [0,pi/2]
 )
 {
-  const int upper = psi > M_PI/4.0;
-  const double ratio = tan(upper ? M_PI/2.0-psi : psi);
+  const int upper = psi > M_PI*0.25;
+  const double ratio = tan(upper ? M_PI*0.5-psi : psi);
   double sum = ratio*coefficient_3pcf(coefficients, degree, mode);
   const double amplitude = 1.0-ratio*ratio;
 
@@ -191,7 +191,7 @@ void legendre_coupling_3pcf(
   }
 
   for (int query=0; query<nquery; query++) {
-    if (!isfinite(psi[query]) || psi[query] < 0.0 || psi[query] > M_PI/2.0) {
+    if (!isfinite(psi[query]) || psi[query] < 0.0 || psi[query] > M_PI*0.5) {
       log_fatal("legendre_coupling_3pcf: psi outside [0,pi/2]");
       exit(1);
     }

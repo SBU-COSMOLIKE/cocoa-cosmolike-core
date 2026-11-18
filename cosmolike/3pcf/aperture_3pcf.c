@@ -224,7 +224,7 @@ static inline void aperture_kernel_3pcf(
     const double complex direction =
       (centroid[next] - centroid[last])/centroid[vertex];
 
-    filter_f[vertex] = (aperture_sq[next] + aperture_sq[last])/2.0
+    filter_f[vertex] = (aperture_sq[next] + aperture_sq[last])*0.5
       + (aperture_sq[next] - aperture_sq[last])*direction/6.0;
     filter_g_conj[vertex] = conj(aperture_sq[next]*aperture_sq[last]
       + (aperture_sq[last] - aperture_sq[next])
