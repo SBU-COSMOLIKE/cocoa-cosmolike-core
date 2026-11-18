@@ -68,6 +68,24 @@ use Mpc/h, power uses (Mpc/h)^3, and angles use radians. Growth is D(z),
 normalized to one today. The ordinary core's D/a table requires the explicit
 conversion supplied by the project bridge.
 
+The joint bridge also converts the fastnc alignment amplitudes to the
+ordinary core's fixed normalization and redshift pivot. It multiplies each
+amplitude by `(c1_rho/0.01389)*(1.62/(1+z_pivot))**eta`, preserving the
+physical C1 and C2. The ordinary core stores -C1 and C2/5 and applies the
+remaining sign/factors in its correlators; do not compare those intermediate
+names directly with the three-point coefficients. The tensor-basis density
+coefficient is C1delta-2*C2/3, while the physical bta remains C1delta/C1.
+
+Matching supplied growth nodes does not match intermediate interpolation:
+the ordinary core linearly reads G=(1+z)D, whereas three-point preparation
+uses a cubic interpolant of D followed by dense linear reads. Refine the
+supplied growth axis separately from the three-point LOS nodes. Ordinary
+CFASTPT IA loops use linear power at z=0 and a D^4 factor; the full linear
+power table supplied by the bridge is its interface contract. This differs
+from the deliberate nonlinear-power prescription of three-point mode2.
+The project's `tests/studies/joint_ia_conventions.md` derives these mappings
+and distinguishes source/growth quadrature from physical conventions.
+
 ## Numerical strategy required for changes
 
 The production sequence is **coarse physical calculation, natural-cubic
