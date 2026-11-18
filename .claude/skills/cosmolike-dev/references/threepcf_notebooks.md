@@ -250,6 +250,14 @@ work, then retain the new stencils and verify dependencies before saving.
 Normalize a plotted noise ratio to the same selected columns and reference
 spacing, rather than to a different all-parameter score.
 
+The project's `tests/studies/cosmology_step_study.py` performs this targeted
+Omega_m/Hubble-h test for the w0-wa FoM. Its notebook reader checks retained
+array shapes, shared-node bits and the complete newly evaluated parameter
+coordinates; another FoM pair is refused. The independent array studies
+`analyze_des3pcf_fisher_amplification.py` and
+`analyze_des3pcf_fisher_step_blocks.py` inspect nuisance projection and
+two-point/three-point sensitivity without evaluating another physical mean.
+
 The estimate assumes approximately independent evaluation jitter. Smooth
 fourth derivatives can contaminate it; odd coherent errors and correlated
 stencil errors can escape it. Report the omitted columns and measured
