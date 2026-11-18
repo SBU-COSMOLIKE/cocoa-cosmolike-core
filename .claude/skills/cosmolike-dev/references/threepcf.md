@@ -86,6 +86,19 @@ from the deliberate nonlinear-power prescription of three-point mode2.
 The project's `tests/studies/joint_ia_conventions.md` derives these mappings
 and distinguishes source/growth quadrature from physical conventions.
 
+The low-level nineteen-component IA API contains seven density/E terms
+and twelve terms with one B leg. Only the first seven enter the projected
+mean. That matches the paper's all-E numerical approximation and suffices
+for ideal E-aperture moments. Finite-SAS truncation need not preserve exact
+E/B separation. The project's `tests/studies/finite_window_eb.md` derives
+why a reflection-odd single-B bispectrum and an odd response kernel can
+give an even integrand; parity alone is not a zero test. No nonzero
+correction for the particular weights has been measured. Require an
+oriented-template transformation, ideal-aperture null, identical finite
+weights and full-joint-covariance scoring before claiming that omission
+is negligible. Two-B bispectra begin beyond the retained tree order;
+two-point TATT BB power is a different order of correlation.
+
 ## Numerical strategy required for changes
 
 The production sequence is **coarse physical calculation, natural-cubic

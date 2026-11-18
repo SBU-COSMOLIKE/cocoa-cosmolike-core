@@ -173,12 +173,14 @@ TATT means tidal alignment and tidal torquing. It includes a response
 linear in the tidal field and responses quadratic in that field, with
 a density-weighting term. The latter accounts for sampling shapes at
 galaxy positions rather than uniformly through space. The optional
-velocity-shear contribution is
-another declared intrinsic-shape response. The nineteen active kernels
-returned by the physical engine are the chosen perturbative components
-used to assemble these correlations; they are not nineteen independently
-measured data vectors. Their amplitudes and redshift laws must be kept
-with their Fourier legs and source labels.
+velocity-shear contribution is another declared intrinsic-shape response.
+The low-level IA calculation returns nineteen components: seven contain
+only density and intrinsic E fields; twelve contain one intrinsic B field.
+The projected mean contracts only the first seven, following the paper's
+E-only numerical calculation. The single-B components are available for
+separate diagnostics; their natural-component transform is not part of
+this mean. Each amplitude and redshift law belongs to its assigned
+Fourier leg and source label.
 
 The nonlinear-alignment (NLA) baseline keeps a shape response linear in
 the tidal field while using the selected nonlinear matter correlations.
@@ -195,7 +197,11 @@ evolving nonlinear table. `ct_mode=0` defines the physical velocity-shear
 coefficient as $`C_t=C_1\,ct`$; `1` takes `ct` itself as that coefficient.
 
 The mean's selected three-point IA model predicts E-mode correlations.
-It does not supply every possible intrinsic-shape B-mode bispectrum.
+This suffices for ideal E-mode aperture moments. A finite-SAS aperture
+integral can mix E and B contributions, and leakage from the omitted
+single-B bispectra has not been quantified. Those bispectra exist at the
+retained tree order. Bispectra with two B legs first enter at higher order
+under the model's Gaussian-initial-field assumptions.
 The companion joint mean obtains two-point TATT E/B spectra from the
 ordinary CFASTPT routines, which evaluate the perturbative convolution
 integrals for that two-point model. Those two statements concern different
@@ -396,6 +402,11 @@ combination, not the full set of eight E/B aperture combinations.
 Agreement with the upstream
 finite weights verifies this numerical operation; it does not remove
 those physical distinctions or establish a matching measured covariance.
+The needed single-B control must preserve oriented triangles and ordered
+source legs, vanish for the unrestricted E-aperture response, and then
+apply the exact finite weights. Its size should be measured with the
+full joint covariance. No nonzero correction for these weights has been
+established; parity alone does not certify its absence.
 
 ## What the covariance components mean <a name="covariance"></a>
 
