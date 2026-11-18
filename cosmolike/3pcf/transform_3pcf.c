@@ -206,7 +206,7 @@ transform_plan_3pcf* transform_create_3pcf(
     exit(1);
   }
   if (!(isfinite(dphi) && dphi >= 0.0
-        && dphi <= acos(-1.0))) {
+        && dphi <= M_PI)) {
     log_fatal("transform_3pcf: invalid opening-angle bin width");
     exit(1);
   }
@@ -363,7 +363,7 @@ transform_plan_3pcf* transform_create_3pcf(
   // the varying centroid-projected shear.
   for (int angle=0; angle<nphi; angle++) {
     if (!(isfinite(phi[angle]) && phi[angle] > 0.0
-          && phi[angle] < acos(-1.0))) {
+          && phi[angle] < M_PI)) {
       log_fatal("transform_3pcf: phi must lie in (0,pi)");
       exit(1);
     }
@@ -521,14 +521,13 @@ void transform_natural_3pcf(
   const size_t nratio = 2*(size_t)nell-1;
   const size_t radial_pairs = (size_t)ntheta*ntheta;
   const size_t triangles = radial_pairs*nphi;
-  const double two_pi = 2.0*acos(-1.0);
 
   // Each Fourier leg contributes a plane measure d^2(ell)/(2*pi)^2,
   // giving (2*pi)^-4 in total. The fastnc paper books three of those
   // powers on each multipole and the fourth on the resummation
   // prefactor 1/(2*pi); this code multiplies the whole product into
   // the stored modes, so the resummation loop below is a plain sum.
-  const double normalization = 1.0/pow(two_pi, 4);
+  const double normalization = 1.0/pow(2.0*M_PI, 4);
   const int nmodes = plan->ordered_legs ? 2*plan->mmax+1 : plan->mmax+1;
 
   // Each job computes one signed multipole M: it fills the FFT input

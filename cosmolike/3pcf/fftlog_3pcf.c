@@ -158,7 +158,7 @@ static double taper_fftlog_3pcf(
   // x measures how far this frequency sits from the Nyquist end of the
   // taper region, as a fraction of the region's width.
   const double fraction = (double)(edge-absolute)/(cutoff-1);
-  const double two_pi = 2.0*acos(-1.0);
+  const double two_pi = 2.0*M_PI;
   return fraction-sin(two_pi*fraction)/two_pi;
 }
 
@@ -416,7 +416,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   // frequencies, 2*pi over the periodic length nfft*step, and origin
   // is the phase anchor log(ell_min*theta_min) of the padded grid.
   const double origin = log(xy)-(nfft-1)*step;
-  const double frequency_step = 2.0*acos(-1.0)/(nfft*step);
+  const double frequency_step = 2.0*M_PI/(nfft*step);
   const size_t axis1 = (size_t)(max_order+1)*nfft;
 
   for (int order=0; order<=max_order; order++) {

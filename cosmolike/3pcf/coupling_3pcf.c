@@ -131,9 +131,8 @@ static double coupling_value_3pcf(
   const double psi // opening angle arctan(ell2/ell1), in [0,pi/2]
 )
 {
-  const double pi = acos(-1.0);
-  const int upper = psi > pi/4.0;
-  const double ratio = tan(upper ? pi/2.0-psi : psi);
+  const int upper = psi > M_PI/4.0;
+  const double ratio = tan(upper ? M_PI/2.0-psi : psi);
   double sum = ratio*coefficient_3pcf(coefficients, degree, mode);
   const double amplitude = 1.0-ratio*ratio;
 
@@ -151,7 +150,7 @@ static double coupling_value_3pcf(
     power *= -ratio;
   }
 
-  return 4.0*pi*pi*sum;
+  return 4.0*M_PI*M_PI*sum;
 }
 
 
@@ -191,9 +190,8 @@ void legendre_coupling_3pcf(
     exit(1);
   }
 
-  const double pi = acos(-1.0);
   for (int query=0; query<nquery; query++) {
-    if (!isfinite(psi[query]) || psi[query] < 0.0 || psi[query] > pi/2.0) {
+    if (!isfinite(psi[query]) || psi[query] < 0.0 || psi[query] > M_PI/2.0) {
       log_fatal("legendre_coupling_3pcf: psi outside [0,pi/2]");
       exit(1);
     }
@@ -259,7 +257,7 @@ void legendre_coupling_3pcf(
           // Reproduce fastnc's tabulation: npsi uniform nodes span
           // [0,pi/2], step is their spacing, and coordinate counts how
           // many steps the query sits above zero.
-          const double step = pi/(2.0*(npsi-1));
+          const double step = M_PI/(2.0*(npsi-1));
           const double coordinate = psi[query]/step;
           int lower = (int)floor(coordinate);
 
