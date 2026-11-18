@@ -2,23 +2,30 @@
 #define COSMOLIKE_APERTURE_3PCF_H
 
 // Finite side-angle-side (SAS) integration of centroid-projected shear
-// three-point correlations. Angles and aperture radii are in radians.
-// The caller validates dimensions, finite values and buffer sizes.
-// d2, d3, radii, dlnd and dphi are positive; 0 < phi < pi.
-// All arrays are contiguous in C order, with the last index adjacent.
-// Inputs and outputs must not overlap; no buffer is retained or allocated.
+// three-point correlations. A SAS grid labels a triangle by two side
+// lengths and the opening angle between them. All angles and all
+// aperture radii are in radians.
 //
-// Weights have shape [nfilter, 4, nd2*nd3*nphi]. A triangle's flat index
-// is (index_d2*nd3 + index_d3)*nphi + index_phi. Filters have shape
-// [nfilter, 3] and keep their ordered radii (R1, R2, R3).
-// Both the mirrored-radius contribution and the final factor 1/4 are
-// included in the weights. The contraction takes Re(weight*gamma),
-// without conjugating either factor.
+// The caller validates the inputs: dimensions, finite values and
+// buffer sizes. d2, d3, the radii, dlnd and dphi are positive, and
+// phi lies strictly between zero and pi. Every array is contiguous in
+// C order, with the last index adjacent in memory. Inputs and outputs
+// must not overlap. These functions allocate no memory and keep no
+// pointer after they return.
 //
-// gamma uses the centroid/SAS convention of the aperture kernels. For
-// fastnc centroid outputs, convert externally to
+// Weights have shape [nfilter, 4, nd2*nd3*nphi]. A triangle's flat
+// index is (index_d2*nd3 + index_d3)*nphi + index_phi. Filters have
+// shape [nfilter, 3], and each row holds one ordered radius triplet
+// (R1, R2, R3). The weights already contain the mirrored-radius
+// contribution and the final factor 1/4, so the contraction is only
+// Re(weight*gamma), and it conjugates neither factor.
+//
+// gamma uses the centroid/SAS convention of the aperture kernels. A
+// caller who starts from fastnc centroid outputs converts them
+// externally to
 //   gamma = -[Gamma0, Gamma1, Gamma3, Gamma2].
-// This interface does not infer or change a supplied projection.
+// This interface neither infers nor changes the projection the caller
+// passes in.
 
 #ifdef __cplusplus
 extern "C" {

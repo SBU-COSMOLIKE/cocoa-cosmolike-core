@@ -10,60 +10,109 @@
 #include "simde/x86/sse2.h"
 #include "fftlog_3pcf.h"
 
-// Two-dimensional cylindrical FFTLog follows Xiao Fang's two-Bessel
-// algorithm as modified by Sunao Sugiyama in fastnc, MIT revision
-// 7b2336ce37a909bed51f07f32a2a4f096e71b6ce, fastnc/twobessel.py.
-// See LICENSE.fastnc-TreeCorr.txt for the distributed source notices.
+// Two-dimensional FFTLog for the double-Bessel projection integrals of
+// the shear three-point transform. The algorithm is the two-Bessel
+// 2D-FFTLog of Xiao Fang, in the form Sunao Sugiyama gives it in
+// fastnc, MIT revision 7b2336ce37a909bed51f07f32a2a4f096e71b6ce,
+// fastnc/twobessel.py. See LICENSE.fastnc-TreeCorr.txt for the
+// distributed source notices.
 //
 // PHYSICAL DERIVATION & LOGIC FLOW
-// We compute integral dln(ell1) dln(ell2) f J_order1(ell1*theta1)
-// J_order2(ell2*theta2). Divide f by ell1^(nu1-1/2) ell2^(nu2-1/2),
-// Fourier-transform on the logarithmic grid, and integrate each resulting
-// complex power law analytically with the Bessel functions. An inverse
-// FFT reconstructs values on theta=xy/reversed(ell).
+// The target is the projection integral
 //
-// The square-grid restriction is the natural-component path's actual
-// geometry. Positive and negative row frequencies share one r2c buffer;
-// no expanded conjugate matrix is needed. At the row Nyquist frequency
-// use +N/2, matching fastnc's frequency rearrangement exactly.
+//   F(theta1,theta2) = integral dln(ell1) dln(ell2) f(ell1,ell2)
+//                      J_a(ell1*theta1) J_b(ell2*theta2),
+//
+// where f is a real function on a logarithmic grid of Fourier
+// multipoles ell1 and ell2, and J_a and J_b are cylindrical Bessel
+// functions. The caller fills f; the three-point transform passes
+// ell1^2 ell2^2 H_M, its coupled bispectrum-multipole kernel. Direct
+// quadrature would fight two oscillating Bessel factors at every
+// output point, so FFTLog evaluates the integral in four steps.
+//
+// 1. Divide out the bias. The FFTLog bias nu of each axis is a real
+//    power-law tilt: dividing f by ell1^(nu1-1/2) ell2^(nu2-1/2)
+//    leaves a function that decays toward both ends of the grid, which
+//    the FFT can treat as periodic without a large jump at the seam.
+//    The tables bias1 and bias2 below hold these per-node factors.
+// 2. Expand in Fourier modes on the log grid. On a uniform grid in
+//    ln(ell) the tilted function equals a finite sum of Fourier modes,
+//    and each mode is a pure power law ell^(nu-1/2+i*eta), with eta
+//    the frequency of oscillation in ln(ell). One forward FFT finds
+//    all coefficients at once.
+// 3. Integrate each power law analytically. A power law against one
+//    Bessel function is a Mellin transform with a closed
+//    Gamma-function form; kernel_fftlog_3pcf below derives it and
+//    tabulates it per axis, Bessel order and frequency. The integral
+//    of f becomes a double sum of coefficient times kernel times
+//    kernel.
+// 4. Reassemble with an inverse FFT. The kernel sum at every output
+//    pair is itself a Fourier sum, so one inverse FFT evaluates it on
+//    the radial grid theta = xy/reversed(ell): output node i carries
+//    theta_i = xy/ell_(n-1-i), the reflected Fourier grid rescaled by
+//    the constant xy, so that every product ell*theta stays on one
+//    fixed logarithmic lattice.
+//
+// Both axes share one grid of length n; the natural-component
+// transform only ever needs this square geometry. The input is real,
+// so the FFT runs in FFTW's real-to-complex (r2c) layout: the second
+// axis stores only its padded/2+1 nonnegative frequencies, because the
+// missing negative-frequency coefficients are complex conjugates of
+// the stored ones. The first axis keeps all of its rows, and a row
+// index above padded/2 means a negative frequency. The row Nyquist
+// frequency - the highest frequency the grid resolves, shared between
+// +padded/2 and -padded/2 - appears once, and this module assigns it
+// the positive sign exactly as fastnc does, so ported results agree
+// with fastnc coefficient by coefficient.
 //
 // Cache invalidation:
-// A workspace owns immutable copies of every transform setting and grid.
-// Create another workspace after changing any of them. Numerical inputs
-// and outputs live in private worker slices; no cosmology state is saved.
-// FFTW planning and destruction are serial. Concurrent executions use the
-// new-array FFTW calls with identical aligned strides and separate arrays.
+// A workspace owns immutable copies of every transform setting and
+// grid; create a new workspace after changing any of them. Each worker
+// slice holds its own numerical input and output, and the workspace
+// stores no cosmology. FFTW planning and destruction must stay serial.
+// Concurrent executions go through FFTW's new-array calls, which reuse
+// one plan on separate arrays with identical aligned strides.
 
+// SIMD applies one operation to several numbers held in positions
+// called lanes. A v2d holds two doubles. In this file the two lanes
+// carry either two adjacent grid cells or the real and imaginary parts
+// of one complex coefficient; each loop below says which. SIMDe maps
+// the operations to the processor's vector instructions or to its
+// portable implementation.
 typedef simde__m128d v2d;
 
 struct fftlog_workspace_3pcf {
-  int n; // original grid length
-  int padded; // FFT length including both padded ends
-  int padding; // zero cells on one end
-  int max_order; // largest precomputed Bessel order
-  int workers; // allocated independent worker slices
-  size_t input_stride; // doubles per worker, rounded to 64 bytes
+  int n; // length of the physical grid on each axis
+  int padded; // FFT length: n plus the zero padding on both ends
+  int padding; // zero cells on one end of one axis
+  int max_order; // largest Bessel order with a precomputed kernel row
+  int workers; // number of independent worker slices
+  size_t input_stride; // doubles per worker slice, rounded to 64 bytes
   size_t real_stride; // padded doubles per worker, rounded to 64 bytes
   size_t complex_stride; // coefficients per worker, rounded to 64 bytes
-  double* input; // [worker,n,n], also receives normalized inverse output
-  double* real; // [worker,padded,padded], FFT real scratch
-  fftw_complex* forward; // [worker,padded,padded/2+1], saved coefficients
-  fftw_complex* scratch; // matching inverse coefficients, overwritten
-  double* bias1; // [n], ell^(1/2-nu1)
-  double* bias2; // [n], ell^(1/2-nu2)
-  double* output1; // [n], theta^(1/2-nu1)
-  double* output2; // [n], theta^(1/2-nu2)
-  fftw_complex* kernel1; // [order,padded], signed row frequencies
+  double* input; // [worker,n,n] caller-filled f; also the inverse output
+  double* real; // [worker,padded,padded], real FFT scratch
+  fftw_complex* forward; // [worker,padded,padded/2+1], forward modes
+  fftw_complex* scratch; // inverse coefficients, same shape, overwritten
+  double* bias1; // [n], ell^(1/2-nu1): divides the first-axis tilt out
+  double* bias2; // [n], ell^(1/2-nu2): the same for the second axis
+  double* output1; // [n], theta^(1/2-nu1): restores the first-axis tilt
+  double* output2; // [n], theta^(1/2-nu2): the same for the second axis
+  fftw_complex* kernel1; // [order,padded], all signed row frequencies
   fftw_complex* kernel2; // [order,padded/2+1], nonnegative frequencies
-  fftw_plan forward_plan; // shared real-to-complex recipe
-  fftw_plan inverse_plan; // shared complex-to-real recipe
-  size_t selected_count; // zero means retain the entire original grid
-  size_t* selected_offsets; // [selected_count], positions in inverse FFT
-  double* selected_first; // [selected_count], first radial output factor
-  double* selected_second; // [selected_count], second radial output factor
+  fftw_plan forward_plan; // one real-to-complex recipe for all workers
+  fftw_plan inverse_plan; // one complex-to-real recipe for all workers
+  size_t selected_count; // kept output cells; 0 keeps the whole grid
+  size_t* selected_offsets; // [selected_count], cells in the inverse FFT
+  double* selected_first; // [selected_count], first-axis output factor
+  double* selected_second; // [selected_count], second-axis output factor
 };
 
 
+// Print one diagnostic and stop. Every check below guards a table or
+// transform that later numerical work builds on, so a failed condition
+// means the workspace cannot produce a trustworthy number; stopping
+// beats returning a partial result.
 static void require_fftlog_3pcf(
   const int condition, // required geometry or allocation condition
   const char* message // diagnostic
@@ -76,8 +125,9 @@ static void require_fftlog_3pcf(
 }
 
 
-// FFTW supplies its required alignment. Numeric blocks are flat with an
-// explicitly rounded worker stride; no hidden row-pointer padding exists.
+// FFTW's allocator returns memory aligned for its vector code. All
+// numeric blocks are flat, with an explicitly rounded worker stride,
+// so no hidden row-pointer padding exists anywhere in the workspace.
 static void* allocate_fftlog_3pcf(
   const size_t count, // number of scalar or complex elements
   const size_t size // bytes per element
@@ -90,14 +140,44 @@ static void* allocate_fftlog_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Return the smallest even length at or above the request whose only
+// prime factors are 2, 3 and 5.
+//
+// An FFT computes a length-N Fourier sum in far fewer than N*N steps
+// by factoring N: the Cooley-Tukey algorithm splits one length-N
+// transform into many short transforms whose lengths are the prime
+// factors of N. Each such factor is called a radix. FFTW ships
+// hand-tuned kernels for the small radices 2, 3 and 5, so a length
+// built only from these primes runs at full N*log(N) speed, while a
+// large prime factor pushes FFTW onto slower generic machinery.
+//
+// The caller uses the returned value as the padded transform length.
+// The cells beyond the physical grid hold zeros, so a longer length
+// changes only the amount of zero padding, never the physical samples.
+// The length must also be even, because the workspace's frequency
+// bookkeeping gives the Nyquist frequency - the highest frequency a
+// length-N grid resolves, at index N/2 - a single row of its own,
+// which only an even N provides.
+//
+// Parameters:
+//   minimum - smallest acceptable length, at least 2
+// Returns:
+//   the first even 2/3/5-smooth integer at or above minimum; the scan
+//   aborts rather than overflow int when no such length fits.
+// ---------------------------------------------------------------------------
 int next_fft_size_3pcf(
   const int minimum // minimum even smooth transform length
 )
 {
   require_fftlog_3pcf(minimum >= 2 && minimum < INT_MAX-2,
       "invalid minimum FFT length");
+  // Round the request up to an even number, then test even candidates
+  // only, since an odd candidate can never satisfy the evenness rule.
   int candidate = minimum+(minimum%2);
   for (; candidate < INT_MAX-2; candidate += 2) {
+    // Divide out every factor of 2, 3 and 5. A remainder of one means
+    // no other prime divides the candidate, so it is 2/3/5-smooth.
     int remainder = candidate;
     while (remainder%2 == 0) {
       remainder /= 2;
@@ -117,12 +197,24 @@ int next_fft_size_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// exp(value) - 1 at full double precision for a complex exponent.
+//
+// Purpose: keep the radial bin-average numerator exp(z*w) - 1 accurate
+// for every Fourier mode. When the exponent is small, exp is close to
+// one and the subtraction cancels the leading digits: at the threshold
+// magnitude 1.0e-4 a direct cexp(value) - 1.0 keeps about twelve of
+// the sixteen double-precision digits, and the loss grows as the
+// exponent shrinks further. Below the threshold the truncated Taylor
+// series builds the difference without any subtraction; its first
+// dropped term, value^9/9!, is smaller than 1.0e-37 relative to the
+// sum, so the series result is exact to machine precision there.
+// Above the threshold the direct form is accurate enough.
+// ---------------------------------------------------------------------------
 static double complex expm1_complex_3pcf(
   const double complex value // exponent of a bin-average numerator
 )
 {
-  // Subtracting one from exp(value) loses relative precision in a narrow
-  // bin. The local power series retains that numerator without division.
   if (cabs(value) < 1.0e-4) {
     double complex term = value;
     double complex sum = value;
@@ -136,10 +228,31 @@ static double complex expm1_complex_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Smooth window for one Fourier coefficient of the forward transform.
+//
+// The FFT treats the tilted input as periodic in ln(ell), so any
+// mismatch between the two ends of the finite grid acts like a sharp
+// feature. Sharp features live in the highest log-frequencies, and
+// keeping those coefficients at full weight spreads oscillatory
+// artifacts - ringing - across the output. Tapering suppresses the
+// highest-frequency coefficients smoothly instead: coefficients below
+// the taper region pass unchanged and the window rolls off to zero at
+// the Nyquist frequency. The shape is the FAST-PT smoothing window of
+// McEwen, Fang, Hirata & Blazek (arXiv:1603.04826),
+//
+//   W(x) = x - sin(2*pi*x)/(2*pi),
+//
+// with x rising from 0 at the Nyquist frequency to 1 at the inner edge
+// of the taper region; W joins both ends with zero slope. width sets
+// the tapered fraction of the half spectrum. enabled=0 returns one for
+// every frequency - the untapered upstream fastnc window - so
+// comparison runs reproduce fastnc's coefficients exactly.
+// ---------------------------------------------------------------------------
 static double taper_fftlog_3pcf(
   const int frequency, // signed or nonnegative discrete frequency
   const int length, // even transform length
-  const int enabled, // zero reproduces historical untapered coefficients
+  const int enabled, // zero keeps the untapered upstream window
   const double width // fraction of the half-spectrum to taper
 )
 {
@@ -153,19 +266,71 @@ static double taper_fftlog_3pcf(
     return 1.0;
   }
   if (cutoff == 1) {
+    // A one-cell taper region has no interior to roll off across, so
+    // only the Nyquist coefficient itself turns off.
     return 0.0;
   }
-  // A one-cell cutoff above is the endpoint-only limit. For larger
-  // cutoffs this is the original smooth Fourier coefficient window.
+  // x measures how far this frequency sits from the Nyquist end of the
+  // taper region, as a fraction of the region's width.
   const double fraction = (double)(edge-absolute)/(cutoff-1);
   const double two_pi = 2.0*acos(-1.0);
   return fraction-sin(two_pi*fraction)/two_pi;
 }
 
 
+// ---------------------------------------------------------------------------
+// One kernel table entry: the analytic Bessel integral of one Fourier
+// mode.
+//
+// PHYSICAL DERIVATION & LOGIC FLOW
+// After the forward FFT, each Fourier mode of the tilted input is a
+// pure power law in one Fourier variable, ell^(nu-1/2+i*eta). Here nu
+// is this axis's FFTLog bias - the real power-law tilt divided out of
+// the integrand - and eta is the logarithmic Fourier frequency, the
+// mode's rate of oscillation in ln(ell). Write the full power as
+// s = nu - 1/2 + i*eta. Projecting one such mode on a cylindrical
+// Bessel function J_n reduces, after substituting x = ell*theta, to a
+// Mellin transform with the closed form
+//
+//   integral_0^inf dx x^(s-1) J_n(x)
+//       = 2^(s-1) Gamma((n+s)/2) / Gamma((n+2-s)/2),
+//
+// the standard result that the 2D-FFTLog covariance paper of Fang,
+// Eifler & Krause (arXiv:2004.04833) applies in this same role. The
+// code works with exponent = nu + i*eta = s + 1/2 and multiplies by
+// 2^exponent rather than 2^(s-1), so every entry carries an extra
+// factor of 2^(3/2); fftlog_inverse_3pcf divides both axes' extra
+// factors out again, following fastnc's normalization split. Both
+// Gamma factors come from gsl_sf_lngamma_complex_e as log magnitude
+// plus phase, so their ratio never overflows at large order. The
+// phase -eta*phase_origin aligns the mode with the output grid:
+// phase_origin equals log(ell_min*theta_min) on the padded grid, so
+// the inverse FFT lands exactly on the radii theta = xy/reversed(ell).
+//
+// Radial bin averaging. With dlnt > 0 each output radius theta names
+// the lower edge of a logarithmic bin of width dlnt, and the caller
+// wants the average of the prediction over that bin rather than the
+// value at its edge. One Fourier mode varies across the bin as the
+// power law theta^(-s). Averaging with the polar area measure
+// theta dtheta = theta^2 dln(theta) gives
+//
+//   <theta^(-s)> = theta^(-s) * S(2-s, dlnt) / S(2, dlnt),
+//   S(z, w) = (exp(z*w) - 1) / z,
+//
+// because the measure adds two powers of theta to the numerator and
+// to the normalizing bin area alike. In the code slope = 2 - s =
+// 2.5 - exponent, expm1_complex_3pcf builds the numerator of S
+// without cancellation, and denominator holds S(2, dlnt) =
+// expm1(2.0*dlnt)/2.0.
+//
+// Parameters name one Bessel order, one axis bias, one frequency and
+// the shared phase origin and bin width; fftlog_create_3pcf calls
+// this for every (order, frequency) pair once per workspace. Returns
+// the complex kernel value and aborts on a nonfinite result.
+// ---------------------------------------------------------------------------
 static double complex kernel_fftlog_3pcf(
   const int order, // cylindrical Bessel order, nonnegative
-  const double nu, // real bias
+  const double nu, // real bias of this axis
   const double eta, // logarithmic Fourier frequency
   const double phase_origin, // log(ell_min*theta_min)
   const double dlnt // logarithmic bin width, zero for point values
@@ -187,8 +352,8 @@ static double complex kernel_fftlog_3pcf(
       +I*(numerator_phase.val-denominator_phase.val-eta*phase_origin);
   double complex value = cexp(logarithm);
   if (dlnt > 0.0) {
-    // Cylindrical radial averaging has measure theta*dtheta. The extra
-    // half power comes from converting the spherical Mellin expression.
+    // Multiply the bin-average factor S(2-s,dlnt)/S(2,dlnt) derived in
+    // the header; slope holds 2 - s written through exponent = s + 1/2.
     const double complex slope = 2.5-exponent;
     const double denominator = expm1(2.0*dlnt)/2.0;
     value *= expm1_complex_3pcf(slope*dlnt)/(slope*denominator);
@@ -199,6 +364,24 @@ static double complex kernel_fftlog_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Build one immutable FFTLog workspace: grids, kernel tables and FFTW
+// plans.
+//
+// The constructor runs five stages, marked by banners below:
+// validation, strides and allocation, bias tables, kernel tables, and
+// FFTW plans. After it returns, the numerical entry points read the
+// workspace without changing it, so many workers can share one
+// workspace through their private slices.
+//
+// Inputs are described per parameter below; the file head explains the
+// role each one plays in the transform. Returns the workspace; every
+// failure aborts with a message rather than returning NULL.
+// Ownership: the workspace copies all geometry, and
+// fftlog_destroy_3pcf frees everything it allocated.
+// Thread safety: creation must stay serial, because FFTW planning
+// mutates the global planner state.
+// ---------------------------------------------------------------------------
 fftlog_workspace_3pcf* fftlog_create_3pcf(
   const int n, // original Fourier length
   const double* ell, // positive log-spaced Fourier grid
@@ -213,6 +396,14 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   const double window_width // taper fraction
 )
 {
+  // --- 1. VALIDATION ---
+  // Reject any geometry the tables below cannot represent. The biases
+  // must lie strictly inside (0.5, 2.5): at nu = 0.5 the kernel's
+  // numerator Gamma factor hits its pole for Bessel order zero at zero
+  // frequency, and at nu = 2.5 the zero-frequency bin-average divisor
+  // slope = 2.5 - nu reaches zero. Inside the open interval every
+  // kernel entry stays finite. The grid must be positive and uniformly
+  // log-spaced, because the common step enters every kernel phase.
   require_fftlog_3pcf(n >= 2 && n%2 == 0 && ell != NULL
       && max_order >= 0 && max_order < INT_MAX-1 && workers > 0
       && padding >= 0 && padding <= (INT_MAX-n)/2,
@@ -230,11 +421,20 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   const double step = log(ell[1]/ell[0]);
   require_fftlog_3pcf(isfinite(step) && step > 0.0,
       "ell must increase");
+  // The tolerance 1.0e-10*step accepts grids a caller built by
+  // exponentiating a uniform array, whose spacing wobbles at roundoff
+  // level; a genuinely nonuniform grid still fails by a wide margin.
   for (int index=1; index<n; index++) {
     const double actual = log(ell[index]/ell[index-1]);
     require_fftlog_3pcf(fabs(actual-step) <= 1.0e-10*step,
         "ell must be uniformly spaced in logarithm");
   }
+
+  // --- 2. STRIDES AND ALLOCATION ---
+  // Round each worker's slice up to a whole number of 64-byte cache
+  // lines - 8 doubles, or 4 of the 16-byte fftw_complex values - so
+  // the slices of different workers never share a cache line. The
+  // overflow checks run before any multiplication that could wrap.
   fftlog_workspace_3pcf* work = calloc(1, sizeof(*work));
   require_fftlog_3pcf(work != NULL, "workspace allocation failed");
   work->n = n;
@@ -269,6 +469,12 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       (size_t)(max_order+1)*nfft, sizeof(fftw_complex));
   work->kernel2 = allocate_fftlog_3pcf(
       (size_t)(max_order+1)*nfrequency, sizeof(fftw_complex));
+
+  // --- 3. BIAS TABLES ---
+  // bias1 and bias2 divide the power-law tilt out of the input (file
+  // head, step 1); output1 and output2 restore the matching powers
+  // theta^(1/2-nu) on the output radii. Output node index points at
+  // the reflected Fourier grid: node i carries theta = xy/ell[n-1-i].
   for (int index=0; index<n; index++) {
     work->bias1[index] = pow(ell[index], 0.5-nu1);
     work->bias2[index] = pow(ell[index], 0.5-nu2);
@@ -276,10 +482,21 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
     work->output1[index] = pow(theta, 0.5-nu1);
     work->output2[index] = pow(theta, 0.5-nu2);
   }
+
+  // --- 4. KERNEL TABLES ---
+  // Tabulate the analytic Bessel integral of every Fourier mode, for
+  // every order up to max_order. kernel1 covers the first axis, whose
+  // rows carry all signed frequencies; kernel2 covers the second
+  // axis, which the r2c layout keeps at nonnegative frequencies only.
+  // frequency_step is the spacing of the discrete logarithmic
+  // frequencies, 2*pi over the periodic length nfft*step, and origin
+  // is the phase anchor log(ell_min*theta_min) of the padded grid.
   const double origin = log(xy)-(nfft-1)*step;
   const double frequency_step = 2.0*acos(-1.0)/(nfft*step);
   for (int order=0; order<=max_order; order++) {
     for (int index=0; index<work->padded; index++) {
+      // Rows above padded/2 hold negative frequencies; the Nyquist row
+      // itself takes the positive sign (file head).
       const int frequency = index <= work->padded/2
           ? index : index-work->padded;
       const double taper = taper_fftlog_3pcf(
@@ -290,9 +507,15 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
         work->kernel1[target] = taper
             *kernel_fftlog_3pcf(order, nu1, eta, origin, dlnt);
       } else {
-        // Gamma(a+1)=a Gamma(a) advances the cylindrical Bessel order
-        // by two. Phase, radial averaging and window factors do not
-        // depend on that order, so each parity needs only one GSL seed.
+        // The recurrence Gamma(a+1) = a*Gamma(a), applied once in the
+        // numerator and once in the denominator of the Mellin form,
+        // advances the Bessel order by two:
+        //
+        //   K(n)/K(n-2) = (n-2+s)/(n-s), with s = exponent - 1/2.
+        //
+        // The phase, bin-average and taper factors do not depend on
+        // the order and ride along unchanged from the order-2 seed,
+        // so each parity needs only one direct GSL evaluation.
         const double complex exponent = nu1+I*eta;
         work->kernel1[target] =
             work->kernel1[(size_t)(order-2)*nfft+index]
@@ -305,13 +528,16 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       const double eta = index*frequency_step;
       const size_t target = (size_t)order*nfrequency+index;
       if (nu1 == nu2) {
-        // Nonnegative frequencies share the first axis's prepared value
-        // when both biases agree. The storage remains separate and flat.
+        // Equal biases make the two axes' kernels identical, so the
+        // nonnegative frequencies copy the first axis's finished
+        // values. The storage stays separate and flat regardless.
         work->kernel2[target] = work->kernel1[(size_t)order*nfft+index];
       } else if (order < 2) {
         work->kernel2[target] = taper
             *kernel_fftlog_3pcf(order, nu2, eta, origin, dlnt);
       } else {
+        // The same order-advancing recurrence as above, with the
+        // second axis's bias in the exponent.
         const double complex exponent = nu2+I*eta;
         work->kernel2[target] =
             work->kernel2[(size_t)(order-2)*nfrequency+index]
@@ -319,8 +545,12 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       }
     }
   }
-  // FFTW_ESTIMATE avoids a tuning run that overwrites prepared data. The
-  // recipe is reused on matching aligned worker arrays by new-array calls.
+
+  // --- 5. FFTW PLANS ---
+  // FFTW_ESTIMATE picks a reasonable recipe without the measurement
+  // run that would overwrite the arrays. The execute calls later reuse
+  // each recipe on matching aligned worker arrays through the
+  // new-array interface.
   work->forward_plan = fftw_plan_dft_r2c_2d(work->padded, work->padded,
       work->real, work->forward, FFTW_ESTIMATE);
   work->inverse_plan = fftw_plan_dft_c2r_2d(work->padded, work->padded,
@@ -331,6 +561,9 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
 }
 
 
+// Free every plan, table and slice of one workspace. NULL is a no-op,
+// so error paths can call this unconditionally. Plan destruction must
+// stay serial, like creation.
 void fftlog_destroy_3pcf(
   fftlog_workspace_3pcf* work // owning workspace
 )
@@ -357,9 +590,20 @@ void fftlog_destroy_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Keep only the radial nodes a measurement uses, once per workspace.
+//
+// The caller lists increasing positions on the output grid
+// theta = xy/reversed(ell). For every pair of kept positions this
+// stores the flat cell offset inside the padded inverse grid and the
+// two tilt-restoring output factors, so each later inverse call can
+// finish a compact [ntheta,ntheta] block instead of the full grid.
+// Call before any forward or inverse execution; a second call aborts,
+// because transforms in flight would read a changing table.
+// ---------------------------------------------------------------------------
 void fftlog_select_3pcf(
   fftlog_workspace_3pcf* work, // owning workspace, before any execution
-  const int ntheta, // retained radial samples
+  const int ntheta, // number of kept radial samples
   const int* indices // positions on xy/reversed(ell)
 )
 {
@@ -391,6 +635,10 @@ void fftlog_select_3pcf(
 }
 
 
+// Return the start of one worker's private input slice. The caller
+// fills it with f(ell1,ell2) in row-major [n,n] order before calling
+// fftlog_forward_3pcf; after an inverse call the same memory holds
+// that worker's finished output.
 double* fftlog_input_3pcf(
   fftlog_workspace_3pcf* work, // owning workspace
   const int worker // requested private slice
@@ -402,6 +650,20 @@ double* fftlog_input_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Forward step: tilt the worker's grid and save its Fourier
+// coefficients.
+//
+// The worker's input slice holds f(ell1,ell2). This function
+// multiplies each cell by the bias factors ell1^(1/2-nu1) and
+// ell2^(1/2-nu2) - the tilt division of the file head's step 1 -
+// writes the result into the zero-padded real FFT buffer, and runs the
+// real-to-complex FFT. The coefficients stay in the worker's forward
+// slice, where fftlog_inverse_3pcf reads them once per Bessel-order
+// pair, so the forward FFT runs once per filled grid rather than once
+// per order pair.
+// Thread safety: each worker touches only its own slices.
+// ---------------------------------------------------------------------------
 void fftlog_forward_3pcf(
   fftlog_workspace_3pcf* work, // workspace with an unweighted input grid
   const int worker // private slice
@@ -411,22 +673,43 @@ void fftlog_forward_3pcf(
   double* real = work->real+(size_t)worker*work->real_stride;
   fftw_complex* forward =
       work->forward+(size_t)worker*work->complex_stride;
-  // With no padding, the following loop overwrites every FFT input cell.
-  // Clear only the alignment tail in that case. With padding retain the
-  // full clear, so a previous inverse never supplies spurious edge values.
+  // The fill loop below overwrites every cell inside the physical n*n
+  // block of the FFT buffer. Without padding that block is the whole
+  // transform, so only the alignment tail after it needs clearing.
+  // With padding the border cells must also return to zero, because
+  // the previous inverse transform wrote its full padded output here.
   const size_t clear_start = work->padding == 0 ? (size_t)work->n*work->n : 0;
   for (size_t index=clear_start; index<work->real_stride; index++) {
     real[index] = 0.0;
   }
+  // Scalar meaning of one iteration, for row first and the column
+  // pair second and second+1:
+  //   real[first+padding][second+padding] =
+  //       input[first][second]*bias1[first]*bias2[second];
+  // and the same at second+1. The tilt division multiplies in because
+  // the tables already hold the reciprocal powers ell^(1/2-nu). The
+  // two column neighbors occupy the two SIMD lanes; the lanes never
+  // interact, so vectorizing changes no arithmetic.
   for (int first=0; first<work->n; first++) {
+    // Broadcast this row's factor ell1^(1/2-nu1) into both lanes.
     const v2d first_bias = simde_mm_set1_pd(work->bias1[first]);
+    // n is even - fftlog_create_3pcf enforces it - so column pairs
+    // cover every row exactly and no scalar remainder is needed.
     for (int second=0; second<work->n; second+=2) {
       const size_t target =
           (size_t)(first+work->padding)*work->padded+second+work->padding;
+      // Load f at columns second and second+1 of this row; loadu needs
+      // two valid doubles but no vector-aligned address.
       const v2d values =
           simde_mm_loadu_pd(input+(size_t)first*work->n+second);
+      // Multiply both cells by the shared row factor.
       const v2d first_product = simde_mm_mul_pd(values, first_bias);
+      // Load the two column factors ell2^(1/2-nu2).
       const v2d second_bias = simde_mm_loadu_pd(work->bias2+second);
+      // Finish and store, walking the nested call inside out: mul
+      // multiplies the row-weighted pair by the column factors, and
+      // storeu writes lane 0 at target and lane 1 at target+1 inside
+      // the padded FFT buffer.
       simde_mm_storeu_pd(real+target,
           simde_mm_mul_pd(first_product, second_bias));
     }
@@ -435,6 +718,32 @@ void fftlog_forward_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Inverse step: combine the saved coefficients with two Bessel kernels
+// and transform back to the radial grid.
+//
+// For one pair of Bessel orders the projection integral is the double
+// sum, over all Fourier modes, of coefficient times first-axis kernel
+// times second-axis kernel - and evaluating that sum on every radial
+// pair is itself a Fourier transform, which one complex-to-real FFT
+// performs. The loop below builds the combined coefficients, the FFT
+// reassembles the grid, and the output stage applies the normalization
+// together with the theta^(1/2-nu) factors that restore the tilt
+// divided out on input.
+//
+// The wanted mode sum carries the opposite complex-exponential sign
+// from FFTW's backward transform. Its value is real, because every
+// negative frequency contributes the complex conjugate of its positive
+// partner, so conjugating each combined coefficient flips the sign
+// convention while leaving that real value unchanged; the plain c2r
+// transform then produces the wanted sum. fastnc builds its inverse
+// coefficients the same way.
+//
+// Returns the worker's private output: [n,n], or [ntheta,ntheta] after
+// fftlog_select_3pcf. The next inverse on this worker overwrites it;
+// the forward coefficients survive for further order pairs.
+// Thread safety: workers share only the immutable kernel tables.
+// ---------------------------------------------------------------------------
 const double* fftlog_inverse_3pcf(
   fftlog_workspace_3pcf* work, // workspace with saved forward coefficients
   const int worker, // private slice
@@ -452,6 +761,17 @@ const double* fftlog_inverse_3pcf(
   fftw_complex* scratch =
       work->scratch+(size_t)worker*work->complex_stride;
   double* real = work->real+(size_t)worker*work->real_stride;
+  // Scalar meaning for each coefficient c = forward[index] and the
+  // combined kernel k = kernel1(row frequency)*kernel2(column
+  // frequency):
+  //   scratch[index] = conj(c*k);
+  // Rows carry the signed first-axis frequencies, so kernel1 reads at
+  // the row index directly; columns hold the nonnegative second-axis
+  // frequencies of the r2c layout. The SIMD lanes hold the real part
+  // (lane 0) and imaginary part (lane 1) of one complex value - the
+  // memory order of fftw_complex - and the block computes the complex
+  // product from (a+ib)(p+iq) = (ap-bq) + i(bp+aq), then negates the
+  // imaginary lane to conjugate.
   for (int first=0; first<work->padded; first++) {
     const double complex kernel1 =
         work->kernel1[(size_t)order1*work->padded+first];
@@ -460,59 +780,112 @@ const double* fftlog_inverse_3pcf(
       const double complex factor = kernel1
           *work->kernel2[(size_t)order2*nfrequency+second];
 
-      // SIMD lanes are real and imaginary parts of one coefficient.
-      // (a+ib)(c+id)=(ac-bd)+i(bc+ad); the final sign conjugates it,
-      // exactly as fastnc's inverse coefficient construction requires.
+      // Load c: lane 0 takes its real part, lane 1 its imaginary part.
       const v2d coefficient = simde_mm_loadu_pd((const double*)(forward+index));
+      // Exchange the lanes: the shuffle immediate 1 picks element 1
+      // for lane 0 and element 0 for lane 1, giving [Im c, Re c].
       const v2d swapped = simde_mm_shuffle_pd(coefficient, coefficient, 1);
+      // Broadcast the real part of k to both lanes.
       const v2d real_factor = simde_mm_set1_pd(creal(factor));
+      // set_pd lists lanes high first: lane 1 (the imaginary slot)
+      // receives +Im k and lane 0 (the real slot) receives -Im k.
       const v2d imag_factor =
           simde_mm_set_pd(cimag(factor), -cimag(factor));
+      // Multiply c by Re k in both lanes: [Re c*Re k, Im c*Re k].
       const v2d first_product = simde_mm_mul_pd(coefficient, real_factor);
+      // Multiply the swapped lanes by the signed Im k, giving
+      // [-Im c*Im k, +Re c*Im k].
       const v2d second_product = simde_mm_mul_pd(swapped, imag_factor);
+      // Add the two halves: product = [Re(c*k), Im(c*k)].
       const v2d product = simde_mm_add_pd(first_product, second_product);
+      // Conjugate, walking the nested call inside out: set_pd places
+      // -1 in lane 1 and +1 in lane 0, and mul then flips the sign of
+      // the imaginary lane only.
       const v2d conjugated =
           simde_mm_mul_pd(product, simde_mm_set_pd(-1.0, 1.0));
+      // Store [Re, Im] of the finished inverse coefficient.
       simde_mm_storeu_pd((double*)(scratch+index), conjugated);
     }
   }
   fftw_execute_dft_c2r(work->inverse_plan, scratch, real);
+  // Undo the two conventions the pipeline carried. FFTW scales neither
+  // direction, so the forward and inverse transforms together multiply
+  // every value by the cell count padded*padded. Each axis kernel also
+  // carries a factor 2^(3/2) beyond the analytic Mellin integral (see
+  // kernel_fftlog_3pcf), and the two axes contribute
+  // 2^(3/2)*2^(3/2) = 8.
   const double normalization = 1.0/(8.0*work->padded*work->padded);
   if (work->selected_count > 0) {
-    // Most FFT nodes are discarded by a finite triangle measurement.
-    // Read its prepared offsets directly instead of normalizing/copying
-    // a full n*n output after every inverse. Each SIMD lane is a retained
-    // output; two scalar indexed loads avoid an architecture-specific
-    // gather. The multiplication order matches the full-grid route.
+    // A finite triangle measurement keeps only ntheta of the n radial
+    // nodes per axis, so most cells of the padded inverse grid go
+    // unread. This loop normalizes and tilt-restores just the kept
+    // cells, through the offsets fftlog_select_3pcf stored, instead of
+    // finishing a full n*n grid after every inverse.
+    //
+    // Scalar meaning per kept cell:
+    //   output[cell] = normalization*real[selected_offsets[cell]]
+    //       *selected_first[cell]*selected_second[cell];
+    // Each SIMD lane carries one kept cell. The offsets jump around
+    // the padded grid, so the two grid values arrive through two
+    // scalar indexed loads rather than an architecture-specific
+    // gather; the factor arrays are contiguous and load as pairs. The
+    // multiplication order matches the full-grid route below, so both
+    // routes round identically.
     const v2d factor = simde_mm_set1_pd(normalization);
     size_t cell = 0;
     for (; cell+1<work->selected_count; cell+=2) {
+      // set_pd lists lanes high first: lane 1 takes the value of
+      // cell+1 and lane 0 the value of cell.
       const v2d values = simde_mm_set_pd(
           real[work->selected_offsets[cell+1]],
           real[work->selected_offsets[cell]]);
+      // Scale both cells by the shared normalization.
       const v2d normalized = simde_mm_mul_pd(factor, values);
+      // Multiply in the first-axis factors theta1^(1/2-nu1); the
+      // nested loadu reads the contiguous pair at cell and cell+1.
       const v2d first = simde_mm_mul_pd(normalized,
           simde_mm_loadu_pd(work->selected_first+cell));
+      // Multiply in the second-axis factors theta2^(1/2-nu2), loaded
+      // the same way.
       const v2d second = simde_mm_mul_pd(first,
           simde_mm_loadu_pd(work->selected_second+cell));
+      // Store the finished pair into the worker's compact output.
       simde_mm_storeu_pd(output+cell, second);
     }
+    // The pair loop stops one short when the kept-cell count is odd -
+    // ntheta*ntheta is odd exactly when ntheta is - and this scalar
+    // tail finishes the single remaining cell.
     for (; cell<work->selected_count; cell++) {
       output[cell] = normalization*real[work->selected_offsets[cell]]
           *work->selected_first[cell]*work->selected_second[cell];
     }
     return output;
   }
+  // Full-grid output: normalize every cell of the physical n*n block
+  // and restore the theta^(1/2-nu) powers on both axes, reading from
+  // the padded inverse grid and writing the compact worker output.
+  // The lanes hold two adjacent second-axis cells; n is even, so the
+  // pairs cover each row exactly with no remainder.
   for (int first=0; first<work->n; first++) {
+    // Broadcast the normalization into both lanes.
     const v2d factor = simde_mm_set1_pd(normalization);
+    // Broadcast this row's factor theta1^(1/2-nu1).
     const v2d first_factor = simde_mm_set1_pd(work->output1[first]);
     for (int second=0; second<work->n; second+=2) {
       const size_t source =
           (size_t)(first+work->padding)*work->padded+second+work->padding;
+      // Normalize, walking the nested call inside out: loadu reads the
+      // two adjacent inverse-FFT values at source and source+1, and
+      // mul scales both by the normalization.
       const v2d normalized =
           simde_mm_mul_pd(factor, simde_mm_loadu_pd(real+source));
+      // Multiply both cells by the shared row factor.
       const v2d first_product = simde_mm_mul_pd(normalized, first_factor);
+      // Load the two column factors theta2^(1/2-nu2).
       const v2d second_factor = simde_mm_loadu_pd(work->output2+second);
+      // Finish and store, inside out again: mul applies the column
+      // factors, and storeu writes the pair into the compact [n,n]
+      // output at (first, second) and (first, second+1).
       simde_mm_storeu_pd(output+(size_t)first*work->n+second,
           simde_mm_mul_pd(first_product, second_factor));
     }

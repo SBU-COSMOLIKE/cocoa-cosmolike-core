@@ -7,13 +7,22 @@
 
 namespace cosmolike_interface {
 
-// The notebook adapter receives private Armadillo arrays. Armadillo
-// stores columns contiguously, whereas C expects its last axis to be
-// contiguous. The loops here copy between those layouts; they neither
-// evaluate a physical kernel nor choose an integration rule.
+// ---------------------------------------------------------------------------
+// physics_wrapper.cpp: the notebook route to the 3PCF physics model.
+// The notebook adapter receives private Armadillo arrays. Armadillo is
+// column-major: it stores each column contiguously, so the first (row)
+// index runs fastest in memory. The C model reads row-major tables,
+// where the last index runs fastest. The loops here copy between those
+// layouts; they neither evaluate a physical kernel nor choose an
+// integration rule. physics_3pcf.h and physics_grid_3pcf.h hold the
+// physics these calls reach.
+// ---------------------------------------------------------------------------
+
+// Stop the program, printing which input contract failed, before any
+// partly built table can reach the caller.
 static void require_physics_cpp(
-  const bool condition,
-  const char* message
+  const bool condition, // required shape or physical-domain condition
+  const char* message // diagnostic for a violated input contract
 )
 {
   if (!condition) {
@@ -23,12 +32,14 @@ static void require_physics_cpp(
 }
 
 
+// Build the immutable C model; physics_create_3pcf copies every input.
 physics_owner_3pcf::physics_owner_3pcf(const physics_input_3pcf& input)
   : model(physics_create_3pcf(&input), physics_destroy_3pcf)
 {
 }
 
 
+// Expose the borrowed C pointer; the owner must outlive every reader.
 const physics_model_3pcf* physics_owner_3pcf::get() const
 {
   return model.get();
@@ -48,6 +59,8 @@ physics_grid_owner_3pcf::physics_grid_owner_3pcf(
 }
 
 
+// Adopt a table the batch factory already built; physics_wrapper.hpp
+// explains why lmax travels alongside it.
 physics_grid_owner_3pcf::physics_grid_owner_3pcf(
   physics_grid_3pcf* prepared,
   const int lmax
@@ -68,6 +81,20 @@ int physics_grid_owner_3pcf::lmax() const
 }
 
 
+// ---------------------------------------------------------------------------
+// Notebook model factory. It validates the Armadillo tables, repacks
+// the two matrices into row-major C storage, and hands the pointers to
+// physics_create_3pcf, which copies every physical value into an
+// immutable model. physics_3pcf.h defines the table contract and the
+// units: k in h/Mpc, chi in Mpc/h, P in (Mpc/h)^3, a redshift grid
+// that includes zero.
+//
+// Parameters:
+//   documented argument by argument in physics_wrapper.hpp
+//
+// Returns:
+//   shared owner of the C model; Python keeps it alive
+// ---------------------------------------------------------------------------
 std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const arma::Col<double>& k,
   const arma::Col<double>& p_linear0,
@@ -94,24 +121,42 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
 )
 {
   const arma::uword nsource = source_z.n_elem ? source_z.n_elem : z.n_elem;
+
+  // One chained size check: cubic preparation needs at least four k
+  // nodes, four z nodes and four source-coordinate nodes; the line of
+  // sight needs at least two nodes; at least one source bin must exist;
+  // every count must fit the C int fields of physics_input_3pcf.
   require_physics_cpp(k.n_elem >= 4 && k.n_elem <= INT_MAX
     && z.n_elem >= 4 && z.n_elem <= INT_MAX
     && sources.n_rows > 0 && sources.n_rows <= INT_MAX
     && los_z.n_elem >= 2 && los_z.n_elem <= INT_MAX
     && nsource >= 4 && nsource <= INT_MAX,
     "invalid model dimensions");
+
+  // One chained cross-table check: the linear power lives on the k
+  // axis; the nonlinear power is [nz,nk]; chi, dz/dchi and the growth
+  // factor live on the z axis; each source row holds one density per
+  // source-coordinate node.
   require_physics_cpp(p_linear0.n_elem == k.n_elem
     && p_nonlinear.n_rows == z.n_elem && p_nonlinear.n_cols == k.n_elem
     && chi.n_elem == z.n_elem && dz_dchi.n_elem == z.n_elem
     && growth.n_elem == z.n_elem && sources.n_cols == nsource,
     "model table shapes disagree");
+
+  // Repack both matrices for C. Armadillo stores them column-major
+  // (row index fastest); the C model reads row-major tables (last
+  // index fastest), so each loop writes one row at a time.
   std::vector<double> nonlinear(p_nonlinear.n_elem);
   std::vector<double> source(sources.n_elem);
+
+  // nonlinear[row*nk + column] lays P(z,k) out with k running fastest
   for (arma::uword row=0; row<p_nonlinear.n_rows; row++) {
     for (arma::uword column=0; column<p_nonlinear.n_cols; column++) {
       nonlinear[row*p_nonlinear.n_cols + column] = p_nonlinear(row, column);
     }
   }
+
+  // source[row*nsource + column] puts the source coordinate fastest
   for (arma::uword row=0; row<sources.n_rows; row++) {
     for (arma::uword column=0; column<sources.n_cols; column++) {
       source[row*sources.n_cols + column] = sources(row, column);
@@ -147,6 +192,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   input.sigma8 = sigma8;
   feedback_input_3pcf response = {};
   if (feedback != nullptr) {
+    // The four axis counts must fit the C int fields before any size_t
+    // arithmetic uses them.
     require_physics_cpp(feedback->z.n_elem <= INT_MAX
       && feedback->logk.n_elem <= INT_MAX
       && feedback->logu.n_elem <= INT_MAX && feedback->v.n_elem <= INT_MAX,
@@ -155,6 +202,11 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     const size_t nk = feedback->logk.n_elem;
     const size_t nu = feedback->logu.n_elem;
     const size_t nv = feedback->v.n_elem;
+
+    // One chained check: each axis needs at least four nodes for cubic
+    // preparation; each division guard proves the next multiplication
+    // cannot wrap around SIZE_MAX; the flattened tables must then match
+    // their axis products exactly.
     require_physics_cpp(nz >= 4 && nk >= 4 && nu >= 4 && nv >= 4
       && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
       && nz*nk*nu <= SIZE_MAX/nv
@@ -176,6 +228,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     input.feedback = &response;
   }
   if (pixel_window != nullptr) {
+    // The window reader interpolates linearly between integer
+    // multipoles, so it needs at least two samples.
     require_physics_cpp(pixel_window->n_elem >= 2
       && pixel_window->n_elem <= INT_MAX && pixel_window->is_finite(),
       "pixel window requires a finite vector with at least two samples");
@@ -186,6 +240,33 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Notebook point evaluator: the Armadillo twin of the production
+// dispatch in physics_interface.cpp. One integer selects the physical
+// operation, and physics_3pcf.h holds each C function it reaches:
+// 0 evaluates the matter bispectrum, 1 the nineteen IA bispectra,
+// 2 the projected bispectrum through a shared projector (three source
+// bins instead of redshifts), 3 the nineteen IA bispectra for
+// triangles of one common shape, and 4 the baryon-feedback bispectrum
+// response.
+//
+// This route stays serial on purpose, while the production route
+// parallelizes over triangles: the notebook adapter serves interactive
+// exploration, where a simple loop is worth more than speed.
+//
+// Parameters:
+//   owner      - the immutable model
+//   sides      - [point,3] triangle sides: k in h/Mpc, or multipoles
+//                ell for operation 2
+//   redshifts  - [point] evaluation redshifts (operations 0, 1, 3, 4)
+//   bins       - [3] ordered source bins (operation 2 only)
+//   parameters - IA parameter choice (physics_ia_3pcf)
+//   operation, component, remove_alignment - see above and
+//                physics_3pcf.h
+//
+// Returns:
+//   [point,ncomponent] matrix, checked finite
+// ---------------------------------------------------------------------------
 arma::Mat<double> physics_points_cpp_3pcf(
   const physics_owner_3pcf& owner,
   const arma::Mat<double>& sides,
@@ -203,20 +284,38 @@ arma::Mat<double> physics_points_cpp_3pcf(
     "unknown point operation");
   require_physics_cpp(operation == 2 ? bins.n_elem == 3
     : redshifts.n_elem == sides.n_rows, "point query shapes disagree");
+
+  // Operations 1 and 3 return the nineteen density/E/B leg combinations
+  // that physics_ia_bispectra_3pcf lists in physics_3pcf.h; every other
+  // operation returns one value per triangle.
   const int ncomponent = operation == 1 || operation == 3 ? 19 : 1;
   arma::Mat<double> result(sides.n_rows, ncomponent);
+
   if (operation == 3) {
+    // physics_ia_same_shape_3pcf takes every triangle in one C call,
+    // so the adapter packs the sides into C layout first and unpacks
+    // the results after the call returns.
     std::vector<double> triangles(sides.n_elem);
-    std::vector<double> values(sides.n_rows*19);
+    std::vector<double> values(sides.n_rows*19); // [point,19], row-major
+
+    // pack: Armadillo [point,3] column-major (point index fastest) to
+    // C row-major, where the leg index runs fastest
     for (arma::uword point=0; point<sides.n_rows; point++) {
       for (arma::uword leg=0; leg<3; leg++) {
         triangles[point*3 + leg] = sides(point, leg);
       }
     }
+
     physics_ia_same_shape_3pcf(owner.get(), &parameters,
       static_cast<int>(sides.n_rows), triangles.data(), redshifts.memptr(),
       remove_alignment ? 1 : 0, values.data());
+
+    // unpack: C row-major [point,19] back into the Armadillo matrix
     for (arma::uword point=0; point<sides.n_rows; point++) {
+      // Warning: this loop index reuses the name component and hides
+      // the function parameter component inside the loop body. The
+      // parameter plays no role in operation 3, so the physics is
+      // unchanged; keep the shadowing in mind when editing.
       for (int component=0; component<19; component++) {
         result(point, component) = values[point*19 + component];
       }
@@ -227,22 +326,26 @@ arma::Mat<double> physics_points_cpp_3pcf(
   physics_projection_3pcf* projection = operation == 2
     ? physics_projector_create_3pcf(owner.get(), &parameters, bins.memptr())
     : nullptr;
+
+  // Each iteration evaluates one physical triangle through the C
+  // function that operation selects and copies its components into one
+  // result row. The loop stays serial by design (see the header above).
   for (arma::uword point=0; point<sides.n_rows; point++) {
-    double values[19];
-    if (operation == 0) {
+    double values[19]; // scratch row: up to the nineteen IA entries
+    if (operation == 0) { // matter bispectrum
       values[0] = physics_matter_3pcf(owner.get(), sides(point, 0),
         sides(point, 1), sides(point, 2), redshifts(point), component,
         parameters.fb);
-    } else if (operation == 1) {
+    } else if (operation == 1) { // nineteen IA bispectra
       physics_ia_bispectra_3pcf(owner.get(), &parameters, sides(point, 0),
         sides(point, 1), sides(point, 2), redshifts(point),
         remove_alignment ? 1 : 0, values);
-    } else if (operation == 4) {
+    } else if (operation == 4) { // feedback bispectrum response
       const double triangle[3] = {sides(point, 0), sides(point, 1),
         sides(point, 2)};
       values[0] = physics_feedback_bispectrum_3pcf(owner.get(), triangle,
         redshifts(point), parameters.feedback_amplitude);
-    } else {
+    } else { // operation 2: projection through the shared projector
       values[0] = physics_projected_3pcf(projection, sides(point, 0),
         sides(point, 1), sides(point, 2), component);
     }
@@ -257,6 +360,19 @@ arma::Mat<double> physics_points_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Paired power response at each (k, z) pair, scaled by the shared
+// amplitude; physics_feedback_power_3pcf in physics_3pcf.h holds the
+// physics, and an amplitude of zero returns the DMO (dark-matter-only)
+// value unchanged.
+//
+// Parameters:
+//   k, z      - equal-length wavenumber and redshift arrays
+//   amplitude - shared log-response amplitude
+//
+// Returns:
+//   [n] positive power-response values
+// ---------------------------------------------------------------------------
 arma::Col<double> physics_feedback_power_cpp_3pcf(
   const physics_owner_3pcf& owner,
   const arma::Col<double>& k,
@@ -275,6 +391,17 @@ arma::Col<double> physics_feedback_power_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Direct Legendre multipoles b_L(ell1,ell2) of the projected
+// bispectrum, through the mu quadrature of physics_multipoles_3pcf;
+// physics_3pcf.h displays the defining integral.
+//
+// Parameters:
+//   documented argument by argument in physics_wrapper.hpp
+//
+// Returns:
+//   cube [lmax+1,nell,nell], checked finite entry by entry
+// ---------------------------------------------------------------------------
 arma::Cube<double> physics_multipoles_cpp_3pcf(
   const physics_owner_3pcf& owner,
   const arma::Col<double>& ell,
@@ -289,6 +416,13 @@ arma::Cube<double> physics_multipoles_cpp_3pcf(
     && bins.n_elem == 3 && lmax >= 0 && lmax < INT_MAX,
     "invalid multipole dimensions");
   const size_t nell = ell.n_elem;
+
+  // Overflow guards before allocating [lmax+1,nell,nell]: first
+  // nell*nell, then the full element count with lmax+1. The byte bound
+  // uses SIZE_MAX/sizeof(double) because std::vector measures its
+  // allocation with the unsigned size_t; the production twin in
+  // physics_interface.cpp bounds the same count by NumPy's signed
+  // ssize_t instead.
   require_physics_cpp(nell <= SIZE_MAX/nell
     && static_cast<size_t>(lmax + 1) <= SIZE_MAX/(nell*nell)
     && static_cast<size_t>(lmax + 1)*nell*nell <= SIZE_MAX/sizeof(double),
@@ -296,6 +430,10 @@ arma::Cube<double> physics_multipoles_cpp_3pcf(
   std::vector<double> buffer(static_cast<size_t>(lmax + 1)*nell*nell);
   physics_multipoles_3pcf(owner.get(), &parameters, bins.memptr(),
     static_cast<int>(nell), ell.memptr(), lmax, nmu, component, buffer.data());
+
+  // The C buffer is row-major [L,ell1,ell2] with ell2 running fastest;
+  // the Armadillo cube is column-major inside each slice. The loop
+  // places each value one at a time and checks it finite on the way.
   arma::Cube<double> result(lmax + 1, nell, nell);
   for (int order=0; order<=lmax; order++) {
     for (size_t first=0; first<nell; first++) {
@@ -312,6 +450,19 @@ arma::Cube<double> physics_multipoles_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Full third-order aperture statistic by the direct (ell, phi)
+// quadrature of physics_aperture_full_3pcf; physics_3pcf.h gives the
+// compensated-Gaussian filter U. One value comes back per
+// filter-radius triple.
+//
+// Parameters:
+//   documented argument by argument in physics_wrapper.hpp; phi, dphi
+//   and the filter radii are in radians
+//
+// Returns:
+//   [nfilter] aperture means, checked finite
+// ---------------------------------------------------------------------------
 arma::Col<double> physics_aperture_full_cpp_3pcf(
   const physics_owner_3pcf& owner,
   const arma::Col<double>& ell,
@@ -329,6 +480,9 @@ arma::Col<double> physics_aperture_full_cpp_3pcf(
     && filters.n_cols == 3 && bins.n_elem == 3
     && dell.n_elem == ell.n_elem && dphi.n_elem == phi.n_elem,
     "full-aperture input shapes disagree");
+
+  // pack the radii: Armadillo [nfilter,3] column-major to the C
+  // row-major layout, where the leg index runs fastest
   std::vector<double> radii(filters.n_elem);
   for (arma::uword filter=0; filter<filters.n_rows; filter++) {
     for (arma::uword leg=0; leg<3; leg++) {
@@ -345,6 +499,17 @@ arma::Col<double> physics_aperture_full_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Interpolated projected bispectrum: one read of the prepared grid
+// table (physics_grid_3pcf.h) per row of multipole triangles.
+//
+// Parameters:
+//   sides     - [point,3] angular Fourier triangles
+//   component - total=0, NLA baseline=1, residual IA=2
+//
+// Returns:
+//   [point] interpolated values, checked finite
+// ---------------------------------------------------------------------------
 arma::Col<double> physics_grid_projected_cpp_3pcf(
   const physics_grid_owner_3pcf& owner,
   const arma::Mat<double>& sides,
@@ -363,6 +528,17 @@ arma::Col<double> physics_grid_projected_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Interpolated Legendre multipoles b_L from the prepared grid table;
+// the owner carries the Legendre cutoff the table was built with.
+//
+// Parameters:
+//   ell       - Fourier sides of the b_L output grid
+//   component - total=0, NLA baseline=1, residual IA=2
+//
+// Returns:
+//   cube [lmax+1,nell,nell], checked finite
+// ---------------------------------------------------------------------------
 arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
   const physics_grid_owner_3pcf& owner,
   const arma::Col<double>& ell,
@@ -380,6 +556,9 @@ arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
   std::vector<double> packed(norder*count*count);
   physics_grid_multipoles_3pcf(owner.get(), static_cast<int>(count),
     ell.memptr(), component, packed.data());
+
+  // The C buffer is row-major [L,ell1,ell2] with ell2 running fastest;
+  // the loop places each value into the column-major Armadillo cube.
   arma::Cube<double> result(norder, count, count);
   for (size_t order=0; order<norder; order++) {
     for (size_t first=0; first<count; first++) {
@@ -394,6 +573,19 @@ arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Batch projection-grid factory: one prepared table per ordered source
+// triplet. physics_grid_create_many_3pcf shares the triangle and
+// redshift preparation across the whole batch, which is why building
+// many tables together beats building them one by one.
+//
+// Parameters:
+//   bins - [ntriplet,3] ordered source triplets; parameters and
+//          settings apply to every table
+//
+// Returns:
+//   one shared owner per triplet, in the input row order
+// ---------------------------------------------------------------------------
 std::vector<std::shared_ptr<physics_grid_owner_3pcf>>
 physics_grids_cpp_3pcf(
   const physics_owner_3pcf& owner,
@@ -404,6 +596,9 @@ physics_grids_cpp_3pcf(
 {
   require_physics_cpp(bins.n_rows > 0 && bins.n_rows <= INT_MAX
     && bins.n_cols == 3, "batch bins must have shape [ntriplet,3]");
+
+  // pack the triplets: Armadillo [ntriplet,3] column-major to the C
+  // row-major layout, where the leg index runs fastest
   std::vector<int> ordered(bins.n_elem);
   for (arma::uword row=0; row<bins.n_rows; row++) {
     for (arma::uword leg=0; leg<3; leg++) {
@@ -424,6 +619,18 @@ physics_grids_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Aperture statistic from the prepared grid table: the same (ell, phi)
+// quadrature as the direct route, reading interpolated values instead
+// of line-of-sight projections.
+//
+// Parameters:
+//   documented argument by argument in physics_wrapper.hpp; phi, dphi
+//   and the filter radii are in radians
+//
+// Returns:
+//   [nfilter] aperture means, checked finite
+// ---------------------------------------------------------------------------
 arma::Col<double> physics_grid_aperture_cpp_3pcf(
   const physics_grid_owner_3pcf& owner,
   const arma::Col<double>& ell,
@@ -433,11 +640,17 @@ arma::Col<double> physics_grid_aperture_cpp_3pcf(
   const arma::Mat<double>& filters
 )
 {
+  // One chained check: both quadrature node arrays must be nonempty and
+  // fit the C int counts; each filter row holds three radii; each
+  // weight array matches its node array.
   require_physics_cpp(ell.n_elem > 0 && ell.n_elem <= INT_MAX
     && phi.n_elem > 0 && phi.n_elem <= INT_MAX
     && filters.n_rows > 0 && filters.n_rows <= INT_MAX
     && filters.n_cols == 3 && dell.n_elem == ell.n_elem
     && dphi.n_elem == phi.n_elem, "grid aperture input shapes disagree");
+
+  // pack the radii: Armadillo [nfilter,3] column-major to the C
+  // row-major layout, where the leg index runs fastest
   std::vector<double> radii(filters.n_elem);
   for (arma::uword filter=0; filter<filters.n_rows; filter++) {
     for (arma::uword leg=0; leg<3; leg++) {
@@ -454,6 +667,18 @@ arma::Col<double> physics_grid_aperture_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Shear power spectrum C_ell with NLA kernels for one source-bin pair,
+// through physics_nla_power_batch_3pcf; no TATT loop integrals enter
+// this diagnostic.
+//
+// Parameters:
+//   ell  - output multipoles of the shear C_ell
+//   bins - [2] source bins of the power spectrum
+//
+// Returns:
+//   [nell] C_ell values, checked finite
+// ---------------------------------------------------------------------------
 arma::Col<double> physics_nla_power_cpp_3pcf(
   const physics_owner_3pcf& owner,
   const arma::Col<double>& ell,

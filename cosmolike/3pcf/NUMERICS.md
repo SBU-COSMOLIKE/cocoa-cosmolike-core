@@ -33,16 +33,16 @@ need separate refinement checks.
 
 | Table | Physical calculation or input | Repeated read |
 |---|---|---|
-| Matter power and background | Supplied physical arrays, resampled during model construction | Uniform log-wave-number/redshift cells |
+| Matter power and background | Physical input arrays, resampled during model construction | Uniform log-wave-number/redshift cells |
 | Matter-fit coefficients | Fixed uniform redshift anchors | Dense uniform redshift table |
 | Projected bispectrum | Fixed Fourier-triangle charts and radial nodes | Dense triangle-coordinate tables |
-| Angular Legendre coefficients | Fixed angular projection of the prepared bispectrum | Uniform log-scale and selected angular-coordinate cells |
+| Angular Legendre coefficients | Fixed angular projection of the prepared bispectrum | Uniform log-scale and angular-coordinate cells |
 | Halo shear profiles | Fixed Fourier quadrature at radial preparation nodes | Uniform transformed-radius cells |
 
 The external input tables need not already be uniform. Their conversion
 can use a general interpolator during serial preparation. That does not
-put a spline or a search inside the production reader. Named upstream
-reference modes preserve their original interpolation sequence for
+put a spline or a search inside the production reader. The upstream
+reference modes keep their original interpolation sequence for
 cross-code comparisons; they are distinct numerical choices.
 
 ## Uniform coordinates and interpolation <a name="interpolation"></a>
@@ -62,7 +62,7 @@ f(x)=(1-t)f_j+t f_{j+1}.
 
 There is no binary search because the coordinate determines the cell
 directly. Endpoint handling must keep $`j+1`$ inside the table. The
-declared extrapolation rule is a separate scientific choice; clamping an
+extrapolation rule is a separate scientific choice; clamping an
 out-of-range request is not an interpolation accuracy test.
 
 For repeated multipole requests, calculate all indices and fractions
@@ -72,15 +72,19 @@ uses eight. Keeping the final coordinate contiguous lets neighboring
 outputs share the same memory layout as the angular-power reads used by
 the existing $`\xi_\pm`$ calculation.
 
-The positive matter/NLA baseline can be stored logarithmically only where
-its sign is known. Residual intrinsic-alignment terms can cross zero and
+The code can store the positive matter/NLA baseline logarithmically only
+where its sign is known. Residual intrinsic-alignment terms can cross zero and
 must retain their signed values. Source labels remain attached to their
 Fourier sides when a triangle is sorted or mapped to another shape chart.
 Equal array dimensions do not make those permutations interchangeable.
 
-The prepared grid's `signed_baseline: 1` setting uses two RUV tables:
-the logarithm of the positive gravity-only projection $`B_{GGG}`$, and
-the signed ratio $`B_{\rm NLA}/B_{GGG}`$. Cubic preparation and dense
+The prepared grid's `signed_baseline: 1` setting uses two tables on the
+sorted RUV triangle coordinates, where $`r`$ is the middle side length,
+$`u`$ divides the smallest side by the middle one, and $`v`$ divides the
+difference between the largest and middle sides by the smallest. One
+table holds the logarithm of the positive gravity-only projection
+$`B_{GGG}`$; the other holds the signed ratio
+$`B_{\rm NLA}/B_{GGG}`$. Cubic preparation and dense
 linear reads apply to each table. Their reconstructed product can be
 negative or zero without taking the logarithm of an intrinsic-alignment
 signal. The default `signed_baseline: 0` retains the positive-logarithm
@@ -94,14 +98,14 @@ scale an absolute interpolation error by $`B_{GGG}`$ rather than dividing
 by the vanishing baseline. This setting does not change the separately
 computed TATT residual or its accuracy requirements.
 
-
 ### Signed residuals across a large Fourier range
 
 The residual is the TATT or velocity-shear contribution left after removing
 the separately calculated NLA baseline. It is a signed function, so storing
 its logarithm would discard negative values and fail at a physical zero.
 Storing the raw value also has a numerical cost: a cubic fit along
-$`\ln p`$, with $`p=\ell_1+\ell_2+\ell_3`$, can carry an error from a large
+$`\ln p`$, where the perimeter $`p=\ell_1+\ell_2+\ell_3`$ adds the three
+Fourier side lengths, can carry an error from a large
 sample into a region where the true residual is many orders smaller.
 Densely reading that incorrect cubic does not remove the error.
 
@@ -113,7 +117,8 @@ E(p)=B_{GGG}(p/3,p/3,p/3)>0,
 Q(p,u,v)=\frac{B_{\rm residual}(p,u,v)}{E(p)}.
 ```
 
-Here $`u=\ell_1/p`$ and $`v=\ell_2/p`$. The denominator uses the same
+Here the shape fractions are $`u=\ell_1/p`$ and $`v=\ell_2/p`$. The
+denominator uses the same
 cosmology, ordered source triplet and matter/baryon prescription, with all
 intrinsic-shape amplitudes set to zero. The code stores $`\ln E`$ and
 signed $`Q`$, prepares their cubic curves separately, and reconstructs
@@ -128,19 +133,22 @@ does not resolve an angular feature or modify the physical IA coefficients.
 The default `residual_scaling: 0` retains the raw residual. Pure NLA has
 exactly zero residual and prepares neither the scale nor the ratio. When
 `signed_baseline: 1` also needs a gravity-only projector, both preparations
-share that projector. The temporary positive scales and worker buffers
-are allocated before the worker loops and released after table preparation.
-A nonpositive denominator or an unrepresentable ratio produces a named
-refusal; no absolute value or positive floor replaces a physical result.
+share that projector. The code allocates the temporary positive scales
+and worker buffers before the worker loops and releases them after table
+preparation. A nonpositive denominator or an unrepresentable ratio
+produces an explicit refusal; no absolute value or positive floor
+replaces a physical result.
 
 ### Resolving the physical triangle shape
 
-The rectangular PUV table samples $`u,v\in[m,1/2]`$, where production
+The rectangular PUV table stores the residual on the perimeter $`p`$ and
+the unsorted shape fractions $`u`$ and $`v`$ defined above, without side
+sorting. It samples $`u,v\in[m,1/2]`$, where production
 uses $`m=\min(10^{-6},\ell_{\min}/(4\ell_{\max}))`$. A physical triangle
 also requires $`u+v\geq1/2`$ and a positive closing side
-$`1-u-v>0`$. The remaining rectangular cells use the named upstream
+$`1-u-v>0`$. The remaining rectangular cells use the upstream
 continuation outside the triangle domain. The zero-side corner at
-$`u=v=1/2`$ is assigned a continuation value; it is not a derivation of a
+$`u=v=1/2`$ receives a continuation value; it is not a derivation of a
 physical squeezed limit. Keeping these cells is an interpolation convention.
 Source labels stay with their original sides throughout. Check boundary
 influence with direct physical triangles when changing the shape resolution
@@ -155,26 +163,32 @@ u(t)=m+\frac{1/2-m}{2}
 \qquad s=\mathtt{shape\_stretch}.
 ```
 
-The default $`s=3`$ preserves the previous grid. Increasing $`s`$ puts more
-nodes near small fractions and near $`1/2`$, where squeezed triangles occur.
-It simultaneously spreads the central nodes farther apart. The support
-limit $`m`$ and the first interior node are different quantities: an axis
-can include $`m\ll10^{-6}`$ while its next node is near $`10^{-4}`$.
-Declaring that support alone does not resolve the intervening shapes.
+The default $`s=3`$ keeps the original node placement. Increasing $`s`$
+puts more nodes near small fractions and near $`1/2`$, where squeezed
+triangles occur. It simultaneously spreads the central nodes farther
+apart.
+
+The support limit $`m`$ and the first interior node are different
+quantities: an axis can include $`m\ll10^{-6}`$ while its next node sits
+near $`10^{-4}`$. Declaring that support alone does not resolve the
+intervening shapes.
+
 Changing `shape_stretch` therefore needs a separate `nshape` refinement,
 including ordinary, squeezed and nearly flattened physical triangles.
 The scale suggested by $`s\simeq\tfrac12\ln[(1/2)/m]`$ is a sampling
 choice to investigate, not an accuracy guarantee.
 
 Close to a machine-precision boundary, even recovering a stored knot can
-be ill-conditioned. The short side $`p(1-u-v)`$ subtracts order-one fractions,
-and converting rounded sides back into $`u,v`$ changes their final bits.
-The inverse hyperbolic tangent can amplify those small changes near its
-endpoints. Exact endpoint branches protect the declared endpoints, but
-they cannot restore information lost in a nonzero side ratio. Interior
-knot tests, high-precision side-geometry checks, and convergence on near-edge
-physical triangles answer different questions. A broad tolerance applied to
-all three would conceal which calculation is failing.
+be ill-conditioned. The short side $`p(1-u-v)`$ subtracts order-one
+fractions, and converting rounded sides back into $`u,v`$ changes their
+final bits. The inverse hyperbolic tangent can amplify those small
+changes near its endpoints. Exact endpoint branches protect the endpoint
+values themselves, but they cannot restore information lost in a nonzero
+side ratio.
+
+Interior knot tests, high-precision side-geometry checks, and convergence
+on near-edge physical triangles answer different questions. A broad
+tolerance applied to all three would conceal which calculation is failing.
 
 ### Physical angles and their interpolation coordinate
 
@@ -203,23 +217,24 @@ coordinate. A positive scale changes where a fixed number `npsi` of coarse
 samples is spent; it does not add samples or establish a target error.
 
 Only preparation inverts this relation. A fixed bracketed root calculation
-produces the physical log-angles at each coarse or dense coordinate, with
-exactly retained physical endpoints. The exported `log_psi` axis continues
+produces the physical log-angles at each coarse or dense coordinate and
+keeps the physical endpoints exact. The exported `log_psi` axis continues
 to contain $`\ln\psi`$, which is generally nonuniform in this mode. A separate
 internal `psi_coordinate` array is uniform and supplies arithmetic cell
 indices, interpolation fractions and cubic preparation. There is no new
 binary search or inverse root in the repeated production reader. There is
 also no new integration Jacobian: this is an interpolation coordinate,
-while the Legendre projection still integrates over its declared $`\mu`$
-nodes. The source `reference_mode: 1` keeps its original angular axis and
+while the Legendre projection still integrates over its fixed $`\mu`$
+nodes, where $`\mu`$ is the cosine of the angle between the two Fourier
+multipole legs. The source `reference_mode: 1` keeps its original angular axis and
 reader regardless of `psi_scale`.
 
 ## Integration rules are a separate choice <a name="integration"></a>
 
-Fixed integration nodes are prepared before the physical calculation.
-The Fourier, angular, mass and radial rules have explicit nodes and
-weights. The same nodes are used at every displaced cosmology in a
-derivative. There is no data-dependent subdivision of an integral while
+The code prepares fixed integration nodes before the physical
+calculation. The Fourier, angular, mass and radial rules have explicit
+nodes and weights. Every displaced cosmology in a derivative uses the
+same nodes. There is no data-dependent subdivision of an integral while
 an OpenMP worker evaluates it.
 
 A Gauss-Legendre rule has nonuniform nodes. This is consistent with a
@@ -237,8 +252,8 @@ by its equation. Multiplying by that Jacobian again changes the units
 and the answer.
 
 The source-comparison angular projection integrates its piecewise-linear
-bispectrum against Legendre polynomials with prepared weights. It should
-not be described as a direct Gauss-Legendre evaluation of the physical
+bispectrum against Legendre polynomials with prepared weights. Do not
+describe it as a direct Gauss-Legendre evaluation of the physical
 bispectrum. Both methods use fixed nodes, but they approximate different
 intermediate functions.
 
@@ -250,14 +265,14 @@ operation that changes those inputs. A transform plan owns its angular
 geometry, FFTW plans and worker buffers. A new cosmology supplies new
 bispectrum values while retaining a compatible transform plan.
 
-| Retained object | Inputs that define its contents |
+| Object kept across calls | Inputs that define its contents |
 |---|---|
 | Physical model | All physical arrays, cosmological scalars, source kernels and preparation controls |
 | Projection tables | Physical model, ordered source labels, all IA/baryon coefficients, triangle ranges and resolution controls |
-| Transform plan | Fourier and angular coordinates, selected bins, angular orders, FFT bias/padding/window, projection convention and worker capacity |
+| Transform plan | Fourier and angular coordinates, requested bins, angular orders, FFT bias/padding/window, projection convention and worker capacity |
 | Multipole query map inside the plan | Exact requested Fourier nodes, complete projected-grid axes, their dimensions, the Legendre cutoff and reader convention |
 | Aperture weights | Side/angle bins, widths, three ordered filter radii and the shear convention |
-| Project mean | Immutable model, exact IA values and owned observable geometry; shear calibration is applied afterward |
+| Project mean | Immutable model, exact IA values and owned observable geometry; shear calibration applies afterward |
 
 A cache key is the list of inputs compared before reuse. Sizes alone are
 not enough: two arrays with the same shape can contain different source
@@ -282,14 +297,17 @@ physical nodes coincide. With two PSI nodes and no dense upsampling,
 but give different interpolation fractions between them. The query key
 therefore includes `psi_scale`, the complete internal coordinate array,
 and the physical `log_psi` array, as well as the Fourier axis, dimensions,
-Legendre cutoff and reference-mode choice. By contrast, `residual_scaling`
-and `shape_stretch` change the current physical table values; if the b_L
-query geometry is unchanged, the map may still read those new values.
-Neither the normalized residual nor its positive scale is retained as a
-physical-value cache inside the geometric map.
+Legendre cutoff and reference-mode choice. The stored outputs are the
+$`b_L`$: the Legendre coefficients, in the angular cosine $`\mu`$, of the
+projected E-mode bispectrum. By contrast, `residual_scaling`
+and `shape_stretch` change the current physical table values; if the
+$`b_L`$ query geometry is unchanged, the map may still read those new
+values.
+The geometric map keeps neither the normalized residual nor its positive
+scale as a physical-value cache.
 
 `TransformPlan.aperture_from_grid` performs this read and the aperture
-calculation in C. Its notebook counterpart copies the supplied weights
+calculation in C. Its notebook counterpart copies the caller's weights
 through Armadillo and returns the same one-dimensional filter vector.
 The two-step `grid.multipoles` followed by `aperture_from_multipoles` remains
 available when the multipoles themselves are needed. The plan owns its
@@ -300,8 +318,7 @@ mean. It is an offline calculation with explicit shared inputs. Within
 one calculation it prepares the halo, filter, Bessel and window tables
 once, then shares them across covariance terms and row pairs. A persistent
 cosmology cache is unnecessary when there is no subsequent call that can
-reuse it. This distinction follows the existing covariance implementation;
-the presence of a file-scope `static` is not itself an optimization.
+reuse it. This distinction follows the existing covariance implementation.
 
 Source-bin factors can often be separated exactly. In the pure-lensing
 halo model, a filtered profile is $`\Phi_{i,R}=W_i\phi_R`$. All sources
@@ -309,20 +326,20 @@ with the same radius therefore share $`\phi_R`$. A pair transform depends
 on the two radii, while its source efficiencies multiply the result.
 For five distinct radii there are fifteen unordered radius pairs. Creating
 separate transforms for every source/radius label would repeat the same
-radial integral. This factorization requires the declared physical model;
-it must be rederived before adding a source-dependent halo prescription.
+radial integral. This factorization holds only for that pure-lensing
+model; rederive it before adding a source-dependent halo prescription.
 
 The same separation reduces the $`P\,T`$ covariance term. Here $`P`$ joins
 one field from each cubic estimator, while the one-halo connected four-point
 function $`T`$ joins the other four. There are nine choices of the two fields
 assigned to $`P`$. Several covariance entries ask for the same radial dot
 product, specified by the two single-field labels and the two complementary
-radius pairs. Each needed ordered choice is calculated once per halo mass
-and distance. The remaining source weights and the nine-term sum retain
-their order in each matrix cell. Reversing the field pair is not used to
-merge entries: finite-window products can have a different rounding order.
-All contraction values are refilled at the next halo and released when the
-covariance call returns. The six additional finite-window terms remain
+radius pairs. The code calculates each needed ordered choice once per
+halo mass and distance. The remaining source weights and the nine-term
+sum keep their order in each matrix cell. The code does not merge entries
+by reversing the field pair: finite-window products can have a different
+rounding order. It refills all contraction values at the next halo and
+releases them when the covariance call returns. The six additional finite-window terms remain
 separate from these nine contractions.
 
 ## OpenMP and SIMD <a name="parallel"></a>
@@ -330,7 +347,7 @@ separate from these nine contractions.
 OpenMP assigns independent outputs to workers. Each worker writes its
 own rows or triangle cells and owns its scratch storage. FFTW planning
 and allocations occur before those workers start. Inner numerical sums
-retain their declared node order; changing the worker count does not
+keep their fixed node order; changing the worker count does not
 change which worker contributes to a shared floating-point reduction.
 
 SIMD evaluates several independent arithmetic operations in one vector
@@ -351,9 +368,9 @@ Odd output counts use an explicit scalar tail.
 Projection batches store radial weights with the source triplet as the
 contiguous index. Two SIMD lanes can therefore load neighboring triplets
 from one array while sharing the same matter and intrinsic-shape calculation.
-The weights depend on the immutable model and alignment parameters, and are
-prepared before triangle workers start. The packed owner is destroyed before
-the projectors it borrows. Increasing the batch size shares more physical
+The weights depend on the immutable model and alignment parameters; the
+code prepares them before triangle workers start and destroys the packed
+owner before the projectors it borrows. Increasing the batch size shares more physical
 work but keeps more projected grids in memory; it is a memory choice, not an
 accuracy control.
 
@@ -378,9 +395,9 @@ angular modes can run on separate OpenMP workers, each with private
 Fourier scratch. Starting an additional FFT thread team inside each such
 worker would multiply the active workers and compete for the same cores.
 Thread-count changes must respect the capacity owned by the plan.
-Modes with two inverse transforms are scheduled after those with four.
-Workers take the next available mode, while each completed result is stored
-under its physical angular order. A worker still evaluates each Legendre
+The schedule places modes with two inverse transforms after those with
+four. Workers take the next available mode and store each completed
+result under its physical angular order. A worker still evaluates each Legendre
 sum in increasing order. The coupling table already includes its fixed
 $`(-1)^L`$ factor, and two independent SIMD pairs advance four output cells
 without regrouping any cell's sum.
@@ -390,7 +407,8 @@ thread team inside an OpenMP worker would oversubscribe that allocation.
 ## What a numerical comparison establishes <a name="validation"></a>
 
 Three checks answer different questions. A pinned-source comparison
-tests whether the stated source convention was translated. An independent
+tests whether the implementation translated the stated source
+convention. An independent
 analytic or quadrature calculation tests a physical normalization or
 operator. A refinement test asks whether the chosen discretization has
 resolved the observable. Agreement with the first does not replace the
@@ -415,17 +433,16 @@ $`\frac12\int|B_{\rm linear}(\mu)|\,d\mu`$ avoids a division by that
 coefficient. This comparison isolates multipole interpolation; it does not
 validate the physical projected table or the omitted angular endpoint cap.
 
-Only after those checks should transform, finite-aperture and derivative
-refinement be interpreted together. In particular, a plausible-looking
+Interpret transform, finite-aperture and derivative refinement together
+only after those checks. In particular, a plausible-looking
 aperture amplitude or a stable Fisher ratio cannot certify the earlier
 stages. The optional representations above have separate controls because
 radial amplitude, triangle shape and multipole angular sampling are separate
 sources of numerical error. Their presence does not establish convergence
-for a selected survey data vector.
+for a chosen survey data vector.
 
 The [executed validation record](../../../../../projects/des_3pcf/tests/VALIDATION.md)
 identifies the checks and build modes actually run. Survey-size accuracy
-requires the selected Y3 or Y6 rows, a matched covariance and derivative
+requires the survey's Y3 or Y6 rows, a matched covariance and derivative
 step checks. Runtime claims require a separate controlled measurement on
-an available machine. The implementation choices described here identify
-reused work and arithmetic structure; they are not measured speedups.
+an available machine.

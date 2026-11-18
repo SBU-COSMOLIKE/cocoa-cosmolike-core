@@ -10,20 +10,24 @@ extern "C" {
 // The caller owns every array and supplies finite inputs, valid lengths,
 // positive dimensions, and an output buffer that overlaps no input.
 // Read-only inputs may share storage. The pair transform allocates one
-// temporary geometric table before its workers start and frees it before
-// returning. The contractions retain no state between calls.
+// temporary geometric table for the length of the call and frees it
+// before returning. The contractions keep no state between calls.
 
 // Filtered correlation of two real, statistically isotropic scalar fields:
-//   K_ij(r) = integral dell ell/(2*pi) U_i(ell) U_j(ell) P_ij(ell) J0(ell*r).
-// ell [nell] is nonnegative angular wavenumber; r [nr] is nonnegative
-// separation in radians. Their product must be dimensionless.
-// ell_weights [nell] contains quadrature weights for dell, with no 2*pi.
-// For an integral sampled in log(ell), include the extra ell in these
-// weights. filters [nfield,nell] contains real dimensionless U_i.
-// power [nfield,nfield,nell] contains the angular power, including any
-// noise once. Each field label may specify a source bin and a filter.
-// out [nfield,nfield,nr] is overwritten. All ordered pairs are evaluated.
-// No symmetry, infinite ell range, or convergence is imposed by this sum.
+//   K_ij(r) = integral dell ell/(2*pi) U_i(ell) U_j(ell) P_ij(ell) J0(ell*r),
+// with U_i the real circular filter of field i, P_ij the total angular
+// power of fields i and j, and J0 the Bessel function of the first
+// kind of order zero. ell [nell] is nonnegative angular wavenumber;
+// r [nr] is nonnegative separation in radians. Their product must be
+// dimensionless. ell_weights [nell] holds the quadrature weights for
+// dell alone; the code supplies the 1/(2*pi). For an integral sampled
+// in log(ell), include the extra ell in these weights. filters
+// [nfield,nell] holds the real dimensionless U_i. power
+// [nfield,nfield,nell] holds the angular power, including any noise
+// once. Each field label may specify a source bin and a filter. The
+// function overwrites out [nfield,nfield,nr] and evaluates every
+// ordered pair. The sum imposes no symmetry, no infinite ell range and
+// no convergence.
 void filtered_pair_3pcf(
   int nfield,                  // number of field/filter labels
   int nell,                    // number of multipole quadrature nodes
@@ -36,13 +40,14 @@ void filtered_pair_3pcf(
   double* out                  // pair functions [nfield,nfield,nr]
 );
 
-// Weighted contraction of supplied connected responses:
+// Weighted contraction of the caller's connected responses:
 //   out[i,j] = sum_node weights[node] responses[i,node] responses[j,node].
-// responses [nrow,nnode]; weights [nnode], finite and nonnegative;
-// out [nrow,nrow], overwritten and symmetric. The caller places the entire
-// physical measure, including any survey area factor, in weights.
-// This function does not infer halo profiles, a response model, or the
-// other contributions required for a complete covariance.
+// responses [nrow,nnode] holds the response of each row at each node;
+// weights [nnode] is finite and nonnegative. The function overwrites
+// out [nrow,nrow] with the symmetric result. The caller places the
+// entire physical measure, including any survey area factor, in
+// weights. This function does not infer halo profiles, a response
+// model, or the other contributions a complete covariance needs.
 void connected_gram_3pcf(
   int nrow,                    // number of observable responses
   int nnode,                   // number of shared quadrature nodes
@@ -55,15 +60,16 @@ void connected_gram_3pcf(
 // triplets [nrow,3] lists zero-based field indices for each product.
 // pair [nfield,nfield,nr] is K_ij(r); pair_zero [nfield,nfield] is K_ij(0).
 // Both describe symmetric correlations of real, zero-mean, isotropic
-// Gaussian fields. pair_zero is supplied explicitly; r need not start at 0.
-// radial_weights [nr] includes the full radial quadrature and estimator
-// window measure, e.g. 2*pi*r*dr/area in the large-area approximation.
-// It is finite and nonnegative. No extra area or angular factor is added.
-// out [nrow,nrow] is overwritten with all 15 positional Wick pairings:
-// six with three cross-pairs and nine with one cross-pair. Repeated labels
-// retain their multiplicity. This is not a distinct-galaxy catalogue
-// estimator: its internal noise self-pairs have not been subtracted.
-// No connected non-Gaussian term or xi-plus/minus cross-covariance is added.
+// Gaussian fields. The caller supplies pair_zero explicitly, so r need
+// not start at zero. radial_weights [nr] is finite and nonnegative and
+// includes the full radial quadrature and estimator window measure,
+// e.g. 2*pi*r*dr/area in the large-area approximation; the function
+// adds no extra area or angular factor. The function overwrites out
+// [nrow,nrow] with all 15 positional Wick pairings: six with three
+// cross-pairs and nine with one cross-pair. Repeated labels keep their
+// multiplicity. This is not a distinct-galaxy catalogue estimator (the
+// sum keeps the internal noise self-pairs), and it adds no connected
+// non-Gaussian term and no xi-plus/minus cross-covariance.
 void gaussian_aperture_covariance_3pcf(
   int nfield,                  // number of field/filter labels
   int nr,                      // number of radial quadrature nodes

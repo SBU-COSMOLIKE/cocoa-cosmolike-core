@@ -17,32 +17,44 @@
 // aperture center. Correlations of these values are easier to assemble
 // than a six-wavevector integral when the fields are Gaussian: Wick's
 // theorem expresses a six-field expectation as products of two-field
-// correlations. A different reduction applies to a connected response
-// model whose covariance has the form integral dnu H_i H_j. The functions
-// below provide these two contractions and the radial pair transform.
+// correlations. A connected response model allows a different
+// reduction: when its covariance is an integral dnu H_i(nu) H_j(nu),
+// with nu the integration label and H_i the response of observable i,
+// the covariance is a weighted Gram matrix of those responses. The
+// functions below provide these two contractions and the radial pair
+// transform.
 //
-// The Gaussian aperture covariance and survey-window distinction are
-// discussed by Linke et al., https://arxiv.org/abs/2212.04485. The sums here
-// are implemented directly from the stated equations. They do not import
-// a survey, a cosmology, halo profiles, or a galaxy-catalogue estimator.
-// In particular, the connected response contraction does not supply the
-// bispectrum-squared or power-times-trispectrum covariance contributions.
+// Linke et al. (aperture-statistics covariances, arXiv 2212.04485)
+// discuss the Gaussian aperture covariance and the survey-window
+// distinction; the sums below implement their stated equations
+// directly. The functions import no survey, no cosmology, no halo
+// profiles and no galaxy-catalogue estimator. In particular, the
+// connected response contraction does not supply the
+// bispectrum-squared or power-times-trispectrum covariance
+// contributions.
 //
-// All arrays use contiguous C order, with the last index changing fastest.
-// size_t is an unsigned type large enough for an array offset; casting
-// before multiplying prevents intermediate products of int dimensions.
-// The caller checks array lengths, finite values and physical domains;
-// the guards below catch invalid dimensions, pointers and field labels.
-// The pair transform prepares one temporary Bessel table before workers
-// start; the other contractions need no heap storage. No global physical
-// state is saved. Inputs remain unchanged, and output storage must not
-// overlap any input.
+// This file deliberately stands alone: it calls plain malloc/free and
+// reports errors with fprintf plus exit instead of using the core's
+// allocators and loggers, so the module compiles without basics.h.
+//
+// All arrays use contiguous C order, with the last index changing
+// fastest. size_t is an unsigned type large enough for an array
+// offset; casting each dimension to size_t before multiplying keeps
+// the intermediate index products from overflowing int. The caller
+// checks array lengths, finite values and physical domains; the guards
+// below catch invalid dimensions, pointers and field labels. The pair
+// transform fills one temporary Bessel table (an OpenMP team computes
+// the table itself) before the field-pair contraction workers start;
+// the other contractions need no heap storage. The functions keep no
+// global state, leave every input unchanged, and require that the
+// output storage overlap no input.
 
-// SIMD performs the same arithmetic on several values in positions called
-// lanes. v2d contains two doubles. We use lanes for separate outputs or
-// radial samples, never to reorder a sum over integration nodes. SIMDe
-// supplies the same interface across supported processors. Unaligned loads
-// and stores permit ordinary caller buffers without an alignment promise.
+// SIMD performs the same arithmetic on several values in positions
+// called lanes. A v2d holds two doubles side by side. The loops below
+// use lanes for separate outputs or radial samples, never to reorder a
+// sum over integration nodes. SIMDe supplies the same intrinsic
+// interface across supported processors. Unaligned loads and stores
+// accept ordinary caller buffers, which make no alignment promise.
 typedef simde__m128d v2d;
 
 
@@ -50,19 +62,25 @@ typedef simde__m128d v2d;
 // Radial pair correlation from an angular power spectrum.
 //
 // Derivation and logic:
-// Adopt X(theta) = integral d^2ell/(2*pi)^2 X(ell) exp(i ell.theta).
-// Isotropy makes the power depend on ell's length alone. Integrating its
-// polar angle gives 2*pi*J0(ell*r), so the remaining measure is
-// dell*ell/(2*pi). Each of the two fields contributes one real circular
-// filter U. The supplied quadrature approximates precisely that integral.
-// A finite ell interval returns a finite-interval correlation; the caller
-// must test the interval and spacing needed for the requested separations.
+// The Fourier convention is X(theta) = integral d^2ell/(2*pi)^2 X(ell)
+// exp(i ell.theta), with theta the angular position and ell the
+// angular wavevector. Isotropy makes the power depend on ell's length
+// alone. Integrating the polar angle of ell gives 2*pi*J0(ell*r), with
+// J0 the Bessel function of the first kind of order zero and r the
+// separation, so the remaining measure is dell*ell/(2*pi). Each of the
+// two fields contributes one real circular filter U. The quadrature
+// the caller supplies approximates precisely that integral, and the
+// result is the pair correlation K_ij(r) of the two filtered fields.
+// A finite ell interval returns a finite-interval correlation; the
+// caller must test that the interval and spacing resolve the
+// separations it requests.
 //
-// A field label can combine a source bin and an aperture radius. power may
-// repeat the same source-bin spectrum for several radii. Noise, if present,
-// is already included there. Adding it again here would double count it.
-// With angles in radians, ell*r is dimensionless, and K has the units of
-// the product of the two filtered fields under the stated Fourier rule.
+// A field label can combine a source bin and an aperture radius. power
+// may repeat the same source-bin spectrum for several radii. Noise,
+// when present, already lives inside power; adding it again here would
+// double count it. With angles in radians, ell*r is dimensionless, and
+// K carries the units of the product of the two filtered fields under
+// the Fourier convention above.
 //
 // Cache invalidation:
 // The temporary J0 table belongs to this call's ell and separation grids.
@@ -96,6 +114,9 @@ void filtered_pair_3pcf(
     fprintf(stderr, "filtered_pair_3pcf: invalid dimensions or pointer\n");
     exit(EXIT_FAILURE);
   }
+  // 1/(2*pi) written to 20 digits, more than double precision holds,
+  // so the compiler stores the nearest double to the exact flat-sky
+  // measure factor in dell*ell/(2*pi).
   const double inverse_two_pi = 0.15915494309189533577;
   if ((size_t)nell > SIZE_MAX/sizeof(double)/(size_t)nr) {
     fprintf(stderr, "filtered_pair_3pcf: Bessel table size overflow\n");
@@ -120,7 +141,7 @@ void filtered_pair_3pcf(
 
   // collapse(2) distributes ordered pairs (i,j), each with its own row of
   // nr outputs. No worker writes another pair's row. Both orders are
-  // evaluated so that the supplied power rows determine their own values.
+  // evaluated so that the caller's power rows determine their own values.
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int i=0; i<nfield; i++) {
     for (int j=0; j<nfield; j++) {
@@ -148,14 +169,24 @@ void filtered_pair_3pcf(
         // Each radius shares the same filter/power coefficient. Hoisting
         // it outside the radius loop avoids recomputing it for every pair
         // of lanes. Node order for each output remains increasing ell.
+        // Broadcast that one coefficient into both lanes of a vector.
         const v2d amplitude = simde_mm_set1_pd(coefficient);
         int radial = 0;
+        // Lanes hold neighboring radii: the low lane accumulates the
+        // output at r[radial], the high lane at r[radial + 1]. Each sum
+        // stays in its own lane; nothing crosses between them.
         for (; radial + 1 < nr; radial += 2) {
-          // Lanes contain neighboring r outputs, with no cross-lane sum.
+          // Load the two running sums correlation[radial] and
+          // correlation[radial + 1]; the unaligned load needs no
+          // special address.
           const v2d previous = simde_mm_loadu_pd(correlation + radial);
+          // Load J0(ell*r) at the same two radii from this node's row.
           const v2d bessel = simde_mm_loadu_pd(bessel_row + radial);
+          // Multiply coefficient times J0 separately in each lane.
           const v2d contribution = simde_mm_mul_pd(amplitude, bessel);
+          // Add this ell node's contribution to each lane's running sum.
           const v2d updated = simde_mm_add_pd(previous, contribution);
+          // Store both updated sums back over the two slots just read.
           simde_mm_storeu_pd(correlation + radial, updated);
         }
         // An odd radial count leaves one value with the identical scalar
@@ -174,20 +205,24 @@ void filtered_pair_3pcf(
 // Symmetric weighted Gram matrix of connected responses.
 //
 // Derivation and logic:
-// Suppose a specified connected covariance is C_ij = integral dnu H_i H_j.
-// Quadrature replaces dnu by weights[node], and H_i by one row of
-// responses. For a Poisson one-halo model, the node can label halo mass
-// and distance, H_i is that halo's estimator response integrated over its
-// center, and dnu includes the number-density measure and inverse area.
-// That interpretation requires deriving H_i for the actual estimator.
-// This routine only performs the supplied contraction. It is also usable
-// for any other response model with the same mathematical form.
+// Suppose a connected covariance has the form C_ij = integral dnu
+// H_i(nu) H_j(nu), with nu the integration label and H_i the response
+// of observable i. Quadrature replaces dnu by weights[node], and H_i
+// by one row of responses. For a Poisson one-halo model the node
+// labels halo mass and distance; H_i is then that halo's estimator
+// response integrated over its center, and dnu carries the
+// number-density measure and the inverse survey area. That
+// interpretation requires deriving H_i for the actual estimator. This
+// routine only performs the contraction the caller supplies, and any
+// other response model with the same mathematical form can use it.
 //
-// For nonnegative weights, x_i C_ij x_j equals a sum of nonnegative
-// squares: sum_node weights[node]*(sum_i x_i H_i[node])^2. This explains
-// the positive-semidefinite property in exact arithmetic. Roundoff may
-// still produce small negative eigenvalues; this code does not repair or
-// invert the matrix. No factor of two or survey area is inserted here.
+// For nonnegative weights, the quadratic form x_i C_ij x_j of any test
+// vector x equals a sum of nonnegative squares,
+// sum_node weights[node]*(sum_i x_i H_i[node])^2, so the matrix is
+// positive semidefinite in exact arithmetic. Roundoff may still
+// produce small negative eigenvalues; this code does not repair or
+// invert the matrix, and it inserts no factor of two and no survey
+// area.
 //
 // Cache invalidation:
 // No cache. Responses and all measure factors come from the caller.
@@ -223,7 +258,8 @@ void connected_gram_3pcf(
     const double* restrict response_i = responses + (size_t)i*nnode;
     int j = i;
 
-    // Both columns are valid. Scalar equivalent for each column c:
+    // The loop bound keeps both columns j and j+1 inside the matrix.
+    // Scalar equivalent for each column c:
     // covariance[i,c] += weights[node]*response_i[node]*response_c[node].
     for (; j + 1 < nrow; j += 2) {
       const double* restrict response_j = responses + (size_t)j*nnode;
@@ -232,7 +268,7 @@ void connected_gram_3pcf(
       // Zero the sums for columns j (low lane) and j+1 (high lane).
       v2d sum = simde_mm_setzero_pd();
 
-      // Advance through the same supplied nodes for both columns. Only
+      // Advance through the same quadrature nodes for both columns. Only
       // the right response changes between lanes; the left is shared.
       for (int node=0; node<nnode; node++) {
         const double weighted_left = weights[node]*response_i[node];
@@ -247,7 +283,8 @@ void connected_gram_3pcf(
         sum = simde_mm_add_pd(sum, contribution);
       }
       double values[2];
-      // Extract both valid sums into a two-element local array.
+      // Extract the two ordered node sums into a local array:
+      // values[0] is column j (low lane), values[1] is column j+1.
       simde_mm_storeu_pd(values, sum);
       covariance[(size_t)i*nrow + j] = values[0];
       covariance[(size_t)j*nrow + i] = values[0];
@@ -255,8 +292,9 @@ void connected_gram_3pcf(
       covariance[(size_t)(j + 1)*nrow + i] = values[1];
     }
 
-    // A single remaining column has the same ordered contraction. Mirror
-    // writes include the diagonal only when its value belongs to this row.
+    // A single remaining column gets the same ordered contraction.
+    // When that column is the diagonal (j = i), both mirror writes
+    // land on the same entry, which this row owns.
     if (j < nrow) {
       const double* restrict response_j = responses + (size_t)j*nnode;
       double sum = 0.0;
@@ -276,14 +314,17 @@ void connected_gram_3pcf(
 //
 // Derivation and logic:
 // Let row I describe M_a(x) M_b(x) M_c(x), averaged over centers x,
-// and row J describe M_d(y) M_e(y) M_f(y). Each M has zero mean.
-// For a Gaussian field the cubic mean vanishes, and Wick's theorem gives
-// the six-field expectation as 15 pairings. A pairing divides the six
-// labeled positions into three pairs. It has either three cross-pairs
-// between x and y (3! = 6 choices), or one cross-pair (3*3 = 9 choices).
-// In the latter case, the remaining two fields at each center pair there.
-// Their correlations are K(0), while each cross-pair contributes K(r),
-// where r=|x-y|. Repeated field labels do not remove these choices.
+// and row J describe M_d(y) M_e(y) M_f(y), where M_a is the filtered
+// map of field label a and every M has zero mean. For a Gaussian field
+// the cubic mean vanishes, and Wick's theorem gives the six-field
+// expectation as 15 pairings. A pairing divides the six labeled
+// positions into three pairs. It has either three cross-pairs between
+// x and y (3! = 6 choices), or one cross-pair (3*3 = 9 choices). With
+// one cross-pair, the two fields left behind at each center pair with
+// each other at that center. Those within-center pairs contribute the
+// zero-separation correlation K(0), while each cross-pair contributes
+// K(r) at the center separation r = |x-y|. Repeated field labels do
+// not remove these choices.
 //
 // The resulting integrand for triplets a[3], b[3] is
 //   sum_permutation product_p K_{a[p],b[permutation[p]]}(r)
@@ -291,21 +332,23 @@ void connected_gram_3pcf(
 //       *K_{a[remaining p,0],a[remaining p,1]}(0)
 //       *K_{b[remaining q,0],b[remaining q,1]}(0).
 // For six identical labels this becomes 6*K(r)^3 + 9*K(r)*K(0)^2.
-// The supplied radial_weights integrate this expression with the center
-// window. For uniform large area A they approximate 2*pi*r*dr/A. A finite
-// common center window can instead supply its angular-averaged overlap
-// measure, provided the filtered map correlations remain stationary.
-// Masking the field before filtering generally breaks that stationarity;
-// changing radial_weights alone does not account for such a mask.
+// The caller's radial_weights integrate this expression together with
+// the center window; for a uniform large area A they approximate
+// 2*pi*r*dr/A. A finite common center window can instead supply its
+// angular-averaged overlap measure, provided the filtered map
+// correlations remain stationary. Masking the field before filtering
+// generally breaks that stationarity; changing radial_weights alone
+// does not account for such a mask.
 //
-// This is the covariance of raw map products, including any noise in K.
-// A catalogue statistic excluding repeated galaxies removes particular
-// internal noise contractions and requires its own overlap counting.
-// Likewise, a finite-triangle shear estimator is not automatically the
-// complete aperture map product. Neither change is made by this routine.
-// Connected non-Gaussian cumulants and spin-2 xi-plus/minus rows require
-// additional kernels. The dimensions of the result are the product of
-// the two cubic observables when the supplied measure is dimensionless.
+// This is the covariance of raw map products, including any noise in
+// K. A catalogue statistic that excludes repeated galaxies removes
+// particular internal noise contractions and requires its own overlap
+// counting. Likewise, a finite-triangle shear estimator is not
+// automatically the complete aperture map product. This routine makes
+// neither change. Connected non-Gaussian cumulants and spin-2
+// xi-plus/minus rows require additional kernels. The result carries
+// the units of the product of the two cubic observables when the
+// caller's radial measure is dimensionless.
 //
 // Cache invalidation:
 // No cache. pair_zero is explicit, independent of the radial grid.
@@ -432,7 +475,8 @@ void gaussian_aperture_covariance_3pcf(
           // Add this one-cross pairing to both radial integrands.
           density = simde_mm_add_pd(density, contribution);
         }
-        // Load the two complete window/quadrature weights, no extra area.
+        // Load the two radial window/quadrature weights; the measure
+        // already carries any area factor.
         const v2d measure = simde_mm_loadu_pd(radial_weights + ir);
         // Weight each radial integrand with its own integration measure.
         const v2d weighted = simde_mm_mul_pd(measure, density);

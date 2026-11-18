@@ -18,172 +18,242 @@ static int omp_get_thread_num(void) { return 0; }
 #endif
 
 // ===========================================================================
-// Physical bispectra and their flat-sky, unshifted Limber projection
+// physics_3pcf.c: the physical bispectra of matter and intrinsic
+// alignment, and their flat-sky Limber projection onto the observed
+// angular bispectra.
 // ===========================================================================
-// A bispectrum measures the correlation of three Fourier amplitudes whose
-// wavevectors close into a triangle. Gravitational evolution produces a
-// matter bispectrum even from initially Gaussian fluctuations. Intrinsic
-// alignment adds correlations between density and galaxy shape. The first
-// part below prepares the supplied physical tables. Later parts evaluate
-// Takahashi's BiHalofit and the active fastnc TATT tensor equations, then
-// integrate these three-dimensional quantities over comoving distance.
+// A bispectrum measures how three Fourier amplitudes correlate when
+// their wavevectors close into a triangle. Gravity couples Fourier
+// modes as structure grows, so even initially Gaussian fluctuations
+// develop a matter bispectrum. Intrinsic alignment (IA) adds a second
+// effect: the tidal field that assembles a galaxy also aligns its
+// shape, so observed shapes correlate with the matter density.
 //
-// Formula and software provenance: Sunao Sugiyama's MIT-licensed fastnc,
-// tatt commit 7b2336ce37a909bed51f07f32a2a4f096e71b6ce, halofit.py,
-// ia_bispectra.py and bispectrum.py; the IA work includes Rafael Gomes.
-// BiHalofit: Takahashi et al., arXiv:1911.07886. TATT and velocity shear:
-// Gomes et al., arXiv:2601.09133. The active source equations are preserved;
-// the unused alternative direct-equation helpers are not silently selected.
-// See the module's credits and the archived study for normalization issues.
+// The file works in three stages. The first stage copies the physical
+// input tables and prepares fast interpolation readers. The second
+// stage evaluates two fitted three-dimensional quantities: the
+// BiHalofit matter bispectrum and the TATT (tidal alignment and tidal
+// torquing) alignment bispectra, in fastnc's tensor formulation. The
+// third stage integrates them along the line of sight (LOS): in the
+// flat-sky Limber approximation, the angular bispectrum at multipoles
+// (ell1, ell2, ell3) is a single integral over the comoving distance
+// chi of three radial kernels against the three-dimensional bispectrum
+// at k_i = ell_i/chi, without the +1/2 multipole shift.
 //
-// Units: k is h/Mpc, chi is Mpc/h, P is (Mpc/h)^3 and B is (Mpc/h)^6.
-// Lensing angles and Fourier multipoles are dimensionless. The model copies
-// its inputs and normalizes linear P to sigma8. Production converts the
-// supplied tables to immutable uniform arrays during preparation; repeated
-// queries use arithmetic cell indices and linear interpolation. The named
-// source comparison mode retains cubic reads of the supplied tables.
-// Recreate it after changing cosmology, power, distances, growth, sources
-// or radial grids. IA changes need only a new small projection object.
-// There are no file-scope mutable caches and no lazy initialization.
-// Source efficiencies use (chi_s-chi)/chi_s, so the public model requires
-// spatial flatness: |Omega_m+Omega_de-1| <= 1e-8. This tolerance admits
-// scalar rounding only; curved-distance lensing is not implemented.
+// Provenance. The formulas and their software expression follow Sunao
+// Sugiyama's MIT-licensed fastnc package, tatt commit
+// 7b2336ce37a909bed51f07f32a2a4f096e71b6ce (halofit.py,
+// ia_bispectra.py and bispectrum.py); Rafael Gomes wrote parts of the
+// IA code. The matter fit is BiHalofit (Takahashi et al.,
+// arXiv:1911.07886). The TATT and velocity-shear equations follow
+// Gomes et al. (arXiv:2601.09133). This port evaluates fastnc's
+// active tensor equations only. The package also ships direct-equation
+// IA helpers that it never calls; their amplitude normalization
+// differs from the active tensor path, and this file does not
+// implement them.
+//
+// Units: the wave number k is in h/Mpc, the comoving distance chi in
+// Mpc/h, the power spectrum P in (Mpc/h)^3 and the bispectrum B in
+// (Mpc/h)^6. Lensing angles and the Fourier multipoles are
+// dimensionless.
+//
+// Ownership. The model copies every input table at creation and
+// normalizes the linear power spectrum to sigma8; after that it reads
+// nothing from the caller. The production path resamples each copy
+// onto a uniform grid that never changes, so a query finds its cell by
+// index arithmetic and interpolates linearly. The one exception is the
+// source-comparison mode, which the caller requests explicitly: it
+// keeps cubic interpolation on the original tables, to match the
+// upstream numbers.
+//
+// The model holds no file-scope mutable caches and builds nothing
+// lazily, so it cannot follow a parameter change. Build a new model
+// whenever the cosmology, the power spectra, the distances, the
+// growth, the sources or the radial grids change. A change of IA
+// parameters is cheaper: it needs only a new, small projection object.
+//
+// The source efficiency is the flat-space ratio (chi_s - chi)/chi_s,
+// with chi_s the comoving distance to the source. The public model
+// therefore requires spatial flatness, |Omega_m + Omega_de - 1| <=
+// 1e-8. That tolerance absorbs floating-point rounding and nothing
+// more: lensing with curved-space distances is not implemented.
 
+// ===========================================================================
+// [SECTION] MODEL STORAGE AND SPLINE TABLES
+// ===========================================================================
+
+// Two doubles side by side in one 128-bit register. The SIMD code
+// below applies one operation to two independent values at a time;
+// each value occupies a vector position called a lane.
 typedef simde__m128d physics_v2d;
 
+// One interpolation table. make_spline fills x, y and second for
+// cubic evaluation on an irregular grid; uniformize_spline later
+// replaces the table with a dense uniform grid and sets
+// inverse_spacing, after which read_spline switches to linear reads
+// with arithmetic cell indices. The power-spectrum tables store log P
+// against log k, so their endpoint slopes are the power-law indices
+// that read_power extrapolates with.
 typedef struct {
-  int n;
-  double* x;
-  double* y;
-  double* second;
+  int n;                  // number of nodes
+  double* x;              // node coordinates, strictly increasing [n]
+  double* y;              // tabulated values at the nodes [n]
+  double* second;         // second derivatives of the cubic fit [n]
   double inverse_spacing; // positive only for prepared uniform linear reads
-  double slope_low;
-  double slope_high;
+  double slope_low;       // endpoint slope dy/dx of the first interval
+  double slope_high;      // endpoint slope dy/dx of the last interval
 } physics_spline;
 
-// A redshift row identifies the two P(k) arrays and their interpolation
-// fraction. It is prepared once per LOS node, shared by all triangle
-// sides and source triplets, and contains no mutable interpolation state.
+// A redshift row names the one or two P(k) tables a power query reads
+// and how to combine them. prepare_power_row builds it once per LOS
+// node; every triangle side and source triplet then shares it, and no
+// field changes during evaluation.
 typedef struct {
-  const physics_spline* lower;
-  const physics_spline* upper;
-  double fraction;
-  double growth;
+  const physics_spline* lower; // P(k) table at or below the query z
+  const physics_spline* upper; // next table above; NULL for D^2 scaling
+  double fraction;             // interpolation weight toward upper
+  double growth;               // growth factor D(z), applied as D^2
 } physics_power_row;
 
+// The redshift-dependent coefficients of the BiHalofit matter fit
+// (Takahashi et al., arXiv:1911.07886). The names follow the paper's
+// subscript-n symbols. With q = k*radius on each triangle leg, the
+// one-halo term multiplies 1/[(a q^alpha + b q^beta)(1 + 1/(c q))]
+// per leg; the three-halo term builds an enhanced power spectrum from
+// f, g, h (its low-k factor) and m, n, mu, nu, p (its high-k
+// addition), adds the d*q cross terms and damps each leg by
+// 1/(1 + e q). The side ratios r1 = k_min/k_max and
+// r2 = (k_mid + k_min - k_max)/k_max describe the triangle shape;
+// matter_prepared applies the shape corrections that need them.
 typedef struct {
-  double radius;
-  double loga;
-  double b;
-  double c;
-  double logalpha;
-  double alpha_shape;
-  double logbeta;
-  double gamma;
-  double f;
-  double g;
-  double h;
-  double m;
-  double n;
-  double mu;
-  double nu;
-  double p;
-  double e;
-  double d;
+  double radius;      // nonlinear radius 1/k_NL where sigma_G = 1, Mpc/h
+  double loga;        // log10 a_n, one-halo amplitude before shape terms
+  double b;           // b_n, one-halo coefficient of q^beta_n
+  double c;           // c_n, one-halo low-k cutoff coefficient
+  double logalpha;    // log10 alpha_n before its shape term and cap
+  double alpha_shape; // coefficient of the r2^2 shape term in log alpha
+  double logbeta;     // log10 beta_n before its 0.007 r2 shape term
+  double gamma;       // gamma_n, exponent of the r1 term in log a_n
+  double f;           // f_n, numerator of the low-k enhanced-power factor
+  double g;           // g_n, linear-q denominator term of that factor
+  double h;           // h_n, quadratic-q denominator term of that factor
+  double m;           // m_n, first high-k addition coefficient
+  double n;           // n_n, second high-k addition coefficient
+  double mu;          // mu_n, exponent of the m_n q term
+  double nu;          // nu_n, exponent of the n_n q term
+  double p;           // p_n, low-k cutoff of the high-k addition
+  double e;           // e_n, per-leg damping of the three-halo term
+  double d;           // d_n, amplitude of the q3 cross terms
 } physics_bh_coefficients;
 
-// Common rescaling of all three sides changes their physical k values,
-// but leaves these dimensionless triangle factors unchanged. They are
-// prepared once per angular triangle before the radial integration.
+// Dimensionless factors of one triangle shape. Rescaling all three
+// sides by a common factor changes the physical k values but none of
+// these numbers, so a projection prepares them once per angular
+// triangle and reuses them at every LOS node. Frame convention: for
+// cyclic ordering c the output wavevector is leg (c+2)%3, placed on
+// the positive x axis, and triangle closure fixes the unit vectors of
+// the two input legs c and (c+1)%3 in that frame.
 typedef struct {
-  double sides[3];
-  double gravity[3];
-  double pair_cosine[3];
-  double first_x[3];
-  double first_y[3];
-  double second_x[3];
-  double second_y[3];
-  double dot[3];
-  double sine_squared[3];
-  // Existing IA vertex parentheses, independent of power and redshift.
-  double ia_quadratic_shape[3];
-  double ia_density_zero_shape[3];
-  double ia_density_two_shape[3];
-  double minimum_ratio;
-  double flattened_ratio;
+  double sides[3];        // side lengths over a common power of two
+  double gravity[3];      // F2 density kernel of input legs c, c+1
+  double pair_cosine[3];  // cosine between the wavevectors c and c+1
+  double first_x[3];      // x component of the unit vector of leg c
+  double first_y[3];      // y component of the unit vector of leg c
+  double second_x[3];     // x component of the unit vector of leg c+1
+  double second_y[3];     // y component of the unit vector of leg c+1
+  double dot[3];          // dot product of the two input unit vectors
+  double sine_squared[3]; // squared sine between the two input legs
+  // The parenthesized IA vertex shapes of the fastnc tensor equations,
+  // independent of power spectrum and redshift; the IA coefficients
+  // multiply them later (the tensor helpers define the helicities).
+  double ia_quadratic_shape[3];    // tidal-torque vertex shape factor
+  double ia_density_zero_shape[3]; // density-weighting shape, helicity 0
+  double ia_density_two_shape[3];  // density-weighting shape, helicity 2
+  double minimum_ratio;   // r1 = k_min/k_max, BiHalofit shape ratio
+  double flattened_ratio; // r2 = (k_mid + k_min - k_max)/k_max
 } physics_triangle_geometry;
 
+// The TATT vertex weights at one redshift, already combined into the
+// factors the tensor equations read; ia_coefficients derives them
+// from the public parameters.
 typedef struct {
-  double c1;
-  double linear;
-  double velocity;
-  double quadratic;
-  double density;
+  double c1;        // linear tidal-alignment coefficient C_1(z)
+  double linear;    // 2 C_1, the weight of a linear shape on one leg
+  double velocity;  // -2 C_t/5, the velocity-shear vertex weight
+  double quadratic; // C_2(z), the tidal-torque vertex weight
+  double density;   // b_TA C_1 - 2 C_2/3, the density-weighting weight
 } physics_ia_coefficients;
 
+// The immutable model. Creation fills every member; afterwards all
+// calls only read. Several members below belong to the NLA
+// (nonlinear alignment) model, which ties galaxy shapes linearly to
+// the tidal field; its source kernel is the normalized source density
+// per unit comoving distance. A model without paired feedback tables
+// is dark-matter-only (DMO).
 struct physics_model_3pcf {
   feedback_3pcf* feedback; // immutable paired matter response, NULL for DMO
-  int nwindow;
-  double* window; // owned integer-ell samples; NULL disables smoothing
-  int nk;
-  int nz;
-  int nbin;
-  int nlos;
-  int kernel_nz;
-  int source_readers;
-  int table_boost;
-  int fit_nz;
-  int npower_z;
-  int nsource;
-  double zmax;
-  double* power_z;
-  double omega_m;
-  double omega_de;
-  double w0;
-  double wa;
-  double ns;
-  double sigma8;
-  physics_spline linear;
-  physics_spline* nonlinear;
-  physics_spline distance;
-  physics_spline growth;
-  physics_spline dz_dchi;
-  physics_spline radius;
-  physics_spline neff;
-  physics_spline sigma8z;
-  physics_spline omega_m_z;
-  double* sources;
-  double* source_z;
-  double* source_chi;
-  double* source_jacobian;
-  double* kernel_z;
-  double* kernel_chi;
-  double* kernel_growth;
-  double* kernel_lens;
-  double* kernel_shape;
-  double* los_z;
-  double* los_chi;
-  double* los_dchi;
-  double* los_lens;
-  double* los_shape;
-  physics_bh_coefficients* los_bh;
+  int nwindow;        // integer-ell pixel-window samples; zero disables
+  double* window;     // owned integer-ell samples; NULL disables smoothing
+  int nk;             // input wave-number nodes
+  int nz;             // input background redshift nodes
+  int nbin;           // tomographic source bins
+  int nlos;           // line-of-sight integration nodes
+  int kernel_nz;      // nodes of the uniform lensing-kernel grid
+  int source_readers; // 1 keeps cubic reads of the original tables
+  int table_boost;    // dense-grid refinement factor of uniform readers
+  int fit_nz;         // BiHalofit coefficient anchors in production
+  int npower_z;       // stored nonlinear P(k) rows (grows with the boost)
+  int nsource;        // source-distribution redshift nodes
+  double zmax;        // largest tabulated redshift
+  double* power_z;    // redshifts of the nonlinear P(k) rows [npower_z]
+  double omega_m;     // matter density fraction today
+  double omega_de;    // dark-energy density fraction today
+  double w0;          // dark-energy equation of state today
+  double wa;          // its evolution, w(a) = w0 + wa (1 - a)
+  double ns;          // primordial spectral index
+  double sigma8;      // linear fluctuation amplitude at z = 0
+  physics_spline linear;     // log P_linear(z=0) against log k
+  physics_spline* nonlinear; // log P_nonlinear against log k [npower_z]
+  physics_spline distance;   // comoving distance chi(z), Mpc/h
+  physics_spline growth;     // linear growth D(z), D(0) = 1
+  physics_spline dz_dchi;    // Jacobian dz/dchi (z), h/Mpc
+  physics_spline radius;     // BiHalofit nonlinear radius 1/k_NL (z)
+  physics_spline neff;       // effective spectral slope n_eff(z)
+  physics_spline sigma8z;    // amplitude sigma8(z)
+  physics_spline omega_m_z;  // matter fraction Omega_m(z)
+  double* sources;         // source densities per unit z [nbin,nsource]
+  double* source_z;        // source-grid redshifts [nsource]
+  double* source_chi;      // distances at the source nodes [nsource]
+  double* source_jacobian; // dz/dchi at the source nodes [nsource]
+  double* kernel_z;        // uniform kernel-grid redshifts [kernel_nz]
+  double* kernel_chi;      // distances at the kernel nodes [kernel_nz]
+  double* kernel_growth;   // growth at the kernel nodes [kernel_nz]
+  double* kernel_lens;     // lensing efficiency W_kappa [nbin,kernel_nz]
+  double* kernel_shape; // NLA kernel over chi(1+z) [nbin,kernel_nz]
+  double* los_z;        // LOS node redshifts [nlos]
+  double* los_chi;      // LOS node comoving distances [nlos]
+  double* los_dchi;     // trapezoid integration weights [nlos]
+  double* los_lens;     // W_kappa resampled on LOS nodes [nbin,nlos]
+  double* los_shape;    // NLA kernel resampled on LOS nodes [nbin,nlos]
+  physics_bh_coefficients* los_bh; // BiHalofit fit per LOS node [nlos]
   physics_power_row* los_power; // [mode,nlos], fixed redshift brackets
 };
 
 struct physics_projection_3pcf {
-  const physics_model_3pcf* model;
-  physics_ia_3pcf ia;
+  const physics_model_3pcf* model; // borrowed; must outlive the projection
+  physics_ia_3pcf ia;              // copied IA parameter set
   double* weights; // [8,nlos]: matter baseline and seven residual terms
-  physics_ia_coefficients* coefficients;
+  physics_ia_coefficients* coefficients; // TATT weights per LOS node [nlos]
 };
 
 // A batch stores radial weights, not triangle-dependent predictions.
-// The first immutable projector supplies common IA coefficients and the
-// model. Its owner must outlive this object; the other weights are copied.
-// Adjacent triplets occupy adjacent doubles for an unaligned SIMD load.
+// The first projector supplies the shared IA coefficients and the
+// model, so its owner must outlive the batch; the batch copies every
+// projector's weights. Adjacent triplets occupy adjacent doubles, so
+// the evaluation loop loads a pair with one unaligned SIMD read.
 struct physics_projection_batch_3pcf {
-  const physics_projection_3pcf* first;
-  int nprojection;
+  const physics_projection_3pcf* first; // borrowed first projector
+  int nprojection;                      // ordered source triplets
   double* weights; // [nlos,8,nprojection], baseline followed by seven IA terms
 };
 
@@ -195,6 +265,10 @@ static physics_power_row prepare_power_row(
 static void triangle_physics(double first, double second, double third);
 
 
+// ---------------------------------------------------------------------------
+// require_physics: stop with a clear message when an input or a
+// numerical invariant fails. The module prefers one hard stop over
+// recovery machinery for conditions that valid inputs never reach.
 static void require_physics(
   const int condition,
   const char* message
@@ -207,9 +281,12 @@ static void require_physics(
 }
 
 
-// Models are independent owned objects, rather than CosmoLike global
-// state. Each allocation is a single flat array, so ordinary calloc/free
-// supplies the needed alignment and makes partial construction explicit.
+// ---------------------------------------------------------------------------
+// allocate_physics: zero-initialized allocation with overflow and
+// failure checks. Models are independent owned objects, rather than
+// CosmoLike global state. Each allocation is a single flat array, so
+// ordinary calloc/free supplies the needed alignment and makes
+// partial construction explicit.
 static void* allocate_physics(
   const size_t count,
   const size_t element_size
@@ -223,6 +300,10 @@ static void* allocate_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// increasing_physics: require a finite, strictly increasing grid of
+// at least two nodes; positive = 1 also requires every value to be
+// positive.
 static void increasing_physics(
   const double* values,
   const int count,
@@ -240,11 +321,27 @@ static void increasing_physics(
 }
 
 
-// A not-a-knot cubic spline matches scipy's InterpolatedUnivariateSpline
-// boundary condition: the first two intervals share a cubic polynomial,
-// as do the last two. Eliminating the endpoint second derivatives leaves
-// a tridiagonal system for interior derivatives. Its solution is prepared
-// once; evaluation uses only reads and needs no mutable GSL accelerator.
+// ---------------------------------------------------------------------------
+// make_spline: build a not-a-knot cubic spline on an irregular grid.
+//
+// A cubic spline stores the second derivative at every node; between
+// nodes the interpolant is the cubic polynomial those endpoint values
+// determine. Continuity of the first derivative at each interior node
+// gives one equation per interior node,
+//
+//   h_left M[i-1] + 2 (h_left + h_right) M[i] + h_right M[i+1]
+//     = 6 (slope_right - slope_left),
+//
+// with M the second derivatives, h the interval widths and slope the
+// finite-difference slope of each interval. Two boundary conditions
+// close the system. The not-a-knot choice of scipy's
+// InterpolatedUnivariateSpline makes the first two intervals share
+// one cubic polynomial, and likewise the last two; eliminating M[0]
+// and M[n-1] folds that condition into the first and last interior
+// rows and leaves a tridiagonal system. One forward elimination and
+// one back substitution (the Thomas algorithm) solve it here, during
+// preparation; evaluation then only reads and needs no mutable GSL
+// accelerator object.
 static physics_spline make_spline(
   const double* x,
   const double* y,
@@ -281,6 +378,9 @@ static physics_spline make_spline(
   double* diagonal = allocate_physics((size_t)interior, sizeof(double));
   double* upper = allocate_physics((size_t)interior, sizeof(double));
   double* rhs = allocate_physics((size_t)interior, sizeof(double));
+  // Assemble the interior rows and eliminate on the fly: each row
+  // folds its subdiagonal entry into the previous pivot, so one pass
+  // both builds and forward-eliminates the tridiagonal system.
   for (int row=0; row<interior; row++) {
     const int index = row + 1;
     const double left = x[index] - x[index - 1];
@@ -291,25 +391,37 @@ static physics_spline make_spline(
     rhs[row] = 6.0*((y[index + 1] - y[index])/right
       - (y[index] - y[index - 1])/left);
     if (row == 0) {
+      // First interior row: the not-a-knot condition expresses M[0]
+      // through M[1] and M[2]; substituting it modifies this row's
+      // diagonal and upper entries and removes its subdiagonal.
       diagonal[row] += left*(left + right)/right;
       upper[row] -= left*left/right;
       lower = 0.0;
     }
     if (row == interior - 1) {
+      // Last interior row: the mirrored not-a-knot condition folds
+      // M[n-1] into the two previous interior values the same way.
       diagonal[row] += right*(left + right)/left;
       lower -= right*right/left;
       upper[row] = 0.0;
     }
     if (row > 0) {
+      // Forward elimination: subtract the multiple of the previous
+      // row that zeroes this row's subdiagonal entry.
       const double multiplier = lower/diagonal[row - 1];
       diagonal[row] -= multiplier*upper[row - 1];
       rhs[row] -= multiplier*rhs[row - 1];
     }
   }
+  // Back substitution fills the interior second derivatives from the
+  // last row upward.
   for (int row=interior - 1; row>=0; row--) {
     const double next = row + 1 < interior ? result.second[row + 2] : 0;
     result.second[row + 1] = (rhs[row] - upper[row]*next)/diagonal[row];
   }
+  // Recover the endpoint second derivatives from the not-a-knot
+  // relations the elimination removed: each endpoint extrapolates
+  // linearly from its two neighboring interior values.
   const double first = x[1] - x[0];
   const double second = x[2] - x[1];
   result.second[0] = ((first + second)*result.second[1]
@@ -325,6 +437,8 @@ static physics_spline make_spline(
 }
 
 
+// ---------------------------------------------------------------------------
+// destroy_spline: free the three node arrays and zero the struct.
 static void destroy_spline(physics_spline* spline)
 {
   free(spline->x);
@@ -334,6 +448,26 @@ static void destroy_spline(physics_spline* spline)
 }
 
 
+// ---------------------------------------------------------------------------
+// make_natural_uniform_spline: rebuild the second derivatives with
+// natural boundaries, M[0] = M[n-1] = 0, for a uniformly spaced grid.
+//
+// The production coefficient tables live on uniform anchors, and
+// fastnc fits them with a natural cubic spline, so this helper
+// reproduces that choice. make_spline supplies the copied nodes and
+// endpoint slopes; this routine then overwrites the second
+// derivatives. With uniform spacing h the interior continuity
+// equations reduce to
+//
+//   M[i-1] + 4 M[i] + M[i+1] = 6 (y[i+1] - 2 y[i] + y[i-1])/h^2,
+//
+// a tridiagonal system with the constant stencil (1, 4, 1); the 6 and
+// the 4 below are exactly these stencil numbers, and inverse_square
+// is 1/h^2. The first loop runs the Thomas forward elimination:
+// 4 - 1/diagonal[i-1] is the pivot after eliminating the subdiagonal
+// 1, and the right-hand side subtracts the matching multiple of the
+// previous row. The second loop back-substitutes; the upper entry is
+// 1, so it subtracts the next solution value directly.
 static physics_spline make_natural_uniform_spline(
   const double* x,
   const double* y,
@@ -360,6 +494,11 @@ static physics_spline make_natural_uniform_spline(
 }
 
 
+// ---------------------------------------------------------------------------
+// interval_physics: binary search for the interval index i with
+// grid[i] <= coordinate < grid[i+1], clamped to the valid range.
+// Preparation and the source-comparison mode search; the production
+// readers find their cell by index arithmetic on uniform grids.
 static int interval_physics(
   const double* grid,
   const int count,
@@ -380,6 +519,14 @@ static int interval_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// read_spline: evaluate one spline. A uniform table (positive
+// inverse_spacing) interpolates linearly inside the cell its index
+// arithmetic selects and follows the edge segments outside the grid.
+// An irregular table evaluates the cubic second-derivative form.
+// zero_outside = 1 instead returns zero beyond the grid; the radial
+// kernels use it so a query outside a source's support contributes
+// nothing.
 static double read_spline(
   const physics_spline* spline,
   const double coordinate,
@@ -407,9 +554,13 @@ static double read_spline(
 }
 
 
-// Outside supplied Fourier support, retain fastnc's endpoint power laws.
-// This is an extrapolation of the physical model, not proof of accuracy.
-// The forecast must test the support against its aperture and scale cuts.
+// ---------------------------------------------------------------------------
+// read_power: return P(k) from a log P(log k) table. Outside the
+// tabulated Fourier support the reader keeps fastnc's convention and
+// extends each end as a power law with the stored endpoint slope.
+// That is an extrapolation of the physical model, not a statement of
+// accuracy: the forecast must test the tabulated support against its
+// aperture and scale cuts.
 static double read_power(
   const physics_spline* spline,
   const double logk
@@ -427,11 +578,14 @@ static double read_power(
 }
 
 
-// CosmoLike's table strategy separates expensive preparation from repeated
-// reads: cubic interpolation fills a dense uniform grid once, and workers
-// then locate a cell by (x-xmin)/dx and linearly interpolate its two values.
-// Input tables may be irregular; only this serial preparation searches
-// their intervals. The production reader above never searches a grid.
+// ---------------------------------------------------------------------------
+// uniform_storage: allocate an empty uniform table. CosmoLike's table
+// strategy separates expensive preparation from repeated reads: cubic
+// interpolation fills a dense uniform grid once, and workers then
+// locate a cell by (x - xmin)/dx and linearly interpolate its two
+// values. Input tables may be irregular; only the serial preparation
+// searches their intervals, and the production reader above never
+// searches a grid.
 static physics_spline uniform_storage(
   const int count,
   const double lower,
@@ -452,6 +606,10 @@ static physics_spline uniform_storage(
 }
 
 
+// ---------------------------------------------------------------------------
+// boosted_count: the node count after refining each original interval
+// into boost uniform pieces; the guard keeps the multiplication from
+// overflowing int.
 static int boosted_count(const int original, const int boost)
 {
   require_physics(boost >= 1 && original >= 2
@@ -460,6 +618,11 @@ static int boosted_count(const int original, const int boost)
 }
 
 
+// ---------------------------------------------------------------------------
+// uniformize_spline: replace an irregular cubic table with its dense
+// uniform resampling. Cubic reads of the original table fill the new
+// nodes once; afterwards the table serves linear arithmetic-index
+// reads and keeps the original endpoint slopes for extrapolation.
 static void uniformize_spline(physics_spline* spline, const int boost)
 {
   const int count = boosted_count(spline->n, boost);
@@ -475,6 +638,15 @@ static void uniformize_spline(physics_spline* spline, const int boost)
 }
 
 
+// ---------------------------------------------------------------------------
+// prepare_uniform_readers: convert every production table to the
+// dense uniform representation. The background and BiHalofit splines
+// refine in place. The nonlinear power needs more care: production
+// interpolates between redshift rows, so this routine also builds a
+// denser uniform redshift axis and fills each new row by splining
+// every fixed-k column, and both endpoint slopes, along redshift.
+// The source-comparison mode returns immediately and keeps cubic
+// reads of the original tables.
 static void prepare_uniform_readers(physics_model_3pcf* model)
 {
   if (model->source_readers) {
@@ -538,6 +710,12 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
 }
 
 
+// ---------------------------------------------------------------------------
+// linear_read: linear interpolation on an irregular grid, with zero
+// outside the tabulated range. The radial preparation reads the
+// source densities with it, so a node outside a source's support
+// gets zero, and the linear rule matches fastnc's handling of those
+// raw tables.
 static double linear_read(
   const double* x,
   const double* y,
@@ -554,6 +732,10 @@ static double linear_read(
 }
 
 
+// ---------------------------------------------------------------------------
+// trapezoid: the trapezoid rule on an irregular grid. Each interval
+// contributes its width times the average of its endpoint values,
+// which integrates the straight line between the two samples exactly.
 static double trapezoid(
   const double* x,
   const double* y,
@@ -568,8 +750,13 @@ static double trapezoid(
 }
 
 
-// This includes scipy's final Cartwright interval for an even number of
-// equally spaced nodes: h*(5*f_n/12+2*f_(n-1)/3-f_(n-2)/12).
+// ---------------------------------------------------------------------------
+// simpson_uniform: composite Simpson integration on a uniform grid.
+// Simpson's rule needs an odd node count, so for an even count the
+// main loop covers the first count - 1 nodes and the final interval
+// gets scipy's closing correction, due to Cartwright: fit a parabola
+// through the last three nodes and integrate it over that one
+// interval, which gives h*(5 f_n/12 + 2 f_(n-1)/3 - f_(n-2)/12).
 static double simpson_uniform(
   const double* values,
   const int count,
@@ -590,9 +777,31 @@ static double simpson_uniform(
 }
 
 
-// Window 0 is a spherical top hat. Windows 1 and 2 are exp(-x^2/2)
-// and x*exp(-x^2/2); their squared windows determine sigma_G^2 and
-// its logarithmic radius derivative, hence the nonlinear scale and n_eff.
+// ===========================================================================
+// [SECTION] BIHALOFIT BACKGROUND QUANTITIES
+// ===========================================================================
+
+// variance_physics: the variance of linear density fluctuations
+// smoothed on a radius, which fixes BiHalofit's background inputs.
+//
+// The dimensionless linear power Delta^2(k) = k^3 P_lin(k)/(2 pi^2)
+// integrates against a squared smoothing window over log k:
+//
+//   sigma^2(R) = int dln k  Delta^2(k) W^2(k R) D^2(z),
+//
+// with D the growth factor. Window 0 is the spherical top hat, used
+// for sigma8(z). Window 1 is the Gaussian exp(-x^2/2), whose square
+// gives the Gaussian variance sigma_G^2(R) that defines BiHalofit's
+// nonlinear radius through sigma_G = 1. Window 2 is x exp(-x^2/2):
+// differentiating e^(-x^2) with respect to ln R brings down -2 x^2,
+// so the effective slope n_eff = -3 - dln sigma_G^2/dln R equals
+// -3 + 2*variance with window 2 at the radius where sigma_G = 1.
+//
+// A uniform Simpson grid covers log k up to log(100): fastnc samples
+// the same 100 h/Mpc upper bound, and the optional analytic tail
+// below accounts for everything above it. The 2000-entry cap bounds
+// the fixed stack buffer; the callers use 1000 nodes for the
+// variances and 2000 for the slope.
 static double variance_physics(
   const physics_model_3pcf* model,
   const double radius,
@@ -612,6 +821,9 @@ static double variance_physics(
     const double logk = logk_min + spacing*index;
     const double k = exp(logk);
     const double x = k*radius;
+    // The top hat W(x) = 3 (sin x - x cos x)/x^3 loses its leading
+    // digits to cancellation at small x; its Taylor series
+    // 1 - x^2/10 + x^4/280 is exact to double precision below 1e-3.
     double filter;
     if (window == 0) {
       filter = fabs(x) < 1.0e-3
@@ -625,6 +837,19 @@ static double variance_physics(
   }
   double sum = simpson_uniform(values, count, spacing);
   if (tail) {
+    // Gaussian tail: account for the integral above k = 100 exactly
+    // enough that the nonlinear-radius solve never feels the cutoff.
+    // Approximate Delta^2(k) beyond the last node as the power law
+    // A k^s, with s the log slope of the final interval. With the
+    // substitution u = (k R)^2 the remaining integral becomes
+    //
+    //   int_{ln 100}^inf dln k  A k^s e^(-(k R)^2)
+    //     = (A/2) R^(-s) Gamma(s/2, (100 R)^2),
+    //
+    // the upper incomplete gamma function that GSL evaluates below;
+    // the growth factor squared multiplies at the end, as in the main
+    // sum. A GSL underflow return only means the tail is zero to
+    // double precision, so it passes the status check.
     const double logdelta_last = log(read_power(&model->linear, logk_max))
       + 3.0*logk_max;
     const double logdelta_previous = log(read_power(&model->linear,
@@ -645,6 +870,26 @@ static double variance_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// omega_m_physics: the matter density fraction at redshift z for a
+// w0-wa dark-energy background.
+//
+// Integrating the continuity equation with the equation of state
+// w(a) = w0 + wa (1 - a) gives the dark-energy density evolution
+//
+//   rho_de(a)/rho_de(1) = a^(-3 (1 + w0 + wa)) exp(-3 wa (1 - a)).
+//
+// Multiplying numerator and denominator of the usual a^-3 form of
+// Omega_m(a) by a^2 puts the exact fraction into the shape the code
+// uses,
+//
+//   Omega_m(a) = (Omega_m/a) / (Omega_m/a + Omega_de dark + Omega_k),
+//
+// where dark = a^2 rho_de(a)/rho_de(1) is the local variable below
+// and Omega_k = 1 - Omega_m - Omega_de. The input densities may miss
+// flatness by up to the 1e-8 rounding tolerance, so the code keeps
+// the Omega_k term, written as the factor total; exactly flat inputs
+// make total equal one exactly.
 static double omega_m_physics(
   const physics_model_3pcf* model,
   const double z
@@ -661,6 +906,16 @@ static double omega_m_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// bh_coefficients: the redshift-dependent BiHalofit fit coefficients
+// of Takahashi et al. (arXiv:1911.07886). The paper expresses each
+// coefficient as ten to a polynomial in the effective spectral slope
+// n_eff(z) and in log10 sigma8(z), with one Omega_m(z) term in the
+// cross-term amplitude d_n; this function copies those polynomials
+// digit for digit. The triangle-shape corrections to the one-halo
+// coefficients need the side ratios, so matter_prepared applies them
+// later; loga, logalpha and logbeta therefore stay in log10 form
+// here.
 static physics_bh_coefficients bh_coefficients(
   const physics_model_3pcf* model,
   const double z
@@ -701,11 +956,16 @@ static physics_bh_coefficients bh_coefficients(
 }
 
 
-// BiHalofit coefficients depend on a nonlinear radius, not directly on a
-// guessed k_nl. Solve sigma_G(R,z)=1 on the same 1000-node log-k grid as
-// fastnc, then evaluate its derivative on 2000 nodes. Coefficient anchor
-// spacings are the source's 0.15 below z=.5 and 0.3 above it. Small z
-// domains receive at least four anchors so the cubic fit remains defined.
+// ---------------------------------------------------------------------------
+// prepare_bihalofit: tabulate the BiHalofit background quantities on
+// coefficient anchor redshifts. The fit depends on a nonlinear radius
+// rather than directly on a guessed k_NL, so at each anchor a
+// bisection solves sigma_G(R, z) = 1 on the same 1000-node log-k grid
+// as fastnc, and the slope that gives n_eff uses 2000 nodes. In the
+// source-comparison mode the anchor spacings copy the source, 0.15 in
+// z below 0.5 and 0.3 above it; production places fit_nz uniform
+// anchors instead. A small redshift domain still receives at least
+// four anchors so the cubic fit stays defined.
 static void prepare_bihalofit(physics_model_3pcf* model)
 {
   const double zmax = model->growth.x[model->nz - 1];
@@ -796,6 +1056,35 @@ static void prepare_bihalofit(physics_model_3pcf* model)
 }
 
 
+// ===========================================================================
+// [SECTION] RADIAL KERNELS AND MODEL CONSTRUCTION
+// ===========================================================================
+
+// prepare_radial: build every radial table the Limber integrals read.
+//
+// Four products come out of this pass, all owned by the model:
+//
+//   1. kernel_lens: the lensing efficiency W_kappa of every source
+//      bin on the uniform kernel redshift grid. W_kappa(chi) is the
+//      Poisson prefactor (3/2) Omega_m (H0/c)^2 times the mean of the
+//      source efficiency (chi_s - chi)/chi_s over the bin's
+//      normalized source distribution.
+//   2. kernel_shape, plus a source-grid variant: the NLA source
+//      kernel, the normalized source density per unit comoving
+//      distance n(z) dz/dchi, stored divided by chi (1 + z) (next
+//      paragraph).
+//   3. los_chi, los_dchi and los_bh: the comoving distance, the
+//      trapezoid weight and the BiHalofit coefficients at every LOS
+//      node.
+//   4. los_lens and los_shape: both kernels resampled by cubic
+//      spline onto the LOS nodes, where the projection weights read
+//      them.
+//
+// The combined lensing + alignment kernel of the NLA baseline carries
+// a common factor chi (1 + z) that physically belongs to the lensing
+// term alone; field_kernel_physics multiplies it onto the combined
+// kernel. Dividing the shape kernel by chi (1 + z) here lets both
+// terms share that later factor without changing the alignment part.
 static void prepare_radial(physics_model_3pcf* model)
 {
   const int nz = model->nsource;
@@ -822,12 +1111,17 @@ static void prepare_radial(physics_model_3pcf* model)
   model->los_dchi = allocate_physics((size_t)nlos, sizeof(double));
   model->los_bh = allocate_physics((size_t)nlos,
     sizeof(physics_bh_coefficients));
+  // Sample the background once on the uniform kernel grid: redshift,
+  // comoving distance and growth at every node.
   for (int node=0; node<nkernel; node++) {
     const double redshift = zmin + (zmax - zmin)*node/(nkernel - 1);
     model->kernel_z[node] = redshift;
     model->kernel_chi[node] = read_spline(&model->distance, redshift, 0);
     model->kernel_growth[node] = read_spline(&model->growth, redshift, 0);
   }
+  // Distances and BiHalofit coefficients at every LOS node;
+  // physics_create_3pcf refreshes los_bh after the uniform readers
+  // replace the splines.
   for (int node=0; node<nlos; node++) {
     model->los_chi[node] = read_spline(&model->distance,
       model->los_z[node], 0);
@@ -835,6 +1129,10 @@ static void prepare_radial(physics_model_3pcf* model)
     require_physics(model->los_chi[node] > 0.0,
       "line-of-sight distance must be positive");
   }
+  // Trapezoid weights: an interior node owns half the distance
+  // between its two neighbors, and each endpoint owns half of its
+  // single adjacent interval, so summing f(chi_node)*dchi over the
+  // nodes equals the trapezoid rule on the LOS grid.
   for (int node=0; node<nlos; node++) {
     const int lower = node > 0 ? node - 1 : node;
     const int upper = node + 1 < nlos ? node + 1 : node;
@@ -843,25 +1141,48 @@ static void prepare_radial(physics_model_3pcf* model)
   }
   double* integrand = allocate_physics((size_t)nz, sizeof(double));
   double* source_shape = allocate_physics((size_t)nz, sizeof(double));
+  // Lensing prefactor (3/2) Omega_m (H0/c)^2 of the Poisson equation.
+  // With H0 = 100 h km/s/Mpc and c = 299792 km/s, the ratio
+  // 100/299792 is H0/c in h/Mpc, matching the Mpc/h distances, so the
+  // prefactor carries units of (h/Mpc)^2.
   const double prefactor = 1.5*pow(100.0/299792.0, 2)*model->omega_m;
+  // One pass per source bin: normalize the bin's source distribution,
+  // build its lensing efficiency and NLA kernel on the kernel grid,
+  // build the source-grid shape kernel, and resample both kernels
+  // onto the LOS nodes.
   for (int bin=0; bin<model->nbin; bin++) {
+    // Rows of this bin: density points at the input dn/dz, while lens
+    // and nla_shape point at the bin's output rows on the kernel grid.
     const double* density = model->sources + (size_t)bin*nz;
     double* lens = model->kernel_lens + (size_t)bin*nkernel;
     double* nla_shape = model->kernel_shape + (size_t)bin*nkernel;
+    // The input n(z) need not integrate to one; this norm divides it
+    // out of every average below.
     const double redshift_norm = trapezoid(source_z, density, nz);
     require_physics(redshift_norm > 0.0, "empty source distribution");
     for (int node=0; node<nkernel; node++) {
       const double distance = model->kernel_chi[node];
       for (int source=0; source<nz; source++) {
+        // Geometric lensing weight of one source at chi_s for a lens
+        // at this node's distance: (chi_s - chi)/chi_s = 1 - chi/chi_s.
+        // A source in front of the lens cannot be lensed by it and
+        // contributes zero, which the ternary enforces.
         integrand[source] = source_chi[source] > distance
           ? density[source]*(1.0 - distance/source_chi[source]) : 0.0;
       }
+      // The trapezoid integral over the sources, divided by the n(z)
+      // norm, is the density-weighted mean efficiency of the bin.
       lens[node] = prefactor*trapezoid(source_z, integrand, nz)
         /redshift_norm;
+      // NLA kernel sample: the source density per unit comoving
+      // distance, n(z) dz/dchi, read at this kernel node's redshift.
       nla_shape[node] = linear_read(source_z, density, nz,
         model->kernel_z[node])*read_spline(&model->dz_dchi,
         model->kernel_z[node], 0);
     }
+    // Normalize the NLA kernel to unit integral over chi, then remove
+    // the common chi (1 + z) factor that field_kernel_physics
+    // restores on the combined kernel.
     const double nla_norm = trapezoid(model->kernel_chi,
       nla_shape, nkernel);
     require_physics(nla_norm > 0.0, "empty sampled NLA source kernel");
@@ -869,18 +1190,26 @@ static void prepare_radial(physics_model_3pcf* model)
       nla_shape[node] /= nla_norm*model->kernel_chi[node]
         *(1.0 + model->kernel_z[node]);
     }
+    // The TATT residual reads the shape kernel on the source grid
+    // itself, normalized over chi there: fastnc keeps this grid
+    // separate from the kernel-grid NLA baseline, and so does this
+    // port (see field_kernel_physics).
     for (int source=0; source<nz; source++) {
       integrand[source] = density[source]*model->source_jacobian[source];
     }
     const double shape_norm = trapezoid(source_chi, integrand, nz);
     require_physics(shape_norm > 0.0, "empty shape source kernel");
     for (int source=0; source<nz; source++) {
-      // Only the actual observer has a zero-distance endpoint. A source
-      // grid may instead begin at a positive midpoint; its first density
-      // is then retained. LOS nodes themselves are strictly positive.
+      // Only the actual observer sits at zero distance, where the
+      // 1/chi factor would diverge; the observer hosts no sources, so
+      // that endpoint stores zero. A source grid may instead begin at
+      // a positive midpoint and then keeps its first density. The LOS
+      // nodes themselves are strictly positive.
       source_shape[source] = source_chi[source] == 0.0 ? 0.0 : integrand[source]
         /(shape_norm*source_chi[source]*(1.0 + source_z[source]));
     }
+    // Resample both kernels onto the LOS nodes by cubic spline; the
+    // zero-outside read keeps a node beyond the sources empty.
     physics_spline lens_spline = make_spline(model->kernel_chi,
       lens, nkernel);
     physics_spline shape_spline = make_spline(source_chi, source_shape, nz);
@@ -898,6 +1227,17 @@ static void prepare_radial(physics_model_3pcf* model)
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_create_3pcf: validate the input, copy every table and run
+// the preparation passes in a fixed order. The constructor normalizes
+// the linear power spectrum to sigma8 before anything reads it; the
+// BiHalofit background and the radial kernels then build on the
+// original cubic splines; prepare_uniform_readers replaces the
+// production tables last. Because that replacement changes
+// interpolation details, the constructor re-evaluates the per-LOS
+// BiHalofit coefficients, power rows and kernel growth samples
+// afterwards, so projected means and covariance queries read
+// identical model values at identical redshifts.
 physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
 {
   require_physics(input != NULL, "missing model input");
@@ -1007,9 +1347,12 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->source_chi = allocate_physics((size_t)nsource, sizeof(double));
   model->source_jacobian = allocate_physics((size_t)nsource, sizeof(double));
   memcpy(model->source_z, source_z, (size_t)nsource*sizeof(double));
-  // Preserve the old path exactly, including when its axis is supplied
-  // explicitly. Otherwise evaluate background quantities on source nodes
-  // once, before any triangle or covariance worker is entered.
+  // When the source grid is the background redshift grid itself, copy
+  // chi and dz/dchi directly, so this shared source/background grid
+  // preparation keeps its original arithmetic bit for bit. An
+  // independent source grid instead reads the background splines on
+  // its nodes here, once, before any triangle or covariance worker
+  // starts.
   const int same_source_grid = nsource == nz
     && memcmp(source_z, input->z, (size_t)nz*sizeof(double)) == 0;
   for (int index=0; index<nsource; index++) {
@@ -1042,9 +1385,10 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   prepare_bihalofit(model);
   prepare_radial(model);
   prepare_uniform_readers(model);
-  // The per-LOS fit coefficients and NLA growth samples must use the
-  // selected reader too, so projected means and covariance B queries use
-  // identical model values at an identical redshift.
+  // The per-LOS fit coefficients and the kernel growth samples must
+  // come from the reader that production will use, so projected means
+  // and covariance B queries read identical model values at an
+  // identical redshift.
   model->los_power = allocate_physics((size_t)3*model->nlos,
     sizeof(physics_power_row));
   for (int node=0; node<model->nlos; node++) {
@@ -1064,6 +1408,9 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_destroy_3pcf: free every owned table; a NULL model is a
+// no-op.
 void physics_destroy_3pcf(physics_model_3pcf* model)
 {
   if (model == NULL) {
@@ -1104,6 +1451,14 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_default_ia_3pcf: zero every IA parameter, then set the
+// defaults the fastnc comparison uses: the pivot redshift
+// zpivot = 0.62; the normalization c1rho = 0.0134, the C_1 rho_crit
+// value of the tidal-alignment literature; power_mode = 1, the z = 0
+// nonlinear power scaled by the squared growth factor; and
+// intrinsic_legs = -1, keeping every field placement. All amplitudes
+// stay zero, so the default model has no intrinsic alignment.
 void physics_default_ia_3pcf(physics_ia_3pcf* parameters)
 {
   require_physics(parameters != NULL, "missing alignment parameters");
@@ -1115,9 +1470,12 @@ void physics_default_ia_3pcf(physics_ia_3pcf* parameters)
 }
 
 
-// These reads need no search: array index j represents ell=j. The zero
-// extension above the final sample is deliberate, even when that sample
-// is nonzero. Do not interpolate that boundary into a gradual taper.
+// ---------------------------------------------------------------------------
+// physics_window_value_3pcf: read the angular pixel window at a real
+// multipole. The samples sit at integer ell, so array index j holds
+// ell = j and the read needs no search. Above the final sample the
+// window drops to zero on purpose, even when that sample is nonzero.
+// Do not interpolate that boundary into a gradual taper.
 double physics_window_value_3pcf(
   const int count,
   const double* window,
@@ -1142,6 +1500,9 @@ double physics_window_value_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_window_samples_3pcf: expose the owned window samples and
+// their count; the model keeps ownership.
 const double* physics_window_samples_3pcf(
   const physics_model_3pcf* model,
   int* count
@@ -1153,6 +1514,14 @@ const double* physics_window_samples_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// prepare_power_row: choose the P(k) tables for one power convention.
+// Mode 0 reads the linear power at z = 0 and scales it by the squared
+// growth factor D^2(z); mode 1 does the same with the nonlinear power
+// at z = 0; mode 2 interpolates log P between the two nonlinear
+// redshift rows that bracket z. Production finds the bracket by index
+// arithmetic on the uniform redshift axis; the source-comparison mode
+// searches the original irregular axis.
 static physics_power_row prepare_power_row(
   const physics_model_3pcf* model,
   const double z,
@@ -1181,6 +1550,11 @@ static physics_power_row prepare_power_row(
 }
 
 
+// ---------------------------------------------------------------------------
+// read_power_row_log: evaluate one prepared power row at log k. A
+// single-table row multiplies its reader by the squared growth; a
+// bracketing row interpolates log P linearly between its two redshift
+// rows.
 static double read_power_row_log(
   const physics_power_row* row,
   const double logk
@@ -1205,20 +1579,26 @@ static double read_power_row_log(
       + fraction*(upper->y[index + 1] - upper->y[index]);
     return exp(first + row->fraction*(second - first));
   }
-  // The original source reader and endpoint power laws retain their
-  // explicit comparison path. No binary search occurs in production.
+  // The source-comparison mode and the out-of-range endpoint power
+  // laws keep this explicit scalar path; a production in-range query
+  // never reaches it and never searches a grid.
   const double first = log(read_power(lower, logk));
   const double second = log(read_power(upper, logk));
   return exp(first + row->fraction*(second - first));
 }
 
 
+// ---------------------------------------------------------------------------
 static double read_power_row(const physics_power_row* row, const double k)
 {
   return read_power_row_log(row, log(k));
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_power_3pcf: public power reader; mode selects the
+// convention of prepare_power_row (0 linear times D^2, 1 nonlinear at
+// z = 0 times D^2, 2 nonlinear interpolated in redshift).
 double physics_power_3pcf(
   const physics_model_3pcf* model,
   const double k,
@@ -1234,6 +1614,9 @@ double physics_power_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_feedback_power_3pcf: the paired baryon response ratio for
+// the power spectrum; feedback_3pcf.c owns the physics.
 double physics_feedback_power_3pcf(
   const physics_model_3pcf* model,
   const double k,
@@ -1247,6 +1630,9 @@ double physics_feedback_power_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_feedback_bispectrum_3pcf: the paired baryon response ratio
+// for the bispectrum, after validating the triangle.
 double physics_feedback_bispectrum_3pcf(
   const physics_model_3pcf* model,
   const double* sides,
@@ -1261,10 +1647,17 @@ double physics_feedback_bispectrum_3pcf(
 }
 
 
-// The two wavevectors add to a vector whose length is opposite. Factor
-// the difference of the two large squared lengths before subtracting
-// the small side. For (epsilon,1,1), this retains mu=-epsilon/2 even
-// when epsilon squared is below the precision of a number near one.
+// ===========================================================================
+// [SECTION] TRIANGLE GEOMETRY AND TREE-LEVEL KERNELS
+// ===========================================================================
+
+// pair_cosine_physics: the cosine between two wavevectors whose sum
+// has the third side's length. The law of cosines subtracts nearly
+// equal squares in a squeezed triangle, so the code factors the
+// difference of the two large squared lengths before dividing by the
+// small side: for sides (epsilon, 1, 1) this keeps mu = -epsilon/2
+// even when epsilon squared falls below the precision of a number
+// near one.
 static double pair_cosine_physics(
   const double first,
   const double second,
@@ -1278,6 +1671,17 @@ static double pair_cosine_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// f2_physics: the second-order density kernel of standard
+// perturbation theory,
+//
+//   F2(k1, k2) = 5/7 + (mu/2) (k1/k2 + k2/k1) + (2/7) mu^2,
+//
+// with mu the cosine between the two wavevectors (see the large-scale
+// structure review of Bernardeau et al., arXiv:astro-ph/0112551). It
+// weights the second-order density that gravity generates on the side
+// closing the two input modes, and so drives the tree-level
+// bispectrum.
 static double f2_physics(
   const double first,
   const double second,
@@ -1288,10 +1692,11 @@ static double f2_physics(
   const double large = fmax(first, second);
   const double cosine = pair_cosine_physics(small, large, opposite);
   if (cosine < -0.5) {
-    // Near antiparallel equal sides F2 tends to zero. Its usual three
-    // terms cancel at order unity. Write t=1+mu using another factored
-    // side difference, then keep the unequal-side correction with its
-    // physical sign. F2 can be negative for unequal antiparallel sides.
+    // For nearly antiparallel equal sides F2 tends to zero, and its
+    // usual three terms cancel at order unity. The code forms
+    // one_plus = 1 + mu from another factored side difference, then
+    // keeps the unequal-side correction with its physical sign; F2
+    // can be negative for unequal antiparallel sides.
     const double difference = large - small;
     const double one_plus = 0.5*((opposite - difference)/small)
       *((opposite + difference)/large);
@@ -1303,9 +1708,12 @@ static double f2_physics(
 }
 
 
-// Cosine of the angle between a side and the closing vector. This has
-// the opposite sign convention to pair_cosine_physics. Either argument
-// can be the short side, so choose the factored subtraction accordingly.
+// ---------------------------------------------------------------------------
+// closing_cosine_physics: the cosine between a side and the closing
+// vector, with the opposite sign convention to pair_cosine_physics.
+// Either argument can be the short side, so the code chooses the
+// factored subtraction accordingly to keep the squeezed-triangle
+// precision.
 static double closing_cosine_physics(
   const double first,
   const double closing,
@@ -1319,6 +1727,11 @@ static double closing_cosine_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// triangle_geometry: prepare every dimensionless factor of one
+// triangle shape (see the struct comment for the frame convention).
+// with_ia = 1 also fills the IA vertex shapes; the matter-only
+// baseline passes 0 and skips that unused preparation.
 static physics_triangle_geometry triangle_geometry(
   const double* sides,
   const int with_ia // prepare IA shapes only when an IA reader will use them
@@ -1327,8 +1740,9 @@ static physics_triangle_geometry triangle_geometry(
   physics_triangle_geometry geometry;
   const double minimum = fmin(sides[0], fmin(sides[1], sides[2]));
   const double maximum = fmax(sides[0], fmax(sides[1], sides[2]));
-  // A power-of-two rescaling is exact for ordinary binary numbers. It
-  // avoids overflow in side products without rounding away the small
+  // Rescale by a power of two to prevent overflow in side products.
+  // For normal, non-subnormal doubles the rescaling only shifts the
+  // exponent field, so it is exact and cannot round away the small
   // difference between two nearly equal long sides.
   int exponent;
   frexp(maximum, &exponent);
@@ -1373,10 +1787,15 @@ static physics_triangle_geometry triangle_geometry(
       const double sine = (twice_area/first)/second;
       geometry.sine_squared[cyclic] = sine*sine;
     } else {
-      // Rectangular PUV interpolation includes off-triangle corners.
-      // The source's clipped angle defines that continuation. It also
-      // handles closure errors within the direct validator's roundoff
-      // tolerance. A valid triangle uses its area and both cosines.
+      // Off-triangle sides appear while filling fastnc's rectangular
+      // PUV interpolation grid: the triangle-coordinate table over
+      // the perimeter p = ell1 + ell2 + ell3 and the side fractions
+      // u = ell1/p, v = ell2/p, whose rectangular corners include
+      // side combinations that close no triangle. The source clips
+      // the cosine and continues the vertex construction; the same
+      // branch absorbs closure error within the direct validator's
+      // roundoff tolerance. A valid triangle takes the area branch
+      // above instead.
       const double cosine = fmax(-1.0, fmin(1.0,
         closing_cosine_physics(first, third, second)));
       geometry.first_x[cyclic] = -cosine;
@@ -1395,9 +1814,10 @@ static physics_triangle_geometry triangle_geometry(
     geometry.ia_density_zero_shape[cyclic] = 0.0;
     geometry.ia_density_two_shape[cyclic] = 0.0;
     if (with_ia) {
-      // Preserve each original parenthesized expression, including its
-      // operation order. Its IA coefficient is still multiplied later.
-      // Baseline-only geometry avoids this unused IA preparation.
+      // Keep each of fastnc's parenthesized vertex expressions with
+      // its original operation order; the IA coefficients multiply
+      // them later. A baseline-only geometry skips this preparation
+      // because nothing reads it.
       const double first_x = geometry.first_x[cyclic];
       const double first_y = geometry.first_y[cyclic];
       const double second_x = geometry.second_x[cyclic];
@@ -1418,13 +1838,21 @@ static physics_triangle_geometry triangle_geometry(
 }
 
 
-// The two F2 terms containing a short side can separately grow as 1/s,
-// although their weighted sum is finite. Combine their opposite large
-// pieces before multiplication. With b,c the other sides,
-// F2(s,b,c)=13/28+2*mu_sb^2/7+mu_sb*s/(2*b)+(c^2-b^2)/(4*s^2).
-// The last piece therefore multiplies P(b)-P(c), not two large products
-// that are subsequently subtracted. This also applies to the effective
-// powers in BiHalofit's three-halo term.
+// ---------------------------------------------------------------------------
+// tree_sum_physics: the tree-level bispectrum 2 [F2 P P + cyclic],
+// arranged to stay finite in squeezed triangles. The two F2 terms
+// containing the short side s can separately grow as 1/s even though
+// their weighted sum stays finite, so the code combines their
+// opposite large pieces before multiplying. With b, c the other two
+// sides,
+//
+//   F2(s,b,c) = 13/28 + 2 mu_sb^2/7 + mu_sb s/(2 b)
+//             + (c^2 - b^2)/(4 s^2),
+//
+// and the last piece multiplies the difference P(b) - P(c) directly,
+// rather than two large products that a later subtraction would
+// cancel. The same arrangement serves the enhanced powers in
+// BiHalofit's three-halo term.
 static double tree_sum_physics(
   const physics_triangle_geometry* geometry,
   const double* power
@@ -1458,6 +1886,14 @@ static double tree_sum_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// triangle_physics: require three positive finite lengths that close
+// into a triangle. The test allows a relative slack of
+// 32*DBL_EPSILON on the triangle inequality because callers often
+// build the third side in floating point - for example from the law
+// of cosines in the multipole integrator - and that construction can
+// overshoot a degenerate triangle by a few units in the last place.
+// A genuinely impossible triangle misses by far more than the slack.
 static void triangle_physics(
   const double first,
   const double second,
@@ -1472,6 +1908,26 @@ static void triangle_physics(
 }
 
 
+// ===========================================================================
+// [SECTION] MATTER BISPECTRUM (BIHALOFIT AND BARYONS)
+// ===========================================================================
+
+// baryon_physics: the baryonic correction ratio of the matter
+// bispectrum. Takahashi et al. (arXiv:1911.07886) fitted the ratio of
+// the bispectrum with baryons to the DMO one in the IllustrisTNG
+// simulation TNG300-1; every constant below copies that published
+// fit, a function of the scale factor a = 1/(1 + z) and of log10 k on
+// each leg. Per leg the ratio has three pieces: a mild enhancement
+// bump at intermediate k and low redshift (amplitude0), a Gaussian
+// depression near k = 10 h/Mpc (amplitude1), and a strong power-law
+// enhancement above the turnover scale. The simulation shows no
+// baryon effect in the fitted range above z = 5, so the published
+// ratio is one there and the function returns early.
+//
+// fb interpolates between DMO and the full fitted ratio: the return
+// value is 1 + fb (transfer - 1), so fb = 0 keeps DMO and fb = 1
+// applies the complete fit. suppress_only = 1 caps the fitted ratio
+// at one before scaling, keeping only the suppression.
 static double baryon_physics(
   const double* sides,
   const double z,
@@ -1508,6 +1964,37 @@ static double baryon_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// matter_prepared: the BiHalofit matter bispectrum of Takahashi et
+// al. (arXiv:1911.07886), evaluated with coefficients, a power row
+// and a triangle geometry that the caller may have prepared in
+// advance (NULL arguments fall back to local preparation). component
+// selects the returned piece: 0 the full fit, 1 the tree level, 2 the
+// one-halo term, 3 the three-halo term.
+//
+// PHYSICAL DERIVATION & LOGIC FLOW
+//   1. Read the linear power on each leg and scale every side to
+//      q = k*radius = k/k_NL, the wave number in units of the
+//      nonlinear scale.
+//   2. One-halo term, one halo carrying all three legs:
+//        B_1h = prod_i 1/[(a q_i^alpha + b q_i^beta)(1 + 1/(c q_i))].
+//      The local amplitude is a_n with its squeezed-shape correction,
+//      -0.310 r1^gamma_n in log10; alpha is alpha_n with its
+//      flattened-shape r2^2 term; beta is beta_n with its 0.007 r2
+//      term. r1 and r2 are the side ratios stored in the geometry.
+//   3. The fit caps alpha_n at 1 - 2 n_s/3, with n_s the primordial
+//      spectral index: the paper imposes this bound so the one-halo
+//      term stays below the tree level in the low-k limit.
+//   4. Three-halo term, three distinct correlated halos: effective
+//      holds the enhanced power spectrum
+//        P_E = (1 + f q^2)/(1 + g q + h q^2) P_lin
+//            + 1/[(m q^mu + n q^nu)(1 + (p q)^-3)],
+//      which replaces P_lin in the tree-level sum; the cross terms
+//      2 d q_opposite P_E P_E add the paper's halo-model correction
+//      to the F2 weight; and damping multiplies one factor
+//      1/(1 + e q) per leg.
+//   5. The full bispectrum is the sum of the one-halo and three-halo
+//      terms.
 static double matter_prepared(
   const physics_model_3pcf* model,
   const physics_bh_coefficients* coefficients,
@@ -1564,11 +2051,21 @@ static double matter_prepared(
       *effective[leg]*effective[next];
   }
   three_halo *= damping;
-  return component == 2 ? one_halo
-    : (component == 3 ? three_halo : one_halo + three_halo);
+  if (component == 2) {
+    return one_halo;
+  }
+  if (component == 3) {
+    return three_halo;
+  }
+  return one_halo + three_halo;
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_matter_3pcf: public matter-bispectrum query. It validates
+// the triangle, evaluates the BiHalofit coefficients at z and applies
+// the baryon ratio at the requested fb, with the fit's enhancement
+// pieces allowed (suppress_only off).
 double physics_matter_3pcf(
   const physics_model_3pcf* model,
   const double k1,
@@ -1590,6 +2087,12 @@ double physics_matter_3pcf(
 }
 
 
+// ===========================================================================
+// [SECTION] TATT TENSOR ALGEBRA
+// ===========================================================================
+
+// check_ia: require finite IA parameters and known convention
+// selectors before any evaluation path reads them.
 static void check_ia(const physics_ia_3pcf* parameters)
 {
   require_physics(parameters != NULL, "missing alignment parameters");
@@ -1614,6 +2117,26 @@ static void check_ia(const physics_ia_3pcf* parameters)
 }
 
 
+// ---------------------------------------------------------------------------
+// ia_coefficients: the TATT amplitude coefficients at one redshift,
+// in the conventions of Gomes et al. (arXiv:2601.09133) that fastnc
+// implements. With the pivot ratio r = (1 + z)/(1 + zpivot) and the
+// growth factor D(z),
+//
+//   C_1(z) = -A_1 r^eta1 (C_1 rho_crit) Omega_m / D(z),
+//   C_2(z) =  A_2 r^eta2 5 (C_1 rho_crit) Omega_m / D(z)^2,
+//   C_t    =  C_1(z) ct  (ct_mode 0, the fastnc convention)
+//          or ct alone   (ct_mode 1).
+//
+// A_1 is the tidal-alignment amplitude (parameters->a1) with its
+// redshift power eta1; A_2 is the tidal-torque amplitude (a2) with
+// eta2; bta is the density-weighting amplitude b_TA; ct scales the
+// velocity-shear term; c1rho is the C_1 rho_crit normalization,
+// 0.0134 by default. The combined vertex weights follow: linear is
+// 2 C_1 for a linear shape on one leg, velocity is -2 C_t/5,
+// quadratic is C_2, and density is b_TA C_1 - 2 C_2/3, whose second
+// piece is the density-shaped trace part of the tidal-torque
+// operator.
 static physics_ia_coefficients ia_coefficients(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
@@ -1634,9 +2157,12 @@ static physics_ia_coefficients ia_coefficients(
   coefficients.velocity = -2.0*ct/5.0;
   coefficients.quadratic = c2;
   coefficients.density = parameters->bta*c1 - 2.0*c2/3.0;
-  // The EFT density-shaped vertex contains part of the physical tidal
-  // torque. Selecting C2 alone would assign that part to the wrong model.
-  // Every residual keeps the same linear shapes on its remaining I legs.
+  // Diagnostics select one physical operator. The density-shaped
+  // vertex contains the trace part of the tidal torque, so selecting
+  // C_2 alone would assign that part to the wrong operator; the
+  // tidal-torque diagnostic (3) therefore keeps -2 C_2/3 in the
+  // density weight. Every residual keeps the same linear shapes on
+  // its remaining intrinsic legs.
   if (parameters->operator_component != 0) {
     coefficients.velocity = parameters->operator_component == 4
       ? -2.0*ct/5.0 : 0.0;
@@ -1651,13 +2177,19 @@ static physics_ia_coefficients ia_coefficients(
 }
 
 
-// A shape tensor has three helicity projections here, labelled 0,1,2.
-// For each cyclic ordering put the output wavevector on the positive
-// x axis and construct the two input vectors from triangle closure. F[m]
-// is the second-order shape vertex for that ordering after removing the
-// linear-alignment part. Gravity is collected into a common tree sum
-// later, avoiding cancellation between large squeezed cyclic terms.
-// Preparing three vertices keeps each leg and orientation explicit.
+// ---------------------------------------------------------------------------
+// ia_vertices: the second-order shape vertices of the three cyclic
+// orderings. A shape tensor here has three helicity projections,
+// labelled 0, 1 and 2: the tensor components counted around the
+// output wavevector as the axis. For each cyclic ordering the output
+// wavevector sits on the positive x axis and triangle closure fixes
+// the two input vectors; vertices[c][m] is the helicity-m
+// second-order vertex of ordering c after removing the
+// linear-alignment part. The gravity part joins a common tree sum
+// later (ia_prepared adds it once at the end), which avoids
+// cancellation between large squeezed cyclic terms; the tree array
+// therefore stays zero here. Preparing three explicit vertices keeps
+// each leg and orientation visible.
 static void ia_vertices(
   const physics_triangle_geometry* geometry,
   const double* power,
@@ -1698,15 +2230,18 @@ static void ia_vertices(
 }
 
 
-// These labels describe the fields, not their perturbation orders: 0 is
-// scalar density and 2 is the rank-two intrinsic-shape tensor. Thus 002
-// contains two densities and one shape, 022 one density and two shapes,
-// and 222 three shapes. At tree order each contribution places one
-// second-order vertex on a leg and linear fields on the remaining legs.
-// The cyclic index tracks that leg placement. A helicity argument instead
-// selects a tensor component relative to its wavevector; it does not
-// count perturbative powers. Linear shapes occupy helicity zero only,
-// which explains the conditional factors in these contractions.
+// ---------------------------------------------------------------------------
+// tensor002, tensor022, tensor222: the field contractions. The digit
+// labels describe the fields, not their perturbation orders: 0 is the
+// scalar density and 2 the rank-two intrinsic-shape tensor. Thus 002
+// contains two densities and one shape, 022 one density and two
+// shapes, and 222 three shapes. At tree order each contribution
+// places one second-order vertex on a leg and linear fields on the
+// remaining legs; the cyclic index tracks that leg placement. A
+// helicity argument instead selects a tensor component relative to
+// its wavevector and does not count perturbative powers. Linear
+// shapes occupy helicity zero only, which explains the conditional
+// factors in these contractions.
 static double tensor002(
   const double vertices[3][3],
   const double* tree,
@@ -1721,6 +2256,7 @@ static double tensor002(
 }
 
 
+// ---------------------------------------------------------------------------
 static double tensor022(
   const double vertices[3][3],
   const double* tree,
@@ -1738,6 +2274,7 @@ static double tensor022(
 }
 
 
+// ---------------------------------------------------------------------------
 static double tensor222(
   const double vertices[3][3],
   const double linear,
@@ -1756,11 +2293,14 @@ static double tensor222(
 }
 
 
-// Convert tensor helicities to observable E/B shape components. These
-// equations contain the source's factors of 1/2, sqrt(3/2) and 3/16.
-// Changing them changes the IA amplitude convention; it is not a speed
-// optimization. Cyclic arrays below map output *labels*, not sorted side
-// lengths. Sorting only k would silently exchange source-bin kernels.
+// ---------------------------------------------------------------------------
+// ia_prepared: contract the tensor vertices into the 19 observable
+// E/B shape components. These equations keep the source's factors of
+// 1/2, sqrt(3/2) and 3/16: changing any of them changes the IA
+// amplitude convention, so none of this is a speed optimization. The
+// cyclic slot arrays below map output labels, not sorted side
+// lengths; sorting only the k values would silently exchange
+// source-bin kernels.
 static void ia_prepared(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
@@ -1777,8 +2317,9 @@ static void ia_prepared(
   if (coefficients->quadratic == 0.0 && coefficients->density == 0.0
       && coefficients->velocity == 0.0
       && (remove_alignment || coefficients->linear == 0.0)) {
-    // With no quadratic shape vertex, subtracting the linear alignment
-    // leaves exactly zero. This common NLA case needs no power reads.
+    // With no quadratic shape vertex, subtracting the linear
+    // alignment leaves exactly zero. This common NLA case needs no
+    // power-spectrum reads.
     const int ncomponent = e_only ? 7 : 19;
     for (int index=0; index<ncomponent; index++) {
       out[index] = 0.0;
@@ -1793,9 +2334,10 @@ static void ia_prepared(
   for (int leg=0; leg<3; leg++) {
     power[leg] = read_power_row(&row, sides[leg]);
   }
-  // Projection already owns this immutable triangle throughout the LOS
-  // sum. Borrow it here; scalar queries construct their identical local
-  // geometry. No geometry is retained after this synchronous call.
+  // A projection owns one immutable triangle geometry for its whole
+  // LOS sum and lends it here; a scalar query builds an identical
+  // local one. Nothing keeps the geometry after this synchronous call
+  // returns.
   physics_triangle_geometry local_geometry;
   const physics_triangle_geometry* geometry = prepared_geometry;
   if (geometry == NULL) {
@@ -1805,6 +2347,16 @@ static void ia_prepared(
   ia_vertices(geometry, power, coefficients, vertices, tree, e_only);
   const double linear = coefficients->linear;
   const double root_three_halves = sqrt(3.0/2.0);
+  // Slot arrays: map cyclic ordering c to the public 19-entry order
+  // ddE,dEd,Edd,dEE,EEd,EdE,EEE,ddB,dBd,Bdd,dEB,dBE,EBd,BEd,BdE,EdB,
+  // EEB,EBE,BEE, where d is density, E and B are the shape modes, and
+  // the three letters name legs 1, 2, 3 in order. In ordering c the
+  // helicity arguments sit on legs c, c+1, c+2 (mod 3): the single
+  // shape of a 002 term and the lone B of a mixed term sit on leg
+  // c+2, and the single density of a 022 term on leg c. For example
+  // single_e = {0, 2, 1} sends c = 0, 1, 2 to ddE, Edd, dEd - the
+  // entries whose E sits on leg c+2; the other arrays follow the same
+  // placement rule.
   const int single_e[3] = {0, 2, 1};
   const int double_e[3] = {3, 5, 4};
   const int single_b[3] = {7, 9, 8};
@@ -1819,9 +2371,9 @@ static void ia_prepared(
       *(root_three_halves*tensor022(vertices, tree, linear, cyclic, 0, 0)
       - tensor022(vertices, tree, linear, cyclic, 0, 2)
       - tensor022(vertices, tree, linear, cyclic, 2, 0));
-    // Projection contracts the seven all-E terms above and below. Its
-    // result has never included these twelve B/mixed terms; omitting
-    // their calculation changes no retained tensor or radial sum.
+    // The projection contracts only the seven all-E entries, so an
+    // e_only caller skips the twelve B and mixed entries here;
+    // omitting them changes no kept tensor or radial sum.
     if (!e_only) {
       out[single_b[cyclic]] = -tensor002(vertices, tree, linear, cyclic, 1);
       out[mixed_eb[cyclic]] = -sqrt(3.0/8.0)
@@ -1838,10 +2390,12 @@ static void ia_prepared(
     - tensor222(vertices, linear, 0, 2, 0, 0)
     - tensor222(vertices, linear, 0, 0, 2, 0));
   if (!remove_alignment && parameters->operator_component <= 1) {
-    // Linear shapes have only helicity zero. Their contribution to an
-    // all-E correlator is C1 to the number of shapes times B_tree.
-    // Adding this once is algebraically equal to its three placements.
-    // The requested TATT residual never subtracts these large terms.
+    // Linear shapes carry helicity zero only, so the linear-alignment
+    // contribution to an all-E correlator is C_1 to the number of
+    // shape legs times B_tree. Adding it once here equals the sum of
+    // its three placements. A TATT residual request
+    // (remove_alignment) never subtracts these large terms because it
+    // never adds them.
     const double total_tree = tree_sum_physics(geometry, power);
     const double c1 = coefficients->c1;
     for (int index=0; index<3; index++) {
@@ -1853,6 +2407,10 @@ static void ia_prepared(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_ia_bispectra_3pcf: public 19-component IA bispectrum query
+// at one triangle and redshift (the header file lists the component
+// order).
 void physics_ia_bispectra_3pcf(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
@@ -1877,9 +2435,12 @@ void physics_ia_bispectra_3pcf(
 }
 
 
-// A common triangle shape occurs along every Limber integral and in
-// scale scans of one configuration. Validate the shape association before
-// launching workers: changing one leg alone requires a different geometry.
+// ---------------------------------------------------------------------------
+// physics_ia_same_shape_3pcf: evaluate many triangles that share one
+// shape. A common shape occurs along every Limber integral and in
+// scale scans of one configuration, so the function prepares the
+// geometry once and validates the shape association before launching
+// workers: changing one leg alone would require a different geometry.
 void physics_ia_same_shape_3pcf(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
@@ -1901,6 +2462,12 @@ void physics_ia_same_shape_3pcf(
     require_physics(isfinite(z[point]) && z[point] >= 0.0
       && z[point] <= model->zmax, "invalid common-shape IA redshift");
     for (int leg=1; leg<3; leg++) {
+      // Common-shape tolerance: every triangle must share one shape
+      // for the prepared geometry to apply. Side ratios formed from a
+      // common scaling agree to a few units in the last place, and
+      // 64*DBL_EPSILON leaves room for a caller that scaled through
+      // several rounded operations; a genuinely different shape
+      // misses by far more.
       const double ratio = triangle[leg]/triangle[0];
       const double reference = sides[leg]/sides[0];
       require_physics(fabs(ratio - reference)
@@ -1908,6 +2475,10 @@ void physics_ia_same_shape_3pcf(
         "IA same-shape inputs change a triangle side ratio");
     }
   }
+  // Every point evaluates the same triangle shape at its own scale
+  // and redshift: the workers share the one prepared geometry
+  // read-only and write disjoint 19-entry output rows, so the
+  // parallel loop needs no synchronization.
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int point=0; point<npoint; point++) {
     const double growth = read_spline(&model->growth, z[point], 0);
@@ -1919,13 +2490,22 @@ void physics_ia_same_shape_3pcf(
 }
 
 
-// The nonlinear-alignment baseline uses g+C1*W sampled on the lensing
-// kernel grid, then splined in chi. The TATT residual uses the pure g and
-// the source-grid W. They represent the same continuum window but have
-// different finite-grid errors in fastnc, which this implementation keeps.
-// Each field choice returns its physical kernel with chi*(1+z) included.
-// G and I are splined separately only for a selected placement; the
-// ordinary total keeps its original combined-kernel arithmetic.
+// ---------------------------------------------------------------------------
+// field_kernel_physics: one source bin's radial kernel on the LOS
+// nodes, with the common factor chi (1 + z) restored. The field
+// argument selects the content: -1 the combined G + C_1 W kernel of
+// the NLA baseline, 0 the lensing kernel G alone, 1 the intrinsic
+// kernel I = C_1 W alone, all on the same finite kernel grid. G is
+// the gravitational lensing efficiency, I the intrinsic-shape field,
+// and W the normalized source density per unit distance.
+//
+// The NLA baseline splines G + C_1 W sampled on the lensing kernel
+// grid, while the TATT residual uses the pure G and the source-grid
+// W. Both represent the same continuum window, but their finite-grid
+// errors differ in fastnc, and this implementation keeps that
+// difference on purpose. G and I come out separately only when a
+// placement diagnostic asks for one field; the ordinary total keeps
+// its original combined-kernel arithmetic.
 static void field_kernel_physics(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
@@ -1961,6 +2541,9 @@ static void field_kernel_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_nla_kernel_3pcf: the combined NLA kernel G + C_1 W of one
+// bin on the LOS nodes, with chi (1 + z) included.
 void physics_nla_kernel_3pcf(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
@@ -1972,6 +2555,40 @@ void physics_nla_kernel_3pcf(
 }
 
 
+// ===========================================================================
+// [SECTION] LIMBER PROJECTION AND BATCHES
+// ===========================================================================
+
+// physics_projector_create_3pcf: precompute the radial weights of one
+// ordered source-bin triplet.
+//
+// PHYSICAL DERIVATION & LOGIC FLOW
+//   1. Target quantity: the flat-sky Limber projection of a
+//      bispectrum,
+//
+//        b(ell1, ell2, ell3)
+//          = int dchi W1(chi) W2(chi) W3(chi) / chi^4
+//              * B(ell1/chi, ell2/chi, ell3/chi; z(chi)),
+//
+//      with W_i the radial kernel of leg i. The trapezoid weights
+//      dchi turn the integral into a sum over LOS nodes, so each node
+//      needs only the product weight dchi W1 W2 W3 / chi^4.
+//   2. Baseline weight (weights[0..nlos-1]): the kernels from
+//      field_kernel_physics already carry their chi (1 + z) factor,
+//      so dchi K1 K2 K3 / chi^4 is the matter-baseline weight
+//      directly.
+//   3. Residual weights (seven more per node): the TATT residual
+//      needs every placement of the intrinsic kernel on one, two or
+//      three legs. The stored lensing and shape rows are each the
+//      full kernel divided by chi (1 + z), so a product of three
+//      rows is W_i W_j W_k / [chi^3 (1 + z)^3]; multiplying by the
+//      common measure dchi (1 + z)^3 / chi cancels the (1 + z)
+//      powers and completes the Limber factor 1/chi^4, leaving
+//      dchi W_i W_j W_k / chi^4 for every placement. The alignment
+//      amplitudes do not enter these kernels: they live in the
+//      tensor values that multiply the weights at evaluation time.
+//   4. The placement bitmask below gates diagnostics that keep only
+//      one field placement.
 physics_projection_3pcf* physics_projector_create_3pcf(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
@@ -1998,11 +2615,15 @@ physics_projection_3pcf* physics_projector_create_3pcf(
   for (int leg=0; leg<3; leg++) {
     const int field = parameters->intrinsic_legs < 0 ? -1
       : (parameters->intrinsic_legs >> leg)&1;
-    // Spline C1*W as a product. Multiplying a splined W by C1 at the LOS
-    // node would change the established finite-grid baseline convention.
+    // Spline C_1 W as a product: multiplying a splined W by C_1 at
+    // the LOS node would change the established finite-grid baseline
+    // convention.
     field_kernel_physics(model, parameters, bins[leg], field,
       kernels + (size_t)leg*count);
   }
+  // One pass per LOS node: evaluate the IA coefficients at the node's
+  // redshift, then form the baseline weight and the seven residual
+  // placement weights from the stored kernel rows.
   for (int node=0; node<count; node++) {
     const double distance = model->los_chi[node];
     const double redshift = model->los_z[node];
@@ -2018,6 +2639,8 @@ physics_projection_3pcf* physics_projector_create_3pcf(
     projection->weights[node] = model->los_dchi[node]
       *kernels[node]*kernels[count + node]*kernels[2*count + node]
       /pow(distance, 4);
+    // Diagnostics that isolate a quadratic operator (2 to 4) carry no
+    // matter baseline; the NLA diagnostic (1) keeps it.
     if (parameters->operator_component >= 2) {
       projection->weights[node] = 0.0;
     }
@@ -2033,6 +2656,12 @@ physics_projection_3pcf* physics_projector_create_3pcf(
       shape[0]*shape[1]*shape[2]
     };
     for (int term=0; term<7; term++) {
+      // placement[term] encodes which legs of residual[term] carry
+      // the intrinsic kernel: bit j (value 2^j) is set when ordered
+      // leg j+1 is intrinsic. The residual order above is
+      // llI, lIl, Ill, lII, IIl, IlI, III, so the masks read
+      // {4, 2, 1, 6, 3, 5, 7}, matching the intrinsic_legs convention
+      // of physics_3pcf.h (4 = GGI, 3 = IIG).
       const int placement[7] = {4, 2, 1, 6, 3, 5, 7};
       projection->weights[(size_t)(term + 1)*count + node]
         = measure*residual[term];
@@ -2047,6 +2676,9 @@ physics_projection_3pcf* physics_projector_create_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_projector_destroy_3pcf: free the owned weights and
+// coefficients; a NULL projection is a no-op.
 void physics_projector_destroy_3pcf(physics_projection_3pcf* projection)
 {
   if (projection != NULL) {
@@ -2057,6 +2689,11 @@ void physics_projector_destroy_3pcf(physics_projection_3pcf* projection)
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_projected_3pcf: the Limber-projected bispectrum of one
+// prepared triplet at one angular triangle. component 0 returns the
+// total E-mode prediction, 1 the matter baseline with NLA kernels,
+// and 2 the TATT residual alone.
 double physics_projected_3pcf(
   const physics_projection_3pcf* projection,
   const double ell1,
@@ -2075,6 +2712,12 @@ double physics_projected_3pcf(
     component != 1);
   double baseline = 0.0;
   double residual = 0.0;
+  // Walk the LOS nodes in fixed order: each node scales the angular
+  // sides to k = ell/chi, evaluates the matter bispectrum with its
+  // baryon and feedback ratios and the seven all-E residual terms,
+  // and contracts them with the node's precomputed weights. The
+  // weights carry all tomography, so one matter fit and one tensor
+  // evaluation per node suffice.
   for (int node=0; node<count; node++) {
     const double distance = model->los_chi[node];
     const double redshift = model->los_z[node];
@@ -2103,6 +2746,13 @@ double physics_projected_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_projected_puv_extension_3pcf: evaluate the TATT residual
+// for a corner of the rectangular PUV interpolation grid (defined at
+// triangle_geometry's off-triangle branch). The rectangular grid
+// contains corners that close no triangle, so this entry point skips
+// the strict validator and follows the source's continuation: clipped
+// vertex angles, and zero at a zero closing side.
 double physics_projected_puv_extension_3pcf(
   const physics_projection_3pcf* projection,
   const double ell1,
@@ -2130,9 +2780,10 @@ double physics_projected_puv_extension_3pcf(
       sides, model->los_z[node], 1, intrinsic, model->los_power
       + (size_t)projection->ia.power_mode*count + node, &geometry, 1);
     for (int term=0; term<7; term++) {
-      // The pinned outer IA class applies nan_to_num to each component.
-      // Restrict that historical extension to the interpolation fill;
-      // a failed physical direct evaluation must still be visible.
+      // fastnc's IA bispectrum class passes each component through
+      // numpy's nan_to_num, which replaces every non-finite entry
+      // with zero. Keep that replacement for the interpolation fill
+      // only: a failed direct physical evaluation must stay visible.
       if (isfinite(intrinsic[term])) {
         sum += projection->weights[(size_t)(term + 1)*count + node]
           *intrinsic[term];
@@ -2143,6 +2794,9 @@ double physics_projected_puv_extension_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// same_ia_parameters: exact field comparison; a batch requires
+// identical IA settings, not merely physically equivalent ones.
 static int same_ia_parameters(
   const physics_ia_3pcf* first,
   const physics_ia_3pcf* second
@@ -2161,6 +2815,12 @@ static int same_ia_parameters(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_projection_batch_create_3pcf: validate the projectors and
+// repack their weights so that, at one LOS node and term, the values
+// of all triplets sit in adjacent doubles. The evaluation loop then
+// loads a pair of triplets with one unaligned SIMD read instead of
+// gathering across the separate projector arrays.
 physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
   const int nprojection, // number of ordered source-triplet outputs
   physics_projection_3pcf* const* projections // validated before any worker
@@ -2188,6 +2848,9 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
   batch->first = first;
   batch->nprojection = nprojection;
   batch->weights = allocate_physics(nweight, sizeof(double));
+  // Transpose the per-projector [term,node] storage into the packed
+  // [node][term][triplet] order, copying every weight exactly once
+  // during this serial construction.
   for (int node=0; node<count; node++) {
     for (int term=0; term<8; term++) {
       const size_t target = ((size_t)node*8 + term)*nprojection;
@@ -2201,6 +2864,7 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
 void physics_projection_batch_destroy_3pcf(
   physics_projection_batch_3pcf* batch // borrowed projector/model stay owned
 )
@@ -2212,10 +2876,12 @@ void physics_projection_batch_destroy_3pcf(
 }
 
 
-// Both batch layouts share identical physical work at one LOS node.
-// The caller initializes intrinsic[19] and preserves the accumulation
-// order. This helper changes no triangle geometry, power prescription,
-// baryon convention or source PUV treatment between the two layouts.
+// ---------------------------------------------------------------------------
+// projected_node_physics: the shared per-node physics of both batch
+// layouts. The caller initializes intrinsic[19] and preserves the
+// accumulation order; this helper changes no triangle geometry, power
+// prescription, baryon convention or PUV treatment between the two
+// layouts, so both produce identical per-node physics.
 static double projected_node_physics(
   const physics_projection_3pcf* first,
   const double* angular_sides,
@@ -2257,20 +2923,24 @@ static double projected_node_physics(
 }
 
 
-// The expensive three-dimensional physics depends on triangle and z,
-// whereas tomography enters through radial weights. Evaluate the former
-// once, then contract it with every ordered source triplet. No array with
-// dimensions [triangle,z,triplet,IA term] is retained: a caller supplies
-// only one output vector per worker, and each output keeps its z order.
+// ---------------------------------------------------------------------------
+// physics_projected_batch_3pcf: project one triangle for many ordered
+// source triplets at once. The expensive three-dimensional physics
+// depends on the triangle and redshift only, whereas tomography
+// enters through the radial weights, so the function evaluates the
+// physics once per LOS node and contracts it with every triplet. It
+// keeps no array with dimensions [triangle, z, triplet, IA term]: a
+// caller supplies one output vector per worker, and each output
+// accumulates its LOS nodes in fixed order.
 void physics_projected_batch_3pcf(
-  const int nprojection,
-  physics_projection_3pcf* const* projections,
-  const double ell1,
-  const double ell2,
-  const double ell3,
-  const int component,
-  const int puv_extension,
-  double* out
+  const int nprojection,                      // ordered source triplets
+  physics_projection_3pcf* const* projections, // shared model and IA
+  const double ell1,                          // first Fourier side
+  const double ell2,                          // second Fourier side
+  const double ell3,                          // closing side
+  const int component,                        // 0 total, 1 baseline, 2 IA
+  const int puv_extension,                    // nonzero: PUV corner rules
+  double* out                                 // [nprojection]
 )
 {
   require_physics(nprojection > 0 && projections && out
@@ -2304,6 +2974,16 @@ void physics_projected_batch_3pcf(
     double intrinsic[19] = {0.0};
     const double baseline = projected_node_physics(first, angular_sides,
       &geometry, node, component, puv_extension, intrinsic);
+    // scalar: at this node every ordered source triplet t adds
+    //   out[t] += weights_t[node]*baseline;                  (matter)
+    //   out[t] += weights_t[(term+1)*count + node]*b_E[term]; (7 IA)
+    // with weights_t the triplet's own radial weights and b_E the
+    // seven all-E tensor values, which every triplet shares. The
+    // vector loop runs those statements for two triplets at once:
+    // lane 0 holds triplet t and lane 1 holds triplet t + 1. The
+    // lanes never mix; each continues its own radial sum in node
+    // order, and the scalar branch below finishes an odd final
+    // triplet.
     int triplet = 0;
     for (; triplet + 1<nprojection; triplet += 2) {
       const double* restrict first_weights = projections[triplet]->weights;
@@ -2312,24 +2992,37 @@ void physics_projected_batch_3pcf(
       // Adjacent lanes own different ordered source-triplet sums. The
       // output storage does not overlap either immutable weight array;
       // restrict states this promise for reads through the local pointers.
+      // Load the two running sums out[triplet] and out[triplet + 1];
+      // loadu needs no vector-aligned address.
       physics_v2d sum = simde_mm_loadu_pd(out + triplet);
       if (component != 2) {
+        // Pair the two triplets' baseline weights at this node;
+        // set_pd places its first argument in the high lane, so lane 1
+        // holds triplet t + 1 and lane 0 holds triplet t.
         const physics_v2d weight = simde_mm_set_pd(second_weights[node],
           first_weights[node]);
+        // Broadcast the shared matter value of this node to both lanes.
         const physics_v2d value = simde_mm_set1_pd(baseline);
+        // Multiply each triplet's weight by the matter value and add
+        // the product to that triplet's running sum.
         sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, value));
       }
       if (component != 1) {
         for (int term=0; term<7; term++) {
           const size_t index = (size_t)(term + 1)*count + node;
-          // Gather one radial weight per triplet; both share this vertex.
+          // Gather one radial weight per triplet; both share this
+          // vertex. set_pd again puts triplet t + 1 in the high lane.
           const physics_v2d weight = simde_mm_set_pd(second_weights[index],
             first_weights[index]);
+          // Broadcast the shared tensor value of this term.
           const physics_v2d value = simde_mm_set1_pd(intrinsic[term]);
-          // Preserve the scalar node/term order independently in each lane.
+          // Multiply and accumulate, preserving the scalar node/term
+          // order independently in each lane.
           sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, value));
         }
       }
+      // Store both updated sums back; the two output cells belong to
+      // these triplets alone.
       simde_mm_storeu_pd(out + triplet, sum);
     }
     if (triplet < nprojection) {
@@ -2352,6 +3045,11 @@ void physics_projected_batch_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_projection_batch_evaluate_3pcf: the packed-weight variant
+// of the batch projection. The physics per node is identical to
+// physics_projected_batch_3pcf; only the weight layout differs, with
+// all triplets of one node and term adjacent in memory.
 void physics_projection_batch_evaluate_3pcf(
   const physics_projection_batch_3pcf* batch, // immutable packed preparation
   const double ell1, // ordered first Fourier side
@@ -2389,25 +3087,42 @@ void physics_projection_batch_evaluate_3pcf(
       &geometry, node, component, puv_extension, intrinsic);
     const double* restrict weights = batch->weights
       + (size_t)node*8*nprojection;
+    // scalar: at this node every ordered source triplet t adds
+    //   out[t] += weights[t]*baseline;                      (matter)
+    //   out[t] += weights[(term+1)*nprojection + t]*b_E[term]; (7 IA)
+    // with b_E the shared all-E tensor values. Lane 0 carries triplet
+    // t and lane 1 triplet t + 1; the packed [node][term][triplet]
+    // layout makes both weights adjacent, so plain loads replace the
+    // gathers of the unpacked path, and the scalar branch below
+    // finishes an odd final triplet.
     int triplet = 0;
     for (; triplet + 1<nprojection; triplet += 2) {
-      // Each lane continues one triplet's existing sum. Loading adjacent
-      // weights replaces a gather, without exchanging terms or LOS nodes.
+      // Each lane continues one triplet's existing sum: load
+      // out[triplet] and out[triplet + 1] with one unaligned read.
       physics_v2d sum = simde_mm_loadu_pd(out + triplet);
       if (component != 2) {
+        // One contiguous load reads the two adjacent baseline weights
+        // weights[triplet] and weights[triplet + 1].
         const physics_v2d weight = simde_mm_loadu_pd(weights + triplet);
+        // Broadcast the shared matter value of this node to both lanes.
         const physics_v2d value = simde_mm_set1_pd(baseline);
+        // Multiply each triplet's weight by the matter value and add
+        // the product to that triplet's running sum.
         sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, value));
       }
       if (component != 1) {
         for (int term=0; term<7; term++) {
           const size_t index = (size_t)(term + 1)*nprojection + triplet;
-          // Term planes have contiguous triplets, including odd batches.
+          // Term planes keep contiguous triplets, including in odd
+          // batches, so one load reads both weights of this term.
           const physics_v2d weight = simde_mm_loadu_pd(weights + index);
+          // Broadcast the shared tensor value of this term.
           const physics_v2d value = simde_mm_set1_pd(intrinsic[term]);
+          // Multiply and accumulate without exchanging terms or nodes.
           sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, value));
         }
       }
+      // Store both updated sums back to their private output cells.
       simde_mm_storeu_pd(out + triplet, sum);
     }
     if (triplet < nprojection) {
@@ -2429,10 +3144,17 @@ void physics_projection_batch_evaluate_3pcf(
 }
 
 
-// Gauss-Legendre nodes avoid both endpoints, including the zero-length
-// squeezed triangle at ell1=ell2 and mu=1. Newton iteration solves each
-// Legendre root; mirror roots share weights. No scientific table is read
-// or written after preparation, and this helper runs before worker launch.
+// ===========================================================================
+// [SECTION] MULTIPOLES, ACCESSORS AND NLA ANGULAR POWER
+// ===========================================================================
+
+// gauss_legendre_physics: Gauss-Legendre nodes and weights on the
+// open interval (-1, 1). The nodes avoid both endpoints, including
+// the degenerate mu = 1 triangle at ell1 = ell2 whose closing side
+// would vanish. Each node is a root of the Legendre polynomial of
+// degree count, refined by Newton iteration; mirror roots share
+// weights by symmetry. This helper runs before worker launch, and
+// afterwards nothing reads or writes a scientific table.
 static void gauss_legendre_physics(
   const int count,
   double* nodes,
@@ -2440,10 +3162,17 @@ static void gauss_legendre_physics(
 )
 {
   for (int root=0; root<(count + 1)/2; root++) {
+    // Tricomi's initial guess: the k-th root of the degree-n Legendre
+    // polynomial lies near cos(pi (k + 3/4)/(n + 1/2)), and Newton
+    // converges from it in a few steps for every order used here.
     double coordinate = cos(3.14159265358979323846
       *(root + 0.75)/(count + 0.5));
     double derivative = 0.0;
     for (int iteration=0; iteration<100; iteration++) {
+      // Evaluate P_count(coordinate) with the three-term recurrence
+      // order*P_order = (2 order - 1) x P_(order-1)
+      // - (order - 1) P_(order-2), keeping the previous polynomial
+      // for the derivative identity below.
       double previous = 1.0;
       double value = coordinate;
       for (int order=2; order<=count; order++) {
@@ -2452,6 +3181,8 @@ static void gauss_legendre_physics(
         previous = value;
         value = next;
       }
+      // P'_n(x) = n (x P_n - P_(n-1))/(x^2 - 1); one Newton step is
+      // P_n/P'_n.
       derivative = count*(coordinate*value - previous)
         /(coordinate*coordinate - 1.0);
       const double step = value/derivative;
@@ -2463,6 +3194,8 @@ static void gauss_legendre_physics(
     }
     nodes[root] = -coordinate;
     nodes[count - 1 - root] = coordinate;
+    // Gauss-Legendre weight w = 2/[(1 - x^2) P'_n(x)^2]; the mirrored
+    // root -x carries the same weight.
     const double weight = 2.0/((1.0 - coordinate*coordinate)
       *derivative*derivative);
     weights[root] = weight;
@@ -2471,16 +3204,28 @@ static void gauss_legendre_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_multipoles_3pcf: the Legendre coefficients b_L of the
+// projected E-mode bispectrum in mu, the cosine of the angle between
+// the two Fourier multipole legs:
+//
+//   b_L(ell_i, ell_j) = (2L + 1)/2 int_{-1}^{1} dmu P_L(mu)
+//                         * b(ell_i, ell_j, ell_3),
+//   ell_3^2 = ell_i^2 + ell_j^2 - 2 ell_i ell_j mu,
+//
+// with no Limber +1/2 shift on any leg. Gauss-Legendre quadrature in
+// mu integrates a polynomial of degree 2 nmu - 1 exactly, so nmu must
+// exceed lmax. The function imposes no leg-sorting symmetry on out.
 void physics_multipoles_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int* bins,
-  const int nell,
-  const double* ell,
-  const int lmax,
-  const int nmu,
-  const int component,
-  double* out
+  const physics_model_3pcf* model,   // immutable physical tables
+  const physics_ia_3pcf* parameters, // IA and baryon settings
+  const int* bins,                   // ordered source bins of the legs
+  const int nell,                    // multipole nodes per leg
+  const double* ell,                 // positive multipole values [nell]
+  const int lmax,                    // highest Legendre order L
+  const int nmu,                     // Gauss nodes in mu; nmu > lmax
+  const int component,               // 0 total, 1 baseline, 2 residual
+  double* out                        // b_L [lmax+1, nell, nell]
 )
 {
   require_physics(ell && out && nell > 0 && lmax >= 0 && lmax < INT_MAX
@@ -2501,6 +3246,10 @@ void physics_multipoles_3pcf(
   double* legendre = allocate_physics((size_t)(lmax + 1)*nmu,
     sizeof(double));
   gauss_legendre_physics(nmu, nodes, weights);
+  // Tabulate the quadrature-ready Legendre factors: entry [L][node]
+  // holds (L + 1/2) w_node P_L(mu_node), so each b_L below is a plain
+  // dot product of a table row with the bispectrum values. The
+  // three-term recurrence advances P_L at a fixed node.
   for (int node=0; node<nmu; node++) {
     double previous = 1.0;
     double value = nodes[node];
@@ -2514,13 +3263,20 @@ void physics_multipoles_3pcf(
     }
   }
 
-  // Independent ell pairs own disjoint output cells. Each pair evaluates
-  // the costly projected bispectrum only nmu times and shares it across
-  // every L. SIMD lanes accumulate neighboring orders with the same node
-  // sequence: sum_L += LegendreWeight[L,node]*B[node]. No reduction tree
-  // or scheduling choice changes that order.
-  // A padded slice belongs to each possible worker. Allocate before
-  // parallel work, including the direct scientific reference path.
+  // Independent ell pairs own disjoint output cells. Each pair
+  // evaluates the costly projected bispectrum only nmu times and
+  // shares those values across every order L. SIMD lanes accumulate
+  // neighboring orders with the same node sequence,
+  // sum_L += LegendreWeight[L,node]*B[node], and no reduction tree or
+  // scheduling choice changes that order.
+  //
+  // Each worker owns one padded slice of scratch. The stride rounds
+  // nmu up to a multiple of 8 doubles (one 64-byte cache line) and
+  // adds a spare line, so two workers never write the same cache
+  // line; without the padding, neighboring slices would share a line
+  // and every write would bounce it between cores (false sharing).
+  // The allocation happens before parallel work, including for the
+  // direct scientific reference path.
   const size_t worker_stride = (((size_t)nmu + 7)/8 + 1)*8;
   const size_t workers = (size_t)omp_get_max_threads();
   require_physics(workers > 0 && worker_stride <= SIZE_MAX/workers,
@@ -2548,6 +3304,11 @@ void physics_multipoles_3pcf(
               model->window, third);
           }
         }
+        // scalar: for each Legendre order L,
+        //   b_L = sum_node legendre[L][node]*values[node].
+        // The vector loop forms two orders at once - lane 0 carries L
+        // and lane 1 carries L + 1, both reading the same node
+        // sequence - and the scalar tail below covers an odd lmax.
         int order = 0;
         for (; order + 1<=lmax; order += 2) {
           // Both independent L accumulators start at zero.
@@ -2592,6 +3353,10 @@ void physics_multipoles_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_radial_3pcf: expose the LOS grids and kernel rows so the
+// covariance shares the same physical tables; the model keeps
+// ownership for its lifetime.
 void physics_radial_3pcf(
   const physics_model_3pcf* model,
   int* nbin,
@@ -2615,6 +3380,8 @@ void physics_radial_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_omega_m_3pcf: today's matter density fraction of the model.
 double physics_omega_m_3pcf(const physics_model_3pcf* model)
 {
   require_physics(model != NULL, "missing model");
@@ -2622,6 +3389,9 @@ double physics_omega_m_3pcf(const physics_model_3pcf* model)
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_omega_m_z_3pcf: the exact matter fraction Omega_m(z) of the
+// model's w0-wa background (see omega_m_physics for the derivation).
 double physics_omega_m_z_3pcf(
   const physics_model_3pcf* model,
   const double z
@@ -2633,6 +3403,7 @@ double physics_omega_m_z_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
 // Read two neighboring ell outputs with their prepared integer cells.
 // Both redshift rows share the same uniform log-k nodes. Gathers supply
 // the two cell endpoints; SIMD lanes represent independent ell values,
@@ -2702,14 +3473,26 @@ static physics_v2d nla_power_pair(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_nla_power_batch_3pcf: the Limber angular power spectrum of
+// the combined lensing + NLA intrinsic kernel,
+//
+//   C(ell) = int dchi K1(chi) K2(chi) / chi^2 P(ell/chi; z(chi)),
+//
+// with K = G + C_1 W from physics_nla_kernel_3pcf (chi (1 + z)
+// included) and P the nonlinear power interpolated in redshift (mode
+// 2). The trapezoid LOS sum reuses the model's prepared power rows,
+// and a nonzero feedback amplitude multiplies the power by its baryon
+// response ratio per ell. The function rejects TATT loop parameters
+// and the legacy bispectrum-only fb: this spectrum is strictly NLA.
 void physics_nla_power_batch_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int bin1,
-  const int bin2,
-  const int nell,
-  const double* ell,
-  double* out
+  const physics_model_3pcf* model,   // immutable physical tables
+  const physics_ia_3pcf* parameters, // NLA parameters; TATT rejected
+  const int bin1,                    // source bin of the first kernel
+  const int bin2,                    // source bin of the second kernel
+  const int nell,                    // number of multipoles
+  const double* ell,                 // positive multipoles [nell]
+  double* out                        // C(ell) [nell]
 )
 {
   check_ia(parameters);
@@ -2747,9 +3530,10 @@ void physics_nla_power_batch_3pcf(
     const size_t remaining = (size_t)nell - start;
     const int length = (int)(remaining < (size_t)capacity
       ? remaining : (size_t)capacity);
-    // Prepare log(k)=log(ell)-log(chi), then integer cell and fraction.
-    // The bounded tile stores only geometry. Its entries are reused by
-    // both nonlinear-redshift rows and remain read-only in the workers.
+    // Prepare log k = log ell - log chi, then the integer cell and
+    // fraction of each (ell, node) pair. The bounded tile stores only
+    // this geometry; both nonlinear-redshift rows reuse its entries,
+    // and the workers only read them.
     for (int node=0; node<count; node++) {
       const physics_spline* spectrum
         = model->los_power[(size_t)2*count + node].lower;
@@ -2771,6 +3555,14 @@ void physics_nla_power_batch_3pcf(
       }
     }
     const int pairs = length/2;
+    // scalar: for one multipole the radial sum is
+    //   C(ell) = sum_node radial_weight[node]*P(ell/chi_node; z_node).
+    // Each worker owns one pair of multipoles: lane 0 carries the ell
+    // at this pair's even index and lane 1 the next ell, both
+    // visiting the radial nodes in increasing order with the same
+    // prepared cells, so the thread count never changes any sum's
+    // rounding. The block after the parallel loop covers an odd final
+    // multipole.
     #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
     for (int pair=0; pair<pairs; pair++) {
       const int index = pair*2;
@@ -2790,16 +3582,22 @@ void physics_nla_power_batch_3pcf(
           const double second_ratio = feedback_power_3pcf(model->feedback,
             ell[start + index + 1]/model->los_chi[node], model->los_z[node],
             parameters->feedback_amplitude);
-          // Each lane is one ell. Its own ratio modifies only the NLA
-          // power; the immutable DMO rows also serve unmodified IA loops.
+          // Each lane is one ell, and its own ratio modifies only the
+          // NLA power; the immutable DMO rows also serve unmodified
+          // IA loops. set_pd places second_ratio, the ratio of the
+          // higher ell, in the high lane to match the power lanes.
           power = simde_mm_mul_pd(power,
             simde_mm_set_pd(second_ratio, first_ratio));
         }
-        // The same radial weight multiplies both ell values.
+        // Broadcast the node's radial weight: the same weight
+        // multiplies both ell values.
         const physics_v2d weight = simde_mm_set1_pd(radial_weight[node]);
+        // Multiply weight times power per lane and add each product
+        // to that lane's radial sum.
         sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, power));
       }
-      // This pair owns the two adjacent output cells exclusively.
+      // Store the two sums; this pair owns the two adjacent output
+      // cells exclusively.
       simde_mm_storeu_pd(out + start + index, sum);
     }
     if (length%2 != 0) {
@@ -2820,12 +3618,17 @@ void physics_nla_power_batch_3pcf(
           const double ratio = feedback_power_3pcf(model->feedback,
             ell[start + index]/model->los_chi[node], model->los_z[node],
             parameters->feedback_amplitude);
-          // Both lanes duplicate the same final ell coordinate.
+          // Both lanes duplicate the same final ell coordinate, so one
+          // broadcast ratio multiplies them identically.
           power = simde_mm_mul_pd(power, simde_mm_set1_pd(ratio));
         }
+        // Broadcast the node's radial weight to both duplicate lanes.
         const physics_v2d weight = simde_mm_set1_pd(radial_weight[node]);
+        // Multiply and accumulate exactly as in the paired loop.
         sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, power));
       }
+      // Store both lanes and keep lane 0; lane 1 repeated the same
+      // multipole and its duplicate result is discarded.
       double result[2];
       simde_mm_storeu_pd(result, sum);
       out[start + index] = result[0];
@@ -2841,6 +3644,9 @@ void physics_nla_power_batch_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_nla_power_3pcf: single-multipole convenience wrapper over
+// the batch spectrum above.
 double physics_nla_power_3pcf(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
@@ -2855,6 +3661,18 @@ double physics_nla_power_3pcf(
 }
 
 
+// ===========================================================================
+// [SECTION] APERTURE-MASS INTEGRATION
+// ===========================================================================
+
+// aperture_filter_physics: the compensated-Gaussian aperture filter
+// in Fourier space, U(x) = (x^2/2) exp(-x^2/2) with x = ell R. The
+// early return protects the far tail: at (ell R)^2 = 1500 the factor
+// exp(-750) is near 1e-326, below the smallest normal double (about
+// 2.2e-308), so the product would pass through slow subnormal
+// arithmetic on its way to a value that contributes nothing.
+// Returning zero above the threshold keeps every operation on normal
+// numbers and changes no digit of any integral.
 static double aperture_filter_physics(
   const double ell,
   const double radius
@@ -2862,37 +3680,45 @@ static double aperture_filter_physics(
 {
   const double scaled = ell*radius;
   const double square = scaled*scaled;
-  // Underflow represents the Gaussian tail. Handling a very large
-  // finite argument before square*exp avoids the indeterminate inf*0.
   return square > 1500.0 ? 0.0 : 0.5*square*exp(-0.5*square);
 }
 
 
-// A circular aperture multiplies each Fourier field by U(ell R). The
-// three-point delta function removes the third Fourier integral, leaving
-// d^2ell1 d^2ell2/(2pi)^4. Statistical isotropy integrates the common
-// orientation into 2pi, so the measure below is
-// ell1*dell1 * ell2*dell2 * dphi/(2pi)^3. The closing leg is |ell1+ell2|.
-// This is the full-filter statistic at one aperture center. A finite SAS
-// triangle selection is a different estimator and has different weights.
+// ---------------------------------------------------------------------------
+// physics_aperture_integrate_3pcf: the third-moment aperture-mass
+// statistic from a projected bispectrum.
 //
-// Only a bounded tile of projected bispectra is stored. Each triangle is
-// evaluated once and reused for every filter triplet. Workers first own
-// triangle values, then own pairs of filter outputs; no workers share an
-// accumulator. Every output visits triangles in the same fixed order at
-// every thread count. All saved physical model arrays remain read-only.
+// A circular aperture of radius R multiplies each Fourier field by
+// the filter U(ell R). The three-point delta function removes the
+// third Fourier integral, leaving d^2ell1 d^2ell2/(2 pi)^4, and
+// statistical isotropy integrates the overall orientation into 2 pi,
+// so the quadrature measure below is
+//
+//   ell1 dell1 * ell2 dell2 * dphi / (2 pi)^3,
+//
+// with phi the angle between the two integration legs and the
+// closing leg |ell1 + ell2|. This is the full-filter statistic at one
+// aperture center; a finite side-angle-side (SAS) triangle selection
+// is a different estimator with different weights.
+//
+// Work organization. The loop stores only a bounded tile of projected
+// bispectra: each triangle costs one reader call, and every filter
+// triplet reuses it. Workers first own triangle values, then own
+// pairs of filter outputs, so no two workers share an accumulator,
+// and every output visits the triangles in the same fixed order at
+// every thread count. All saved physical model arrays stay read-only.
 void physics_aperture_integrate_3pcf(
-  const void* context,
-  physics_projection_reader_3pcf reader,
-  const int nell,
-  const double* ell,
-  const double* dell,
-  const int nphi,
-  const double* phi,
-  const double* dphi,
-  const int nfilter,
-  const double* filters,
-  double* out
+  const void* context,                   // opaque reader state
+  physics_projection_reader_3pcf reader, // total E-mode projected B
+  const int nell,                        // radial quadrature nodes
+  const double* ell,                     // increasing ell nodes [nell]
+  const double* dell,                    // quadrature widths [nell]
+  const int nphi,                        // angular quadrature nodes
+  const double* phi,                     // angles in [0, 2 pi] [nphi]
+  const double* dphi,                    // angular widths, sum 2 pi [nphi]
+  const int nfilter,                     // aperture-radius triplets
+  const double* filters,                 // radii [nfilter,3], ordered legs
+  double* out                            // one moment per triplet [nfilter]
 )
 {
   require_physics(context && reader && ell && dell && phi
@@ -2937,10 +3763,17 @@ void physics_aperture_integrate_3pcf(
       }
     }
   }
+  // 1/(2 pi)^3 of the quadrature measure derived in the header.
   const double measure_constant = 0.00403144180414993615;
   for (size_t start=0; start<ntriangle; start += capacity) {
     const size_t remaining = ntriangle - start;
     const int count = (int)(remaining < capacity ? remaining : capacity);
+    // Fill one tile: each worker evaluates independent triangles,
+    // decoding its flat index into (first leg, second leg, angle),
+    // and writes disjoint entries of values and closure. The closing
+    // side follows from the two legs and their angle, and each stored
+    // value is the projected bispectrum already multiplied by its
+    // quadrature measure.
     #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
     for (int offset=0; offset<count; offset++) {
       const size_t triangle = start + (size_t)offset;
@@ -2949,24 +3782,38 @@ void physics_aperture_integrate_3pcf(
       const int first = triangle/((size_t)nphi*nell);
       double third = hypot(ell[first] + ell[second]*cos(phi[angle]),
         ell[second]*sin(phi[angle]));
+      // Equal legs at phi = pi close to a zero third side exactly;
+      // hypot's rounded result can miss zero, so snap it within four
+      // units in the last place of pi.
       if (first == second && fabs(phi[angle] - 3.14159265358979323846)
           <= 4.0*DBL_EPSILON*3.14159265358979323846) {
         third = 0.0;
       }
       closure[offset] = third;
-      // Compensation U(0)=0 removes this isolated degenerate triangle.
-      // Do not call a three-positive-side fit with a zero closing side.
+      // The compensation U(0) = 0 removes this isolated degenerate
+      // triangle, so the reader never receives a zero closing side;
+      // do not call a three-positive-side fit with one.
       values[offset] = third == 0.0 ? 0.0
         : reader(context, ell[first], ell[second], third)
         *ell[first]*dell[first]*ell[second]*dell[second]*dphi[angle]
         *measure_constant;
     }
     const int npair = nfilter/2 + nfilter%2;
+    // Contract the tile with every filter triplet: each worker owns
+    // two adjacent outputs, reuses the per-leg filter tables and
+    // evaluates only the closing-side filter per triangle. The scalar
+    // branch finishes an odd final filter with the vector path's
+    // rounding.
     #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
     for (int pair_index=0; pair_index<npair; pair_index++) {
       const int filter = pair_index*2;
       const double* restrict table = filter_table;
       double* restrict output = out + filter;
+      // scalar: each filter triplet f accumulates, over the tile,
+      //   out[f] += values[triangle]*U1_f(ell1)*U2_f(ell2)*U3_f(ell3),
+      // with values already carrying the quadrature measure. Lane 0
+      // holds filter f and lane 1 filter f + 1; both visit the tile's
+      // triangles in the same global order and never mix.
       if (filter + 1 < nfilter) {
         // Continue the two independent filter sums from preceding tiles.
         physics_v2d sum = simde_mm_loadu_pd(output);
@@ -3018,6 +3865,10 @@ void physics_aperture_integrate_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// direct_aperture_reader: adapt a projection to the integrator's
+// reader callback - the total E-mode projected bispectrum with the
+// pixel window applied once per leg.
 static double direct_aperture_reader(
   const void* context,
   const double ell1,
@@ -3037,19 +3888,23 @@ static double direct_aperture_reader(
 }
 
 
+// ---------------------------------------------------------------------------
+// physics_aperture_full_3pcf: convenience entry point - build the
+// projector for one ordered bin triplet, run the shared integrator
+// with the direct reader, and destroy the projector.
 void physics_aperture_full_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int* bins,
-  const int nell,
-  const double* ell,
-  const double* dell,
-  const int nphi,
-  const double* phi,
-  const double* dphi,
-  const int nfilter,
-  const double* filters,
-  double* out
+  const physics_model_3pcf* model,   // immutable physical tables
+  const physics_ia_3pcf* parameters, // IA and baryon settings
+  const int* bins,                   // ordered source bins of the legs
+  const int nell,                    // radial quadrature nodes
+  const double* ell,                 // increasing ell nodes [nell]
+  const double* dell,                // quadrature widths [nell]
+  const int nphi,                    // angular quadrature nodes
+  const double* phi,                 // angles in [0, 2 pi] [nphi]
+  const double* dphi,                // angular widths, sum 2 pi [nphi]
+  const int nfilter,                 // aperture-radius triplets
+  const double* filters,             // radii [nfilter,3], ordered legs
+  double* out                        // one moment per triplet [nfilter]
 )
 {
   physics_projection_3pcf* projection = physics_projector_create_3pcf(

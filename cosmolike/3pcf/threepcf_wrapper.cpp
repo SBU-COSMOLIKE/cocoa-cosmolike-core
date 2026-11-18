@@ -10,15 +10,24 @@
 
 namespace cosmolike_interface {
 
-// These wrappers preserve the named axes and the caller's inputs. C uses
-// the last index fastest, whereas Armadillo uses the first index fastest.
-// An explicit copy changes only storage order: entry (field,field,ell)
-// retains that meaning. All integration, SIMD and OpenMP remain in C.
+// ---------------------------------------------------------------------------
+// threepcf_wrapper.cpp: notebook adapters for the aperture and covariance
+// kernels. Each wrapper exists to bridge two storage orders: the C
+// kernels read flat row-major buffers, where the last index changes
+// fastest, while Armadillo stores its first index fastest. An explicit
+// copy changes only the memory order - entry (field, field, ell) keeps
+// that meaning on both sides. Every integral, SIMD loop and OpenMP
+// region stays in C; these functions validate, repack and call.
 //
 // Cache invalidation:
-// There is no stored result or mutable model state. Every call owns its
-// converted inputs and output; later calls cannot replace those values.
+// These wrappers keep no stored result and no mutable model state.
+// Every call owns its converted inputs and its output, so a later call
+// cannot replace values an earlier caller still holds.
+// ---------------------------------------------------------------------------
 
+// Abort with a diagnostic when a notebook input breaks its contract.
+// The notebook route favors a hard stop over an exception: a partial
+// covariance must never reach an interactive session silently.
 static void require_3pcf(
     const bool condition, // required input condition
     const char* message // diagnostic naming the violated contract
@@ -31,6 +40,8 @@ static void require_3pcf(
 }
 
 
+// Convert an Armadillo axis length to the C int the kernels take,
+// aborting when the length is zero or exceeds the int range.
 static int count_3pcf(
     const arma::uword count, // axis length passed to a C int argument
     const char* name // axis description for the error message
@@ -45,9 +56,18 @@ static int count_3pcf(
 }
 
 
-// Gaussian mirror writes require symmetric field correlations. Permit
-// only rounding-scale differences relative to the entries themselves:
-// tiny physical correlations receive no absolute tolerance of order one.
+// The Gaussian kernel fills one covariance triangle and mirrors it, so
+// it requires symmetric field correlations. This check accepts only
+// rounding-scale differences relative to the entries themselves; an
+// absolute tolerance of order one would hide real asymmetry in small
+// correlations.
+//
+// Why 64 machine epsilons: the caller typically builds K_ij and K_ji by
+// two separate floating-point sums (filtered_pair_3pcf evaluates every
+// ordered pair independently), so the two orderings can disagree by a
+// few dozen roundings even for an exactly symmetric model. The factor
+// 64 leaves that accumulation headroom while still rejecting genuine
+// asymmetry, which enters at a far larger scale.
 static bool symmetric_values_3pcf(
     const double first, // K_ij or its zero-separation value
     const double second // K_ji at the same separation
@@ -59,9 +79,10 @@ static bool symmetric_values_3pcf(
 }
 
 
-// C stores a matrix row together. For example, [2,3] maps (1,2) to
-// 1*3+2=5. The Armadillo column remains an owning contiguous workspace;
-// it is not a view into a caller's array or a second numerical algorithm.
+// Pack an Armadillo matrix into the row-major order C reads: C stores a
+// matrix row together, so a [2,3] matrix maps entry (1,2) to flat
+// offset 1*3+2 = 5. The returned column owns a contiguous copy; the C
+// kernel never sees the caller's array or Armadillo's own layout.
 template <typename Element>
 static arma::Col<Element> pack_matrix_3pcf(
     const arma::Mat<Element>& input // matrix with physical axes unchanged
@@ -77,6 +98,8 @@ static arma::Col<Element> pack_matrix_3pcf(
 }
 
 
+// Extend the same row-major rule to three axes: cell (first, second,
+// third) lives at flat offset (first*ncols + second)*nslices + third.
 static arma::Col<double> pack_cube_3pcf(
     const arma::Cube<double>& input // [first,second,third] physical axes
   )
@@ -96,7 +119,8 @@ static arma::Col<double> pack_cube_3pcf(
 
 
 // Reverse the storage-order conversion on a C result. The returned
-// Armadillo object owns its values, including when CARMA exports it.
+// Armadillo object owns its values, including when CARMA, the
+// NumPy-Armadillo bridge library, later exports it to Python.
 static arma::Mat<double> unpack_matrix_3pcf(
     const arma::Col<double>& packed, // row-major C output
     const int nrow, // first output axis
@@ -114,6 +138,7 @@ static arma::Mat<double> unpack_matrix_3pcf(
 }
 
 
+// Reverse pack_cube_3pcf's rule on a last-index-fastest C result.
 static arma::Cube<double> unpack_cube_3pcf(
     const arma::Col<double>& packed, // last-index-fastest C output
     const int nfirst, // first physical axis
@@ -136,8 +161,9 @@ static arma::Cube<double> unpack_cube_3pcf(
 
 
 // Prepare the finite triangle-bin aperture weights. The shared C kernel
-// includes both mirrored configurations and the final factor 1/4. The
-// two returned cubes therefore contract directly with natural components.
+// includes both mirrored triangle configurations and the final factor
+// 1/4, so the two returned cubes contract directly with natural
+// components; the caller applies no further factor.
 aperture_weights_result_3pcf aperture_weights_cpp_3pcf(
     const arma::Col<double>& d2, // [nd2], side-bin centers in radians
     const arma::Col<double>& d3, // [nd3], side-bin centers in radians
@@ -188,9 +214,12 @@ aperture_weights_result_3pcf aperture_weights_cpp_3pcf(
 }
 
 
-// Reuse prepared weights for several source triplets or model samples.
-// Output [sample,filter] is real. The C routine takes the real part of
-// the complex product; the imaginary arrays must not be discarded first.
+// Contract prepared weights with natural components for several source
+// triplets or model samples at once. The C routine takes the real part
+// of the product weight*gamma without conjugating either factor, so the
+// caller must pass both imaginary arrays: the real part of a complex
+// product mixes them with the real parts. The output [sample,filter]
+// holds one real aperture moment per sample and radius triplet.
 arma::Mat<double> aperture_apply_cpp_3pcf(
     const arma::Cube<double>& weights_real, // [filter,4,triangle]
     const arma::Cube<double>& weights_imag, // matching imaginary weights
@@ -227,8 +256,10 @@ arma::Mat<double> aperture_apply_cpp_3pcf(
 }
 
 
-// A pair correlation is the J0 transform of supplied filtered angular
-// power. The caller supplies d ell quadrature weights; C inserts ell/2pi.
+// Pair correlation of filtered fields: the C kernel transforms the
+// caller's filtered angular power with J0, the cylindrical Bessel
+// function of the first kind and order zero. The caller supplies the
+// d ell quadrature weights; C inserts the factor ell/(2 pi).
 arma::Cube<double> filtered_pair_cpp_3pcf(
     const arma::Col<double>& ell, // [nell], angular multipoles
     const arma::Col<double>& ell_weights, // [nell], d ell weights
@@ -265,11 +296,12 @@ arma::Cube<double> filtered_pair_cpp_3pcf(
 }
 
 
-// Covariance from supplied common-node responses: sum w H_row H_column.
-// The weights include the desired measure; this wrapper adds no area,
-// abundance, or distance factor and chooses no halo model.
+// Covariance from responses the caller evaluates on common nodes: the C
+// kernel forms sum_node w H_row H_column. The caller places the entire
+// physical measure in the weights; this wrapper adds no area, abundance
+// or distance factor and chooses no halo model.
 arma::Mat<double> connected_gram_cpp_3pcf(
-    const arma::Mat<double>& responses, // [row,node], supplied responses
+    const arma::Mat<double>& responses, // [row,node], halo responses
     const arma::Col<double>& weights // [node], nonnegative weights
   )
 {
@@ -291,9 +323,13 @@ arma::Mat<double> connected_gram_cpp_3pcf(
 }
 
 
-// Gaussian covariance of raw cubic aperture fields. All fifteen Wick
-// pairings are retained, including pairs at the same aperture center.
-// Distinct-galaxy catalogue estimators require their own noise exclusions.
+// Gaussian covariance of raw cubic aperture fields. For Gaussian
+// fields, Wick's theorem splits the expectation of a product of six
+// fields into products of pair expectations; these splittings are the
+// Wick pairings. The C kernel keeps all fifteen position pairings of
+// two field triplets, including the pairs that join two fields at the
+// same aperture center. A catalogue estimator over distinct galaxies
+// drops its self-pair noise terms, which this kernel does not subtract.
 arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
     const arma::Mat<int>& triplets, // [row,3], field labels
     const arma::Cube<double>& pair, // [field,field,r], correlations

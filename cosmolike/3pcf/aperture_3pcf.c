@@ -14,46 +14,62 @@
 // ===========================================================================
 // FINITE TRIANGLE INTEGRATION FOR APERTURE MASS
 // ===========================================================================
-// Aperture mass averages the projected mass density with a compensated
-// circular filter: a constant density gives zero. Its third moment can
-// also be recovered from four complex shear three-point correlations.
-// The kernels below describe the Gaussian aperture filter, whose Fourier
-// form is U(ell*R) = (ell*R)^2 exp[-(ell*R)^2/2]/2.
+// Aperture mass averages the projected mass density inside a circular
+// window with a compensated filter: the filter integrates to zero, so
+// a constant density sheet contributes nothing. The third moment of
+// the aperture mass measures the skewness of the projected density
+// field, and the four complex three-point correlations of the shear
+// contain the information to rebuild that moment. The kernels in this
+// file belong to the Gaussian aperture filter, whose Fourier transform
+// is U(ell*R) = (ell*R)^2 exp[-(ell*R)^2/2]/2, with ell the angular
+// multipole and R the aperture radius.
 //
-// The physical equations are from Schneider, Kilbinger & Lombardi (2005),
-// A&A 431, 9, Eqs. (62)-(69), https://arxiv.org/abs/astro-ph/0308328.
-// Their equal-radius limit is the aperture statistic of Jarvis, Bernstein
-// & Jain (2004), MNRAS 352, 338. TreeCorr's _calculateT/calculateMap3
-// implementation by Mike Jarvis provides the centroid/SAS convention.
-// The application to fastnc natural components follows the work of
-// Sunao Sugiyama and Rafael Gomes; repository credits and license notices
-// accompany this module. These routines implement the published math in C.
+// The physical equations come from Schneider, Kilbinger & Lombardi
+// (2005), A&A 431, 9, Eqs. (62)-(69),
+// https://arxiv.org/abs/astro-ph/0308328. Their equal-radius limit is
+// the aperture statistic of Jarvis, Bernstein & Jain (2004), MNRAS
+// 352, 338. TreeCorr's _calculateT/calculateMap3 implementation by
+// Mike Jarvis provides the centroid/SAS convention. The application to
+// fastnc natural components follows the work of Sunao Sugiyama and
+// Rafael Gomes; repository credits and license notices accompany this
+// module. These routines implement the published math in C.
 //
-// A finite SAS grid labels a triangle by two lengths and the angle between
-// them. This file integrates only the supplied triangle bins. It neither
-// extrapolates missing triangles nor asserts that finite coverage equals
-// the infinite-domain aperture statistic. Finite coverage and quadrature
-// can mix E and B modes even for a physical field with only E modes.
+// A finite side-angle-side (SAS) grid labels a triangle by two side
+// lengths and the angle between them. This file integrates the
+// triangle bins the caller passes in, and nothing else. A finite set
+// of bins is not the infinite-domain aperture statistic. Finite
+// coverage and quadrature can therefore mix E modes (the curl-free
+// shear pattern that gravitational lensing produces) with B modes
+// (the divergence-free pattern), even when the physical field carries
+// E modes only.
 //
-// Arrays are flat, caller-owned C buffers; no core cosmology state is read.
-// The caller checks units, bin definitions, sizes, finite inputs and lack
-// of overlap. In particular, phi lies strictly between zero and pi. This
-// excludes collinear triangles whose centroid can coincide with a vertex,
-// where the direction used to project its spin-2 shear is undefined.
-// Near-collinear triangles still require numerical accuracy checks.
+// Arrays are flat, caller-owned C buffers, and this file reads no core
+// cosmology state. The caller checks units, bin definitions, sizes,
+// finite inputs and the absence of overlap between buffers. In
+// particular, the opening angle phi lies strictly between zero and pi.
+// That bound excludes collinear triangles, whose centroid can coincide
+// with a vertex; at such a vertex the direction that projects the
+// spin-2 shear is undefined. Nearly collinear triangles stay inside
+// the domain, so the caller still needs to check their numerical
+// accuracy.
 
-// SIMD applies one operation to several numbers held in positions called
-// lanes. v2d holds two doubles. Each lane below carries a separate aperture
-// output, with its own ordered triangle sum; the lanes are never added.
-// SIMDe maps these operations to the processor's vector instructions, or
-// its portable implementation. No optional scalar implementation is used.
+// SIMD (single instruction, multiple data) applies one operation to
+// several numbers at once; each number occupies a vector position
+// called a lane. The type v2d holds two doubles side by side. In this
+// file each lane carries a separate aperture output and accumulates
+// its own triangle sum in a fixed order; the code never adds the two
+// lanes together. SIMDe translates each operation into the processor's
+// vector instructions when they exist, and into portable C when they
+// do not. This file keeps no optional scalar implementation.
 typedef simde__m128d v2d;
 
 
-// A positive physical length can still be too large or too small for
-// the dimensionless products below. Stop before using a zero or infinite
-// denominator; replacing it by a clipped value would change the kernel.
-// This helper keeps the diagnostic consistent at each arithmetic stage.
+// A positive physical length can still overflow or underflow the
+// dimensionless products below. The checks in this file stop the
+// program before a zero or infinite denominator enters a kernel,
+// because replacing such a value by a clipped one would change the
+// kernel silently. This helper prints which arithmetic stage failed,
+// so every check reports in the same form, and then exits.
 static inline void aperture_geometry_error_3pcf(const char* stage)
 {
   fprintf(stderr,
@@ -67,36 +83,58 @@ static inline void aperture_geometry_error_3pcf(const char* stage)
 // Four complex kernels for one ordered set of aperture radii.
 //
 // PHYSICAL DERIVATION & LOGIC FLOW
-// Put the triangle vertices at 0, side and other, in units of R1. The
-// three centroid offsets q_i sum to zero. Their squared lengths give the
-// rotationally invariant part of the Gaussian convolution; their complex
-// phases describe the rotation of a spin-2 shear at each vertex.
+// Work in units of the first aperture radius R1. The triangle then has
+// its vertices at 0, at the real number side = d2/R1, and at the
+// complex number other = (d3/R1) exp(i phi). Each vertex sits at a
+// complex offset q_i from the triangle centroid, and the three offsets
+// add to zero because the centroid is their mean.
 //
-// For radii (R1,R2,R3), set a_i = (R_i/R1)^2 / Theta2, where
-// Theta2 = sqrt[(R1^2 R2^2 + R1^2 R3^2 + R2^2 R3^2)/(3 R1^4)].
-// The dimensionless functions f_i and g_i in Eqs. (65) and (69) describe
-// the unequal filter sizes. Kernel zero has no conjugated shear. Kernels
-// 1, 2 and 3 conjugate the shear at the corresponding centroid offset.
-// The cyclic loop evaluates the same published expression at each vertex.
+// The offsets carry the two pieces of the kernel. Their squared
+// lengths |q_i|^2 feed the Gaussian aperture convolution, and these
+// are invariant when the whole triangle rotates. Their phases record
+// how each vertex is oriented around the centroid. A shear is a
+// spin-2 quantity: rotating the reference direction shifts its
+// complex phase by twice the rotation angle, and the phases of the
+// q_i supply exactly that rotation at each vertex.
 //
-// Cache invalidation:
-// No cache. Inputs describe one triangle and one ordered radius triplet.
-// Thread safety:
-// Only local arrays and the caller's four output values are written.
-// static limits this helper to this file; inline permits call expansion
-// while retaining a callable definition in an unoptimized debug build.
+// Unequal radii (R1, R2, R3) enter through the dimensionless weights
+//
+//   a_i = (R_i/R1)^2 / Theta2,
+//   Theta2 = sqrt[(R1^2 R2^2 + R1^2 R3^2 + R2^2 R3^2)/(3 R1^4)],
+//
+// where Theta2 averages the three pairwise products of squared radii
+// and takes a square root: an effective squared radius in units of
+// R1^2, so for equal radii every a_i is 1. The weights build the
+// dimensionless filter functions f_i and g_i of Schneider, Kilbinger
+// & Lombardi 2005 (astro-ph/0308328, Eqs. 65 and 69), which carry the
+// whole effect of the unequal filter sizes.
+//
+// The four kernels differ only in which shear is conjugated. Kernel 0
+// conjugates none. Kernel i (i = 1, 2, 3) conjugates the shear at the
+// vertex with centroid offset q_i. The loop below cycles through the
+// vertices because each kernel evaluates the same published
+// expression, read from a different starting vertex.
+//
+// Cache invalidation: no cache. The inputs describe one triangle and
+// one ordered radius triplet, so there is nothing to reuse.
+// Thread safety: the helper writes only local arrays and the caller's
+// four output values. static keeps it private to this file; inline
+// lets the compiler expand calls while an unoptimized debug build
+// still keeps a callable definition.
 // ---------------------------------------------------------------------------
 static inline void aperture_kernel_3pcf(
   const double side,              // d2/R1, positive
   const double complex other,     // (d3/R1)*exp(i*phi)
   const double ratio2,            // R2/R1, positive
   const double ratio3,            // R3/R1, positive
-  double complex* kernel         // output [4], before bin measure
+  double complex* kernel         // output [4]; no bin measure yet
 )
 {
-  // Squared radius ratios enter the Gaussian normalization. Reject an
-  // unrepresentable square before it can enter a square root or divisor.
-  // This bound comes from double precision, not from an angular cut.
+  // This guard protects the Gaussian normalization: the squared radius
+  // ratios feed it, and a ratio near sqrt(DBL_MAX) squares to
+  // infinity. The guard rejects such an input before its square can
+  // reach a square root or a divisor. The bound comes from double
+  // precision alone, not from an angular or physical cut.
   const double largest_ratio = sqrt(DBL_MAX);
   if (!isfinite(side)
       || side <= 0.0
@@ -146,18 +184,24 @@ static inline void aperture_kernel_3pcf(
   centroid[1] = centroid[0] - other;
   centroid[2] = centroid[0] - side;
 
-  // One iteration supplies the radial distance and filter deformation at
-  // one vertex. next and last keep the cyclic order of the three shears.
-  // Conjugation changes i to -i and thus reverses a complex phase.
+  // Loop overview: one iteration computes, for one vertex, its squared
+  // distance from the centroid and the two filter values f_i and g_i
+  // that encode the unequal aperture radii. The indices next and last
+  // walk the other two vertices in cyclic order, because the published
+  // filter at a vertex mixes the aperture weights a_i of its two
+  // neighbors. conj changes i to -i and therefore reverses a complex
+  // phase.
   for (int vertex=0; vertex<3; vertex++) {
     const int next = (vertex + 1)%3;
     const int last = (vertex + 2)%3;
     const double real_part = creal(centroid[vertex]);
     const double imag_part = cimag(centroid[vertex]);
 
-    // A centroid can approach a vertex even with 0<phi<pi. Its squared
-    // distance may then underflow to zero in double precision. Check it
-    // before forming the projected direction; no angle is clipped.
+    // This guard protects the projected direction: a centroid offset
+    // can approach zero even with 0 < phi < pi, and its squared length
+    // can then underflow to exactly zero in double precision. The
+    // check runs before the division that forms the direction; the
+    // code clips no angle and moves no vertex.
     distance_sq[vertex] = real_part*real_part + imag_part*imag_part;
     if (!isfinite(distance_sq[vertex])
         || distance_sq[vertex] <= 0.0) {
@@ -173,8 +217,11 @@ static inline void aperture_kernel_3pcf(
         *aperture_sq[vertex]*direction/3.0);
   }
 
-  // Z is the Gaussian exponent after integrating the common aperture
-  // center. theta4 restores its area normalization in units of R1.
+  // Integrating the triangle over the common aperture center leaves a
+  // Gaussian in the centroid offsets; exponent is its argument, the Z
+  // of Schneider, Kilbinger & Lombardi 2005 (astro-ph/0308328). The
+  // division by theta4 in the prefactor restores the area
+  // normalization in units of the first aperture radius R1.
   const double exponent =
     ((2.0*aperture_sq[1] + 2.0*aperture_sq[2] - aperture_sq[0])
        *distance_sq[0]
@@ -184,8 +231,9 @@ static inline void aperture_kernel_3pcf(
        *distance_sq[2])/(6.0*theta2);
   const double radial_product =
     distance_sq[0]*distance_sq[1]*distance_sq[2];
-  // The conjugated-shear kernel divides by this product. Individually
-  // representable distances need not have a representable product.
+  // This guard protects the conjugated-shear kernels, which divide by
+  // this product: three individually representable distances can
+  // still multiply to an overflowing or underflowing product.
   if (!isfinite(radial_product)
       || radial_product <= 0.0) {
     aperture_geometry_error_3pcf("centroid distance product");
@@ -198,9 +246,14 @@ static inline void aperture_kernel_3pcf(
   kernel[0] = prefactor*radial_product*all_f_conj*all_f_conj
     /(24.0*theta6);
 
-  // Conjugating one shear adds the lower-degree Gaussian moments in
-  // Eq. (68). The three terms have degrees six, four and two in centroid
-  // lengths. b carries the phase difference for the conjugated vertex.
+  // Loop overview: one iteration builds the kernel that conjugates the
+  // shear at one vertex. Conjugating one shear brings in the
+  // lower-degree Gaussian moments of Schneider, Kilbinger & Lombardi
+  // 2005 (astro-ph/0308328, Eq. 68): the three terms below have
+  // degrees six, four and two in the centroid offset lengths. phase_b
+  // is the paper's quantity b, the conjugated-squared centroid offset
+  // of this vertex times the offsets of the other two; it carries the
+  // phase difference that the conjugated vertex introduces.
   for (int vertex=0; vertex<3; vertex++) {
     const int next = (vertex + 1)%3;
     const int last = (vertex + 2)%3;
@@ -229,29 +282,44 @@ static inline void aperture_kernel_3pcf(
 // Construct reusable weights on the measured finite triangle grid.
 //
 // PHYSICAL DERIVATION & LOGIC FLOW
-// The polar area measure is s ds d^2t/(2 pi). With logarithmic side
-// bins, ds = s dlnd and d|t| = |t| dlnd, giving
+// The aperture third moment integrates the shear correlations over all
+// triangle shapes. Write the first side as the real length s and the
+// second side as the complex number t; the integral then runs over s
+// and over the two-dimensional t with the polar area measure
+// s ds d^2t/(2 pi), where d^2t = |t| d|t| dphi. Both side grids bin
+// logarithmically, so ds = s dlnd and d|t| = |t| dlnd, and one
+// triangle bin carries the measure
+//
 //   measure = s^2 |t|^2 dlnd^2 dphi/(2 pi).
-// s=d2/R1 and |t|=d3/R1 make this measure dimensionless. The SAS grid
-// stores one orientation, 0<phi<pi. Adding the kernel with R2 and R3
-// exchanged supplies the mirrored-radius contribution in this estimator.
-// This is an estimator convention; it does not exchange source-bin labels
-// or establish an arbitrary tomographic permutation identity.
 //
-// Re(sum_mu T_mu Gamma_mu)/4 selects the real aperture third moment.
-// Include the measure and 1/4 here so applying the weights is only a
-// complex dot product. The input Gamma must already have the projection
-// and component ordering declared in aperture_3pcf.h.
+// Measuring the sides in units of the first aperture radius R1, as
+// s = d2/R1 and |t| = d3/R1, makes this measure dimensionless.
 //
-// Cache invalidation:
-// This function always overwrites all weights. A caller retaining them
-// must rebuild after any coordinate, bin width, radius or convention
-// changes, even when dimensions are unchanged. Cosmology alone does not
-// change these geometric weights.
-// Thread safety:
-// Each worker owns one (filter, first-side-bin) slice. Other workers read
-// the same inputs but write disjoint slices. An active enclosing OpenMP
-// team suppresses a nested team; its caller must own separate outputs.
+// The SAS grid stores each triangle in one orientation, 0 < phi < pi.
+// The loop therefore adds a second kernel with the radii R2 and R3
+// exchanged; this mirrored-radius term represents the reflected
+// triangle in this estimator. The exchange is an estimator convention:
+// it does not exchange source-bin labels, and it does not create a
+// tomographic permutation identity.
+//
+// The four kernels T_mu pair with the four natural components Gamma_mu
+// of the shear three-point correlation, and the real part of
+// (1/4) sum_mu T_mu Gamma_mu is the real aperture third moment. This
+// function folds the bin measure and the factor 1/4 into the weights,
+// so applying them later is one complex dot product. The input Gamma
+// must already carry the projection and the component ordering that
+// aperture_3pcf.h documents.
+//
+// Cache invalidation: this function always overwrites every weight. A
+// caller who keeps the weights must rebuild them after any change of
+// coordinates, bin widths, radii or conventions, even when the array
+// dimensions stay the same. Cosmology alone never changes these
+// purely geometric weights.
+// Thread safety: each OpenMP worker owns one (filter, first-side-bin)
+// slice of the output. All workers read the same inputs, and no two
+// workers write the same slice. When an enclosing OpenMP team is
+// already active this function runs inside it without opening a
+// nested team, so concurrent callers must pass separate outputs.
 // ---------------------------------------------------------------------------
 void aperture_weights_3pcf(
   const int nd2,                 // first-side count
@@ -261,7 +329,7 @@ void aperture_weights_3pcf(
   const double* d2,             // radians [nd2]
   const double* d3,             // radians [nd3]
   const double* phi,            // radians [nphi]
-  const double dlnd,            // logarithmic side width
+  const double dlnd,            // logarithmic side-bin width
   const double dphi,            // angle width, radians
   const double* filters,        // radians [nfilter,3]
   double* weights_real,         // output [nfilter,4,ntriangle]
@@ -270,12 +338,17 @@ void aperture_weights_3pcf(
 {
   const double two_pi = 6.283185307179586476925286766559;
   const size_t ntriangle = (size_t)nd2*(size_t)nd3*(size_t)nphi;
+  // bin_factor carries the constant part of the bin measure and the
+  // final factor 1/4 of the aperture estimator; the loop multiplies
+  // in the s^2 |t|^2 part separately for each triangle.
   const double bin_factor = 0.25*dlnd*dlnd*dphi/two_pi;
 
-  // A slice uses one R1 and d2 for all second sides and opening angles.
-  // collapse(2) distributes both outer indices, providing more tasks than
-  // the number of aperture triplets alone. schedule(static) assigns fixed
-  // slices to workers. No worker contributes to another worker's output.
+  // Loop overview: one slice fixes the aperture triplet and the first
+  // side, then sweeps every second side and opening angle. collapse(2)
+  // spreads both outer indices across the team, which offers many
+  // more independent tasks than the aperture triplets alone.
+  // schedule(static) gives each worker a fixed set of slices, and no
+  // worker writes into another worker's output.
 #ifdef _OPENMP
   // Cap the team by the number of independent geometric slices.
   const size_t jobs = (size_t)nfilter*nd2;
@@ -294,12 +367,15 @@ void aperture_weights_3pcf(
       const double side = d2[first]/radius1;
 
       // Each second-side bin fixes the remaining radial area factor.
-      // No equality of d2 and d3 grids is assumed; both use width dlnd.
+      // This code never assumes the d2 and d3 grids are equal; it only
+      // uses that both share the logarithmic width dlnd.
       for (int second=0; second<nd3; second++) {
         const double other_length = d3[second]/radius1;
-        // Check both side ratios before forming the complex triangle and
-        // its area measure. Physical inputs may be finite while a ratio
-        // overflows or underflows; either case needs a clear refusal.
+        // This guard protects the triangle construction: a physical
+        // length can be finite while its ratio to the aperture radius
+        // overflows or underflows. The check refuses both cases before
+        // the code builds the complex triangle and its area measure
+        // from these ratios.
         if (!isfinite(side)
             || side <= 0.0
             || !isfinite(other_length)
@@ -309,8 +385,18 @@ void aperture_weights_3pcf(
         const double measure = bin_factor*side*side
           *other_length*other_length;
 
-        // Each angle specifies a complex triangle with the first side
-        // along the real axis. Keep phi as the fastest-changing index.
+        // Loop overview: each angle fixes one triangle. The first side
+        // lies along the positive real axis, and the second side sits
+        // at other_length*(cos(phi) + i sin(phi)) = other_length*
+        // exp(i*phi): in this file the opening angle rotates the
+        // second side counterclockwise from the first. transform_3pcf.c
+        // draws the same angle clockwise because it follows fastnc,
+        // whose angle is minus TreeCorr's (arXiv:2407.01798); the
+        // correlations that meet these weights arrive in the TreeCorr
+        // component order and sign, so each file draws its own
+        // convention. phi stays the fastest-changing index, so the
+        // flat triangle index below matches the layout the header
+        // documents.
         for (int angle=0; angle<nphi; angle++) {
           const double complex other = other_length
             *(cos(phi[angle]) + I*sin(phi[angle]));
@@ -324,8 +410,9 @@ void aperture_weights_3pcf(
           aperture_kernel_3pcf(side, other, ratio3, ratio2, mirrored);
 
           // Store one row per natural component. Both orientations use
-          // the same physical bin measure and contribute before taking
-          // a real part with the supplied complex correlation function.
+          // the same physical bin measure, and both enter the weight
+          // here, before the caller takes a real part against its
+          // complex correlation function.
           for (int component=0; component<4; component++) {
             const size_t offset =
               (4*(size_t)filter + (size_t)component)*ntriangle + triangle;
@@ -346,20 +433,23 @@ void aperture_weights_3pcf(
 // Contract fixed geometric weights with one or more source combinations.
 //
 // PHYSICAL DERIVATION & LOGIC FLOW
-// For weight w=wr+i wi and correlation gamma=gr+i gi,
-//   Re(w gamma) = wr*gr - wi*gi.
-// Sum this expression over the four natural components and every triangle.
-// Each source combination is independent, and all can share the same
-// geometric weights. Any multiplicative shear calibration belongs in the
-// caller's supplied correlations or in a later calibration of the result.
+// Write one weight as w = wr + i*wi and one correlation value as
+// gamma = gr + i*gi. The real part of their product is
+//   Re(w gamma) = wr*gr - wi*gi,
+// and the aperture moment sums this expression over the four natural
+// components and over every triangle. Each source combination is an
+// independent sum, and all of them share the same geometric weights.
+// Any multiplicative shear calibration belongs in the correlations the
+// caller passes in, or in a calibration the caller applies to the
+// result afterward.
 //
-// Cache invalidation:
-// No cache or allocation. Weights and correlations are borrowed read-only.
-// Thread safety:
-// One worker owns a source combination and a pair of aperture outputs.
-// SIMD lanes hold those two outputs and accumulate components and then
-// triangles in a fixed order. No horizontal sum or OpenMP reduction mixes
-// the lanes, so thread count cannot change the order for an output.
+// Cache invalidation: no cache and no allocation. This function
+// borrows the weights and correlations read-only.
+// Thread safety: one worker owns one source combination and one pair
+// of aperture outputs. The two SIMD lanes hold those two outputs and
+// accumulate components, then triangles, in a fixed order. No
+// horizontal sum and no OpenMP reduction mixes the lanes, so the
+// thread count cannot change the summation order of any output.
 // ---------------------------------------------------------------------------
 void aperture_apply_3pcf(
   const int nfilter,             // aperture-triplet count
@@ -373,17 +463,23 @@ void aperture_apply_3pcf(
 )
 {
   const size_t row_size = 4*(size_t)ntriangle;
+  // The number of lane pairs is the integer ceiling of nfilter/2, so
+  // an odd aperture count gets one final pair that duplicates its
+  // single aperture (see the lane comment below).
   const int filter_pairs = nfilter/2 + nfilter%2;
 
-  // Scalar meaning for each independent output lane:
+  // Scalar meaning of each independent output lane:
   //   sum += wr[row]*gamma_real[row] - wi[row]*gamma_imag[row];
-  // Both lanes read the same correlation and use different aperture
-  // weights. A final unpaired aperture is duplicated into the other lane;
-  // that duplicate is discarded. This avoids reading beyond the buffers.
+  // Both lanes read the same correlation values and apply different
+  // aperture weights. When nfilter is odd, the last pair loads its
+  // single aperture into both lanes, and the guarded store at the end
+  // discards the duplicate lane; the duplication keeps every weight
+  // read inside the arrays.
 #ifdef _OPENMP
-  // A single source triplet often asks for only a few aperture radii.
-  // More workers than independent output pairs would remain idle. This
-  // cap changes only scheduling, never the component/triangle sum order.
+  // A single source combination often asks for only a few aperture
+  // radii, and workers beyond the number of independent output pairs
+  // would sit idle. This cap changes only the scheduling; it never
+  // changes the component/triangle summation order.
   const size_t jobs = (size_t)nsample*filter_pairs;
   int workers = omp_in_parallel() ? 1 : omp_get_max_threads();
   if (jobs > 0 && jobs < (size_t)workers) {
@@ -400,9 +496,10 @@ void aperture_apply_3pcf(
         second_filter = first_filter;
       }
 
-      // The caller guarantees separate input and output storage. Access
-      // through these local restrict pointers lets the compiler rely on
-      // writes to out never changing a weight or correlation being read.
+      // The caller guarantees separate input and output storage.
+      // Reading through these local restrict pointers lets the
+      // compiler assume that a write to out never changes a weight or
+      // a correlation that this loop still reads.
       const double* restrict first_wr = wr + first_filter*row_size;
       const double* restrict first_wi = wi + first_filter*row_size;
       const double* restrict second_wr = wr + second_filter*row_size;
@@ -413,8 +510,9 @@ void aperture_apply_3pcf(
       // Initialize both independent aperture sums to zero.
       v2d vSum = simde_mm_setzero_pd();
 
-      // Flat row order visits component 0 through 3 and, within each,
-      // every supplied triangle. The two lanes retain this same order.
+      // Loop overview: the flat row order visits natural component 0
+      // through 3 and, inside each component, every triangle the
+      // caller passed. Both lanes keep this same order.
       for (size_t row=0; row<row_size; row++) {
         // Lane 0 receives the first aperture; lane 1 receives the second.
         const v2d vWeightReal =

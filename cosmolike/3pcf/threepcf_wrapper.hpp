@@ -5,10 +5,20 @@
 
 namespace cosmolike_interface {
 
-// Notebook quantities keep their physical axis order in Armadillo. The
-// binding copies NumPy inputs before these functions are called; the
-// wrappers only validate, change storage order, and call the shared C.
-// Angles and aperture radii are in radians. No cosmology is installed.
+// Notebook adapters for the aperture and covariance kernels. Each
+// function receives Armadillo copies that the pybind layer makes from
+// the caller's NumPy arrays, so no caller buffer ever reaches C. The
+// wrappers validate those copies, repack them into the row-major order
+// the C kernels read, and call the kernels; they install no cosmology
+// and keep no state between calls. Every angle and aperture radius is
+// in radians.
+//
+// The component axis of length four holds the natural components
+// Gamma_0..Gamma_3 of the shear three-point function: the four complex
+// correlators that differ by which of the three shears is conjugated
+// (Gamma_0 none, Gamma_i the shear at vertex i; Schneider & Lombardi,
+// arXiv:astro-ph/0207454). The arrays carry them split-complex: the
+// real and imaginary parts travel as two separate real arrays.
 struct aperture_weights_result_3pcf {
   arma::Cube<double> real; // [filter,component,triangle], real weights
   arma::Cube<double> imag; // same axes, imaginary weights

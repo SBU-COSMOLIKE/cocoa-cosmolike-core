@@ -12,30 +12,83 @@
 #include "simde/x86/sse2.h"
 #include "covariance_physics_3pcf.h"
 
-// Physical covariance of full aperture products and midpoint-centered xi.
-// The cumulant partitions follow Linke et al. (2023), arXiv:2212.04485,
-// and Wielders et al. (2025), arXiv:2509.20443. The xi spin kernels below
-// insert the actual separation-bin weights into the same field estimator.
-// This implementation is written from those equations and Fourier rules;
-// it does not translate the GPL threepoint implementation.
+// ---------------------------------------------------------------------------
+// covariance_physics_3pcf.c: the physical covariance of aperture-mass
+// statistics and shear correlation functions measured on the same
+// lensing fields.
 //
-// The field model is pure gravitational lensing with independent Gaussian
-// E/B shape noise. The connected four-, five-, and six-field cumulants use
-// a Poisson one-halo model. The extra long-mode term is the halo-abundance
-// response, not a complete growth, dilation or tidal response. Finite
-// center windows retain full filters inside each aperture. A galaxy mask
-// inside a filter or finite triangle selection defines another estimator.
+// The requested observables arrive as rows. A quadratic row is second
+// order in the shear field: the aperture-mass second moment Map^2 at one
+// filter radius, or a binned shear correlation function xi+ / xi-, whose
+// estimator averages the product of two shears measured at points
+// displaced by -theta/2 and +theta/2 from a common center. A cubic row
+// is third order in the shear field: the aperture-mass third moment
+// Map^3. For every pair of rows the engine fills six covariance terms -
+// Gaussian, BB, P*T, P*B, connected one-halo, and the halo-abundance
+// response - following the cumulant partitions of the aperture-statistics
+// covariance in Linke et al. (2023), arXiv:2212.04485, with the xi rows
+// entering through their actual separation-bin weights as in Wielders et
+// al. (2025), arXiv:2509.20443. This implementation is written from
+// those equations and the flat-sky Fourier rules; it does not translate
+// the GPL threepoint implementation.
+//
+// Notation shared by the helpers and assemblers below:
+//
+//   U_R(ell)    the compensated aperture filter of radius R
+//               (covariance_filter_3pcf).
+//   Q(p,q,phi)  the quadratic kernel of one row: the weight its
+//               estimator gives a pair of shear Fourier modes with
+//               magnitudes p and q and relative angle phi
+//               (covariance_quadratic_3pcf).
+//   K_ab(r)     the two-point function of the two filtered fields a and
+//               b, shape noise included, transformed to the separation r
+//               of two estimator centers; K_ab(0) is its value at
+//               coincident centers (work->pair, work->pair_zero).
+//   S_ab|c(q)   the projected bispectrum of fields a, b and source bin c
+//               with the filters of a and b attached and their angles
+//               integrated out, leaving the magnitude q of the third leg
+//               open (work->bspec). B_ab|c(r) is its transform to the
+//               center separation r once the third filter is attached
+//               (work->breal).
+//   closure     the third side -(q+p) that closes a Fourier triangle
+//               built from two vectors of magnitudes q and p
+//               (covariance_closure_3pcf returns its magnitude |q+p|).
+//
+// The field model is pure gravitational lensing with independent
+// Gaussian E/B shape noise. The connected four-, five- and six-field
+// cumulants use a Poisson one-halo model. The extra long-mode term is
+// the halo-abundance response, not a complete growth, dilation or tidal
+// response. Finite center windows keep the full filters inside each
+// aperture. A galaxy mask inside a filter, or a finite triangle
+// selection, defines a different estimator with its own covariance.
 //
 // No process-global state or lazy initialization occurs. The call owns
-// temporary physical tables, prepares them before parallel readers, and
-// releases them before returning. Each parallel task owns complete rows
-// or upper-triangle cells. Quadrature sums retain their input order.
+// its temporary physical tables, prepares them before any parallel
+// reader starts, and releases them before returning. Each parallel task
+// owns complete rows or upper-triangle cells. Quadrature sums keep
+// their input order, so results do not depend on the thread count.
+// ---------------------------------------------------------------------------
 
+// Pi to double precision.
 #define COV_PI 3.141592653589793238462643383279502884
+// 1/(2*pi). The planar Fourier measure d^2ell/(2*pi)^2 splits into
+// ell dell/(2*pi) times dphi/(2*pi); each split factor below carries one
+// COV_I2PI.
 #define COV_I2PI 0.159154943091895335768883763372514362
 
+// A v2d packs two doubles into one 128-bit register (SSE2 through SIMDe,
+// so the same source also builds on NEON).
 typedef simde__m128d v2d;
 
+
+
+// ============================================================================
+// [SECTION] UTILITIES: CHECKS, ALLOCATION AND THE ORDERED SIMD DOT
+// ============================================================================
+
+// Stop with a clear message when an input or a computed table is
+// invalid. The covariance has no recovery path: the caller must fix a
+// wrong grid; this file never patches one.
 static inline void covariance_require_3pcf(int condition, const char* text)
 {
   if (!condition) {
@@ -44,9 +97,13 @@ static inline void covariance_require_3pcf(int condition, const char* text)
   }
 }
 
-// Check each multiplication before forming a multidimensional extent.
-// Checking only count*sizeof(element) is too late if count already wrapped.
-// Prepared extents then bound the flattened offsets in all worker loops.
+
+// Multiply two array extents only after checking that their product
+// fits in a size_t. Checking count*sizeof(element) alone would come too
+// late, because the element count itself can already have wrapped.
+// Every multidimensional extent below passes through this helper first,
+// so the flattened offsets inside the worker loops stay inside their
+// allocations.
 static size_t covariance_product_3pcf(size_t first, size_t second)
 {
   covariance_require_3pcf(second > 0 && first <= (size_t)-1/second,
@@ -54,6 +111,9 @@ static size_t covariance_product_3pcf(size_t first, size_t second)
   return first*second;
 }
 
+
+// Checked allocation. calloc zero-fills, so every table starts at zero
+// and the += accumulations below need no separate clearing pass.
 static void* covariance_allocate_3pcf(size_t count, size_t size)
 {
   covariance_product_3pcf(count, size);
@@ -62,43 +122,82 @@ static void* covariance_allocate_3pcf(size_t count, size_t size)
   return memory;
 }
 
-// This ordered dot product uses SIMD for two adjacent nodes. Lanes never
-// replace the scalar accumulation order: weighted nodes are added first
-// from the low lane, then from the high lane. Every node evaluates w*(a*b),
-// including the scalar tail, so changing lane assignment preserves bits.
+
+// Weighted dot product sum_i w_i*(a_i*b_i), evaluated with SIMD on two
+// adjacent quadrature nodes at a time. The lanes only evaluate; they do
+// not reorder the accumulation: after each two-node step the low lane's
+// value joins the running sum first and the high lane's value second,
+// exactly the order a scalar loop would use. Every node forms w*(a*b)
+// with the product a*b rounded before the weight multiplies it - the
+// scalar tail included - so moving a node between lanes cannot change a
+// single bit of the result.
+//
+// Parameters:
+//   count   - number of quadrature nodes
+//   weights - [count] integration weights
+//   first   - [count] first integrand factor
+//   second  - [count] second integrand factor
 static inline double covariance_dot_3pcf(
   int count, const double* weights, const double* first, const double* second
 )
 {
   double sum = 0.0;
   int node = 0;
+  // scalar: for every pair of adjacent nodes,
+  //   sum += weights[node]*(first[node]*second[node]);
+  //   sum += weights[node + 1]*(first[node + 1]*second[node + 1]);
+  // The vector step forms both weighted products at once - lane 0 holds
+  // node, lane 1 holds node + 1 - and then adds them in that same order.
   for (; node + 1 < count; node += 2) {
-    // Load two valid adjacent quadrature weights; alignment is unrestricted.
+    // Load weights[node] and weights[node + 1]; loadu reads two valid
+    // array elements and needs no aligned address.
     const v2d w = simde_mm_loadu_pd(weights + node);
-    // Load the corresponding two values of the first physical function.
+    // Load the first function at the same two nodes.
     const v2d a = simde_mm_loadu_pd(first + node);
-    // Load the second function at those same nodes.
+    // Load the second function at the same two nodes.
     const v2d b = simde_mm_loadu_pd(second + node);
-    // Form the two pointwise products independently.
+    // Multiply lane by lane: lane 0 holds first[node]*second[node] and
+    // lane 1 holds first[node + 1]*second[node + 1], each rounded once.
     const v2d ab = simde_mm_mul_pd(a, b);
-    // Apply each node's integration weight.
+    // Apply each node's integration weight to its own lane.
     const v2d weighted = simde_mm_mul_pd(w, ab);
     double value[2];
-    // Copy both lanes into a valid two-element local buffer.
+    // Copy both lanes into a two-element buffer on the stack.
     simde_mm_storeu_pd(value, weighted);
+    // Add the low lane (node) before the high lane (node + 1): the
+    // scalar accumulation order.
     sum += value[0];
     sum += value[1];
   }
   if (node < count) {
-    // Strict core flags still allow fused multiply-add contraction.
-    // Round this one tail product before addition, as each SIMD lane is
-    // rounded above. Volatile prevents contraction across that boundary.
+    // The last node of an odd count runs in scalar code. The strict
+    // compile flags still allow fused multiply-add contraction, which
+    // would skip the separate rounding of first*second that each SIMD
+    // lane performs. Writing the product through a volatile forces that
+    // rounding before the final addition.
     volatile double weighted = weights[node]*(first[node]*second[node]);
     sum += weighted;
   }
   return sum;
 }
 
+
+// U_R(ell): the compensated aperture filter in Fourier space,
+//
+//   U_R(ell) = (ell*R)^2/2 * exp(-(ell*R)^2/2),
+//
+// the Crittenden-type filter (Crittenden et al.,
+// arXiv:astro-ph/0012336) that the aperture-mass covariances of
+// Linke et al. (2023), arXiv:2212.04485, use. Compensated means the
+// real-space filter integrates to zero, so U_R(0) = 0 and a uniform
+// mass sheet drops out of every aperture statistic. The convention
+// R = 0 returns 1: an xi shear leg carries no aperture filter, and
+// evaluating U with R = 0 lets the same kernel tables serve filtered
+// and unfiltered legs alike.
+//
+// Parameters:
+//   ell    - angular multipole
+//   radius - aperture radius R in radians; 0 marks an unfiltered leg
 static inline double covariance_filter_3pcf(double ell, double radius)
 {
   if (radius == 0.0) {
@@ -109,8 +208,29 @@ static inline double covariance_filter_3pcf(double ell, double radius)
   return 0.5*square*exp(-0.5*square);
 }
 
-// Spherical top-hat W(kR), and its derivative with respect to ln R.
-// The small-x series avoids subtracting two almost equal sine terms.
+
+
+// ============================================================================
+// [SECTION] HALO INGREDIENTS AND THE SHARED HALO TABLES
+// ============================================================================
+
+// Spherical top-hat window W(x) with x = kR, and its logarithmic
+// derivative dW/dln R. Because x = kR at fixed wavenumber k, the
+// derivative with respect to ln R equals the derivative with respect to
+// ln x, which is what the second output evaluates:
+//
+//   W(x) = 3 (sin x - x cos x)/x^3,   dW/dln x = 3 sin(x)/x - 3 W(x).
+//
+// Accuracy of the small-x branch: near x = 0 the closed form subtracts
+// two almost equal sine terms and loses precision. Below |x| = 0.01 a
+// Taylor series takes over; its first omitted terms are of order x^8,
+// about 1e-16 at the threshold, so the switch sits below double
+// rounding and both outputs stay smooth across it.
+//
+// Parameters:
+//   x          - dimensionless argument kR
+//   window     - out: W(x)
+//   derivative - out: dW/dln x = dW/dln R at fixed k
 static inline void covariance_tophat_3pcf(
   double x, double* window, double* derivative
 )
@@ -127,10 +247,31 @@ static inline void covariance_tophat_3pcf(
   }
 }
 
-// Fourier transform of an NFW density truncated at comoving r200m.
-// Normalization is integral rho dV=M, so u(0)=1. The Si/Ci expression is
-// the integral of x/(1+x)^2 sinc(k*r_s*x), divided by ln(1+c)-c/(1+c).
-// At small k*r200 the second radial moment avoids a Ci difference at zero.
+
+// Fourier transform u(k) of an NFW halo density profile truncated at
+// the comoving radius r200. The NFW profile falls as
+// 1/[(r/r_s)(1 + r/r_s)^2], where the scale radius r_s = r200/c marks
+// the turnover between the inner 1/r and outer 1/r^3 slopes and c is
+// the concentration. The transform divides by the enclosed mass, so
+// u(0) = 1 exactly. In the scaled variable y = r/r_s the transform is
+//
+//   u(k) = int_0^c dy y/(1+y)^2 sinc(k r_s y) / [ln(1+c) - c/(1+c)],
+//
+// and that integral has a closed form in the sine and cosine integrals
+// Si(t) = int_0^t sin(s)/s ds and Ci(t) = -int_t^inf cos(s)/s ds, which
+// the general branch below evaluates with x = k*r_s.
+//
+// Accuracy of the small-argument branch: for k*r200 below 1e-4 the Ci
+// difference subtracts two nearly equal values close to the common
+// logarithmic divergence of Ci at zero. The branch instead expands
+// u(k) = 1 - k^2 <r^2>/6, with <r^2> the profile's mass-weighted second
+// radial moment; the first omitted term is of order (k*r200)^4, far
+// below double rounding at the threshold.
+//
+// Parameters:
+//   k             - comoving wavenumber, h/Mpc
+//   r200          - comoving truncation radius, Mpc/h
+//   concentration - NFW concentration c = r200/r_s
 static inline double covariance_nfw_3pcf(
   double k, double r200, double concentration
 )
@@ -148,17 +289,51 @@ static inline double covariance_nfw_3pcf(
     + cos(x)*(gsl_sf_Ci(y) - gsl_sf_Ci(x)) - sin(x*c)/y)/normalization;
 }
 
-// Halo preparation uses the model's P_linear(k,0)*D(z)^2 provider. This is
-// one scale-independent growth law; it does not supply the separate cold
-// matter+baryon halo spectrum needed for a massive-neutrino extension.
-// sigma^2 integrates k^2 dk P W^2/(2*pi^2).
-// Since R is proportional to M^(1/3), d sigma^2/d ln M has the factor 2/3.
-// The Sheth-Tormen multiplicity converts this derivative to dn/dM. The
-// separate bias is the response of halo abundance to a long density mode.
-// Duffy et al. (2008), Table 1 mean-density/full-sample z=0..2 fit, gives
-// c=10.14 (M/2e12 Msun/h)^-0.081 (1+z)^-1.01 for M200m. These coefficients
-// are explicit inputs because extrapolation and alternative fits are
-// physical assumptions. r200 is comoving and uses today's mean density.
+
+// ---------------------------------------------------------------------------
+// covariance_halos_3pcf: tabulate, for every requested (redshift, mass)
+// node, the halo ingredients that the connected covariance terms read -
+// the variance sigma^2(M,z) of the smoothed linear density field, the
+// halo mass function dn/dM, the linear halo bias b_1, the NFW
+// concentration c - and, when nk_profile > 0, the normalized NFW
+// transform u(k) at the requested profile wavenumbers.
+//
+// Power input. The model's linear provider supplies P_linear(k, z=0)
+// times the squared growth factor D(z)^2. That is one scale-independent
+// growth law; it does not supply the separate cold matter+baryon
+// spectrum that a massive-neutrino halo prescription would need.
+//
+// Variance. The smoothing radius R follows from M = (4 pi/3) rho_m R^3,
+// and the top-hat variance is
+//
+//   sigma^2(M,z) = int k^2 dk P(k,z) W^2(kR) / (2 pi^2).
+//
+// Because R is proportional to M^(1/3), the ln M derivative of sigma^2
+// is the ln R derivative times 1/3, which the quadrature evaluates with
+// the factor 2/3 on W dW/dln R (the 2 from differentiating W^2).
+//
+// Mass function and bias. The Sheth-Tormen multiplicity f(nu) of Sheth
+// and Tormen (1999), arXiv:astro-ph/9901122, with peak height
+// nu = delta_c/sigma, converts the variance slope into the abundance
+//
+//   dn/dM = -(rho_m/M^2) f(nu) (d ln sigma^2 / d ln M)/2,
+//
+// and the peak-background split of the same multiplicity gives the
+// linear bias b_1(nu): the response of halo abundance to a long
+// background density mode.
+//
+// Concentration. The default follows the full-sample mean-density fit
+// of Duffy et al. (2008), arXiv:0804.2486, Table 1, calibrated at
+// z = 0..2 for M200m halos:
+//
+//   c = 10.14 (M / 2e12 Msun/h)^-0.081 (1+z)^-1.01.
+//
+// Its coefficients and pivot are explicit inputs, because extrapolating
+// the fit or substituting another one is a physical assumption the
+// caller must own. r200 is comoving and uses today's mean density.
+//
+// Parameters and units: see the declaration in covariance_physics_3pcf.h.
+// ---------------------------------------------------------------------------
 void covariance_halos_3pcf(
   const physics_model_3pcf* model,
   const covariance_input_3pcf* input,
@@ -173,6 +348,9 @@ void covariance_halos_3pcf(
   double* profile
 )
 {
+  // 2.77536627e11 is the critical density rho_crit/h^2 in units of
+  // (Msun/h)/(Mpc/h)^3; multiplied by Omega_m it is today's comoving
+  // mean matter density, the rho_m of the M200m halo definition.
   const double rho = 2.77536627e11*physics_omega_m_3pcf(model);
   const int nm = input->nmass;
   covariance_require_3pcf(nz > 0 && nm > 0 && input->nk > 0
@@ -187,7 +365,12 @@ void covariance_halos_3pcf(
   double* power = covariance_allocate_3pcf(power_count,
     sizeof(double));
 
-  // One worker owns a redshift's linear-power row, shared by every mass.
+  // Tabulate the linear power once per (redshift, wavenumber) node. The
+  // variance integral reads the same power row for every mass at one
+  // redshift, so one worker fills one redshift's row and all masses
+  // share it. Mode 0 asks the provider for the linear power
+  // P_linear(k) D^2(z): halo formation statistics are set by the linear
+  // density field, not by the nonlinear lensing spectrum.
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int iz=0; iz<nz; iz++) {
     for (int ik=0; ik<input->nk; ik++) {
@@ -196,7 +379,20 @@ void covariance_halos_3pcf(
     }
   }
 
-  // Each (redshift,mass) pair owns its variance, abundance and profile row.
+  // Each (redshift, mass) pair owns its variance, abundance and profile
+  // row, so the collapsed loop parallelizes with no shared writes.
+  /* PHYSICAL DERIVATION & LOGIC FLOW
+     1. Smoothing radius from the mass: R = (3M/(4 pi rho_m))^(1/3).
+     2. Top-hat variance and its logarithmic slope by quadrature:
+        sigma^2 = int k^2 dk P W^2(kR)/(2 pi^2) and
+        d sigma^2/d ln M = (2/3) int k^2 dk P W (dW/dln R)/(2 pi^2).
+     3. Squared peak height nu^2 = delta_c^2/sigma^2, with delta_c
+        optionally rescaled by the Omega_m(z) collapse correction.
+     4. Sheth-Tormen multiplicity f(nu) and the mass function
+        dn/dM = -(rho_m/M^2) f(nu) (d ln sigma^2/d ln M)/2.
+     5. Peak-background-split bias b_1(nu) of the same multiplicity.
+     6. Duffy concentration c(M,z) and, if requested, the truncated-NFW
+        transform u(k) at the profile wavenumbers. */
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int iz=0; iz<nz; iz++) {
     for (int im=0; im<nm; im++) {
@@ -217,23 +413,38 @@ void covariance_halos_3pcf(
       covariance_require_3pcf(isfinite(variance) && variance > 0.0
         && isfinite(slope) && slope < 0.0,
         "halo variance/slope is invalid; refine the k interval and rule");
+      // collapse_model = 1 adds the weak Omega_m(z) dependence of the
+      // spherical-collapse threshold delta_c; model 0 keeps it constant.
       double collapse = input->delta_c;
       if (input->collapse_model == 1) {
         collapse *= 1.0 + 0.0123*log10(
           physics_omega_m_z_3pcf(model, z[iz]));
       }
+      // peak holds the squared peak height nu^2 = delta_c^2/sigma^2, and
+      // apeak holds the Sheth-Tormen rescaled a*nu^2; both variables
+      // keep their short names because every formula below uses the
+      // squared combination.
       const double peak = collapse*collapse/variance;
       const double apeak = input->st_a*peak;
+      // Sheth-Tormen multiplicity (arXiv:astro-ph/9901122):
+      //   f(nu) = A sqrt(2 a nu^2/pi) [1 + (a nu^2)^-p] exp(-a nu^2/2).
       const double multiplicity = input->st_norm*sqrt(2.0*apeak/COV_PI)
         *(1.0 + pow(apeak, -input->st_p))*exp(-0.5*apeak);
+      // Duffy concentration c = A (M/M_pivot)^B (1+z)^C with the
+      // explicit input coefficients (see the function header).
       const double c = input->concentration_a
         *pow(mass/input->concentration_pivot, input->concentration_b)
         *pow(1.0 + z[iz], input->concentration_c);
       sigma2[index] = variance;
       dndm[index] = -rho/(mass*mass)*slope/(2.0*variance)*multiplicity;
+      // Peak-background-split bias of the same multiplicity
+      // (arXiv:astro-ph/9901122, with a nu^2 written as apeak):
+      //   b_1 = 1 + [a nu^2 - 1 + 2p/(1 + (a nu^2)^p)] / delta_c.
       bias[index] = 1.0 + (apeak - 1.0 + 2.0*input->st_p
         /(1.0 + pow(apeak, input->st_p)))/collapse;
       concentration[index] = c;
+      // radius encloses the mean density once, r200 encloses it 200
+      // times: M = (4 pi/3) 200 rho_m r200^3, so r200 = radius/200^(1/3).
       const double r200 = radius/cbrt(200.0);
       for (int ik=0; ik<nk_profile; ik++) {
         profile[index*nk_profile + ik] =
@@ -244,56 +455,100 @@ void covariance_halos_3pcf(
   free(power);
 }
 
+
+
+// ============================================================================
+// [SECTION] WORKSPACE, GEOMETRY KERNELS AND SHARED PREPARATION
+// ============================================================================
+
+// Workspace of one covariance call: the tables covariance_prepare_3pcf
+// and covariance_halo_terms_3pcf build before the assemblers read them.
+// Pointers an option does not need stay NULL from the initial memset,
+// and free(NULL) is harmless in covariance_release_3pcf. Dimension
+// shorthand in the member comments: ns source bins, nz redshift nodes,
+// nf = in->nfield field labels, nl = in->nell Fourier nodes, nr =
+// in->nr center-separation nodes, ng = nl*nl*nphi Fourier triangles.
+// The physical symbols U_R, Q, K_ab, S_ab|c and B_ab|c are the ones the
+// file head defines.
 typedef struct {
-  const physics_model_3pcf* model;
-  const covariance_input_3pcf* in;
-  int ns;
-  int nz;
-  int nt;
-  size_t ngeometry;
-  int has_cubic;
-  int nquadratic;
-  int* quadratic_index;
-  int* quadratic_representative;
-  const double* z;
-  const double* chi;
-  const double* dchi;
-  double* lens;
-  int* triples;
-  int* triple_index;
-  double* filters;
-  double* closure_filters;
-  double* power;
-  double* bispectrum;
-  double* bspec;
-  double* breal;
-  double* pair;
-  double* pair_zero;
-  double* radial_measure;
-  double* fourier_measure;
-  double* window_fourier;
-  double* geometry_window;
-  double* quadratic;
-  double* quadratic_mixed;
-  double* pair_window;
-  double* j0_radial;
-  double* j0_fourier;
-  double* j0_window;
-  double* j2_profile;
-  double* quadratic_zero;
-  double* radial_volume;
-  double* sigma2;
-  double* abundance;
-  double* bias;
-  double* concentration;
-  double* responses;
-  double* response_zero;
-  double* response_bias;
+  const physics_model_3pcf* model;    // borrowed matter and source model
+  const covariance_input_3pcf* in;    // borrowed grids and row definitions
+  int ns;                             // source bins in the model
+  int nz;                             // redshift nodes of the radial grid
+  int nt;                             // source triples ns(ns+1)(ns+2)/6
+  size_t ngeometry;                   // Fourier triangles ng = nl*nl*nphi
+  int has_cubic;                      // 1 when any requested row is Map^3
+  int nquadratic;                     // distinct quadratic kernel shapes
+  int* quadratic_index;               // [nrow] shape of each row; -1 cubic
+  int* quadratic_representative;      // [nrow] row defining each shape
+  const double* z;                    // [nz] borrowed redshifts
+  const double* chi;                  // [nz] borrowed distances, Mpc/h
+  const double* dchi;                 // [nz] borrowed dchi weights, Mpc/h
+  double* lens;                       // [ns,nz] weight W = chi*(1+z)*g
+  int* triples;                       // [nt,3] nondecreasing source triples
+  int* triple_index;                  // [ns,ns,ns] ordered -> triple index
+  double* filters;                    // [nf,nl] U_R(ell) of every field
+  double* closure_filters;            // [nf,ng] U_R(|q+p|) per triangle
+  double* power;                      // [ns,ns,nl] Limber C(ell), no noise
+  double* bispectrum;                 // [nt,ng] projected B(q,p,phi)
+  double* bspec;                      // [nf,nf,ns,nl] S_ab|c(q)
+  double* breal;                      // [nf,nf,nf,nr] B_ab|c(r), finite win.
+  double* pair;                       // [nf,nf,nr] K_ab(r), noise included
+  double* pair_zero;                  // [nf,nf] K_ab(0), coincident centers
+  double* radial_measure;             // [nr] 2*pi*r*dr times pair density
+  double* fourier_measure;            // [nl] ell*dell/(2*pi)
+  double* window_fourier;             // [nwindow] G(q) = |w~(q)|^2/A^2
+  double* geometry_window;            // [ng] G(|q+p|), finite window only
+  double* quadratic;                  // [nquadratic,ng] EE part of Q
+  double* quadratic_mixed;            // [nquadratic,ng] EB part of Q
+  double* pair_window;                // [nf,nf,nl] windowed K + ell measure
+  double* j0_radial;                  // [nr,nl] J0(ell*r), ell contiguous
+  double* j0_fourier;                 // [nl,nr] J0(ell*r), r contiguous
+  double* j0_window;                  // [nwindow,nr] J0(q*r), survey nodes
+  double* j2_profile;                 // [nprofile,nl] J2(ell*u) shear kernel
+  double* quadratic_zero;             // [nrow,nl] Q at p = q, phi = pi
+  double* radial_volume;              // [nr] bare 2*pi*r*dr, no window
+  double* sigma2;                     // [nz,nmass] linear variance sigma^2
+  double* abundance;                  // [nz,nmass] mass function dn/dM
+  double* bias;                       // [nz,nmass] linear halo bias b_1
+  double* concentration;              // [nz,nmass] NFW concentration
+  double* responses;                  // never allocated here; stays NULL
+  double* response_zero;              // never allocated here; stays NULL
+  double* response_bias;              // [nz,nrow] R_I = int dM dn/dM b_1 H_I
 } covariance_work_3pcf;
 
-// Circle/square center weights are normalized by area squared. Fourier G
-// is |w_tilde|^2/A^2. The large-area approximation is applied by callers;
-// the long-mode variance always retains the declared finite survey shape.
+
+// Survey-window weight for a pair of estimator centers, normalized by
+// the survey area A. The argument value is a center separation r in
+// real space (fourier = 0) or a Fourier magnitude q (fourier = 1).
+//
+// Real space. The covariance averages over positions of two centers a
+// distance r apart, both inside the survey, so the weight is the
+// density of such center pairs. For a circular survey of radius
+// S = sqrt(A/pi) that density is the overlap area of two circles of
+// radius S whose centers sit r apart, divided by A^2. With x = r/(2S)
+// the overlap area is 2 S^2 (acos x - x sqrt(1 - x^2)); dividing by
+// A^2 = (pi S^2) A gives the returned
+// (2/pi)(acos x - x sqrt(1 - x^2))/A, which vanishes for r >= 2S.
+// For a square of side L = sqrt(A) the pair density factorizes into
+// one triangle overlap per axis, (1 - |dx|/L)(1 - |dy|/L)/A, and it
+// depends on the direction of the separation; the square branch
+// therefore averages the offsets (r cos phi, r sin phi) over the same
+// relative-angle quadrature phi/dphi that the Fourier triangles use.
+//
+// Fourier space. G(q) = |w~(q)|^2/A^2, with w~ the window transform.
+// The circle gives the squared Airy amplitude [2 J1(qS)/(qS)]^2; the
+// square gives one squared sinc factor per axis, again averaged over
+// the orientation quadrature.
+//
+// Callers apply the large-area approximation themselves when they want
+// it; the long-mode variance always keeps the finite survey shape the
+// input declares, through this function.
+//
+// Parameters:
+//   in      - window shape (circle/square), area and phi quadrature
+//   value   - center separation r, or Fourier magnitude q
+//   fourier - 0 returns the pair density; 1 returns G(q)
 static inline double covariance_window_3pcf(
   const covariance_input_3pcf* in, double value, int fourier
 )
@@ -333,6 +588,9 @@ static inline double covariance_window_3pcf(
   return sum;
 }
 
+
+// Flattened index of the Fourier triangle (q, p, phi) in the [nl,nl,nphi]
+// geometry tables: the angle runs fastest, then the second magnitude p.
 static inline size_t covariance_geometry_3pcf(
   const covariance_input_3pcf* in, int q, int p, int angle
 )
@@ -340,9 +598,14 @@ static inline size_t covariance_geometry_3pcf(
   return ((size_t)q*in->nell + p)*in->nphi + angle;
 }
 
-// sin(double(pi)) is not exactly zero. Recognize the exactly specified
-// antiparallel equal-length case before constructing its closure vector.
-// No neighborhood of nearly degenerate physical triangles is removed.
+
+// |q+p|: the magnitude of the closure side that completes the Fourier
+// triangle built from magnitudes q and p with relative angle phi. In
+// floating point sin(pi) is not exactly zero, so the exactly specified
+// antiparallel equal-length case (q == p with phi == pi) is recognized
+// first and returns an exact zero. Only that one exact input maps to
+// zero; no neighborhood of nearly degenerate physical triangles is
+// removed.
 static inline double covariance_closure_3pcf(double q, double p, double phi)
 {
   if (q == p && phi == COV_PI) {
@@ -351,6 +614,9 @@ static inline double covariance_closure_3pcf(double q, double p, double phi)
   return hypot(q + p*cos(phi), p*sin(phi));
 }
 
+
+// Flattened index of S_ab|c(q) in the [nf,nf,ns,nl] bspec table: fields
+// a and b carry the attached filters, source is the separated leg c.
 static inline size_t covariance_bspec_3pcf(
   const covariance_work_3pcf* work, int a, int b, int source, int ell
 )
@@ -359,6 +625,9 @@ static inline size_t covariance_bspec_3pcf(
   return (((size_t)a*in->nfield + b)*work->ns + source)*in->nell + ell;
 }
 
+
+// Flattened index of B_ab|c(r) in the [nf,nf,nf,nr] breal table; here
+// the separated leg c is a field, because its filter is attached too.
 static inline size_t covariance_breal_3pcf(
   const covariance_input_3pcf* in, int a, int b, int c, int radius
 )
@@ -366,6 +635,13 @@ static inline size_t covariance_breal_3pcf(
   return (((size_t)a*in->nfield + b)*in->nfield + c)*in->nr + radius;
 }
 
+
+// One source-pair spectrum at Fourier node ell, white shape noise
+// included. mode = 0 returns the E-mode spectrum C^ab(ell) + N^ab: the
+// lensing signal is pure E, so the E spectrum carries signal plus
+// noise. mode = 1 returns the B-mode spectrum, which is the noise N^ab
+// alone, because the pure-lensing field model produces no B-mode
+// signal.
 static inline double covariance_power_value_3pcf(
   const covariance_work_3pcf* work, int a, int b, int ell, int mode
 )
@@ -375,11 +651,36 @@ static inline double covariance_power_value_3pcf(
   return mode == 0 ? work->power[pair*work->in->nell + ell] + noise : noise;
 }
 
-// An xi estimator averages shear products at x-theta/2 and x+theta/2.
-// Angular integration gives J0(|p-q|theta/2) for xi+ and J4 for xi-.
-// A pure E Fourier shear has phase exp(2i phi_k); a B shear adds i.
-// Their real products give the cosine/sine factors below. At q=-p the
-// mixed E/B kernels vanish and these reduce to the usual binned J0/J4.
+
+// Q(p,q,phi) of one quadratic row: the weight its estimator gives a
+// pair of shear Fourier modes with magnitudes p and q and relative
+// angle phi (the code calls it angle below).
+//
+// A Map^2 row multiplies its two aperture filters, U_R1(p) U_R2(q),
+// and mixes no E and B. An xi row averages the product of two shears
+// measured at x - theta/2 and x + theta/2 around the center x; in
+// Fourier space the two modes then meet at half their difference
+// vector, and integrating the estimator over orientations turns that
+// offset into J0(|p-q| theta/2) for xi+ and J4 for xi-, averaged over
+// the row's separation bin with the row's own weights.
+//
+// E/B outputs. A pure E-mode Fourier shear carries the phase
+// exp(2i phi_k) of its wavevector, and a B-mode shear carries an extra
+// factor i. The real part of the product of the two shear phases gives
+// a cosine factor when both modes have the same parity and a sine
+// factor when one is E and one is B: *ee multiplies two E spectra (or
+// two B spectra) in the Gaussian assembler, and *eb multiplies one E
+// with one B spectrum. At antiparallel vectors q = -p the sine factor
+// vanishes, the mixed kernel is zero, and *ee reduces to the usual
+// binned J0/J4 kernel.
+//
+// Parameters:
+//   in    - row definitions, field radii and separation bins
+//   row   - the quadratic row (Map^2 or xi)
+//   p, q  - Fourier magnitudes of the row's first and second leg
+//   angle - relative angle phi between the two Fourier vectors
+//   ee    - out: kernel for equal-parity (EE or BB) spectra
+//   eb    - out: kernel for mixed E*B spectra
 static inline void covariance_quadratic_3pcf(
   const covariance_input_3pcf* in, int row, double p, double q,
   double angle, double* ee, double* eb
@@ -413,10 +714,13 @@ static inline void covariance_quadratic_3pcf(
   }
 }
 
-// Fourier geometry does not depend on source-bin labels. xi rows share a
-// kernel only when their kind, separation nodes and weights agree exactly.
-// For Map2 the two radii remain ordered: unequal-radius Q(p,q) changes when
-// its Fourier legs are exchanged, even though the full estimator commutes.
+
+// Decide whether two quadratic rows share one kernel shape. The kernel
+// is pure Fourier geometry, so source-bin labels play no part. Two xi
+// rows share a kernel only when their kind, separation nodes and
+// weights agree exactly. Two Map^2 rows compare their radii in leg
+// order, because an unequal-radius Q(p,q) changes when its Fourier
+// legs are exchanged, even though the full estimator commutes.
 static int covariance_quadratic_equal_3pcf(
   const covariance_input_3pcf* in, // row definitions and field radii
   int first,                     // first quadratic row
@@ -447,10 +751,15 @@ static int covariance_quadratic_equal_3pcf(
   return 1;
 }
 
-// Prepare source projection, geometric kernels and the shared B triangle
-// table. The physical B is evaluated once per (z,q,p,phi), before source
-// weights are attached. Neither BB nor P*T shares independent Limber
-// distances: each projected polyspectrum is constructed on its own.
+
+// Build every geometric and spectral table the assemblers read: the
+// source projection weights, the aperture filters and quadratic
+// kernels, the Limber spectra, and - when a cubic row is requested -
+// the shared bispectrum tables. The physical matter bispectrum is
+// evaluated once per (z, q, p, phi) node, before any source weight is
+// attached. Each projected spectrum and bispectrum gets its own full
+// Limber integral: the product terms never share a line-of-sight
+// distance between their two factors.
 static void covariance_prepare_3pcf(covariance_work_3pcf* work)
 {
   const covariance_input_3pcf* in = work->in;
@@ -458,11 +767,11 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   const double* shape;
   physics_radial_3pcf(work->model, &work->ns, &work->nz, &work->z,
     &work->chi, &work->dchi, &lens, &shape);
-  const int ns = work->ns;
-  const int nz = work->nz;
-  const int nf = in->nfield;
-  const int nl = in->nell;
-  const int nr = in->nr;
+  const int ns = work->ns;   // source bins
+  const int nz = work->nz;   // redshift nodes
+  const int nf = in->nfield; // field labels
+  const int nl = in->nell;   // Fourier nodes
+  const int nr = in->nr;     // center-separation nodes
   const size_t source_pairs = covariance_product_3pcf(ns, ns);
   const size_t field_pairs = covariance_product_3pcf(nf, nf);
   const size_t source_triples = covariance_product_3pcf(
@@ -472,7 +781,7 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   work->nt = (int)source_triples;
   work->ngeometry = covariance_product_3pcf(
     covariance_product_3pcf(nl, nl), in->nphi);
-  const size_t ng = work->ngeometry;
+  const size_t ng = work->ngeometry; // Fourier triangles (q, p, phi)
   for (int row=0; row<in->nrow; row++) {
     work->has_cubic = work->has_cubic || in->row_kind[row] == 1;
   }
@@ -487,9 +796,10 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     sizeof(double));
   work->power = covariance_allocate_3pcf(
     covariance_product_3pcf(source_pairs, nl), sizeof(double));
-  // A purely quadratic request has no B, S or three-field correlation.
-  // Keep its Gaussian and connected halo terms, without constructing
-  // unused matter triangles or aperture-partition tables.
+  // A purely quadratic request involves no bispectrum, no S table and
+  // no three-field correlation. Such a request keeps its Gaussian and
+  // connected halo terms but skips every matter-triangle and
+  // aperture-partition table, which would otherwise dominate memory.
   if (work->has_cubic) {
     work->closure_filters = covariance_allocate_3pcf(
       covariance_product_3pcf(nf, ng),
@@ -515,9 +825,10 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   work->fourier_measure = covariance_allocate_3pcf(nl, sizeof(double));
   work->window_fourier = covariance_allocate_3pcf(in->nwindow,
     sizeof(double));
-  // In the large-area limit the quadratic kernel is needed only at
-  // opposite equal Fourier vectors. Its small [row,ell] table below is
-  // sufficient; allocating [row,ell,ell,phi] would waste memory and work.
+  // The large-area limit needs the quadratic kernel only at opposite
+  // equal Fourier vectors, so the small [nrow, nl] quadratic_zero table
+  // below suffices for it. The full [shape, ng] kernel tables here are
+  // built only for a finite window, where every triangle contributes.
   if (!in->large_area) {
     work->quadratic_index = covariance_allocate_3pcf(in->nrow, sizeof(int));
     work->quadratic_representative = covariance_allocate_3pcf(in->nrow,
@@ -566,9 +877,11 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     sizeof(double));
   work->radial_volume = covariance_allocate_3pcf(nr, sizeof(double));
 
-  // Special functions depend on geometry, not on halo mass or cosmology.
-  // Keep both J0 orientations so each transform reads contiguous nodes.
-  // The duplicated small matrix avoids a strided read in either direction.
+  // The Bessel factors depend on geometry alone, not on halo mass or
+  // cosmology, so one pass tabulates them for the whole call. J0 is
+  // stored in both index orders so every later transform reads
+  // contiguous nodes; duplicating this small matrix is cheaper than a
+  // strided read in either direction.
   for (int r=0; r<nr; r++) {
     work->radial_volume[r] = 2.0*COV_PI*in->radius[r]*in->dr[r];
     if (work->has_cubic || !in->large_area) {
@@ -593,6 +906,9 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
       }
     }
   }
+  // Quadratic kernels at antiparallel equal vectors: the large-area
+  // limit and the zero-mode halo response only ever need Q(l, l, pi),
+  // where the mixed E/B kernel vanishes identically.
   for (int row=0; row<in->nrow; row++) {
     if (in->row_kind[row] != 1) {
       for (int l=0; l<nl; l++) {
@@ -603,8 +919,8 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     }
   }
 
-  // The mean model's g already includes the lensing prefactor. Its
-  // physical convergence weight is W=chi*(1+z)*g, in h/Mpc.
+  // The model's g already contains the lensing prefactor, so the full
+  // physical convergence weight is W = chi*(1 + z)*g, in h/Mpc.
   for (int source=0; source<ns; source++) {
     for (int iz=0; iz<nz; iz++) {
       work->lens[(size_t)source*nz + iz] = work->chi[iz]
@@ -622,8 +938,10 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
       }
     }
   }
-  // Scalar matter projection depends on a source-label multiset. Store
-  // the six permutations through this map, without changing field radii.
+  // The scalar matter projection depends only on the multiset of source
+  // labels, not on their order. This map stores all six orderings of
+  // each triple, so an ordered lookup lands on the shared unordered
+  // entry; field radii are not involved here.
   for (int index=0; index<work->nt; index++) {
     const int* t = work->triples + (size_t)3*index;
     const int orders[6][3] = {{0,1,2},{0,2,1},{1,0,2},
@@ -654,9 +972,13 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
       covariance_window_3pcf(in, in->window_ell[q], 1);
   }
 
-  // Each geometry fixes the closure side |q+p|. A zero closure carries
-  // zero compensated aperture weight; its isolated angular node is set
-  // to zero rather than asking the bispectrum for a zero-length triangle.
+  // Fill the per-triangle tables: each geometry node fixes the closure
+  // side |q+p|, and one worker owns one node, filling every field's
+  // closure filter and - for a finite window - the window value and the
+  // kernel of every quadratic shape there. A zero closure carries zero
+  // compensated aperture weight, so its isolated angular node simply
+  // stores zero instead of asking the bispectrum provider for a
+  // zero-length triangle.
   if (work->has_cubic || !in->large_area) {
     #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
     for (size_t g=0; g<ng; g++) {
@@ -683,6 +1005,13 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     }
   }
 
+  // Limber projection of the convergence spectra: at multipole ell the
+  // line-of-sight integral collapses to
+  //   C^ab(ell) = int dchi W_a(chi) W_b(chi) P(ell/chi, z) / chi^2.
+  // The power factor does not depend on the source bins, so the first
+  // loop tabulates it once per (z, ell) node; mode 2 asks the provider
+  // for the nonlinear matter power at redshift z, the spectrum the
+  // lensing two-point signal physically measures.
   double* power_z = covariance_allocate_3pcf(
     covariance_product_3pcf(nz, nl), sizeof(double));
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
@@ -694,6 +1023,9 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
       }
     }
   }
+  // Contract the shared power column with each ordered pair of lensing
+  // kernels. One worker owns one (a, b) pair at one multipole, and the
+  // inner redshift sum keeps the quadrature's input order.
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int a=0; a<ns; a++) {
     for (int b=0; b<ns; b++) {
@@ -716,11 +1048,13 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     return;
   }
 
-  // S_ab|c is read only when a and b are the two unpaired legs of a
-  // requested cubic estimator: its mean, BB covariance and P*B covariance
-  // all use these same three choices. Retain their exact ordered field
-  // pairs. The third source c still spans all source bins, including
-  // those appearing only in quadratic rows of the joint covariance.
+  // Mark the ordered field pairs (a, b) that the S_ab|c table must
+  // hold. S_ab|c is read only when a and b are the two unpaired legs of
+  // a requested cubic row: the row's mean, its BB covariance and its
+  // P*B covariance all draw on these same three leg choices, in their
+  // exact ordered form. The separated source c still spans every source
+  // bin, because the quadratic rows of a joint covariance can bring in
+  // bins that no cubic row carries.
   int* bspec_pair_needed = covariance_allocate_3pcf(field_pairs, sizeof(int));
   for (int row=0; row<in->nrow; row++) {
     if (in->row_kind[row] != 1) {
@@ -738,12 +1072,22 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   #ifdef _OPENMP
   nworker = omp_get_max_threads();
   #endif
-  // Leave a cache-line-sized gap between mutable worker slices even when
-  // calloc's base is not cache-line aligned. Workers never allocate scratch.
+  // Give each worker its own slice of scratch for the dchi column, with
+  // a cache-line-sized gap between slices: two workers then never write
+  // the same cache line, even when calloc's base address is not
+  // cache-line aligned. Workers never allocate scratch of their own.
   const size_t bstride = ((size_t)nz + 7)/8*8 + 8;
   double* local_b = covariance_allocate_3pcf(
     covariance_product_3pcf(nworker, bstride),
     sizeof(double));
+  // Project the matter bispectrum to the convergence bispectrum
+  //   B^abc(q,p,phi) = int dchi W_a W_b W_c B_m(q/chi, p/chi, |q+p|/chi)
+  //                    / chi^4
+  // for every source triple. The matter bispectrum is the expensive
+  // factor and does not depend on the sources, so each worker owns one
+  // triangle geometry, evaluates the dchi column of B_m once, and then
+  // contracts that cached column with every triple's three lensing
+  // kernels.
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (size_t g=0; g<ng; g++) {
     int worker = 0;
@@ -779,10 +1123,12 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   }
   free(local_b);
 
-  // S_ab|c(q) contains the two coincident aperture filters and the
-  // bispectrum, but not the separated leg's filter. Its measure is
-  // p dp dphi/(2*pi)^2. Symmetrizing a and b preserves the exact
-  // commutation of fields at one center at finite quadrature spacing.
+  // Contract the bispectrum into S_ab|c(q). S carries the two
+  // coincident aperture filters and the bispectrum, but not the
+  // separated leg's filter; its measure is p dp dphi/(2*pi)^2.
+  // Averaging the (a, b) and (b, a) orders restores, at finite
+  // quadrature spacing, the exact commutation of two fields measured at
+  // the same center.
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int a=0; a<nf; a++) {
     for (int b=0; b<nf; b++) {
@@ -813,8 +1159,10 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     }
   }
 
-  // K(r), K(0), B_ab|c(r), and the windowed K transform are reusable
-  // across positional partitions. Every ordered field pair owns its row.
+  // Build the real-space tables K_ab(r), K_ab(0), the windowed K
+  // transform, and B_ab|c(r): the building blocks that the positional
+  // partitions of the assemblers reuse. One worker owns one ordered
+  // field pair, so the collapsed loop has no shared writes.
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int a=0; a<nf; a++) {
     for (int b=0; b<nf; b++) {
@@ -839,6 +1187,12 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
         }
         work->pair[pair*nr + r] = value;
       }
+      // Windowed K transform for the P*T partitions: a finite window
+      // transforms K_ab(r) back to Fourier space with the center-pair
+      // density attached, while the large-area limit reduces the same
+      // object to the filtered spectrum divided by the area. The ell
+      // measure is folded in here so the P*T contraction later is a
+      // plain dot product.
       for (int l=0; l<nl; l++) {
         double value = 0.0;
         if (in->large_area) {
@@ -853,10 +1207,11 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
         }
         work->pair_window[pair*nl + l] = value*work->fourier_measure[l];
       }
-      // Finite-window BB reads B_ab|c(r). Its large-area expression
-      // contracts S_ab|c(ell) directly, so no real-space B table enters.
-      // Its first two fields use the same ordered cubic-pair list as S.
-      // The K tables above remain available for all Gaussian/P*T pairs.
+      // Only the finite-window BB term reads B_ab|c(r); the large-area
+      // BB expression contracts S_ab|c(ell) directly, so no real-space
+      // B table enters that branch. The first two fields of B use the
+      // same ordered cubic-pair list as S. The K tables above stay
+      // available to every Gaussian and P*T pair.
       if (!in->large_area && bspec_pair_needed[pair]) {
         for (int c=0; c<nf; c++) {
           const int sc = in->field_source[c];
@@ -877,6 +1232,26 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   free(bspec_pair_needed);
 }
 
+
+
+// ============================================================================
+// [SECTION] XI FROM CALLER SPECTRA: THE PUBLIC BIN-AVERAGE ENTRY POINT
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// covariance_xi_from_power_3pcf: the bin-averaged two-point function
+//
+//   xi[row] = int ell dell/(2*pi) Jbar(ell) [C_E(ell) + sign*C_B(ell)],
+//
+// from spectra the caller already evaluated on the quadrature nodes.
+// Jbar is the average of J0 (xi+, sign = +1) or J4 (xi-, sign = -1)
+// over the row's separation nodes with the row's own weights; the E
+// and B spectra add for xi+ and subtract for xi-. The function performs no
+// ell interpolation and no binary search, so the caller controls the
+// quadrature completely. The additive noise bias of the estimator is
+// not removed. Argument shapes and units: see the declaration in
+// covariance_physics_3pcf.h.
+// ---------------------------------------------------------------------------
 void covariance_xi_from_power_3pcf(
   int nrow,
   int nell,
@@ -891,10 +1266,10 @@ void covariance_xi_from_power_3pcf(
   double* out
 )
 {
-  // Repeated source pairs often use identical separation bins. Prepare
-  // their Bessel kernel only once, then read contiguous ell nodes for
-  // every spectrum. This entry point accepts spectra on the integration
-  // nodes already; it performs no ell interpolation or binary search.
+  // Rows for different source pairs often share identical separation
+  // bins. Find one representative row for each distinct (bins, sign)
+  // combination, so the Bessel average is prepared only once and every
+  // spectrum then reads its kernel at contiguous ell nodes.
   int* representative = covariance_allocate_3pcf(nrow, sizeof(int));
   int* row_kernel = covariance_allocate_3pcf(nrow, sizeof(int));
   int nkernel = 0;
@@ -922,6 +1297,9 @@ void covariance_xi_from_power_3pcf(
   double* kernels = covariance_allocate_3pcf(
     covariance_product_3pcf(nkernel, nell),
     sizeof(double));
+  // Build each distinct kernel once: the Bessel function averaged over
+  // the separation bin, times the integration measure ell*dell/(2*pi).
+  // One worker owns one kernel, so no two workers share a write.
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int k=0; k<nkernel; k++) {
     const int row = representative[k];
@@ -936,6 +1314,12 @@ void covariance_xi_from_power_3pcf(
       kernels[(size_t)k*nell + l] = ell[l]*dell[l]*COV_I2PI*kernel;
     }
   }
+  // Contract each row's spectra with its kernel; one worker owns a row.
+  // scalar: for every ell node l,
+  //   sum += kernel[l]*(ce[l] + sign*cb[l]);
+  // The vector loop runs two consecutive nodes per pass - lane 0 holds
+  // node l, lane 1 holds node l + 1 - and adds lane 0 before lane 1,
+  // the scalar accumulation order.
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int row=0; row<nrow; row++) {
     const double* kernel = kernels + (size_t)row_kernel[row]*nell;
@@ -943,30 +1327,34 @@ void covariance_xi_from_power_3pcf(
     const double* cb = spectra_b + (size_t)row*nell;
     double sum = 0.0;
     int l = 0;
-    // Both adjacent ell lanes use the same xi+ or xi- B-spectrum sign.
+    // Broadcast the row's parity (+1 for xi+, -1 for xi-) to both
+    // lanes: adjacent ell nodes use the same B-spectrum sign.
     const v2d parity = simde_mm_set1_pd(sign[row]);
     for (; l + 1 < nell; l += 2) {
-      // Load E power at two valid consecutive quadrature nodes.
+      // Load the E spectrum at nodes l and l + 1; loadu needs no
+      // aligned address.
       const v2d e = simde_mm_loadu_pd(ce + l);
-      // Load B power at those same nodes.
+      // Load the B spectrum at the same two nodes.
       const v2d b = simde_mm_loadu_pd(cb + l);
-      // Apply the xi- minus sign, or retain B for xi+.
+      // Apply the parity to B: xi- subtracts it, xi+ keeps it.
       const v2d signed_b = simde_mm_mul_pd(parity, b);
-      // Form the two independent E plus/minus B spectra.
+      // Form the two signal values C_E + sign*C_B, one per lane.
       const v2d signal = simde_mm_add_pd(e, signed_b);
-      // Load the shared Bessel/bin/Fourier weights for these ell nodes.
+      // Load the shared Bessel/bin/Fourier weights at these ell nodes.
       const v2d weight = simde_mm_loadu_pd(kernel + l);
-      // Form the two weighted integrand values independently.
+      // Weight each lane's signal value independently.
       const v2d value = simde_mm_mul_pd(weight, signal);
       double lanes[2];
-      // Store the valid lanes and retain the scalar integration order.
+      // Store both lanes to the stack, then add low lane before high
+      // lane: the scalar integration order.
       simde_mm_storeu_pd(lanes, value);
       sum += lanes[0];
       sum += lanes[1];
     }
     if (l < nell) {
-      // Preserve the SIMD product's rounding before the scalar addition;
-      // the strict build otherwise permits fusing this tail into an FMA.
+      // Round the product before the final addition, as every SIMD
+      // lane does; without the volatile the strict build may fuse this
+      // scalar tail into an FMA with a different rounding.
       volatile double weighted = kernel[l]*(ce[l] + sign[row]*cb[l]);
       sum += weighted;
     }
@@ -977,42 +1365,61 @@ void covariance_xi_from_power_3pcf(
   free(row_kernel);
 }
 
-// The halo's projected shape depends on aperture radius, mass and distance;
-// its source-bin dependence is only the multiplicative lensing weight W.
-// Store unordered radius pairs by their position in an upper triangle.
-// This identity applies to the scalar lensing halo model implemented here.
+
+
+// ============================================================================
+// [SECTION] HALO SHEAR-PROFILE INTERPOLATION PLAN
+// ============================================================================
+
+// Index of an unordered pair of aperture radii in an upper triangle.
+// A halo's projected shape depends on the aperture radius, the halo
+// mass and the distance; the source bin enters only through the
+// multiplicative lensing weight W, which stays outside the halo
+// transforms. Profile products therefore depend on radius pairs alone,
+// and the unordered pair (a, b) is stored once. This identity holds for
+// the scalar lensing halo model implemented here.
 static inline size_t covariance_radius_pair_3pcf(int n, int a, int b)
 {
   const int low = a < b ? a : b;
   const int high = a < b ? b : a;
+  // Rows 0..low-1 of the triangle hold n, n-1, ... entries, which sum
+  // to low*(2n - low + 1)/2; high - low is the offset inside row `low`.
   return (size_t)low*(2*(size_t)n - low + 1)/2 + high - low;
 }
 
-// Geometry of the shear lookup, owned by one covariance call. A natural
-// cubic spline is prepared on x=log(1+r/r_scale), including r=0. It is then
-// sampled onto a uniform x grid. Every displaced xi endpoint stores its
-// fine-grid cell and fraction before the halo loop, so repeated reads need
-// neither a binary search nor logarithms. This follows the preparation /
-// linear-read separation in cosmo2D.c; input quadrature may be nonuniform.
+
+// Geometry of the halo shear lookup, owned by one covariance call. A
+// natural cubic spline of the shear profile is prepared on the
+// coordinate x = log(1 + r/r_scale), which includes r = 0, and then
+// sampled onto a uniform grid in x. Every displaced xi endpoint stores
+// its fine-grid cell and fractional position before the halo loop
+// starts, so the repeated per-halo reads need neither a binary search
+// nor a logarithm. This follows the preparation / linear-read
+// separation used in cosmo2D.c; the input quadrature may be nonuniform.
 typedef struct {
-  int coarse;
-  int fine;
-  int per_radius;
-  double* x;
-  double* inverse;
-  double* upper;
-  double* coefficient;
-  double* forward;
-  double* values;
-  int* cell;
-  double* delta;
-  int* minus_cell;
-  int* plus_cell;
-  double* minus_fraction;
-  double* plus_fraction;
-  double* endpoint_weight;
+  int coarse;              // input profile nodes nc = in->nprofile
+  int fine;                // uniform fine nodes (nc-1)*upsample + 1
+  int per_radius;          // xi endpoint samples per radius: ntheta*nphi
+  double* x;               // [coarse] spline coordinate log(1+r/r_scale)
+  double* inverse;         // [coarse] Thomas solver: 1/pivot per row
+  double* upper;           // [coarse] Thomas solver: scaled superdiagonal
+  double* coefficient;     // [coarse] spline c = (second derivative)/2
+  double* forward;         // [coarse] Thomas solver: substituted RHS
+  double* values;          // [fine] current halo's shear on the fine grid
+  int* cell;               // [fine] coarse interval holding each fine node
+  double* delta;           // [fine] x offset inside that coarse interval
+  int* minus_cell;         // [nxi,nr,per_radius] fine cell, minus endpoint
+  int* plus_cell;          // same shape: fine cell, plus endpoint
+  double* minus_fraction;  // same shape: position inside minus_cell
+  double* plus_fraction;   // same shape: position inside plus_cell
+  double* endpoint_weight; // same shape: bin*angle weight * cos(phase)
 } covariance_profile_plan_3pcf;
 
+
+// Build the plan: the shared spline factorization, the fine-grid cell
+// map, and - for every xi shape - each displaced endpoint's cell,
+// fractional position and estimator weight. A request without xi rows
+// leaves the plan empty.
 static void covariance_profile_plan_3pcf_prepare(
   const covariance_input_3pcf* in, // fixed profile and xi-bin geometry
   int nshape,                     // distinct estimator geometries
@@ -1060,8 +1467,13 @@ static void covariance_profile_plan_3pcf_prepare(
       && (r == 0 || plan->x[r] > plan->x[r - 1]),
       "profile coordinates must be finite and strictly increasing");
   }
-  // The tridiagonal spline matrix depends only on the coarse geometry.
-  // Its elimination factors are shared by every mass/redshift node.
+  // The spline's second derivatives solve a tridiagonal linear system
+  // whose matrix depends only on the node geometry, not on the shear
+  // values. The Thomas algorithm (Gaussian elimination specialized to
+  // tridiagonal systems) factors that matrix once here: inverse holds
+  // the reciprocal pivots and upper the scaled superdiagonal. Every
+  // mass/redshift node later reuses them; only the right-hand side
+  // changes per halo.
   for (int r=1; r<nc - 1; r++) {
     const double previous = plan->x[r] - plan->x[r - 1];
     const double next = plan->x[r + 1] - plan->x[r];
@@ -1069,6 +1481,10 @@ static void covariance_profile_plan_3pcf_prepare(
       - previous*plan->upper[r - 1]);
     plan->upper[r] = next*plan->inverse[r];
   }
+  // For every uniform fine node, record which coarse interval contains
+  // it and the x offset inside, so the per-halo fill evaluates the
+  // cubic polynomial directly, without searching. Both grids increase,
+  // so one sweep with a running coarse index suffices.
   const double step = plan->x[nc - 1]/(nfine - 1);
   int coarse = 0;
   for (int r=0; r<nfine; r++) {
@@ -1079,6 +1495,12 @@ static void covariance_profile_plan_3pcf_prepare(
     plan->cell[r] = coarse;
     plan->delta[r] = x - plan->x[coarse];
   }
+  // For every xi shape, halo-offset node and endpoint orientation,
+  // store where the two displaced shear samples land on the fine grid
+  // and the weight that multiplies their product. An xi estimator whose
+  // center sits at offset u from the halo reads the shear at the two
+  // points u -/+ (theta/2)(cos phi, sin phi); precomputing their cells
+  // and fractions makes the per-halo read two linear interpolations.
   for (int s=0; s<nshape; s++) {
     if (xi_shape[s] < 0) {
       continue;
@@ -1091,6 +1513,11 @@ static void covariance_profile_plan_3pcf_prepare(
         for (int a=0; a<in->nphi; a++) {
           const size_t index = ((size_t)xi_shape[s]*in->nr + r)
             *plan->per_radius + (size_t)t*in->nphi + a;
+          // Half-separation displacement along orientation phi. With
+          // the estimator center at (radius, 0) relative to the halo,
+          // the minus endpoint sits at (radius - dx, -dy) and the plus
+          // endpoint at (radius + dx, +dy); rm and rp are their
+          // distances from the halo center.
           const double dx = half*cos(in->phi[a]);
           const double dy = half*sin(in->phi[a]);
           const double xm = in->radius[r] - dx;
@@ -1100,6 +1527,11 @@ static void covariance_profile_plan_3pcf_prepare(
           covariance_require_3pcf(rm <= in->profile_radius[nc - 1]
             && rp <= in->profile_radius[nc - 1],
             "profile grid does not enclose displaced xi endpoints");
+          // Fine-grid coordinates of the two endpoints: um and up are
+          // continuous positions in units of the fine step; im and ip
+          // are the containing cells, clamped so the last node still
+          // interpolates inside the final cell; the stored fractions
+          // are the positions inside those cells.
           const double um = log1p(rm/scale)/step;
           const double up = log1p(rp/scale)/step;
           const int im = um >= nfine - 1 ? nfine - 2 : (int)um;
@@ -1108,6 +1540,17 @@ static void covariance_profile_plan_3pcf_prepare(
           plan->plus_cell[index] = ip;
           plan->minus_fraction[index] = um - im;
           plan->plus_fraction[index] = up - ip;
+          // Spin-2 projection phase. The halo's shear at an endpoint is
+          // tangential about the halo center, so it carries the phase
+          // 2*ph of that endpoint's polar angle ph (phm for the minus
+          // endpoint, php for the plus endpoint). xi+ multiplies one
+          // shear by the conjugate of the other after rotating both to
+          // the line joining the endpoints, so the line direction
+          // cancels and the product keeps cos(2(phm - php)). xi-
+          // multiplies the two shears without conjugation, so the line
+          // direction phi survives: the phase is 2(phm + php) - 4 phi.
+          // The imaginary parts average to zero over the full
+          // orientation quadrature, so only the cosine is stored.
           const double phm = atan2(-dy, xm);
           const double php = atan2(dy, xp);
           const double phase = in->row_kind[row] == 2
@@ -1120,16 +1563,22 @@ static void covariance_profile_plan_3pcf_prepare(
   }
 }
 
-// Update only the spline ordinates for a new halo; every geometric factor
-// and destination interval was prepared once above. The coefficients c
-// are one half of the spline's second derivative. Natural endpoints c=0
-// remain zero throughout the call. Refine both coarse and fine grids.
+
+// Spline one halo's shear profile onto the fine grid. Only the spline
+// ordinates change from halo to halo; every geometric factor and
+// destination interval was prepared once above. The coefficients c are
+// one half of the spline's second derivative at each node, and the
+// natural boundary condition keeps c = 0 at both ends throughout the
+// call. Accuracy is controlled by refining both the coarse input nodes
+// and the fine sampling grid.
 static void covariance_profile_fill_3pcf(
   covariance_profile_plan_3pcf* plan, // fixed geometry and owned scratch
   const double* shear               // coarse gamma_t [plan->coarse]
 )
 {
   const int nc = plan->coarse;
+  // Forward substitution of the Thomas solve: fold this halo's
+  // right-hand side through the prepared elimination factors.
   for (int r=1; r<nc - 1; r++) {
     const double previous = plan->x[r] - plan->x[r - 1];
     const double next = plan->x[r + 1] - plan->x[r];
@@ -1138,10 +1587,15 @@ static void covariance_profile_fill_3pcf(
     plan->forward[r] = (rhs - previous*plan->forward[r - 1])
       *plan->inverse[r];
   }
+  // Back substitution yields the interior c coefficients.
   for (int r=nc - 2; r>=1; r--) {
     plan->coefficient[r] = plan->forward[r]
       - plan->upper[r]*plan->coefficient[r + 1];
   }
+  // Evaluate the cubic on every fine node with Horner's scheme. The
+  // linear coefficient b and cubic coefficient d follow from the
+  // standard cubic-spline interval formulas; dx is the prepared offset
+  // inside the interval.
   for (int r=0; r<plan->fine; r++) {
     const int i = plan->cell[r];
     const double width = plan->x[i + 1] - plan->x[i];
@@ -1154,10 +1608,15 @@ static void covariance_profile_fill_3pcf(
   }
 }
 
-// Two orientation nodes occupy SIMD lanes; the halo profile is gathered
-// using the already prepared cells. Accumulate low then high lane, keeping
-// the same fixed node order for any OpenMP thread count. The final odd node
-// is scalar, so no load may extend beyond the endpoint arrays.
+
+// One halo-offset node's xi response: the weighted sum, over separation
+// nodes and orientations, of the product of the two endpoint shear
+// values. The endpoint samples were planned above, so each read is a
+// linear interpolation on the fine grid. Two consecutive endpoint
+// samples share the SIMD lanes; the sum adds the low lane before the
+// high lane, keeping one fixed node order for any OpenMP thread count.
+// The final odd sample runs in scalar code, so no vector load ever
+// extends past the endpoint arrays.
 static inline double covariance_profile_response_3pcf(
   const covariance_profile_plan_3pcf* plan, // prepared halo and geometry
   size_t start                            // first endpoint for this radius
@@ -1165,44 +1624,62 @@ static inline double covariance_profile_response_3pcf(
 {
   double sum = 0.0;
   int a = 0;
+  // scalar: for every endpoint sample p = start + a,
+  //   minus = values[mc] + minus_fraction[p]*(values[mc+1] - values[mc]);
+  //   plus  = values[pc] + plus_fraction[p] *(values[pc+1] - values[pc]);
+  //   sum  += endpoint_weight[p]*(minus*plus);
+  // with mc = minus_cell[p] and pc = plus_cell[p] the prepared fine
+  // cells. Each term interpolates the halo's shear at the two displaced
+  // xi endpoints and weights their product with the prepared
+  // bin/orientation/spin weight. The vector loop runs two consecutive
+  // samples at once - lane 0 holds sample a, lane 1 holds sample a + 1 -
+  // and adds lane 0 before lane 1, the scalar order.
   for (; a + 1 < plan->per_radius; a += 2) {
     const size_t p = start + a;
     const int m0 = plan->minus_cell[p];
     const int m1 = plan->minus_cell[p + 1];
     const int p0 = plan->plus_cell[p];
     const int p1 = plan->plus_cell[p + 1];
-    // Gather the lower-minus cell values for two adjacent angular nodes.
+    // Gather the shear at the lower edge of each minus cell. set_pd
+    // lists the high lane first: lane 1 receives values[m1] (sample
+    // a + 1) and lane 0 receives values[m0] (sample a), matching the
+    // lane order of the contiguous loadu reads below.
     const v2d ml = simde_mm_set_pd(plan->values[m1], plan->values[m0]);
-    // Gather the upper-minus values, each from a valid neighboring cell.
+    // Gather the shear at the upper edge of each minus cell, in the
+    // same set_pd lane order: lane 1 from m1 + 1, lane 0 from m0 + 1.
     const v2d mh = simde_mm_set_pd(plan->values[m1 + 1], plan->values[m0 + 1]);
-    // Load the two prepared fractional positions in those cells.
+    // Load the two prepared fractional positions inside those cells.
     const v2d mf = simde_mm_loadu_pd(plan->minus_fraction + p);
-    // Subtract the cell endpoints to form the linear-interpolation slopes.
+    // Subtract the cell edges to form each lane's interpolation slope.
     const v2d md = simde_mm_sub_pd(mh, ml);
-    // Multiply each slope by its endpoint's fractional displacement.
+    // Multiply each slope by its endpoint's fractional position.
     const v2d ms = simde_mm_mul_pd(mf, md);
-    // Add the lower values to obtain the two minus-endpoint shear values.
+    // Add the lower edge back: the two minus-endpoint shear values.
     const v2d minus = simde_mm_add_pd(ml, ms);
-    // Gather the lower-plus values for the same two angular nodes.
+    // Gather the lower edge of each plus cell; set_pd lane order as
+    // above, lane 1 from p1 and lane 0 from p0.
     const v2d pl = simde_mm_set_pd(plan->values[p1], plan->values[p0]);
-    // Gather the corresponding upper-plus values.
+    // Gather the upper edge of each plus cell: lane 1 from p1 + 1,
+    // lane 0 from p0 + 1.
     const v2d ph = simde_mm_set_pd(plan->values[p1 + 1], plan->values[p0 + 1]);
-    // Load the already prepared plus-endpoint fractional positions.
+    // Load the prepared plus-endpoint fractional positions.
     const v2d pf = simde_mm_loadu_pd(plan->plus_fraction + p);
-    // Form the independent plus-cell slopes.
+    // Form the two plus-cell interpolation slopes.
     const v2d pd = simde_mm_sub_pd(ph, pl);
     // Scale the slopes by the fractional positions.
     const v2d ps = simde_mm_mul_pd(pf, pd);
-    // Add the lower values to recover both plus-endpoint shears.
+    // Add the lower edge back: the two plus-endpoint shear values.
     const v2d plus = simde_mm_add_pd(pl, ps);
-    // Multiply shears at the two physical endpoints for each orientation.
+    // Multiply the shears at the two physical endpoints, one
+    // orientation sample per lane.
     const v2d pair = simde_mm_mul_pd(minus, plus);
-    // Load bin, angular and spin-projection weights for the two nodes.
+    // Load the prepared bin/orientation/spin weights of the two samples.
     const v2d weights = simde_mm_loadu_pd(plan->endpoint_weight + p);
-    // Apply the prepared scalar-estimator weights to each shear product.
+    // Weight each lane's shear product.
     const v2d weighted = simde_mm_mul_pd(weights, pair);
     double values[2];
-    // Store valid lanes locally before adding them in fixed scalar order.
+    // Store both lanes to the stack, then add them in the fixed scalar
+    // order: low lane (sample a) first, high lane (sample a + 1) second.
     simde_mm_storeu_pd(values, weighted);
     sum += values[0];
     sum += values[1];
@@ -1211,9 +1688,10 @@ static inline double covariance_profile_response_3pcf(
     const size_t p = start + a;
     const int m = plan->minus_cell[p];
     const int u = plan->plus_cell[p];
-    // Each SIMD interpolation uses a separately rounded multiply and
-    // add. Force the same boundaries for this single endpoint, where
-    // compiler contraction would otherwise introduce scalar-only FMAs.
+    // Each SIMD interpolation above rounds its multiply and its add
+    // separately. The volatiles force the same rounding boundaries on
+    // this single scalar endpoint, where compiler contraction would
+    // otherwise fuse scalar-only FMAs and change the result bits.
     volatile double minus_step = plan->minus_fraction[p]
       *(plan->values[m + 1] - plan->values[m]);
     volatile double plus_step = plan->plus_fraction[p]
@@ -1226,6 +1704,9 @@ static inline double covariance_profile_response_3pcf(
   return sum;
 }
 
+
+// Free every allocation of the plan preparation. A large-area call
+// never fills the plan, so its pointers are NULL and free does nothing.
 static void covariance_profile_release_3pcf(
   covariance_profile_plan_3pcf* plan // all allocations from preparation
 )
@@ -1245,27 +1726,46 @@ static void covariance_profile_release_3pcf(
   free(plan->endpoint_weight);
 }
 
-// Evaluate one halo's homogeneous estimator response as a function of
-// its angular offset u from an estimator center. Aperture products use
-// products of radial filtered convergence profiles. xi uses two spin-2
-// shear values at the actual separated endpoints, averaged with the
-// supplied theta-bin and orientation weights. The shear profile is first
-// tabulated on a wider grid so these displaced samples are interpolated,
-// not repeatedly transformed. Refine that interpolation independently.
+
+
+// ============================================================================
+// [SECTION] HALO-MODEL TERMS: P*T, CONNECTED ONE-HALO AND THE RESPONSE
+// ============================================================================
+
+// Fill the three halo-model slabs of the covariance: terms[2] receives
+// the P*T cross term between cubic rows, terms[4] the connected
+// one-halo term of every row pair, and terms[5] the halo-abundance
+// response. The mean is untouched here.
+//
+// The common object is one halo's estimator response as a function of
+// its angular offset u from the estimator center. An aperture row
+// multiplies radial filtered convergence profiles of the halo; an xi
+// row multiplies two spin-2 shear values at the actual displaced
+// endpoints, averaged with the separation-bin and orientation weights
+// the input carries. The halo's shear profile is first tabulated on a wider
+// radial grid, so those displaced samples are interpolated instead of
+// transformed again and again; that interpolation grid is refined
+// independently of the quadratures.
+//
+// Parameters:
+//   work  - prepared workspace; the halo tables are allocated here
+//   terms - output [6, nrow, nrow]; slabs 2, 4 and 5 are accumulated
 static void covariance_halo_terms_3pcf(
   covariance_work_3pcf* work, double* terms
 )
 {
   const covariance_input_3pcf* in = work->in;
-  const int nf = in->nfield;
-  const int nl = in->nell;
-  const int nr = in->nr;
-  const int no = in->nrow;
-  const int nw = in->nwindow;
-  const int nm = in->nmass;
+  const int nf = in->nfield;  // field labels
+  const int nl = in->nell;    // Fourier nodes
+  const int nr = in->nr;      // halo-offset nodes
+  const int no = in->nrow;    // covariance rows
+  const int nw = in->nwindow; // survey-window nodes
+  const int nm = in->nmass;   // halo mass nodes
   const int need_profiles = work->has_cubic || !in->large_area;
   const size_t matrix = covariance_product_3pcf(no, no);
   const size_t nodes = covariance_product_3pcf(work->nz, nm);
+  // 2.77536627e11 is rho_crit/h^2 in (Msun/h)/(Mpc/h)^3; times Omega_m
+  // it is today's comoving mean matter density, as in the halo tables.
   const double rho = 2.77536627e11*physics_omega_m_3pcf(work->model);
   work->sigma2 = covariance_allocate_3pcf(nodes, sizeof(double));
   work->abundance = covariance_allocate_3pcf(nodes, sizeof(double));
@@ -1277,9 +1777,10 @@ static void covariance_halo_terms_3pcf(
   covariance_halos_3pcf(work->model, in, work->nz, work->z, 0, NULL,
     work->sigma2, work->abundance, work->bias, work->concentration, NULL);
 
-  // Equality here means equality of the supplied numerical radii, not a
-  // tolerance-based merging of different observables. Source labels are
-  // retained in field_lens and row_lens, outside all halo transforms.
+  // Deduplicate the aperture radii. Equality means equality of the
+  // numerical radii the input carries; no tolerance ever merges two
+  // different observables. The source labels stay outside every halo transform,
+  // carried by field_lens and row_lens below.
   int* radius_index = covariance_allocate_3pcf(nf, sizeof(int));
   double* unique_radius = covariance_allocate_3pcf(nf, sizeof(double));
   int nrad = 0;
@@ -1303,6 +1804,11 @@ static void covariance_halo_terms_3pcf(
   int* xi_shape = covariance_allocate_3pcf(no, sizeof(int));
   int nshape = 0;
   int nxi = 0;
+  // Group the rows into shapes. A shape is exactly the geometry a halo
+  // response depends on: an aperture row reduces to its unordered
+  // multiset of radii, an xi row to its separation nodes and weights.
+  // Rows that share a shape share the response tables below and differ
+  // only through their lensing weights.
   for (int row=0; row<no; row++) {
     const int kind = in->row_kind[row];
     const int nleg = kind == 1 ? 3 : 2;
@@ -1314,6 +1820,9 @@ static void covariance_halo_terms_3pcf(
         radius_needed[radii[a]] = radius_needed[radii[a]]
           || kind == 1 || !in->large_area;
       }
+      // Sort the radius indices in place: the halo response depends on
+      // the unordered multiset of radii, so putting them in canonical
+      // order lets two rows with permuted legs share one shape.
       for (int a=0; a<nleg; a++) {
         for (int b=a + 1; b<nleg; b++) {
           if (radii[b] < radii[a]) {
@@ -1364,15 +1873,18 @@ static void covariance_halo_terms_3pcf(
     row_shape[row] = s;
   }
 
-  // A P*T contraction chooses one field from each cubic estimator for
-  // the two-point function P. Each estimator's other two fields supply
-  // a pair of halo profiles in the connected four-point function T.
-  // The dot product depends only on those two single-field indices and
-  // two complementary radius pairs. Source weights on the four halo
-  // fields remain in the covariance-cell sum, in their original order.
-  // Gather only choices present in the requested cubic rows. These
-  // integer maps belong to this call; their values are fixed before any
-  // halo is visited, and the contraction values are refilled per halo.
+  // Index maps for the P*T contractions. A P*T partition chooses one
+  // field from each cubic estimator for the two-point function P; the
+  // other two fields of each estimator supply a pair of halo profiles
+  // inside the connected four-point function T. The dot product the
+  // partition needs depends only on the two chosen single fields and
+  // the two complementary radius pairs, so one "entity" is a
+  // (field, radius pair) choice and one contraction is an ordered pair
+  // of entities. The source weights of the four halo fields stay in the
+  // covariance-cell sum, in their original order. Only choices present
+  // in the requested cubic rows are gathered. These integer maps belong
+  // to this call: their values are fixed before any halo is visited,
+  // and only the contraction values are refilled per halo.
   size_t* row_entity = NULL;
   int* entity_field = NULL;
   size_t* entity_radius_pair = NULL;
@@ -1416,10 +1928,10 @@ static void covariance_halo_terms_3pcf(
     }
     contraction_index = covariance_allocate_3pcf(
       covariance_product_3pcf(nentity, nentity), sizeof(size_t));
-    // Preserve ordered entity pairs: the finite-window P table retains
-    // its ordered field multiplications, which can round differently
-    // when exchanged. Zero marks an unused pair; a positive entry will
-    // hold its compact contraction index plus one.
+    // Keep entity pairs ordered: the finite-window P table multiplies
+    // its fields in a fixed order, and exchanging them could round
+    // differently. In contraction_index a zero marks an unused pair,
+    // and a used pair stores its compact contraction index plus one.
     for (int i=0; i<no; i++) {
       if (in->row_kind[i] != 1) {
         continue;
@@ -1462,11 +1974,13 @@ static void covariance_halo_terms_3pcf(
     covariance_profile_plan_3pcf_prepare(in, nshape, representative,
       xi_shape, nxi, &profile_plan);
   }
-  // Large-area connected terms use only each estimator's zero-mode
-  // response H. Quadratic H has a direct Fourier expression below, so
-  // no displaced xi profiles or profile interpolation enter that branch.
-  // Cubic H and P*T still need aperture profiles and their pair products.
-  // A finite center window additionally needs every response at window q.
+  // In the large-area limit the connected terms use only each
+  // estimator's zero-mode response H = int d^2u f(u). Quadratic H has a
+  // direct Fourier expression below, so that branch never touches
+  // displaced xi profiles or profile interpolation. Cubic H and P*T
+  // still need the aperture profiles and their pair products. A finite
+  // center window additionally needs every response transformed to the
+  // survey multipoles q.
   const size_t radius_fourier = covariance_product_3pcf(nrad, nl);
   double* unique_filter = need_profiles
     ? covariance_allocate_3pcf(radius_fourier, sizeof(double)) : NULL;
@@ -1517,9 +2031,12 @@ static void covariance_halo_terms_3pcf(
       *work->window_fourier[q];
   }
 
-  // Halo nodes are visited in a fixed order. At each node all field
-  // profiles are shared across covariance cells; workers own output rows.
-  // This keeps memory independent of the number of mass/redshift nodes.
+  // Main halo traversal. The (redshift, mass) nodes are visited in one
+  // fixed serial order; parallel workers appear only inside a node,
+  // where each owns an output row or a table slice. One node's field
+  // profiles are shared by every covariance cell before the next node
+  // overwrites them, so memory stays independent of the number of
+  // mass/redshift nodes.
   for (int iz=0; iz<work->nz; iz++) {
     const double chi = work->chi[iz];
     if (chi <= 0.0) {
@@ -1538,8 +2055,16 @@ static void covariance_halo_terms_3pcf(
     for (int im=0; im<nm; im++) {
       const size_t node = (size_t)iz*nm + im;
       const double mass = in->mass[im];
+      // Amplitude of the halo's filtered angular profile: in the Phi
+      // equation of COVARIANCE.md, Phi = (W/chi^2)(M/rho_m) u U, this
+      // factor is (M/rho_m)/chi^2. The lensing weight W is attached per
+      // field below, and u and U enter through the nfw/filter tables.
       const double amplitude = mass/(rho*chi*chi);
+      // M200m radius: M = (4 pi/3)*200*rho_m*r200^3, so the 800 in the
+      // denominator is 4*200.
       const double r200 = cbrt(3.0*mass/(800.0*COV_PI*rho));
+      // Expected halo count per steradian: dnu = chi^2 dchi dM dn/dM.
+      // number carries dM dn/dM; measure supplies the chi^2 dchi part.
       const double number = in->dmass[im]*work->abundance[node];
       const double measure = work->dchi[iz]*chi*chi*number;
       for (int l=0; l<nl; l++) {
@@ -1553,6 +2078,12 @@ static void covariance_halo_terms_3pcf(
             in->window_ell[q]/chi, r200, work->concentration[node]);
         }
       }
+      // Transform this halo's filtered profile to real space once per
+      // unique aperture radius:
+      //   profile_real(u) = int ell dell/(2*pi) J0(ell u) u_NFW U_R,
+      // the filtered convergence the aperture at offset u sees. Every
+      // row with that radius reads the same table, and one worker owns
+      // one radius.
       #pragma omp parallel for \
         if(need_profiles && !omp_in_parallel()) schedule(static)
       for (int a=0; a<nrad; a++) {
@@ -1577,6 +2108,11 @@ static void covariance_halo_terms_3pcf(
           }
         }
       }
+      // Tangential shear profile of this halo on the wide grid:
+      //   shear(u) = int ell dell/(2*pi) J2(ell u) u_NFW.
+      // J2 appears because shear is the spin-2 distortion sourced by
+      // the convergence profile. The spline fill then prepares the
+      // fine-grid samples that the displaced xi endpoints read.
       if (nxi > 0 && !in->large_area) {
         #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
         for (int r=0; r<in->nprofile; r++) {
@@ -1586,6 +2122,12 @@ static void covariance_halo_terms_3pcf(
         covariance_profile_fill_3pcf(&profile_plan, shear);
       }
 
+      // Response of every shape to this one halo. An aperture shape
+      // multiplies its radial profiles at each halo offset; an xi shape
+      // sums its displaced endpoint products. The zero mode
+      // H = int d^2u f(u) follows from the radial quadrature, and a
+      // finite window also stores the response transformed to the
+      // survey multipoles. One worker owns one shape.
       #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
       for (int s=0; s<nshape; s++) {
         const int row = representative[s];
@@ -1615,14 +2157,19 @@ static void covariance_halo_terms_3pcf(
         for (int r=0; r<nr; r++) {
           zero += work->radial_volume[r]*response_real[(size_t)s*nr + r];
         }
-        // The two-point zero-mode response has a direct Fourier check,
-        // also avoiding halo-offset truncation for the large-area limit.
+        // A quadratic shape's zero mode has the direct Fourier
+        // expression sum_l (ell dell/2pi) Q(l,l,pi) u^2(l), which
+        // replaces the radial sum here: it avoids truncating the
+        // halo-offset quadrature and is the same expression the
+        // large-area branch above uses.
         if (kind != 1) {
           zero = covariance_dot_3pcf(nl, work->fourier_measure,
             work->quadratic_zero + (size_t)row*nl, nfw_square);
         }
         shape_zero[s] = zero;
         if (!in->large_area) {
+          // Transform of the response over the halo offset, read by the
+          // finite-window connected term at the survey multipoles.
           for (int q=0; q<nw; q++) {
             response_fourier[(size_t)s*nw + q] = covariance_dot_3pcf(nr,
               work->radial_volume, response_real + (size_t)s*nr,
@@ -1636,10 +2183,11 @@ static void covariance_halo_terms_3pcf(
           number*work->bias[node]*response_zero[row];
       }
 
-      // A product of two radial halo profiles supplies the connected
-      // one-halo four-field function. One unordered radius pair supplies
-      // every source pair with those radii; W factors are attached below.
-      // Skip pairs absent from the requested cubic rows.
+      // Products of two radial halo profiles: the building block of the
+      // connected one-halo four-field function in P*T. One unordered
+      // radius pair serves every source pair with those radii, because
+      // the lensing weights W are attached later in the cell sum. Pairs
+      // absent from the requested cubic rows are skipped.
       #pragma omp parallel for \
         if(work->has_cubic && !omp_in_parallel()) schedule(static)
       for (int a=0; a<nrad; a++) {
@@ -1661,9 +2209,10 @@ static void covariance_halo_terms_3pcf(
       }
 
       // The pair-profile transforms above change with halo mass and
-      // distance. Refill every requested contraction before covariance
-      // workers read it. Each entry uses the same ordered quadrature as
-      // its uncached expression, including unequal aperture radii.
+      // distance, so every requested P*T contraction is refilled here
+      // before the covariance workers read it. Each entry runs the same
+      // ordered quadrature its uncached expression would run, unequal
+      // aperture radii included.
       if (work->has_cubic) {
         #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
         for (size_t c=0; c<ncontraction; c++) {
@@ -1678,16 +2227,21 @@ static void covariance_halo_terms_3pcf(
         }
       }
 
-      // Upper-triangle rows shorten as i increases, and cubic rows can
-      // be grouped together in the input. Assign successive rows to
-      // successive workers so both costs are spread across the team.
-      // Each worker still owns a row and visits its halo nodes in order.
+      // Accumulate this halo's connected and P*T contributions into the
+      // upper-triangle cells. Upper-triangle rows shorten as i grows,
+      // and the input may group all cubic rows together, so the
+      // round-robin schedule(static,1) hands successive rows to
+      // successive workers and spreads both costs across the team. Each
+      // worker still owns complete rows and visits them in order.
       #pragma omp parallel for if(!omp_in_parallel()) schedule(static,1)
       for (int i=0; i<no; i++) {
         const int* a = in->row_fields + (size_t)i*3;
         for (int j=i; j<no; j++) {
           const int* b = in->row_fields + (size_t)j*3;
           const size_t cell = (size_t)i*no + j;
+          // Connected one-halo term: H_i H_j / A in the large-area
+          // limit, or the window-weighted overlap of the two response
+          // transforms for a finite survey.
           const double connected = in->large_area
             ? response_zero[i]*response_zero[j]/in->area
             : row_lens[i]*row_lens[j]*covariance_dot_3pcf(nw, window_measure,
@@ -1695,6 +2249,11 @@ static void covariance_halo_terms_3pcf(
                 response_fourier + (size_t)row_shape[j]*nw);
           terms[4*matrix + cell] += measure*connected;
           if (in->row_kind[i] == 1 && in->row_kind[j] == 1) {
+            // P*T partition sum. Nine choices pair the two P fields
+            // across the estimators: p picks row i's separated field
+            // and q picks row j's; the prepared contraction holds the
+            // profile-pair transforms, and the four lensing weights are
+            // attached here in their original order.
             double pt = 0.0;
             for (int p=0; p<3; p++) {
               const int a0 = a[(p + 1)%3];
@@ -1708,6 +2267,14 @@ static void covariance_halo_terms_3pcf(
                 pt += field_lens[a0]*field_lens[a1]
                   *field_lens[b0]*field_lens[b1]*pt_contraction[c];
               }
+              // Six more choices close P inside one estimator; the
+              // compensated filters remove them only in the large-area
+              // limit, so a finite window keeps them. The internal pair
+              // contributes its coincident K(0), while the estimator's
+              // separated field couples to the other row's full
+              // response through the survey window: three placements
+              // with row i's pair internal (first addition) and three
+              // with row j's pair internal (second).
               if (!in->large_area) {
                 pt += work->pair_zero[(size_t)a0*nf + a1]*row_lens[j]
                   *covariance_dot_3pcf(nw, window_measure,
@@ -1728,11 +2295,18 @@ static void covariance_halo_terms_3pcf(
     }
   }
 
-  // The selected squeezed two-halo term uses the abundance responses
-  // R_i(chi)=integral dM dn/dM b H_i. Limber's radial delta gives
-  // integral dchi chi^2 R_i R_j integral q dq P_linear(q/chi)G(q)/(2*pi).
-  // It retains the finite survey window even when short-mode terms use
-  // the large-area approximation. No second copy of this term is SSC.
+  // The squeezed two-halo term uses the abundance responses that the
+  // main traversal accumulated, R_i(chi) = int dM (dn/dM) b_1 H_i: how
+  // strongly each row responds to a long background density mode
+  // through the halo abundance. Limber's radial delta reduces the long-mode
+  // coupling to
+  //   int dchi chi^2 R_i R_j int q dq P_linear(q/chi) G(q)/(2*pi).
+  // The finite survey window G stays in this term even when the
+  // short-mode terms use the large-area approximation, because the
+  // long-mode variance is set by the survey shape. No second copy of
+  // this term is an SSC: another SSC prescription must first check this
+  // overlap. Mode 0 asks for linear power - the survey-scale modes that
+  // modulate halo abundance are linear.
   for (int iz=0; iz<work->nz; iz++) {
     const double chi = work->chi[iz];
     if (chi <= 0.0) {
@@ -1788,26 +2362,50 @@ static void covariance_halo_terms_3pcf(
   covariance_profile_release_3pcf(&profile_plan);
 }
 
-// Gaussian covariance of two quadratic estimators. For finite windows
-// both Fourier vectors are retained. The second Wick pairing reverses
-// their assignment to row J; unequal Map2 filters must be swapped too.
-// E/B spectra are diagonal in parity space. Shape noise supplies equal
-// E and B spectra; treating that noise as E alone biases xi variances.
+
+
+// ============================================================================
+// [SECTION] GAUSSIAN, BB AND P*B ASSEMBLERS
+// ============================================================================
+
+// Gaussian covariance of two quadratic rows i and j. Wick's theorem
+// splits the four-field cumulant into two pairings, and each pairing
+// joins one field of row i to one field of row j, so the covariance
+// integrates the two kernels Q_i and Q_j against products of two
+// spectra. A finite window keeps both Fourier magnitudes independent
+// and ties them together with the window G at the closure vector. The
+// second Wick pairing reverses which of row j's legs receives which
+// vector; an unequal-radius Map^2 kernel changes under that exchange,
+// so the loop forms its swapped filter product explicitly.
 //
-// noise_mode=1 declares continuous, uniformly area-weighted xi annuli in
-// the large-area limit. Hankel completeness gives integral ell dell/(2pi)
-// Jbar_nu,i Jbar_nu,j = Omega_overlap/(Omega_i Omega_j). Both shear
-// components contribute, so NN=2*(N_ac N_bd+N_ad N_bc) times this overlap
-// divided by survey area. Opposite xi parities cancel. Form CC/CN directly
-// in that mode: subtracting a large finite-band NN would lose small signal
-// contributions through rounding. Other Gaussian blocks keep their filters.
+// Parity. E and B spectra are diagonal in parity space. Shape noise
+// supplies equal E and B spectra, and treating that noise as E-mode
+// alone would bias every xi variance, so the B rows of each pairing are
+// kept throughout.
+//
+// noise_mode = 1 declares continuous xi annuli weighted uniformly by
+// area, in the large-area limit. The purpose of this mode is accuracy
+// of the dominant noise block: the completeness of the Hankel transform
+// gives int ell dell/(2*pi) Jbar_i Jbar_j = overlap/(Omega_i Omega_j),
+// with Omega the annulus areas, so the pure-noise block has the closed
+// form NN = 2 (N_ac N_bd + N_ad N_bc) overlap/(A Omega_i Omega_j),
+// added after the spectral loop. Inside the loop only the CC and CN
+// pieces are formed: evaluating a large finite-band NN there and
+// subtracting it later would lose the small signal pieces to rounding.
+// Between opposite xi parities the noise cancels, so only equal-kind
+// cells receive the closed form. Every other Gaussian block keeps its
+// finite-band filters.
+//
+// Parameters:
+//   work - prepared kernels, spectra and window tables
+//   i, j - the two quadratic rows (j >= i in the caller's triangle)
 static double covariance_gaussian_two_3pcf(
   const covariance_work_3pcf* work, int i, int j
 )
 {
   const covariance_input_3pcf* in = work->in;
-  const int nl = in->nell;
-  const size_t ng = work->ngeometry;
+  const int nl = in->nell;           // Fourier nodes
+  const size_t ng = work->ngeometry; // Fourier triangles
   const int* ai = in->row_fields + (size_t)i*3;
   const int* aj = in->row_fields + (size_t)j*3;
   const int a = in->field_source[ai[0]];
@@ -1819,10 +2417,16 @@ static double covariance_gaussian_two_3pcf(
   const double bb_sign_j = in->row_kind[j] == 3 ? -1.0 : 1.0;
   double value = 0.0;
   for (int q=0; q<nl; q++) {
+    // Large-area limit: the window collapses the pairing onto opposite
+    // equal Fourier vectors, both Wick pairings coincide, and a single
+    // ell integral with the kernels at (q, q, pi) remains; dividing by
+    // the area replaces the window G.
     if (in->large_area) {
       const double qi = work->quadratic_zero[(size_t)i*nl + q];
       const double qj = work->quadratic_zero[(size_t)j*nl + q];
       double spectra;
+      // noise_mode = 1 forms CC and CN only; the closed-form NN of the
+      // header is added once after this loop.
       if (both_shear && in->noise_mode == 1) {
         const size_t ac = (size_t)a*work->ns + c;
         const size_t bd = (size_t)b*work->ns + d;
@@ -1851,6 +2455,10 @@ static double covariance_gaussian_two_3pcf(
       value += work->fourier_measure[q]*qi*qj*spectra/in->area;
       continue;
     }
+    // Finite window: both Wick pairings keep their own spectra.
+    // efirst joins (a,c) at vector q with (b,d) at vector p; esecond
+    // joins (a,d) at q with (b,c) at p. The E spectra carry signal
+    // plus noise (mode 0).
     for (int p=0; p<nl; p++) {
       const double efirst = covariance_power_value_3pcf(work, a, c, q, 0)
         *covariance_power_value_3pcf(work, b, d, p, 0);
@@ -1859,11 +2467,19 @@ static double covariance_gaussian_two_3pcf(
       double bbspectra = 0.0;
       double mixedspectra = 0.0;
       if (both_shear) {
+        // Pure-B rows of the two pairings: B spectra are noise alone
+        // (mode 1). bb_sign flips xi- rows, whose kernel enters the B
+        // sector with the opposite sign to E.
         bbspectra = bb_sign_i*bb_sign_j
           *(covariance_power_value_3pcf(work, a, c, q, 1)
               *covariance_power_value_3pcf(work, b, d, p, 1)
             + covariance_power_value_3pcf(work, a, d, q, 1)
               *covariance_power_value_3pcf(work, b, c, p, 1));
+        // Mixed rows pair one E spectrum with one B spectrum, in both
+        // orders. mixed_sign is the parity each row's EB kernel
+        // acquires when the E and B legs swap between its two Fourier
+        // arguments: odd for xi+ (its sine is of the relative angle
+        // alone), even for xi-.
         const double mixed_sign_i = in->row_kind[i] == 2 ? -1.0 : 1.0;
         const double mixed_sign_j = in->row_kind[j] == 2 ? -1.0 : 1.0;
         mixedspectra = covariance_power_value_3pcf(work, a, c, q, 0)
@@ -1876,6 +2492,8 @@ static double covariance_gaussian_two_3pcf(
               + covariance_power_value_3pcf(work, a, d, q, 1)
                 *covariance_power_value_3pcf(work, b, c, p, 0));
       }
+      // Angular sum at fixed (q, p): the window G at the closure side
+      // ties the two magnitudes together.
       double angle_sum = 0.0;
       for (int angle=0; angle<in->nphi; angle++) {
         const size_t g = covariance_geometry_3pcf(in, q, p, angle);
@@ -1883,6 +2501,13 @@ static double covariance_gaussian_two_3pcf(
         const size_t jj = (size_t)work->quadratic_index[j]*ng + g;
         const double qi = work->quadratic[ii];
         const double qj = work->quadratic[jj];
+        // The second pairing hands row j's legs the vectors in the
+        // opposite order. An xi kernel and an equal-radius Map^2 kernel
+        // are symmetric under that exchange - the estimator weighs its
+        // two legs identically, and the kernel depends on the two
+        // vectors only through exchange-symmetric combinations - so qj
+        // already serves both pairings. Only an unequal-radius Map^2
+        // kernel changes: its swapped filter product is formed here.
         const double swapped = in->row_kind[j] == 0
           ? work->filters[(size_t)aj[0]*nl + p]
               *work->filters[(size_t)aj[1]*nl + q] : qj;
@@ -1896,6 +2521,10 @@ static double covariance_gaussian_two_3pcf(
         *COV_I2PI*angle_sum;
     }
   }
+  // Closed-form NN block of noise_mode = 1 (see the header).
+  // Omega = pi (hi^2 - lo^2) is each row's annulus area and the overlap
+  // is the area of the annulus intersection. Only equal xi kinds
+  // receive it: between xi+ and xi- the E and B noise cancel.
   if (both_shear && in->noise_mode == 1
     && in->row_kind[i] == in->row_kind[j]) {
     const double lo_i = in->theta_edges[(size_t)i*2];
@@ -1918,24 +2547,41 @@ static double covariance_gaussian_two_3pcf(
   return value;
 }
 
-// PB cross-covariance has nine positional choices after mean subtraction.
-// Six choose one leg in each estimator. The two remaining aperture legs
-// are already integrated into S, leaving two vectors and their relative
-// angle. Three choices pair two aperture legs internally and retain their
-// K(0). Compensation removes the latter only in the large-area limit.
+
+// P*B cross-covariance of one quadratic row with one cubic row. After
+// mean subtraction the five-field cumulant leaves nine positional
+// choices. Six of them connect one leg of the quadratic estimator to
+// one leg of the cubic estimator through the two-point function P; the
+// cubic estimator's remaining two legs are already integrated into S,
+// which leaves two Fourier vectors and their relative angle. The other
+// three choices close one pair of the cubic estimator's legs into its
+// coincident K(0), while the two quadratic fields and the remaining
+// cubic field span the full bispectrum triangle. The compensated
+// filters remove those internal choices only in the large-area limit,
+// so a finite window keeps them.
+//
+// Parameters:
+//   work      - prepared kernels, spectra, S and bispectrum tables
+//   quadratic - the Map^2 or xi row
+//   cubic     - the Map^3 row
 static double covariance_pb_3pcf(
   const covariance_work_3pcf* work, int quadratic, int cubic
 )
 {
   const covariance_input_3pcf* in = work->in;
-  const int nf = in->nfield;
-  const int nl = in->nell;
-  const int ns = work->ns;
-  const size_t ng = work->ngeometry;
+  const int nf = in->nfield;         // field labels
+  const int nl = in->nell;           // Fourier nodes
+  const int ns = work->ns;           // source bins
+  const size_t ng = work->ngeometry; // Fourier triangles
   const int* a = in->row_fields + (size_t)quadratic*3;
   const int* b = in->row_fields + (size_t)cubic*3;
   double value = 0.0;
   for (int q=0; q<nl; q++) {
+    // Large-area limit: compensation leaves only the six cross
+    // choices, the kernel collapses to (q, q, pi), and every factor
+    // sits at the same magnitude q. left picks the quadratic leg that
+    // P joins (the other leg's source becomes S's separated leg), and
+    // right picks the cubic leg, which keeps its filter at q.
     if (in->large_area) {
       const double qe = work->quadratic_zero[(size_t)quadratic*nl + q];
       double partitions = 0.0;
@@ -1959,9 +2605,19 @@ static double covariance_pb_3pcf(
         const size_t g = covariance_geometry_3pcf(in, q, p, angle);
         const double qe = work->quadratic[
           (size_t)work->quadratic_index[quadratic]*ng + g];
+        // The choice that joins the quadratic row's second leg uses the
+        // kernel with its legs exchanged. As in the Gaussian assembler,
+        // an xi kernel and an equal-radius Map^2 kernel are symmetric
+        // under that exchange, so qe serves both; only an
+        // unequal-radius Map^2 forms a swapped filter product.
         const double swapped = in->row_kind[quadratic] == 0
           ? work->filters[(size_t)a[0]*nl + p]
               *work->filters[(size_t)a[1]*nl + q] : qe;
+        // Six cross choices: P joins quadratic field a[left] to cubic
+        // field b[right] at the first vector q, where the cubic leg
+        // keeps its filter; the cubic row's other two fields enter S at
+        // the second vector p, with the remaining quadratic source as
+        // the separated leg.
         double partitions = 0.0;
         for (int left=0; left<2; left++) {
           const int source = in->field_source[a[1 - left]];
@@ -1975,6 +2631,10 @@ static double covariance_pb_3pcf(
               *work->bspec[covariance_bspec_3pcf(work, b0, b1, source, p)];
           }
         }
+        // Three internal choices: one pair of the cubic row closes into
+        // its coincident K(0); the two quadratic fields and the
+        // remaining cubic field form the bispectrum triangle, with that
+        // field's filter on the closure side.
         for (int remaining=0; remaining<3; remaining++) {
           const int b0 = b[(remaining + 1)%3];
           const int b1 = b[(remaining + 2)%3];
@@ -1995,26 +2655,56 @@ static double covariance_pb_3pcf(
   return value;
 }
 
-// All positional cubic partitions are retained even for repeated labels.
-// Gaussian: six all-cross choices plus nine one-cross choices. BB: nine
-// splits into two triples after removing the product of estimator means.
+
+// Gaussian and BB covariance of two cubic rows, evaluated in real
+// space.
+//
+// Derivation. Both estimators average over their center positions
+// inside the survey. For statistically stationary fields, the
+// correlation of a field at one center with a field at the other
+// depends only on the offset r between the centers, and is exactly the
+// transformed two-point function K(r) of the file head. The survey
+// window supplies the density of center pairs at each offset
+// (covariance_window_3pcf), so every disconnected term becomes one
+// radial integral of products of K factors against that pair density.
+//
+// Gaussian: Wick pairing of the six fields with no pair inside a
+// single estimator gives six all-cross choices, a product of three
+// cross K(r) factors for each way of matching the legs. A finite
+// window keeps nine more one-cross choices, where each estimator
+// closes one internal pair - contributing its coincident K(0) - and a
+// single cross K(r) connects the remaining legs. BB: after the product
+// of the two estimator means is removed, nine splits into two field
+// triples remain, each the product of two B_ab|c factors. All
+// positional choices are kept even when field labels repeat.
+//
+// Parameters:
+//   work     - prepared K and B tables
+//   i, j     - the two cubic rows (j >= i in the caller's triangle)
+//   gaussian - out: Gaussian term of the cell
+//   bb       - out: BB term of the cell
 static void covariance_cubic_disconnected_3pcf(
   const covariance_work_3pcf* work, int i, int j,
   double* gaussian, double* bb
 )
 {
   const covariance_input_3pcf* in = work->in;
-  const int nf = in->nfield;
-  const int nr = in->nr;
-  const int nl = in->nell;
+  const int nf = in->nfield; // field labels
+  const int nr = in->nr;     // center-separation nodes
+  const int nl = in->nell;   // Fourier nodes
   const int* a = in->row_fields + (size_t)i*3;
   const int* b = in->row_fields + (size_t)j*3;
   const int permutations[6][3] = {{0,1,2},{0,2,1},{1,0,2},
     {1,2,0},{2,0,1},{2,1,0}};
   *gaussian = 0.0;
   *bb = 0.0;
+  // Gaussian term: quadrature over the center offset r. radial_measure
+  // already contains 2*pi*r*dr times the center-pair density.
   for (int r=0; r<nr; r++) {
     double density = 0.0;
+    // Six all-cross Wick pairings: permutation p matches leg `leg` of
+    // row i with leg permutations[p][leg] of row j, and the product of
+    // the three cross K(r) factors follows.
     for (int p=0; p<6; p++) {
       double product = 1.0;
       for (int leg=0; leg<3; leg++) {
@@ -2023,6 +2713,10 @@ static void covariance_cubic_disconnected_3pcf(
       }
       density += product;
     }
+    // Nine one-cross choices survive only under a finite window; the
+    // compensated filters remove them in the large-area limit. Each
+    // estimator closes one internal pair at K(0), and one cross K(r)
+    // joins the two remaining legs.
     if (!in->large_area) {
       for (int p=0; p<3; p++) {
         const double left = work->pair_zero[(size_t)a[(p + 1)%3]*nf
@@ -2035,6 +2729,10 @@ static void covariance_cubic_disconnected_3pcf(
     }
     *gaussian += work->radial_measure[r]*density;
   }
+  // BB term: pair the two B factors over the nine (p, q) splits into
+  // field triples. The large-area branch contracts the S tables
+  // directly in Fourier space; the finite window contracts the
+  // real-space B tables over the center offset.
   for (int p=0; p<3; p++) {
     const int a0 = a[(p + 1)%3];
     const int a1 = a[(p + 2)%3];
@@ -2060,6 +2758,14 @@ static void covariance_cubic_disconnected_3pcf(
   }
 }
 
+
+
+// ============================================================================
+// [SECTION] DRIVER: VALIDATION, DISPATCH AND SYMMETRIZATION
+// ============================================================================
+
+// Free every workspace table. Pointers an option never allocated are
+// still NULL from the initial memset, and free(NULL) does nothing.
 static void covariance_release_3pcf(covariance_work_3pcf* work)
 {
   free(work->lens);
@@ -2095,6 +2801,12 @@ static void covariance_release_3pcf(covariance_work_3pcf* work)
   free(work->response_bias);
 }
 
+
+// Public driver: validate the request, prepare the workspace, fill the
+// mean and the six covariance term slabs, and symmetrize. The refusal
+// checks below name the estimators this implementation does not cover,
+// so a caller learns which physical assumption failed rather than
+// receiving a silently wrong matrix.
 void covariance_physical_3pcf(
   const physics_model_3pcf* model,
   const covariance_input_3pcf* input,
@@ -2122,14 +2834,15 @@ void covariance_physical_3pcf(
     && input->nk > 0 && input->nmass > 0 && input->nfield > 0
     && input->nrow > 0 && input->ntheta > 0 && input->area > 0.0,
     "invalid covariance dimensions or area");
-  const int no = input->nrow;
-  const int nl = input->nell;
+  const int no = input->nrow; // covariance rows
+  const int nl = input->nell; // Fourier nodes
   const size_t matrix = covariance_product_3pcf(no, no);
   const size_t term_count = covariance_product_3pcf(6, matrix);
   memset(terms, 0, covariance_product_3pcf(term_count, sizeof(double)));
 
-  // Observable roles are checked before constructing any field offsets.
-  // xi needs unfiltered shear legs; the aperture response needs R>0.
+  // Check every row's field roles before any field offset is built: an
+  // xi leg must be unfiltered (R = 0), and an aperture leg needs a
+  // positive filter radius.
   for (int row=0; row<no; row++) {
     const int kind = input->row_kind[row];
     covariance_require_3pcf(kind >= 0 && kind <= 3, "invalid row kind");
@@ -2176,15 +2889,18 @@ void covariance_physical_3pcf(
   work.in = input;
   covariance_prepare_3pcf(&work);
 
-  // Means omit the known additive Gaussian-noise bias of quadratic rows.
-  // Covariance is unchanged by subtracting that deterministic constant.
+  // Fill the mean of every row; one worker owns a row. The means omit
+  // the known additive Gaussian-noise bias of the quadratic rows:
+  // subtracting a deterministic constant leaves every covariance term
+  // unchanged.
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int row=0; row<no; row++) {
     const int* fields = input->row_fields + (size_t)row*3;
     double value = 0.0;
     if (input->row_kind[row] == 1) {
-      // Averaging the three choices of separated leg preserves a cubic
-      // row's permutation symmetry under a finite numerical quadrature.
+      // A cubic estimator is symmetric under permuting its three legs.
+      // Averaging the three choices of separated leg keeps that
+      // symmetry exact under a finite numerical quadrature.
       for (int p=0; p<3; p++) {
         const int a = fields[(p + 1)%3];
         const int b = fields[(p + 2)%3];
@@ -2207,6 +2923,12 @@ void covariance_physical_3pcf(
     mean[row] = value;
   }
 
+  // Dispatch the disconnected terms; one worker owns an upper-triangle
+  // row. Two cubic rows fill the Gaussian and BB slabs; two quadratic
+  // rows fill the Gaussian slab; a mixed cell fills only P*B, because
+  // the three-field cumulant of zero-mean Gaussian fields vanishes
+  // identically, so a quadratic and a cubic estimator have no Gaussian
+  // covariance.
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int i=0; i<no; i++) {
     for (int j=i; j<no; j++) {
@@ -2224,6 +2946,10 @@ void covariance_physical_3pcf(
     }
   }
   covariance_halo_terms_3pcf(&work, terms);
+  // Every term was filled on the upper triangle only. Check each cell
+  // is finite - one invalid physical table would otherwise propagate
+  // silently - and mirror it, so each slab returns as a full symmetric
+  // matrix.
   for (int term=0; term<6; term++) {
     for (int i=0; i<no; i++) {
       for (int j=i; j<no; j++) {

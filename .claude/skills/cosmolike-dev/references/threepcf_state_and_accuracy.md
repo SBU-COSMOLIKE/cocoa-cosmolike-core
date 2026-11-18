@@ -17,14 +17,14 @@ Neither failure is tested by constructing every case in a fresh process.
 | State | Allocation dimensions | Values defining contents | Reset/lifetime |
 |---|---|---|---|
 | Physical model | k/z/LOS/kernel counts, source count, coarse/dense fit counts | All physical axes and arrays, cosmology, source-reader convention | Constructor copies input; destructor releases owned arrays |
-| Projection grid | Triangle/multipole axes, L cap, chart choice and dense ratios | Model, ordered bins, every IA/baryon selector, bounds and coordinates | New owner for a changed definition; retained old grid stays valid |
-| Transform plan | FFT size/padding, selected cells, L/M caps, scratch capacity | ell/phi/selection values, biases, window, phase/projection convention | Constructor prepares serial FFTW plans; destructor releases plans/storage |
+| Projection grid | Triangle/multipole axes, L cap, chart choice and dense ratios | Model, ordered bins, every IA/baryon selector, bounds and coordinates | New owner for a changed definition; a kept old grid stays valid |
+| Transform plan | FFT size/padding, radial selection, L/M caps, scratch capacity | ell/phi/selection values, biases, window, phase/projection convention | Constructor prepares serial FFTW plans; destructor releases plans/storage |
 | Multipole query map | Requested ell count, projected-grid axis counts and L cap | Exact copied log-ell, physical log-psi and internal PSI-coordinate axes; psi_scale and reference-mode selector; requested ell fixed by plan | Plan owns the map; recreate when the complete axis key differs |
 | Projection batch | LOS count, eight terms, number of triplets | Copied radial weights from projectors sharing one immutable model and exactly equal IA parameters | Call-local owner, destroyed before borrowed first projector/model |
 | Aperture weights | Side/opening-angle/filter counts | Bin widths, coordinates and ordered filter radii | Caller owns the returned numerical weights |
-| Physical covariance | Source/field/row and all quadrature dimensions | All supplied arrays, windows/noise, halo prescription and estimator choices | Call-local preparation, released on return |
+| Physical covariance | Source/field/row and all quadrature dimensions | All caller arrays, windows/noise, halo prescription and estimator choices | Call-local preparation, released on return |
 | Python physical provider | Depends on the new C model | Exact cosmology, photo-z shifts, producer prescription and numerical controls | Replaces latest model; previously returned models remain owned and usable |
-| Python prediction/derivative cache | Full selected row count | Model identity, complete IA dictionary, and numerical state token | Changed input invalidates retained results before lookup |
+| Python prediction/derivative cache | Full row count of the selection | Model identity, complete IA dictionary, and numerical state token | Changed input invalidates cached results before lookup |
 
 Do not add a shared `static` merely to imitate its spelling in `cosmo2D.c`.
 Choose persistence where a later call actually reuses the work. If adding a
@@ -37,10 +37,11 @@ that borrows a physical model cannot outlive that model's storage.
 Production arrays are borrowed only for the duration stated by the C/C++
 entry point. The notebook adapter copies through Armadillo and converts
 layout explicitly. A returned diagnostic axis or output must be an independent
-copy; editing it cannot change the retained C table. In the Cocoa Python
+copy; editing it cannot change the table C keeps. In the Cocoa Python
 project, survey rows and prepared engine geometry are independent immutable
 copies. Construct a new engine in the same interpreter to change its geometry.
-Mutating one public array while retaining old weights is a named refusal.
+Mutating one public array while retaining old weights is refused with an
+explicit diagnostic.
 
 The physical model's optional `source_z[nsource]` is independent of its
 background `z[nz]` and power rows. C copies the source axis and densities,
@@ -50,12 +51,12 @@ radial preparation arithmetic. An independent axis must remain within
 background support. Keep tests of its analytic lensing measure, owned
 inputs/outputs, both adapters, and source-count A/B/A restoration.
 
-In the project, `source_nz` and `source_boost` refine an explicitly selected
+In the project, `source_nz` and `source_boost` refine an explicitly chosen
 source sampling grid while retaining the provider's cosmology tables.
 Every photo-z shift is reconstructed from immutable native samples;
 successive notebook calls must never shift the previous shifted result.
 Reconstruction and endpoint policy are fixed physical-model choices for
-one provider. Native samples refer to the selected FITS, which may already
+one provider. Native samples refer to the chosen FITS, which may already
 be an explicitly processed demonstration file. Preserve its hash and
 processing record. A continuous interior cubic need not join a zero
 extension continuously in its derivative, so endpoint and derivative
@@ -80,7 +81,7 @@ checks default selection, not historical binary identity.
 |---|---:|---|---|
 | `signed_baseline` | 0 | With 1, interpolate log positive GGG and signed NLA/GGG separately | NLA remains the same physical effective-kernel projection |
 | `residual_scaling` | 0 | With 1, interpolate log GGG at equal sides of the same perimeter and signed residual/GGG separately | No absolute value, sign clipping or change of IA coefficients is allowed |
-| `shape_stretch` | 3 | Redistribute fixed PUV shape nodes toward their endpoints | Declared extreme support is not proof of resolved squeezed triangles |
+| `shape_stretch` | 3 | Redistribute fixed PUV shape nodes toward their endpoints | Stated extreme support is not proof of resolved squeezed triangles |
 | `psi_scale` | 0 | With a positive value, use uniform log(psi)+psi/psi_scale for production b_L tables | The exported physical log_psi axis need not be uniform |
 
 The residual scale removes a broad radial amplitude before cubic
@@ -102,7 +103,7 @@ extreme side-geometry tests and from near-boundary interpolation convergence.
 Do not turn a failed extreme test into a loose tolerance for ordinary shapes.
 
 For multipole angle, the mixed coordinate is monotone, so its inverse has a
-unique root within the declared physical endpoints. Root finding occurs only
+unique root within the stated physical endpoints. Root finding occurs only
 while preparing physical node arrays. Cubic upsampling uses the uniform
 internal coordinate; the repeated reader uses arithmetic indices and linear
 fractions in that same coordinate. A fixed iteration count during axis
@@ -112,7 +113,7 @@ belongs in b_L merely because the interpolation coordinate changed.
 
 ### The geometric query key must name the coordinate
 
-The retained map checks grid `nell`, `npsi`, `lmax`, `reference_mode`,
+The map the plan keeps checks grid `nell`, `npsi`, `lmax`, `reference_mode`,
 `psi_scale`, and exact copied values of `log_ell`, physical `log_psi`, and
 internal `psi_coordinate`. Its requested Fourier array is owned and fixed
 for the map's lifetime. The two ordered source-leg charts remain distinct.
@@ -134,7 +135,7 @@ object would confuse its role with the projection table's owned values.
    interior physical knots and then between them. Isolate radial range from
    shape-edge resolution; an off-node perimeter at an original shape knot
    provides a test of the radial interpolation alone. Retain both signs and
-   actual residual crossings. Use a declared positive error scale there.
+   actual residual crossings. Use an explicit positive error scale there.
 2. Hold projected B and its angular nodes fixed. Integrate each linear B(mu)
    segment against P_L with an independent exact polynomial quadrature.
    Compare b_L at off-node scale/angle pairs and both source-leg orders,
@@ -142,15 +143,15 @@ object would confuse its role with the projection table's owned values.
    remain bitwise identical. Scale small coefficients by an angular norm,
    rather than divide by a coefficient close to zero.
 3. Refine the transform, aperture estimator and parameter derivatives on the
-   selected survey rows and covariance only after the earlier stages are
+   chosen survey rows and covariance only after the earlier stages are
    understood. Source reconstruction and photo-z shifts are another numerical
    stage: changing angular nodes cannot remove a kink introduced while
    shifting a piecewise-linear source curve at its own knots.
 
 For every control, combine the independent-value comparison with unchanged
 legacy/reference behavior and setting sequences through both adapters. Use
-retained and rebuilt grids, a retained transform plan, A/B/A restoration,
-and worker counts within the declared resource cap. A test of cold-state
+grids kept and rebuilt, a transform plan kept across calls, A/B/A
+restoration, and worker counts within the stated resource cap. A test of cold-state
 reconstruction alone does not exercise reuse of a geometric map. Record
 which checks actually ran in the project validation record; source review
 and these proposed comparisons are not execution evidence.
@@ -172,8 +173,8 @@ objects do not use the ordinary global initialization API:
 - `data_vector/test_physics_setting_sequences.py`: physical sizes, values,
   reader choices, IA conventions, source ordering and projected grid settings.
 - `data_vector/test_transform_setting_sequences.py`: FFT geometry, angular
-  modes, selected outputs, aperture weights, caller/output mutations and workers.
-- `data_vector/test_grid_transform_reuse.py`: retained query geometry versus
+  modes, chosen outputs, aperture weights, caller/output mutations and workers.
+- `data_vector/test_grid_transform_reuse.py`: kept query geometry versus
   refilled physical values, exact interior-axis keys, both adapters and a
   ten-node Fourier axis exercising the two-cell SIMD tail.
 - `data_vector/test_transform_mode_schedule.py`: small signed-mode sets,
@@ -183,13 +184,14 @@ objects do not use the ordinary global initialization API:
 - `test_pipeline_setting_sequences.py`: provider keys, IA/photo-z/calibration,
   global/stage boosts, returned ownership and the outer Fisher mean cache.
 
-For each compared step, a retained process first evaluates other settings,
+For each compared step, a long-lived process first evaluates other settings,
 applies the requested changes, then evaluates again. Its reference is a
 separate interpreter configured directly at the final settings. Compare
 float64 bit patterns, including signed zero, rather than a tolerance that
-could conceal stale values. Same-process reconstruction alone cannot expose
-a shared stale table. Exercise both adapters, increasing and decreasing sizes,
-same-size value changes, A/B/A object interleaving, destruction/recreation,
+could conceal out-of-date values. Same-process reconstruction alone cannot
+expose a shared out-of-date table. Exercise both adapters, increasing and
+decreasing sizes, same-size value changes, A/B/A object interleaving,
+destruction/recreation,
 strided/read-only notebook inputs, and workers changed after plan creation.
 
 A reach assertion must establish that a changed input enters the calculation.
@@ -197,8 +199,8 @@ For example, large-area xi zero modes bypass the radius-profile interpolation;
 varying profile density there does not test its refill rule. Use finite-window
 xi rows for that test. An IA toggle must reach a nonzero IA component; pure NLA
 must return exact zero residuals when expected. A larger L/M cap needs input
-with power in the added modes. Old retained objects must still reproduce their
-old outputs after a newer object is evaluated.
+with power in the added modes. Objects kept from earlier calls must still
+reproduce their old outputs after a newer object is evaluated.
 
 ## Global and individual controls
 
@@ -210,7 +212,7 @@ same meaning. The C constructors continue receiving explicit resolved counts
 and arrays, so the two C++ adapters share one numerical implementation.
 
 Sampling counts use `accuracy_boost`; fixed quadrature counts use
-`integration_accuracy_boost`. Counts with two retained endpoints refine their
+`integration_accuracy_boost`. Counts that keep both endpoints refine their
 N-1 intervals. LOS nodes use a dyadic subdivision of each original redshift
 interval, with factor `accuracy_boost * integration_accuracy_boost * chi_boost`.
 Old nodes remain exactly present; the C model reevaluates chi and trapezoidal
@@ -266,14 +268,16 @@ lane and a scalar tail. Preserve these tests and local boundaries instead of
 changing unrelated compiler flags.
 
 The Legendre preparation and bilinear multipole reader need the same
-boundary. `test_multipole_lane_invariance.py` adds an unused query or an
-extra retained order, then requires the existing coefficients to keep
+boundary. `data_vector/test_multipole_lane_invariance.py` adds an unused
+query or an
+extra kept order, then requires the existing coefficients to keep
 their float64 bits. The test holds the physical grid and weights fixed;
 changing a quadrature resolution would not justify that exact comparison.
 
 The physical projection has the same requirement. Its paired source triplets,
 Legendre orders, NLA power reads and aperture filters must agree with their
-unpaired tails. `test_physics_lane_invariance.py` moves existing outputs between
+unpaired tails. `data_vector/test_physics_lane_invariance.py` moves existing
+outputs between
 those positions with the physical nodes and weights held fixed. A mixed pair
 with one extrapolated coordinate must preserve the valid coordinate's prepared
 linear interpolation. For a final unpaired NLA coordinate, duplicate its
@@ -294,3 +298,24 @@ cubic-preparation/linear-read strategy and
 [COVARIANCE.md](../../../../cosmolike/3pcf/COVARIANCE.md) for the physical scope.
 Record executed strict/debug checks and their limits in the project's
 `tests/VALIDATION.md`; source-level reasoning is not a replacement for them.
+
+## 2026-11 state-audit record (moved from COVARIANCE.md)
+
+During this audit, correcting parentheses alone did not pass the
+radial-padding check: the optimized ARM64 object still contained a scalar
+`fmadd` where the vector path had two multiplications followed by
+addition. The local rounding boundary in the covariance scalar tails
+addresses that measured compiler behavior.
+
+The covariance setting-sequence tests in
+`Cocoa/projects/des_3pcf/tests/covariance/test_setting_sequences.py`
+passed eight parametrized tests through both adapters, using 41 final
+states and 82 independent fresh-process references; each reference
+process constructed only its requested model and made one covariance
+call. The 36 same-size changes covered each integration axis and weight
+array, source/field/row labels, aperture radii, shape noise, exact xi
+edges, the finite/large-area switch, both NN modes, profile upsampling,
+every exposed ST/Duffy scalar, the evolving collapse threshold, the
+BiHalofit baryon parameter, survey area and window shape. All tested
+transitions matched their fresh references bitwise. The audit found no
+native covariance state defect requiring a code change.

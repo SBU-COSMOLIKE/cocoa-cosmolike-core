@@ -21,27 +21,31 @@ galaxies. Two galaxies can have correlated distortions because light from
 both passes through some of the same foreground matter. A two-point
 statistic measures that correlation as a function of their separation.
 A three-point statistic asks how three distortions correlate as a function
-of the triangle formed by the galaxies. Triangle shape matters: three
-nearly aligned positions and an equilateral arrangement sample structure
-in different ways.
+of the triangle formed by the galaxies.
+
+Triangle shape matters: three nearly aligned positions and an
+equilateral arrangement sample structure in different ways.
 
 A Gaussian random field is completely specified by its mean and two-point
-correlation, and its zero-mean three-point
-correlation vanishes. Gravitational evolution makes the matter field
-non-Gaussian: dense structures grow and couple Fourier modes. The
-three-point function measures part of that extra structure. Its parameter
-dependence can differ from the two-point function, which can help separate
-cosmology from uncertain galaxy-shape physics. The gain depends on their
-shared covariance and on the model assumptions; additional array entries
-alone do not establish additional independent information.
+correlation; for a zero-mean Gaussian field the three-point correlation
+vanishes. Gravitational evolution makes the matter field non-Gaussian:
+dense structures grow and couple Fourier modes. The three-point function
+measures part of that extra structure.
 
-This directory predicts those means and a specified joint covariance. It
-sits beside `covariances/`; existing data-vector C files remain unchanged.
-Its physical inputs are matter power spectra, distances, growth and the
-redshift distribution of each source-galaxy sample, together with the
-cosmological and intrinsic-shape parameters. An optional CAMB producer
-in the companion project calculates the power and background tables.
-The C functions read those tables; they do not run a Boltzmann solver.
+The parameter dependence of the three-point function can differ from that
+of the two-point function, which can help separate cosmology from
+uncertain galaxy-shape physics. The gain depends on their shared
+covariance and on the model assumptions; additional array entries alone
+do not establish additional independent information.
+
+This directory predicts those means and their joint covariance under
+stated estimator assumptions. It sits beside `covariances/` and leaves
+the existing data-vector C files unchanged. Its physical inputs are
+matter power spectra, distances, growth and the redshift distribution of
+each source-galaxy sample, together with the cosmological and
+intrinsic-shape parameters. An optional CAMB producer in the companion
+project calculates the power and background tables. The C functions read
+those tables; they do not run a Boltzmann solver.
 
 The following table maps the calculation. The next sections define its
 physical quantities before introducing their storage and interfaces.
@@ -54,34 +58,36 @@ physical quantities before introducing their storage and interfaces.
 | Full-filter aperture mean | Projected bispectrum, three filters and fixed Fourier quadrature | Third moment for the unrestricted circular-filter estimator |
 | Finite-triangle aperture weights | Two side grids, opening angles and three radii per output | Reusable complex integration weights |
 | Aperture contraction | Weights and four complex natural components | One aperture moment per sample and radius triplet |
-| Physical joint covariance | Matter model, ST/NFW halo prescription, noise, rows and quadratures | Separate Gaussian, BB, PT, PB, connected and selected long-mode terms |
+| Physical joint covariance | Matter model, Sheth–Tormen/Navarro–Frenk–White halo model, noise, rows and quadratures | Separate Gaussian, BB, PT, PB, connected and long-mode terms |
 | Filtered pair correlations | Angular power, two Fourier filters and an explicit quadrature | Correlation of two filtered fields at each separation |
 | Gaussian cubic-map covariance | Filtered pair functions and centre-separation weights | All fifteen Gaussian six-field contractions |
 | Connected response contraction | Observable responses and nonnegative integration weights | A symmetric Gram matrix |
 
 The physical covariance constructs its own halo profiles and responses.
-It describes full-filter map estimators with specified circular or square
-center windows. Catalogue masks, distinct-galaxy exclusions and finite
-triangle selection require different estimator calculations. Nonlinear
-intrinsic-alignment connected covariance is also outside the selected
-matter/halo model. These limits are explained with the equations in the
-[physical covariance guide](COVARIANCE.md).
+It describes full-filter map estimators that average aperture centres
+over a circular or square window. Catalogue masks, distinct-galaxy
+exclusions and finite triangle selection need different estimator
+calculations, and the halo model carries no nonlinear
+intrinsic-alignment connected covariance. The
+[physical covariance guide](COVARIANCE.md) explains these limits with
+the equations.
 
-The companion [DES project](../../../../../projects/des_3pcf/README.md)
-owns builds, survey-file readers, model preparation and Fisher calculations.
-It follows the `lsst_y1` separation of core numerics, project registration
-and tests. Its full selected two-point vector is retained. Predicted means
-and analytic covariances suffice to define a forecast; a reproduction of
-published posterior results additionally needs their data, cuts, priors
-and likelihood choices. No survey accuracy or measured speedup follows
-from the component tests alone.
+The companion DES project (`Cocoa/projects/des_3pcf/README.md`) owns
+builds, survey-file readers, model preparation and Fisher calculations.
+It follows the `lsst_y1` separation of core numerics, project
+registration and tests, and it keeps the full two-point vector next to
+the three-point rows. Predicted means and analytic covariances define a
+forecast; reproducing a published posterior additionally needs that
+analysis's data, cuts, priors and likelihood choices. No survey accuracy
+or measured speedup follows from the component tests alone.
 
 Readers interested in the observable can follow Sections 2–6 without
-reading the C++ interfaces. To change the implementation, continue through
-the ownership and numerical sections, then read the named source header
-and its function comments. [NUMERICS.md](NUMERICS.md) gives the table and
-integration rules. [COVARIANCE.md](COVARIANCE.md) gives the full physical
-covariance construction and its estimator restrictions.
+reading the C++ interfaces. To change the implementation, continue
+through the ownership and numerical sections, then read the relevant
+source header from Section 7 and its function comments.
+[NUMERICS.md](NUMERICS.md) gives the table and integration rules.
+[COVARIANCE.md](COVARIANCE.md) gives the full physical covariance
+construction and its estimator restrictions.
 
 ## From matter and galaxy shapes to angular statistics <a name="physics"></a>
 
@@ -109,24 +115,27 @@ make either physical approximation exact.
 The model accepts $`k`$ in $`h/\mathrm{Mpc}`$, distances in
 $`\mathrm{Mpc}/h`$, power in $`(\mathrm{Mpc}/h)^3`$ and bispectra in
 $`(\mathrm{Mpc}/h)^6`$. Here $`h=H_0/(100\,\mathrm{km\,s^{-1}Mpc^{-1}})`$
-specifies the present expansion rate. Growth $`D(z)`$ describes the linear
-fluctuation amplitude, normalized by $`D(0)=1`$.
-The ordinary core's growth table stores a quantity proportional to
-$`D/a`$ instead, where $`a=1/(1+z)`$ is scale factor; the project bridge
-makes that conversion explicitly.
-Source arrays are probability densities per unit redshift. Their
-normalization is calculated from the supplied grids. A normalized source
-curve describes where galaxies lie, not how many there are. The source
+specifies the present expansion rate.
+
+Growth $`D(z)`$ describes the linear fluctuation amplitude, normalized
+by $`D(0)=1`$. The ordinary core's growth table stores a quantity
+proportional to $`D/a`$ instead, where $`a=1/(1+z)`$ is the scale
+factor; the project bridge makes that conversion explicitly.
+
+Source arrays are probability densities per unit redshift. The code
+normalizes each curve on the grid the caller passes. A normalized source
+curve describes where galaxies lie, not how many there are; the source
 number density needed for shape noise is a separate survey input.
 
 ### Projecting along the line of sight
 
 The model uses spatially flat lensing geometry. It requires
-$`|\Omega_m+\Omega_{\rm de}-1|\leq10^{-8}`$ as a scalar-rounding
-tolerance; it does not change either supplied value. These parameters
-are the present matter and dark-energy density fractions. Supplying a curved
-distance table would not replace the flat distance ratios in the lensing
-kernel. The project CAMB producer explicitly requests flat geometry.
+$`|\Omega_m+\Omega_{\rm de}-1|\leq10^{-8}`$, where $`\Omega_m`$ and
+$`\Omega_{\rm de}`$ are the present matter and dark-energy density
+fractions; the bound is a scalar-rounding tolerance, and the code does
+not change either value. A curved distance table would not replace the
+flat distance ratios in the lensing kernel. The project CAMB producer
+explicitly requests flat geometry.
 
 Convergence $`\kappa`$ is the scalar lensing field obtained by weighting
 matter fluctuations along the line of sight. Its angular variations also
@@ -138,27 +147,30 @@ B_\kappa^{ijk}(\ell_1,\ell_2,\ell_3)
 B_m(\ell_1/\chi,\ell_2/\chi,\ell_3/\chi;z(\chi)).
 ```
 
-Here $`W_i`$ is the usual lensing efficiency, with units of inverse
-distance, and $`\chi`$ is comoving radial distance. A source sample has a
-broad redshift distribution, so a single angular triangle receives
-contributions from many foreground distances. $`W_i`$ weights each
-distance by the amount of sample $`i`$ behind it and by the lens–source
-geometry. The three efficiencies appear because the same foreground
-fluctuation lenses all three source samples. The source labels
-$`i,j,k`$ specify a tomographic triplet: tomography means dividing the
-galaxies into samples selected by estimated redshift.
+Here $`\chi`$ is comoving radial distance and $`W_i`$ is the lensing
+efficiency of source sample $`i`$, with units of inverse distance. A
+source sample has a broad redshift distribution, so a single angular
+triangle receives contributions from many foreground distances.
+$`W_i`$ weights each distance by the amount of sample $`i`$ behind it
+and by the lens–source geometry.
+
+The three efficiencies appear because the same foreground fluctuation
+lenses all three source samples. The source labels $`i,j,k`$ specify a
+tomographic triplet: tomography means dividing the galaxies into samples
+by their estimated redshift.
 
 Limber assigns a transverse spatial wave number $`k=\ell/\chi`$ to an
 angular multipole $`\ell`$; larger multipoles describe finer angular
-structure. The same angular mode probes smaller
-physical structures at a smaller distance. A units check gives
+structure, and the same angular mode probes smaller physical structures
+at a smaller distance. A units check gives
 $`d\chi\,W_iW_jW_k\chi^{-4}B_m`$ units
 $`L\,L^{-3}L^{-4}L^6=1`$, as required for a correlation of
-dimensionless lensing fields. The implementation preserves the source
-convention with no $`\ell+1/2`$ substitution. Its internal `radial()`
-arrays named `lens` and `shape` use fastnc's rescaled kernel convention;
-they are not bare $`W_i`$. The covariance code converts those arrays before
-using the physical powers of distance.
+dimensionless lensing fields.
+
+The implementation keeps the source convention with no $`\ell+1/2`$
+substitution. Its internal radial tables store fastnc's rescaled
+kernels, not the bare $`W_i`$; the covariance code converts those tables
+before using the physical powers of distance.
 
 ### Intrinsic shapes and ordered source labels
 
@@ -171,56 +183,78 @@ intrinsic leg instead selects the source population at the local
 distance. Exchanging these legs changes their radial weights.
 
 TATT means tidal alignment and tidal torquing. It includes a response
-linear in the tidal field and responses quadratic in that field, with
-a density-weighting term. The latter accounts for sampling shapes at
-galaxy positions rather than uniformly through space. The optional
-velocity-shear contribution is another declared intrinsic-shape response.
+linear in the tidal field and responses quadratic in that field, with a
+density-weighting term; the density weighting accounts for sampling
+shapes at galaxy positions rather than uniformly through space. The
+optional velocity-shear contribution is a further intrinsic-shape
+response.
+
 The low-level IA calculation returns nineteen components: seven contain
-only density and intrinsic E fields; twelve contain one intrinsic B field.
-The projected mean contracts only the first seven, following the paper's
-E-only numerical calculation. The single-B components are available for
-separate diagnostics; their natural-component transform is not part of
-this mean. Each amplitude and redshift law belongs to its assigned
-Fourier leg and source label.
+only density and intrinsic E fields; twelve contain one intrinsic B
+field. Here E and B label the two shear patterns: E is the pattern a
+scalar lensing potential produces, and B is the independent rotated
+pattern. The projected mean contracts only the first seven, following
+the E-only numerical calculation of Gomes et al.
+([arXiv:2601.09133](https://arxiv.org/abs/2601.09133)).
+
+The single-B components remain available for separate diagnostics; their
+natural-component transform is not part of this mean. Each amplitude and
+redshift law belongs to its own Fourier leg and source label.
 
 The nonlinear-alignment (NLA) baseline keeps a shape response linear in
-the tidal field while using the selected nonlinear matter correlations.
-Its linear response amplitude is denoted $`C_1`$. This deterministic part
-replaces each lensing efficiency by its lensing-plus-linear-alignment
-value. Residual TATT terms are then added
-without counting that baseline again. The upstream baseline and residual
-source kernels have different normalization/interpolation sequences.
-They remain separate here: combining their continuous formulas does not
-prove their finite numerical grids are equivalent. The IA power choice is
-also explicit: `power_mode=0` uses linear $`P(k,0)D^2`$, `1` uses the
-upstream nonlinear $`P(k,0)D^2`$ prescription, and `2` uses the supplied
-evolving nonlinear table. `ct_mode=0` defines the physical velocity-shear
-coefficient as $`C_t=C_1\,ct`$; `1` takes `ct` itself as that coefficient.
+the tidal field while using the nonlinear matter correlations. Its
+linear response amplitude is $`C_1`$. This deterministic part replaces
+each lensing efficiency by its lensing-plus-linear-alignment value, and
+the residual TATT terms are then added without counting that baseline
+again.
 
-The mean's selected three-point IA model predicts E-mode correlations.
-This suffices for ideal E-mode aperture moments. A finite-SAS aperture
-integral can mix E and B contributions, and leakage from the omitted
-single-B bispectra has not been quantified. Those bispectra exist at the
-retained tree order. Bispectra with two B legs first enter at higher order
-under the deterministic model's Gaussian-initial-field assumptions.
+The upstream baseline and residual source kernels follow different
+normalization and interpolation sequences, and they stay separate here:
+combining their continuous formulas does not prove their finite
+numerical grids are equivalent.
+
+Two settings choose the IA power and the velocity-shear normalization:
+
+- `power_mode: 0`: use linear $`P(k,0)D^2`$.
+- `power_mode: 1`: use the upstream nonlinear $`P(k,0)D^2`$ prescription.
+- `power_mode: 2`: use the evolving nonlinear table the caller passes.
+- `ct_mode: 0`: define the physical velocity-shear coefficient as
+  $`C_t=C_1\,ct`$.
+- `ct_mode: 1`: take `ct` itself as that coefficient.
+
+The mean's three-point IA model predicts E-mode correlations, which
+suffices for ideal E-mode aperture moments. A finite aperture integral
+over measured triangle bins can mix E and B contributions, and leakage
+from the omitted single-B bispectra has not been quantified. Those
+bispectra exist at the tree order kept here; bispectra with two B legs
+first enter at higher order under the deterministic model's
+Gaussian-initial-field assumptions.
+
 The companion joint mean obtains two-point TATT E/B spectra from the
 ordinary CFASTPT routines, which evaluate the perturbative convolution
-integrals for that two-point model. Those two statements concern different
+integrals for that two-point model. The two statements concern different
 orders of correlation and must not be interchanged. Likewise, the
-BiHalofit baryon-response option changes a specified matter bispectrum;
-it does not by itself define a two-point feedback spectrum or modify the
-halo profiles used in the covariance.
+BiHalofit baryon-response option changes a matter bispectrum; it does
+not by itself define a two-point feedback spectrum or modify the halo
+profiles used in the covariance.
 
 ### Separating operators and galaxy placements
 
 A diagnostic can ask either which intrinsic galaxies contribute or which
-physical shape response produces their correlation. The two selectors in
-an IA dictionary answer these questions before integration. The default
-`operator_component=0` retains the complete calculation; `1` retains the
-nonlinear-alignment baseline, `2` density weighting, `3` tidal torque and
-`4` velocity shear. The baseline includes gravity until a placement is
-selected. `intrinsic_legs=-1` retains all placements. Otherwise bits 0, 1
-and 2 select intrinsic shapes on the corresponding ordered source legs:
+physical shape response produces their correlation. Two selectors in an
+IA dictionary answer these questions before integration:
+
+- `operator_component: 0`: keep the complete calculation (default).
+- `operator_component: 1`: keep the nonlinear-alignment baseline.
+- `operator_component: 2`: keep density weighting.
+- `operator_component: 3`: keep tidal torque.
+- `operator_component: 4`: keep velocity shear.
+- `intrinsic_legs: -1`: keep every galaxy placement.
+- `intrinsic_legs: 0` to `7`: read bits 0, 1 and 2 as intrinsic shapes
+  on the corresponding ordered source legs.
+
+The baseline includes gravity until a placement is chosen. The
+placements map to `intrinsic_legs` values as follows:
 
 | Placement | GGG | GGI | GIG | IGG | GII | IIG | IGI | III |
 |---|---|---|---|---|---|---|---|---|
@@ -233,33 +267,41 @@ transforms. The leg selector applies to projection; the unprojected IA
 method continues to return its nineteen explicitly ordered entries.
 
 The tensor basis coefficient of the density-shaped vertex is
-$`C_{1\delta}-2C_2/3`$, where $`C_{1\delta}=b_{\rm TA}C_1`$. A torque-only
-calculation must therefore retain both the quadratic coefficient $`C_2`$
-and the density-shaped coefficient $`-2C_2/3`$. A density-weighting
-calculation retains only $`C_{1\delta}`$. Every residual keeps its factors
-of $`C_1`$ on the other intrinsic legs. This gives a physical operator split
-without subtracting nearly equal total predictions.
+$`C_{1\delta}-2C_2/3`$, where $`C_2`$ is the tidal-torque amplitude
+normalization and $`C_{1\delta}=b_{\rm TA}C_1`$, with $`b_{\rm TA}`$ the
+tidal-alignment bias. A torque-only calculation must therefore keep both
+the quadratic coefficient $`C_2`$ and the density-shaped coefficient
+$`-2C_2/3`$. A density-weighting calculation keeps only $`C_{1\delta}`$.
+Every residual keeps its factors of $`C_1`$ on the other intrinsic legs.
+This gives a physical operator split without subtracting nearly equal
+total predictions.
 
-Prepared component grids require `signed_baseline=1`. They interpolate
-signed components divided by one common positive GGG scale; individually
-logging signed components is undefined and would also break additive
-closure. The baseline's G and I kernels are separately splined on the
-same original kernel grid. The residual keeps its distinct source-grid
-weights. Projectors own their selected weights and coefficients, so a
-component call cannot alter a previously constructed total grid.
+Prepared component grids require `signed_baseline: 1`. They interpolate
+signed components divided by one common positive GGG scale; taking the
+logarithm of an individual signed component is undefined and would also
+break additive closure. The code splines the baseline's G and I kernels
+separately on the same original kernel grid, and the residual keeps its
+own source-grid weights. Each projector owns its weights and
+coefficients, so a component call cannot alter a previously constructed
+total grid.
 
-The project's [operator notebook](../../../../../projects/des_3pcf/EXAMPLE_IA_COMPONENTS.ipynb)
-returns `[5,8,nrow]` signed moments: gravity, linear alignment, density
+The project's operator notebook
+(`Cocoa/projects/des_3pcf/EXAMPLE_IA_COMPONENTS.ipynb`) returns
+`[5,8,nrow]` signed moments: gravity, linear alignment, density
 weighting, torque and velocity shear by the eight placements above. It
-checks their sum against the ordinary total. Its first plot groups physical
-operators; its second groups higher-order TATT placements, excluding both
-linear alignment and velocity shear. This follows the distinction in
-[Gomes et al., Figures 5–6](https://arxiv.org/html/2601.09133v1).
+checks their sum against the ordinary total. Its first plot groups
+physical operators; its second groups higher-order TATT placements,
+excluding both linear alignment and velocity shear. This follows the
+distinction drawn in Figures 5 and 6 of
+[Gomes et al.](https://arxiv.org/abs/2601.09133).
 
-The velocity-shear diagnostic retains the active upstream vertex. In the
-equilateral limit it gives $`B_{\delta\delta E}^{VS}=-3C_t P^2/14`$ and no
-single-B VS term. The literal printed Eqs. 62 and 67 differ. This is an
-unresolved manuscript/code convention issue; the VS curves must not be
+The velocity-shear diagnostic implements the vertex that the upstream
+code evaluates. In the equilateral limit it gives
+$`B_{\delta\delta E}^{VS}=-3C_t P^2/14`$ and no single-B velocity-shear
+term. The velocity-shear vertex equations of Gomes et al.
+([arXiv:2601.09133](https://arxiv.org/abs/2601.09133)), Eqs. 62 and 67
+as printed, differ from this result. The manuscript/code convention
+difference is unresolved, so the velocity-shear curves must not be
 called an independently validated reproduction. The TATT equilateral
 identity $`B_{\delta\delta E}^{res}/P^2=-C_2/6-C_{1\delta}/2`$ is tested
 separately and agrees with the operator calculation.
@@ -289,7 +331,7 @@ Shear has two components, conveniently written
 $`\gamma=\gamma_1+i\gamma_2`$. Rotating the axes by an angle changes
 its phase by twice that angle; this is the meaning of a spin-two field.
 Let $`g_a`$ denote the shear at vertex $`a`$ after rotating it into a
-specified triangle direction. The four natural components are
+chosen triangle direction. The four natural components are
 
 ```math
 \Gamma_0=\langle g_1g_2g_3\rangle,\qquad
@@ -298,7 +340,7 @@ specified triangle direction. The four natural components are
 \Gamma_3=\langle g_1g_2g_3^*\rangle.
 ```
 
-They retain the orientation information needed to convert a shear
+They keep the orientation information needed to convert a shear
 correlation into an aperture statistic. Both the complex phase and the
 position of the conjugated leg matter. The same four arrays in another
 rotation convention are different inputs to an aperture kernel.
@@ -307,29 +349,36 @@ The transform first couples the Legendre coefficients to angular Fourier
 modes $`M`$. Two radial Bessel integrals then turn Fourier-side lengths
 into angular separations. FFTLog evaluates those integrals using Fourier
 transforms on logarithmic grids and analytic transforms of power laws.
-Finally, the modes are summed with $`e^{iM\phi}`$ to recover the opening
-angle $`\phi`$, and the shears are rotated into the requested projection.
-The retained transform plan contains geometry, transform factors and
-worker storage. Its input $`b_L`$ changes when the physical model changes.
+Finally, the transform sums the modes with $`e^{iM\phi}`$ to recover the
+opening angle $`\phi`$ and rotates the shears into the requested
+projection.
+
+A transform plan, once constructed, holds geometry, transform factors
+and worker storage. Its input $`b_L`$ changes when the physical model
+changes.
 
 Source labels and triangle sides must move together. With unequal source
 bins, ordered TATT coefficients need not be symmetric under exchanging
-the two Fourier sides. `ordered_legs=True` therefore evaluates both signs
-of angular mode $`M`$ explicitly. `ordered_legs=False` preserves the
-historical transpose shortcut for source comparisons. Independent
-Cartesian Gaussian-moment tests check the general case as well as the
-shear rotation toward the triangle centroid. The TATT centroid phase
-passes that test; the conjugate phase found on upstream main is retained
-only as a named comparison convention.
+the two Fourier sides. `ordered_legs=True` therefore evaluates both
+signs of angular mode $`M`$ explicitly; `ordered_legs=False` reproduces
+the fastnc main-branch transpose shortcut for source comparisons.
+
+Independent Cartesian Gaussian-moment tests check the general case as
+well as the shear rotation toward the triangle centroid. The TATT
+centroid phase passes that test; the conjugate phase of the fastnc main
+branch stays available only as a comparison convention.
 
 Logarithmic FFT grids have finite bounds and a periodic representation.
-Padding and coefficient tapering control parts of the resulting numerical
-error. The historical untapered operator and the corrected taper remain
-explicit choices for source comparisons. A radial-bin average uses the
-declared lower edges and logarithmic width. An angular-bin average with
-positive `dphi` averages the angular Fourier modes before applying the
-centroid phase at the bin centre; it is not the exact bin average of that
-varying phase. These choices must remain visible when comparing codes.
+Padding and coefficient tapering control parts of the resulting
+numerical error, and the plan offers both the tapered coefficient window
+and the untapered upstream window as explicit choices for source
+comparisons.
+
+A radial-bin average uses the bin lower edges and the logarithmic width
+the caller passes. An angular-bin average with positive `dphi` averages
+the angular Fourier modes before applying the centroid phase at the bin
+centre; it is not the exact bin average of that varying phase. These
+choices must stay visible when comparing codes.
 
 ## From galaxy shapes to aperture mass <a name="aperture"></a>
 
@@ -373,13 +422,13 @@ $`b_L`$ or natural-component arrays. Its finite Fourier bounds are
 numerical truncations of the unrestricted filter integral and must be
 refined.
 
-The finite-triangle route instead starts from shear correlations available
-only for selected side and opening-angle bins. It integrates those natural
-components with four complex kernels. The implementation uses the
-centroid convention of the published aperture kernels: each shear is
-rotated relative to the direction between its vertex and the triangle
-centroid. Supplying components in another projection changes the answer
-even when every array dimension matches.
+The finite-triangle route instead starts from shear correlations
+available only in the measured side and opening-angle bins. It
+integrates those natural components with four complex kernels. The
+implementation uses the centroid convention of the published aperture
+kernels: each shear is rotated relative to the direction between its
+vertex and the triangle centroid. Components in another projection
+change the answer even when every array dimension matches.
 
 For example, a measurement that excludes all triangles with a side below
 one arcminute cannot be turned into the unrestricted aperture moment by
@@ -389,23 +438,29 @@ finite-triangle mean need an estimator comparison before they are used
 together. An aperture radius is a smoothing scale; it is not an angular
 cut on each side of a galaxy triangle.
 
-The [project estimator guide](../../../../../projects/des_3pcf/ESTIMATOR.md)
-exposes the original side-bin bank, explicit cuts and representative-side
-choices. The optional `pixel_window` array supplies scalar W(ell) at
-consecutive integers from zero. Multipoles and aperture means include
-one factor per Fourier leg. Raw projected B and ordinary xi remain
-unsmoothed building blocks. A physical model and each prepared grid own
-independent copies, so a grid remains valid after its model is released.
+The project estimator guide (`Cocoa/projects/des_3pcf/ESTIMATOR.md`)
+describes the original side-bin bank, the explicit cuts and the
+representative-side choices. The optional `pixel_window` array holds
+scalar $`W(\ell)`$ values at consecutive integer multipoles from zero.
+Multipoles and aperture means include one window factor per Fourier leg.
+Raw projected bispectra and the ordinary $`\xi_\pm`$ remain unsmoothed
+building blocks. A physical model and each prepared grid own independent
+copies, so a grid remains valid after its model is released.
 
-The archived scalar HEALPix convention uses the TEMPERATURE column at
-nside=1024 through ell=3071, with linear reads and zero above. W3 enters
-the angular integral; W1 and W2 are applied after prepared-multipole
-interpolation to prevent support leaking across their hard cutoff. This
-scalar convention requires comparison with the actual shear estimator.
-The analytic covariance does not apply these pixel factors and refuses
-a pixel-smoothed model; any supplied covariance needs its own matching
-estimator definition. Refinement of the third-leg cutoff inside the
-angular integral remains part of a survey-accuracy study.
+The scalar HEALPix convention of this implementation reads the
+TEMPERATURE column of the pixel-window file at `nside=1024` through
+$`\ell=3071`$, with linear interpolation between integer multipoles and
+zero above. HEALPix is the equal-area pixelization of the sphere used by
+survey maps, and `nside` is its resolution parameter. The third-leg
+window $`W_3`$ enters the angular integral; the windows $`W_1`$ and
+$`W_2`$ apply after prepared-multipole interpolation, so support cannot
+leak across their hard cutoff.
+
+This scalar convention requires comparison with the actual shear
+estimator. The analytic covariance does not apply these pixel factors
+and refuses a pixel-smoothed model; a covariance from elsewhere needs
+its own matching estimator definition. Refining the third-leg cutoff
+inside the angular integral remains part of a survey-accuracy study.
 
 The two paths share the physical bispectrum and separate at the observable:
 
@@ -418,7 +473,7 @@ flowchart TD
   C --> F["Legendre coefficients b_L"]
   F --> G["Angular coupling, FFTLog and shear rotation"]
   G --> H["Four natural components on side–angle–side bins"]
-  H --> I["Integrate only the declared measured triangles"]
+  H --> I["Integrate only the measured triangles"]
   I --> J["Finite-triangle aperture statistic"]
 ```
 
@@ -436,8 +491,9 @@ $`\Delta\phi`$, the integration measure is
 ```
 
 The powers of the side lengths arise because a radial area element is
-$`s\,ds=s^2d\ln s`$. The supplied grids contain bin representatives;
-this is a finite quadrature, not an exact bin average of the correlation.
+$`s\,ds=s^2d\ln s`$. The grids the caller passes contain bin
+representatives; this is a finite quadrature, not an exact bin average
+of the correlation.
 The two side grids can have different numbers of bins but use the same
 logarithmic width. Angles must lie strictly between zero and $`\pi`$;
 collinear centroid projections are excluded.
@@ -445,7 +501,7 @@ collinear centroid projections are excluded.
 For each output radius triplet, the prepared weights include this measure,
 the sum with radii two and three exchanged, and the final factor one
 quarter. The radius exchange implements the mirrored-orientation
-convention used by the inspected Y6 aperture calculation. If $`W`$ denotes
+convention of the DES Y6 aperture calculation. If $`W`$ denotes
 those complete weights, the C contraction is simply
 
 ```math
@@ -460,24 +516,25 @@ Here $`b`$ visits measured triangle bins and $`\alpha`$ selects the natural
 component. There is no complex conjugation in this multiplication. Do not
 apply another factor one quarter after calling the contraction.
 
-The adapter expects components already in this centroid and component-order
-convention. In Rafael Gomes's inspected Y6 backend, the corresponding
-conversion from the returned fastnc arrays is
-`-[Gamma0, Gamma1, Gamma3, Gamma2]`. The C routine does not perform that
-conversion or infer the convention from the data. The higher-level
-`TransformPlan.aperture_from_multipoles` method performs the declared
-conversion before calling that same C contraction. Do not apply it again.
+The adapter expects components already in this centroid and
+component-order convention. In Rafael Gomes's Y6 backend, the conversion
+from the fastnc output arrays is `-[Gamma0, Gamma1, Gamma3, Gamma2]`.
+The C routine does not perform that conversion or infer the convention
+from the data. The higher-level `TransformPlan.aperture_from_multipoles`
+method performs the conversion before calling that same C contraction;
+do not apply it again.
 
 Finite triangle coverage can differ from the unrestricted aperture
-integral and can cause E/B leakage. The routine returns the stated real
-combination, not the full set of eight E/B aperture combinations.
-Agreement with the upstream
-finite weights verifies this numerical operation; it does not remove
-those physical distinctions or establish a matching measured covariance.
-The needed single-B control must preserve oriented triangles and ordered
-source legs, vanish for the unrestricted E-aperture response, and then
-apply the exact finite weights. Its size should be measured with the
-full joint covariance. No nonzero correction for these weights has been
+integral and can cause E/B leakage. The routine returns the real
+combination displayed above, not the full set of eight E/B aperture
+combinations. Agreement with the upstream finite weights verifies this
+numerical operation; it does not remove those physical distinctions or
+establish a matching measured covariance.
+
+A single-B control must preserve oriented triangles and ordered source
+legs, vanish for the unrestricted E-aperture response, and then apply
+the exact finite weights. Its size should be measured with the full
+joint covariance. No nonzero correction for these weights has been
 established; parity alone does not certify its absence.
 
 ## What the covariance components mean <a name="covariance"></a>
@@ -503,12 +560,14 @@ overlap is why their cross covariance is required.
 The covariance of two quadratic measurements contains four fields; that
 of a quadratic and a cubic measurement contains five; that of two cubic
 measurements contains six. A connected correlation, or cumulant, is what
-remains after subtracting every product of lower-order correlations. Thus
-the four-field expectation contains Gaussian pair products and a connected
-four-field correlation, called a trispectrum in Fourier space. The
-six-field expectation also contains products of two bispectra and products
-of a power spectrum with a trispectrum. This is a bookkeeping of distinct
-physical correlations, not six alternative estimates of the same matrix.
+remains after subtracting every product of lower-order correlations.
+
+The four-field expectation therefore contains Gaussian pair products and
+a connected four-field correlation, called a trispectrum in Fourier
+space. The six-field expectation also contains products of two bispectra
+and products of a power spectrum with a trispectrum. This is a
+bookkeeping of distinct physical correlations, not six alternative
+estimates of the same matrix.
 
 The physical engine returns each of the following six families separately.
 Here $`P`$, $`B`$ and $`T`$ denote power, bispectrum and connected
@@ -521,40 +580,52 @@ trispectrum ingredients after their required projections.
 | $`PT_{1h}`$ | A pair correlation times the connected four-field correlation produced by one halo | Three-point covariance |
 | $`PB`$ | A pair correlation times a connected three-field correlation | Two-/three-point cross covariance |
 | Connected one-halo | Four, five or six fields produced by the same halo | Two-point, cross and three-point blocks |
-| Selected long-mode response | A survey-scale density fluctuation changes the abundance of halos contributing to each observable | Two-point, cross and three-point blocks |
+| Long-mode response | A survey-scale density fluctuation changes the abundance of halos contributing to each observable | Two-point, cross and three-point blocks |
 
-The nonlinear projected power and BiHalofit bispectrum are supplied by the
-matter model. The connected four-, five- and six-field parts use the
-declared halo prescription: Sheth–Tormen abundance and bias, truncated
+The matter model supplies the nonlinear projected power and the
+BiHalofit bispectrum. The connected four-, five- and six-field parts use
+one halo prescription: Sheth–Tormen abundance and bias, truncated
 Navarro–Frenk–White density profiles, and an explicit concentration–mass
-relation. One-halo means that all fields in that connected contribution
-come from one halo. It is an approximation to the full connected
-correlation. For instance, a complete gravitational trispectrum also
-contains contributions involving several halos.
+relation.
 
-The long-mode family models the change in halo abundance. It is a
-specified part of super-sample covariance, the modulation of measurements
-by fluctuations larger than the observed patch. Growth, dilation, tidal
-and intrinsic-shape responses are not all supplied by that abundance
-term. Calling it the complete SSC would overstate the model. Two projected
-bispectra in $`BB`$ retain independent radial integrals; their source
-weights cannot be forced to the same redshift merely to reduce the work.
+One-halo means that all fields in that connected contribution come from
+one halo. It is an approximation to the full connected correlation: a
+complete gravitational trispectrum, for instance, also contains
+contributions involving several halos.
 
-The covariance signal is gravitational lensing, with Gaussian shape
-noise. A TATT mean does not provide the missing intrinsic-shape four-,
-five- and six-field correlations. Adopting this covariance with a TATT
-mean is therefore an explicit fixed, lensing-only covariance approximation.
-The gravitational `mean` returned alongside the covariance terms is useful
-for inspecting that covariance model. It is not the joint TATT prediction
-assembled by the separate mean engine. The current project covariance
-also requires zero fiducial multiplicative shear calibration; calibration
-can still vary in the Fisher mean while that covariance is held fixed.
-The selected halo model also uses one pressureless matter fluid. It does
-not implement the ordinary core's cold-plus-baryon halo-formation
-prescription for massive neutrinos. The project rejects a nonzero mass
-unless the single-fluid effective-growth approximation is selected
-explicitly. [COVARIANCE.md](COVARIANCE.md) states these assumptions and
-the exact normalization of each term.
+The long-mode family models the change in halo abundance. It is one
+part of super-sample covariance, the modulation of measurements by
+fluctuations larger than the observed patch; the abundance term does not
+carry the growth, dilation, tidal and intrinsic-shape responses, so
+calling it the complete super-sample covariance would overstate the
+model. Two projected bispectra in $`BB`$ keep independent radial
+integrals; their source weights cannot be forced to the same redshift
+merely to reduce the work.
+
+The covariance models gravitational lensing with Gaussian shape noise.
+A TATT model of the mean does not supply the intrinsic-shape four-,
+five- and six-field correlations that the covariance is missing. Using
+this covariance with a TATT mean is therefore a fixed, lensing-only
+covariance approximation, and the code makes that choice explicitly.
+
+The covariance code also returns a `mean`. That vector is
+gravitational only, and it exists so the covariance model can be
+inspected. It is not the joint TATT prediction; that comes from the
+separate mean engine.
+
+Two further restrictions apply. First, the project covariance
+requires a fiducial multiplicative shear calibration of zero. The
+calibration can still vary in the Fisher mean while that covariance is
+held fixed.
+
+Second, the halo model inside the covariance treats all matter as one
+pressureless fluid. It does not use the ordinary core's
+cold-plus-baryon halo-formation prescription for massive neutrinos.
+The project therefore rejects a nonzero neutrino mass unless the
+single-fluid effective-growth approximation is chosen explicitly.
+
+[COVARIANCE.md](COVARIANCE.md) states these assumptions and the exact
+normalization of each term.
 
 ### Survey windows and random shape noise
 
@@ -562,33 +633,37 @@ The supported estimator averages full filtered maps over aperture centres,
 or shear pairs over their midpoints. A circle or square weights those
 centres. This window is distinct from holes in a galaxy catalogue inside
 an aperture, and from the cuts that remove data-vector rows. Changing its
-area does not reproduce either kind of selection. The `large_area` option
-uses the large-footprint limit for short-mode contractions; the selected
-long-mode contribution still uses the specified finite survey window.
+area does not reproduce either kind of selection. The `large_area`
+option uses the large-footprint limit for short-mode contractions; the
+long-mode contribution still uses the finite survey window.
 
 For disjoint source samples, the white-noise angular power is
 $`N^{ii}=\sigma_{e,\mathrm{component}}^2/n_i`$, where $`n_i`$ is the
-number per steradian and the dispersion describes one ellipticity
-component. Noise enters the pair correlations once. It is not inserted
+number of galaxies per steradian and the dispersion
+$`\sigma_{e,\mathrm{component}}`$ describes one ellipticity component.
+Noise enters the pair correlations once; the code does not insert it
 into the physical matter bispectrum or the connected halo cumulants.
 
-An ideal white-noise field has a delta-function correlation. Its
-two-point variance therefore needs the actual angular-bin area; a finite
-list of displayed bin centres is insufficient. For large-area,
-uniformly area-weighted $`\xi_\pm`$ bins, `noise_mode=1` calculates
-the pure noise–noise term from the overlap of their exact annular edges.
-It retains numerical quadrature for signal and mixed signal–noise terms.
-`noise_mode=0` instead describes the supplied finite-band rule. The
-annular correction is not assumed for custom pair weights or finite
+An ideal white-noise field has a delta-function correlation, so its
+two-point variance needs the actual angular-bin area; a finite list of
+bin centres is not enough. One setting chooses the rule:
+
+- `noise_mode: 1`: for large-area, uniformly area-weighted $`\xi_\pm`$
+  bins, calculate the pure noise–noise term from the overlap of the
+  exact annular edges, and keep numerical quadrature for the signal and
+  mixed signal–noise terms.
+- `noise_mode: 0`: use the finite-band rule the caller passes.
+
+The annular correction does not extend to custom pair weights or finite
 centre windows. Both E and B shape-noise components enter the shear
 correlation covariance even when the lensing signal is pure E.
 
 ### Pair functions and the one-halo response
 
-The lower-level routines also accept arrays from an independently supplied
-physical model. They expose useful intermediate operations and tests;
-they do not infer an estimator or construct a halo population from the
-array dimensions.
+The lower-level routines also accept arrays from a physical model built
+elsewhere. They expose intermediate operations and tests; they do not
+infer an estimator or construct a halo population from the array
+dimensions.
 
 A filtered field $`X_a`$ is labeled by its source sample and filter.
 Its pair correlation at centre separation $`r`$ is
@@ -611,8 +686,8 @@ zero. The covariance of two such products is their six-field moment.
 Wick's theorem expresses that moment as fifteen pairings. Six pairings
 join every field at one centre to a field at the other centre. Nine
 pairings contain one connection between centres and one local pair at
-each centre. The local pairs use $`K(0)`$, which is supplied separately
-even if the sampled radial grid does not contain zero.
+each centre. The local pairs use $`K(0)`$, which the caller passes
+separately even if the sampled radial grid does not contain zero.
 
 For three copies of one field, this becomes
 
@@ -622,23 +697,25 @@ C^{\rm G}_{333}=\int d\mu(r)
 ```
 
 The weights $`d\mu`$ encode the averaging of aperture centres. In a
-homogeneous large area $`A`$, use $`2\pi r\,dr/A`$; a specified finite
-centre window changes those weights. The routine receives the complete
-weights and does not divide by area again. Both pair-correlation inputs
-must be symmetric in their field labels; the adapters allow only relative
+homogeneous large area $`A`$, use $`2\pi r\,dr/A`$; a finite centre
+window changes those weights. The routine receives the complete weights
+and does not divide by area again. Both pair-correlation inputs must be
+symmetric in their field labels; the adapters allow only relative
 roundoff differences up to 64 machine epsilons, with no absolute floor.
+
 For compensated apertures in the ideal large-area limit, the complete
 separation integral of a single $`K(r)`$ vanishes because
-$`\widetilde U(0)=0`$. The nine local-pair terms then cancel. A finite
-centre window generally prevents that cancellation; the physical
+$`\widetilde U(0)=0`$, and the nine local-pair terms then cancel. A
+finite centre window generally prevents that cancellation; the physical
 `large_area` route and the finite-window route keep this distinction.
-An internal galaxy mask or distinct-object estimator requires its own
-contractions. Do not remove
-the nine local-pair terms merely because another estimator excludes
-self-pairs; establish the estimator's noise rules first.
+
+An internal galaxy mask or a distinct-object estimator requires its own
+contractions. Do not remove the nine local-pair terms merely because
+another estimator excludes self-pairs; establish the estimator's noise
+rules first.
 
 The connected response component has a different mathematical input. If
-$`H_I(\lambda)`$ is observable $`I`$'s response to one halo or one declared
+$`H_I(\lambda)`$ is observable $`I`$'s response to one halo or one
 long-mode source, and $`w_\lambda`$ includes its nonnegative integration
 measure and normalization, the returned matrix is
 
@@ -673,10 +750,10 @@ omit a term from that model in exchange for a lower numerical cost.
 
 ## A joint two- and three-point Fisher calculation <a name="fisher"></a>
 
-The companion project forms a vector containing the selected
-$`\xi_+`$, $`\xi_-`$ and aperture third-moment rows. It keeps the
-selected two-point measurements themselves; it does not replace them
-with aperture variances or compress them implicitly. In block form,
+The companion project forms a vector from the chosen $`\xi_+`$,
+$`\xi_-`$ and aperture third-moment rows. It keeps the two-point
+measurements themselves; it does not replace them with aperture
+variances or compress them implicitly. In block form,
 
 ```math
 d=\begin{pmatrix}d_2\\d_3\end{pmatrix},\qquad
@@ -705,7 +782,7 @@ F_{\alpha\beta}=D_{I\alpha}
 (\mathcal C_*^{-1})_{IJ}D_{J\beta}+\Pi_{\alpha\beta}.
 ```
 
-Repeated indices sum over the retained measurements. $`\Pi`$ is prior
+Repeated indices sum over the kept measurement rows. $`\Pi`$ is prior
 precision: an independent Gaussian prior of width $`\sigma_\alpha`$
 adds $`1/\sigma_\alpha^2`$ to its diagonal. A flat interval does not
 become that Gaussian term. The approximation holds one fiducial
@@ -713,11 +790,11 @@ covariance $`\mathcal C_*`$ fixed while evaluating displaced means;
 it does not include parameter derivatives of the covariance.
 
 This division of work matters computationally. The covariance can be an
-offline calculation performed once for the declared fiducial model. The
+offline calculation performed once at the fiducial model. The
 mean must be evaluated repeatedly for the finite-difference derivatives.
 The project compares derivatives at steps $`h`$ and $`h/2`$, where
-each parameter's step has its declared units. A step that is too large
-mixes curvature into a local derivative. A step that is too small can
+each parameter's step carries that parameter's units. A step that is
+too large mixes curvature into a local derivative. A step that is too small can
 amplify interpolation or floating-point errors. More precise covariance
 arithmetic cannot repair an unresolved derivative.
 
@@ -730,8 +807,8 @@ direction signals a missing independent constraint or a locally inactive
 parameter; it should not be hidden by adding an arbitrary diagonal.
 
 To test an IA or baryon claim, use the same survey rows, covariance,
-parameter basis and declared priors in the compared forecasts. Vary the
-specified nuisance model, refine the numerical derivatives, and report
+parameter basis and priors in the compared forecasts. Vary the nuisance
+model under test, refine the numerical derivatives, and report
 which physical parts of the covariance were held approximate. An increase
 in a conditional figure of merit is not a demonstration that the analysis
 can distinguish an omitted physical effect. Y3 and Y6 require their own
@@ -739,11 +816,11 @@ source curves, noise and measurement definitions; a repository name is
 not a substitute for those inputs.
 
 Optional precision-matrix expansion belongs to the project layer. It
-combines an analytic covariance model with a supplied joint sample
-covariance and a justified independent-realization count, or independent
-sample groups. It does not create simulated information or make correlated
-patches independent. Its statistical assumptions and finite-sample tests
-are separate from the C covariance integral.
+combines an analytic covariance model with a joint sample covariance
+from simulations and a justified independent-realization count, or
+independent sample groups. It does not create simulated information or
+make correlated patches independent. Its statistical assumptions and
+finite-sample tests are separate from the C covariance integral.
 
 ## Files and the two C++ adapters <a name="files"></a>
 
@@ -751,14 +828,20 @@ are separate from the C covariance integral.
 |---|---|
 | [physics_3pcf.c](physics_3pcf.c), [header](physics_3pcf.h) | Owned physical tables, BiHalofit, TATT/velocity shear, projection and full-filter aperture mean |
 | [physics_grid_3pcf.c](physics_grid_3pcf.c), [header](physics_grid_3pcf.h) | Shared source-triplet preparation, uniform triangle/multipole tables and SIMD linear reads |
+| [feedback_3pcf.c](feedback_3pcf.c), [header](feedback_3pcf.h) | Paired baryonic response tables for matter power and bispectrum (Section 12) |
 | [coupling_3pcf.c](coupling_3pcf.c), [fftlog_3pcf.c](fftlog_3pcf.c), [transform_3pcf.c](transform_3pcf.c) | Angular coupling, two-Bessel transforms and natural-component reconstruction |
 | [aperture_3pcf.c](aperture_3pcf.c), [header](aperture_3pcf.h) | Finite aperture geometry and contractions |
 | [covariance_3pcf.c](covariance_3pcf.c), [header](covariance_3pcf.h) | Filtered pairs, Gaussian map contractions and response matrices |
 | [covariance_physics_3pcf.c](covariance_physics_3pcf.c), [header](covariance_physics_3pcf.h) | Halo preparation and physical joint covariance, including actual xi-bin spin weights |
-| [threepcf_interface.cpp](threepcf_interface.cpp), [header](threepcf_interface.hpp) | Production NumPy adapter with borrowed contiguous inputs |
+| [threepcf_interface.cpp](threepcf_interface.cpp), [header](threepcf_interface.hpp) | Creates the `production` and `notebook` pybind submodules and registers the aperture and covariance contraction functions in both; the notebook entries copy inputs and delegate to the wrapper |
 | [threepcf_wrapper.cpp](threepcf_wrapper.cpp), [header](threepcf_wrapper.hpp) | Notebook adapter with owned Armadillo arrays |
-| `physics_*`, `transform_*`, `covariance_*` C++ adapter pairs | The same production/notebook ownership distinction for the physical engines |
-| [CREDITS.md](CREDITS.md) | Scientific attribution, exact source revisions and license scope |
+| [physics_interface.cpp](physics_interface.cpp), [header](physics_interface.hpp) | Registers the physical model and projection grids in both submodules; production entries borrow contiguous inputs |
+| [physics_wrapper.cpp](physics_wrapper.cpp), [header](physics_wrapper.hpp) | Notebook copies into Armadillo for the physical model and grids |
+| [transform_interface.cpp](transform_interface.cpp), [header](transform_interface.hpp) | Registers transform plans in both submodules |
+| [transform_wrapper.cpp](transform_wrapper.cpp), [header](transform_wrapper.hpp) | Notebook copies into Armadillo for transform plans |
+| [covariance_interface.cpp](covariance_interface.cpp), [header](covariance_interface.hpp) | Registers the covariance engines in both submodules |
+| [covariance_wrapper.cpp](covariance_wrapper.cpp), [header](covariance_wrapper.hpp) | Notebook copies into Armadillo for the covariance engines |
+| [CREDITS.md](CREDITS.md) | Scientific attribution, exact source revisions and license scope, with [LICENSE.fastnc-TreeCorr.txt](LICENSE.fastnc-TreeCorr.txt) holding the ported-code license notices |
 
 The project registers these adapters under `production` and `notebook`.
 Both call the same C functions. The production path requires C-contiguous
@@ -769,23 +852,23 @@ prediction and covariance work. The notebook path copies values into
 Armadillo storage for inspection and convenience, then calls the same C
 calculation. These roles follow the [core interface guide](../README.md#interfaces).
 
-Command-line production calculations use the borrowing interface. This
-avoids the notebook adapter's extra input conversion and temporary
-Armadillo arrays; the immutable physical model still copies the inputs
-it must retain after a call. Notebook inspection can return intermediate
-halo tables, angular spectra or natural components, which also require
-their own arrays. Request those diagnostics when they answer a question
-about the model; they are not required merely to obtain a final vector.
-Neither interface changes the underlying scientific formulas. The cost
-of conversion or diagnostics must be measured separately before assigning
-a runtime advantage to the command-line route.
+Command-line production calculations use the borrowing interface, which
+avoids the notebook adapter's input conversion and temporary Armadillo
+arrays; the immutable physical model still copies the inputs it must
+keep after a call.
+
+Notebook inspection can return intermediate halo tables, angular spectra
+or natural components, which need their own arrays. Request those
+diagnostics when they answer a question about the model; the final
+vector does not require them. Neither interface changes the underlying
+scientific formulas.
 
 | Reading task | Follow these stages |
 |---|---|
 | One aperture mean from matter | `physics_3pcf.h` model and projection contracts; `physics_grid_3pcf.c` preparation; direct full-filter contraction or the transform/aperture chain |
 | Natural-component signs and source order | `coupling_3pcf.c`; `fftlog_3pcf.c`; `transform_3pcf.c`; the independent phase tests in the project |
 | One physical covariance block | The estimator and family definitions in `COVARIANCE.md`; `covariance_physics_3pcf.h`; the corresponding assembly in its C file |
-| A notebook input or retained output | The matching `*_wrapper.cpp` and `*_interface.cpp`; the C header's ownership contract; setting-sequence tests |
+| A notebook input or returned output | The matching `*_wrapper.cpp` and `*_interface.cpp`; the C header's ownership contract; setting-sequence tests |
 
 ## Arrays, units and reuse <a name="arrays"></a>
 
@@ -809,45 +892,52 @@ parts are separate arrays, each with the same dimensions.
 | Cubic field labels | `[nrow, 3]` | Observable row and its three field indices |
 | Responses | `[nrow, nnode]` | Observable row and shared integration node |
 
-The physical constructor accepts an optional `source_z` axis. If omitted,
-source densities use the supplied background `z` axis and `nsource=nz`.
-An explicit copy of that same axis preserves the legacy preparation
-arithmetic. A different axis allows a measured redshift distribution to
-be resolved without asking CAMB for thousands of transfer-redshift rows.
-The model copies the axis and densities, evaluates distances and the
-redshift-to-distance Jacobian at those nodes during construction, and owns
-all of these arrays. Source nodes must lie inside the background range.
-Only a source node at the actual observer requires a zero density there.
+The physical constructor accepts an optional `source_z` axis. If the
+caller omits it, source densities use the background `z` axis and
+`nsource = nz`; an explicit copy of that same axis reproduces the same
+preparation arithmetic as the omitted case. A different axis resolves a
+measured redshift distribution without asking CAMB for thousands of
+transfer-redshift rows.
 
-Source sampling, prepared-window sampling (`kernel_nz`) and line-of-sight
-integration sampling are separate approximations. A dense source curve
-does not by itself resolve its projected kernel or its radial integral.
-The companion project's `source_boost`, `kernel_boost` and `chi_boost`
-controls test those stages separately. Reconstructing a curve between
-measured midpoint samples is a declared input-model choice; increasing
-the number of samples of a fixed curve is a numerical refinement. Keep
-measured source support distinct from the background integration limit,
-particularly when a final histogram bin has a nonzero value.
+The model copies the axis and densities, evaluates distances and the
+redshift-to-distance Jacobian at those nodes during construction, and
+owns all of these arrays. Source nodes must lie inside the background
+range. Only a source node at the actual observer requires a zero density
+there.
+
+Source sampling, prepared-window sampling (`kernel_nz`) and
+line-of-sight integration sampling are separate approximations. A dense
+source curve does not by itself resolve its projected kernel or its
+radial integral. The companion project's `source_boost`, `kernel_boost`
+and `chi_boost` controls test those stages separately.
+
+Reconstructing a curve between measured midpoint samples is an
+input-model choice; increasing the number of samples of a fixed curve is
+a numerical refinement. Keep measured source support distinct from the
+background integration limit, particularly when a final histogram bin
+has a nonzero value.
 
 The triangle count is `len(d2)*len(d3)*len(phi)`. Its flat index visits
 `phi` first, then `d3`, then `d2`. Reshaping an array with another triangle
 order gives the wrong integral without necessarily producing an error.
 
-Prepare aperture weights once and retain the returned arrays while changing
-the cosmology or source triplet. The C routines have no hidden cosmology
-state. Their caller owns the persistent
-weights and all outputs. Physical models and transform plans own their
-prepared arrays explicitly. Changing the coordinates, radii, widths, triangle
-selection or component convention requires new weights even when the
-array dimensions are unchanged. Rebuilding the owning model or plan makes
-the invalidation decision visible rather than leaving an incomplete
-process-global cache key. A transform plan is not reentrant and its
-worker capacity is fixed when it is constructed.
+Prepare aperture weights once and keep the returned arrays while
+changing the cosmology or source triplet. The C routines have no hidden
+cosmology state: the caller owns the persistent weights and all outputs,
+and physical models and transform plans own their prepared arrays
+explicitly.
 
-The lower-level contraction accepts supplied weights. Their geometry and
-convention cannot be recovered from their shape alone, so the driver must
-keep those definitions with the weights. Workers read inputs only; the
-caller must not mutate them during a calculation.
+Changing the coordinates, radii, widths, triangle selection or component
+convention requires new weights even when the array dimensions are
+unchanged. Rebuilding the owning model or plan makes the invalidation
+decision visible, instead of hiding it behind an incomplete
+process-global cache key. A transform plan is not reentrant, and its
+worker capacity is fixed at construction.
+
+The lower-level contraction accepts weights from the caller. Their
+geometry and convention cannot be recovered from their shape alone, so
+the driver must keep those definitions with the weights. Workers read
+inputs only; the caller must not mutate them during a calculation.
 
 ## Preparation, interpolation and parallel work <a name="preparation"></a>
 
@@ -883,20 +973,31 @@ coarse node count can resolve structure missed by the physical samples.
 Increasing the dense count better approximates the already chosen cubic
 curve with short straight segments. The latter cannot recover missing
 coarse-grid structure. Signed IA residuals must remain signed across
-zero; logarithmic storage is used only where the selected baseline admits
-it. Source-reference readers retain named upstream interpolation choices
-for controlled comparisons.
+zero; logarithmic storage applies only where the baseline admits it.
+Source-reference readers keep the upstream interpolation choices for
+controlled comparisons.
 
-The corrected DES demonstration selects these options explicitly:
-`signed_baseline=1`, `residual_scaling=1`, `shape_stretch=10.1062201`
-and `psi_scale=0.02`. They preserve signed NLA values, scale the signed
-TATT residual by an equilateral gravity projection at the same perimeter,
-and resolve narrow regions of triangle shape and projection angle. The
-C defaults remain `0`, `0`, `3` and `0`, respectively, for existing callers.
-Those defaults are not the corrected survey configuration. The settings
-and their separate convergence questions are explained in
-[the numerical guide](NUMERICS.md#interpolation); an explicit option set
-still needs resolution and derivative tests for the chosen observable.
+The signed-residual DES configuration sets four options away from their
+defaults:
+
+    signed_baseline: 1
+    residual_scaling: 1
+    shape_stretch: 10.1062201
+    psi_scale: 0.02
+
+- `signed_baseline: 1`: keep the NLA values signed (default `0`).
+- `residual_scaling: 1`: scale the signed TATT residual by an
+  equilateral gravity projection at the same perimeter (default `0`).
+- `shape_stretch: 10.1062201`: resolve narrow regions of triangle
+  shape (default `3`).
+- `psi_scale: 0.02`: resolve narrow regions of the projection angle
+  (default `0`).
+
+Each default keeps existing callers unchanged; the defaults are not
+the signed-residual survey configuration. [The numerical
+guide](NUMERICS.md#interpolation) explains each setting and its own
+convergence question. An explicit option set still needs resolution
+and derivative tests for the chosen observable.
 
 Integration is a separate operation. Fourier, angular, mass and radial
 integrals use fixed nodes and weights. A Gauss–Legendre quadrature may
@@ -911,43 +1012,44 @@ OpenMP distributes work among CPU threads that share the input memory.
 It assigns complete output entries to workers. SIMD, single instruction
 multiple data, applies the same
 arithmetic to independent output entries in vector lanes; a lane is one
-position in a small vector of numbers. Each output retains an ordered
-sum over its integration nodes. The code comments identify lane meanings,
-tail entries and ownership beside the loops. No cosmological setters or
-FFTW planners are called from these workers.
+position in a small vector of numbers. Each output keeps an ordered sum
+over its integration nodes. The code comments identify lane meanings,
+tail entries and ownership beside the loops. The workers call no
+cosmological setters and no FFTW planners.
 
 The FFTW library prepares a plan for each required Fourier-transform
 shape. Plan creation is serial preparation. During a transform, OpenMP
 workers execute those plans on private aligned arrays using serial FFTs.
 Starting a second FFT thread team within every worker would multiply the
-number of active workers; it is not the parallel layout used here. Scratch
-allocations precede the worker loops. SIMD tails, including an odd last
-entry, preserve the declared scalar arithmetic. The strict build avoids
-fast-math reassociation, and local rounding boundaries are used where a
-fused scalar operation would otherwise disagree with its vector counterpart.
+number of active workers; it is not the parallel layout used here.
+
+Scratch allocations precede the worker loops. SIMD tails, including an
+odd last entry, preserve the scalar arithmetic of the plain loop. The
+strict build avoids fast-math reassociation, and the code inserts local
+rounding boundaries where a fused scalar operation would otherwise
+disagree with its vector counterpart.
 
 `PhysicsModel.projection_grids` shares matter and intrinsic-shape work
 across a batch of ordered source triplets. The project limits the number
 of dense tables held simultaneously. Pure NLA omits the identically zero
 residual table. NLA angular-power arrays likewise prepare source kernels
 once and read neighboring multipoles with SIMD using the logarithmic
-wave-number shift. These are reductions in repeated work, with no timing
-claim attached.
+wave-number shift.
 
-Covariance preparation shares Bessel/filter/window geometry across terms.
-Under its pure-lensing halo model, a filtered profile separates into a
-source efficiency and a radius-dependent shape. Different source samples
-with the same radius can share that shape; needed equal radius pairs can
-share their transforms. Source weights are retained explicitly. These
-are identities of the selected model. Adding a source-dependent halo
-prescription would require revisiting that reuse. All covariance work
-arrays are released when the offline call returns, while the mean retains
-its immutable model and transform geometry for repeated use.
+Covariance preparation shares Bessel/filter/window geometry across
+terms. Under its pure-lensing halo model, a filtered profile separates
+into a source efficiency and a radius-dependent shape. Different source
+samples with the same radius can share that shape, equal radius pairs
+can share their transforms, and the source weights stay explicit.
+
+These reuses are identities of the pure-lensing model; a
+source-dependent halo prescription would require revisiting them. The
+covariance releases all work arrays when the offline call returns, while
+the mean keeps its immutable model and transform geometry for repeated
+use.
 
 The [numerical guide](NUMERICS.md) gives the individual grids and their
-lifetime. OpenMP, SIMD and fewer repeated integrals identify how work is
-organized. They do not establish a speedup or an acceptable survey
-resolution without a separate measurement and refinement study.
+lifetime.
 
 ## Changing a calculation without restarting Python <a name="state"></a>
 
@@ -956,68 +1058,73 @@ calculation or stop with a clear instruction. It must not leave an array
 from the previous model behind a new label. The physical model owns
 immutable copies of its input arrays. Editing a caller's original power
 table therefore does not partially alter a live model. Construct a new
-model to use the new table, and retain the old model if it is still needed
-for an A/B comparison.
+model to use the new table, and keep the old model if an A/B comparison
+still needs it.
 
-| Owner | Retained definition | Operation that changes it |
+| Owner | Owned definition | Operation that changes it |
 |---|---|---|
 | `PhysicsModel` | Physical arrays, cosmological scalars and preparation controls | Construct a new model |
 | Projection grid | Model, ordered source triplet, IA/baryon coefficients and every grid setting | Prepare a new grid or source batch |
-| `TransformPlan` | Fourier/angle coordinates, selected indices, orders, padding, taper, biases, rotation and worker capacity | Construct a new plan |
+| `TransformPlan` | Fourier/angle coordinates, index choices, orders, padding, taper, biases, rotation and worker capacity | Construct a new plan |
 | Finite aperture weights | Side/angle bins, widths and three ordered filter radii | Recalculate the weights |
 | Project mean engine | Owned observable geometry and exact parameter keys | Construct an engine for new geometry; supply new parameters for new means |
 | Physical covariance call | Current model, rows, quadratures, survey and halo settings | Make a new call; no hidden covariance model persists |
 
 Array dimensions alone are insufficient for reuse: moving every
 separation by one percent keeps its shape while changing its observable.
-Keys must retain the actual values used, including numerical settings.
-The Python mean caches use exact parameter values, so a small nonzero
-Fisher displacement cannot be rounded into the fiducial cache entry.
+Keys must hold the actual values used, including numerical settings. The
+Python mean caches use exact parameter values, so a small nonzero Fisher
+displacement cannot be rounded into the fiducial cache entry.
+
 Prepared project settings are immutable; create a new owner to change
-them in the same Python kernel. Previously returned outputs are owned
-arrays and survive later calls. Borrowed production inputs must remain
-unchanged for the duration of the native calculation.
+them in the same Python kernel. Outputs returned earlier are owned
+arrays and survive later calls. Borrowed production inputs must stay
+unchanged while the native calculation runs.
 
-The ordinary two-point bridge has a different ownership problem. Its
+The ordinary two-point bridge has a different ownership problem: its
 compiled module has one mutable process-wide state, which a raw notebook
-cell can change without telling the project. `CoreTwoPoint.spectra()`
-therefore resets and reinstalls its complete declared shear calculation
-before loading the new arrays: numerical controls, source counts, TATT,
-nonlinear runmode, photo-z conventions and inactive internal baryon
-contamination. It also clears internal shifts and calibrations because
-the project already applies those effects in its source preparation and
-final mean. A reset protects against partly configured raw notebook
-models as well as complete ones. Its declared adapter controls are
-immutable, with integration levels 0–7 supported explicitly.
+cell can change without telling the project.
 
-This restoration reconstructs input splines. The bridge already invalidates
-the ordinary numerical tables on every spectra request; no performance
-claim is made for the extra reset work. Calls that mutate the same ordinary
-module must remain sequential. A transform plan likewise owns reusable
-scratch and is not reentrant. Neither borrowing input arrays nor using
-OpenMP inside C permits simultaneous Python callers to modify those owners.
+`CoreTwoPoint.spectra()` therefore resets and reinstalls its complete
+shear configuration before loading the new arrays: numerical controls,
+source counts, TATT, nonlinear runmode, photo-z conventions and the
+inactive internal baryon contamination. It also clears internal shifts
+and calibrations, because the project already applies those effects in
+its source preparation and final mean.
+
+The reset protects against partly configured raw notebook models as well
+as complete ones. The bridge's adapter controls are immutable, with
+integration levels 0–7 supported explicitly.
+
+This restoration reconstructs input splines; the bridge already
+invalidates the ordinary numerical tables on every spectra request.
+Calls that mutate the same ordinary module must stay sequential. A
+transform plan likewise owns reusable scratch and is not reentrant.
+Neither borrowed input arrays nor OpenMP inside C permits simultaneous
+Python callers to modify those owners.
 
 ## Accuracy and independent checks <a name="checks"></a>
 
 Three comparisons answer different questions. Agreement with a pinned
-original implementation checks the translation of a declared source
+original implementation checks the translation of a stated source
 convention. Agreement with an independent equation or quadrature checks
 normalization and physical identities. Refinement checks whether finite
 grids, bounds and angular orders resolve the intended observable. A
 source implementation can share a numerical shortcut or bug, so agreement
 with it cannot replace the other checks.
 
-The component tests compare aperture kernels and physical bispectra with
-pinned external Python calculations; angular coupling with its defining
-integral; two-Bessel transforms and shear phases with independent
-references; NFW profiles with a direct radial integral; and Gaussian,
-PB, BB and halo covariance factors with analytic or separately assembled
-results. They also check the
-two adapters and repeated calls with different worker counts. The
-project's [test guide](../../../../../projects/des_3pcf/tests/README.md)
-contains the commands and scope; its validation record reports executed
-checks. Component agreement does not establish survey-scale numerical
-convergence or a performance gain.
+The component tests compare aperture kernels and physical bispectra
+with pinned external Python calculations; angular coupling with its
+defining integral; two-Bessel transforms and shear phases with
+independent references; NFW profiles with a direct radial integral; and
+Gaussian, PB, BB and halo covariance factors with analytic or separately
+assembled results. They also check the two adapters and repeated calls
+with different worker counts.
+
+The project's test guide (`Cocoa/projects/des_3pcf/tests/README.md`)
+contains the commands and scope; its validation record reports the
+executed checks. Component agreement does not establish survey-scale
+numerical convergence or a performance gain.
 
 Setting-sequence checks compare an object reused after many changes with
 the same requested calculation in a clean process. They grow and shrink
@@ -1039,42 +1146,52 @@ separately, holding the estimator fixed. A positive covariance matrix is
 not by itself evidence that those integrals have converged.
 
 Live original-code comparisons must record source revisions, hashes,
-input arrays and conventions. Historical transpose reuse, the FFT taper,
-centroid phases, unequal-radius aperture selection and IA parameter
-mapping are separate checks. A comparison of a shared kernel is not an
-execution of the complete original survey pipeline. The project validation
-record states what was actually run; planned notebooks or unpublished
-survey inputs must not be counted as completed evidence.
+input arrays and conventions. The fastnc main-branch transpose shortcut,
+the FFT taper, centroid phases, unequal-radius aperture selection and IA
+parameter mapping are separate checks. A comparison of a shared kernel
+is not an execution of the complete original survey pipeline. The
+project validation record states what was actually run; planned
+notebooks or unpublished survey inputs must not be counted as completed
+evidence.
 
 ## Paired baryonic responses <a name="paired-feedback"></a>
 
-An optional immutable input supplies positive hydro/DMO ratios for total
-matter power and bispectrum separately. The common amplitude applies
-R(A)=exp(A ln R), with zero returning DMO and one selecting the supplied
-pair. This interpolating family keeps ratios fixed when cosmology changes.
-It does not infer a bispectrum response from a power response.
+An optional immutable input supplies positive ratios of
+hydrodynamical-simulation (hydro) to dark-matter-only (DMO) results, for
+the total matter power and for the bispectrum separately. A common
+amplitude $`A`$ interpolates each ratio $`R`$ through
+
+```math
+R(A)=\exp\left(A\ln R\right),
+```
+
+so the amplitude $`A=0`$ returns the dark-matter-only result and
+$`A=1`$ selects the ratio pair as given. This interpolating family keeps
+ratios fixed when cosmology changes; it does not infer a bispectrum
+response from a power response.
 
 The nonlinear-alignment baseline receives these ratios; quadratic IA
-terms retain DMO inputs. Raw building-block queries remain DMO. Native
-preparation copies uniform axes, upsamples log ratios with cubic splines,
-and leaves only arithmetic-index linear reads inside projection loops.
-The amplitude participates in mean and batch identities. The response
-owner cannot be edited after construction. Boundary extension is explicit:
-refuse out-of-range queries or hold boundary values.
+terms keep dark-matter-only inputs, and raw building-block queries stay
+dark-matter-only. Native preparation copies uniform axes, upsamples the
+logarithmic ratios with cubic splines, and leaves only arithmetic-index
+linear reads inside projection loops. The amplitude participates in the
+mean and batch identities. The response owner cannot be edited after
+construction, and boundary behavior is an explicit choice: refuse
+out-of-range queries or hold each boundary value.
 
-The project [response guide](../../../../../projects/des_3pcf/FEEDBACK.md)
+The project response guide (`Cocoa/projects/des_3pcf/FEEDBACK.md`)
 defines units, array order, metadata, the executed teaching notebook and
 calibration limits. The covariance does not acquire a feedback response
 from this mean calculation.
 
 ## Acknowledgements <a name="credits"></a>
 
-**We thank Sunao Sugiyama and Rafael C. H. Gomes for their scientific work
-and for making their three-point methods, implementations and analysis
-pipelines available to the community. Their work is the foundation of this
-CosmoLike port.**
+We thank Sunao Sugiyama and Rafael C. H. Gomes for their scientific
+work and for making their three-point methods, implementations and
+analysis pipelines available to the community. Their work is the
+foundation of this CosmoLike port.
 
-**Special thanks to:**
+Special thanks go to:
 
 - **Sunao Sugiyama**, for [fastnc](https://github.com/git-sunao/fastnc), its
   shear three-point multipole method, and the numerical organization used
@@ -1090,8 +1207,8 @@ CosmoLike port.**
   its aperture kernels and shear-projection conventions, and **Xiao Fang**
   for the two-dimensional FFTLog work credited by the original transforms.
 
-**Users of this implementation must give appropriate credit to the original
-software and scientific papers.** Cite the relevant works below alongside
+Users of this implementation must give appropriate credit to the
+original software and scientific papers. Cite the works below alongside
 Cocoa/CosmoLike and the other methods used in the calculation.
 
 | Original scientific work | Contribution used here |
@@ -1102,39 +1219,34 @@ Cocoa/CosmoLike and the other methods used in the calculation.
 
 The aperture formulas are due to Jarvis, Bernstein and Jain and to
 Schneider, Kilbinger and Lombardi. The analytic covariance draws on the
-work of Linke, Heydenreich, Burger, Schneider, Wielders and Porth. We also
-thank **Tim Eifler, Elisabeth Krause and the CosmoLike contributors** for
-the numerical framework, and the Cocoa contributors for the project and
-interface conventions. [CREDITS.md](CREDITS.md) gives the corresponding
-paper links, source revisions and retained license notices.
+work of Linke, Heydenreich, Burger, Schneider, Wielders and Porth. We
+also thank Tim Eifler, Elisabeth Krause and the CosmoLike contributors
+for the numerical framework, and the Cocoa contributors for the project
+and interface conventions. [CREDITS.md](CREDITS.md) gives the
+corresponding paper links, the exact source revisions and the license
+notices.
 
-The primary code references are
-[fastnc TATT](https://github.com/git-sunao/fastnc/tree/7b2336ce37a909bed51f07f32a2a4f096e71b6ce),
-[fastnc main](https://github.com/git-sunao/fastnc/tree/e59eab5a07401d2f484bfe00dd48827f2d2162c7),
-[Rafael's Y3 integrator](https://github.com/rchgomes/3pcf_integrator/tree/d6098d326dcb03bc750adcc9627119f52d928944)
-and [his Y6 pipeline](https://github.com/rchgomes/desy6-3pcf/tree/fd59fe4fee694d359453d5f573d6a4a55a47a812).
-The scientific targets include the
-[fastnc method](https://arxiv.org/abs/2407.01798),
-[joint Y3 analysis](https://arxiv.org/abs/2503.03964) and
-[TATT/velocity-shear analysis](https://arxiv.org/abs/2601.09133).
-Their source conventions, selected estimators and publication assumptions
-must remain identifiable in every comparison. Source attribution does
-not replace the retained license notices.
+Every comparison with these works must keep their source conventions,
+estimators and publication assumptions identifiable. Source attribution
+does not replace the license notices.
 
 The project implements fixed-covariance Fisher calculations and
-precision-matrix expansion using the full joint covariance. Their physical
-interpretation still requires numerical refinement, a matched estimator
-and explicit priors. The downloaded Y3 inputs are pinned candidates for
-published-analysis comparisons. The inspected Y6 repository provides its
-pipeline but keeps measured vectors, joint covariance and trained networks
+precision-matrix expansion using the full joint covariance. Their
+physical interpretation still requires numerical refinement, a matched
+estimator and explicit priors. The pinned Y3 inputs are candidates for
+published-analysis comparisons. The Y6 repository provides its pipeline
+but keeps measured vectors, joint covariance and trained networks
 external. A forecast configuration must therefore identify its source
 curves and noise inputs rather than silently borrowing Y3 values.
 
-The project's [compression guide](../../../../../projects/des_3pcf/COMPRESSION.md)
-explains optional fixed linear statistics and the normalized Percival
-finite-simulation likelihood. Conditional xi compression retains the joint
-local Gaussian response information while keeping each Map3 measurement;
-ordinary xi-only compression can lose information from the cross-covariance.
-Finite-simulation inference requires a raw sample covariance and declared
+The project's compression guide
+(`Cocoa/projects/des_3pcf/COMPRESSION.md`) explains optional fixed
+linear statistics and the normalized Percival finite-simulation
+likelihood. Conditional $`\xi`$ compression preserves the joint local
+Gaussian response information while keeping each aperture third-moment
+measurement; $`\xi`$-only compression can lose information from the
+cross-covariance.
+
+Finite-simulation inference requires a raw sample covariance and stated
 Gaussian-mock and independence assumptions. It is a separate statistical
 choice from precision-matrix expansion.

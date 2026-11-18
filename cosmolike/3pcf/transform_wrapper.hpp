@@ -4,13 +4,33 @@
 #include "transform_3pcf.h"
 
 namespace cosmolike_interface {
-// Notebook arrays own their storage. Cube axes remain [L,ell1,ell2],
-// even though Armadillo stores its first axis contiguously. These wrappers
-// pack C-order buffers before calling exactly the production C routines.
+// Notebook adapters for the angular coupling, the double-Bessel FFTLog
+// transform and the natural-component reconstruction. Every Armadillo
+// argument owns its storage: the pybind layer copies the caller's NumPy
+// input before these wrappers run. A cube keeps its physical axis order,
+// [L,ell1,ell2] for the Legendre coefficients b_L, even though Armadillo
+// stores the first index fastest while C reads the last index fastest;
+// each wrapper therefore packs an explicit row-major buffer and hands
+// that buffer to the same C routine the production path calls.
+//
+// Terms the comments below use:
+//   psi   - the opening angle arctan(ell2/ell1) in [0,pi/2]. It encodes
+//           the ratio of the two multipole legs but is itself an angle.
+//   b_L   - the Legendre coefficients, in mu, of the projected E-mode
+//           bispectrum; mu is the cosine in the triangle closure
+//           ell3^2 = ell1^2 + ell2^2 - 2 ell1 ell2 mu.
+//   nu    - the FFTLog bias: the power-law tilt divided out of the
+//           integrand so the integral on the logarithmic grid becomes a
+//           convolution that the FFT evaluates.
+//   xy    - the constant in theta = xy/ell that fixes where the FFTLog
+//           output grid lands.
+//   taper - suppression of the highest log-frequency coefficients, which
+//           damps the ringing that the FFT's periodic assumption causes;
+//           window enables it, window_width sets the tapered fraction.
 arma::Cube<double> coupling_cpp_3pcf(
-    const arma::Col<double>& psi, // angular ratio in radians
+    const arma::Col<double>& psi, // [nquery], opening angles in [0,pi/2]
     int lmax, // maximum Legendre degree
-    int mmax, // maximum angular mode
+    int mmax, // maximum angular Fourier mode
     int npsi // optional interpolation length
   );
 
@@ -19,13 +39,13 @@ arma::Mat<double> bessel_cpp_3pcf(
     const arma::Mat<double>& integrand, // dln ell integrand
     int order1, // first Bessel order
     int order2, // second Bessel order
-    double nu1, // first bias
-    double nu2, // second bias
-    double xy, // grid alignment
-    double dlnt, // radial-bin width
-    int padding, // zero padding on both ends
-    bool window, // enable taper
-    double window_width // taper fraction
+    double nu1, // first FFTLog bias (tilt)
+    double nu2, // second FFTLog bias (tilt)
+    double xy, // constant in theta = xy/ell
+    double dlnt, // log radial-bin width; 0 = point values
+    int padding, // zero cells added at both grid ends
+    bool window, // enable the high-frequency taper
+    double window_width // tapered coefficient fraction
   );
 
 struct natural_result_cpp_3pcf {
@@ -35,7 +55,7 @@ struct natural_result_cpp_3pcf {
 
 natural_result_cpp_3pcf natural_cpp_3pcf(
     transform_plan_3pcf* plan, // owned by the notebook prepared-plan object
-    const arma::Cube<double>& multipoles, // [L,nell,nell]
+    const arma::Cube<double>& multipoles, // b_L, [L,nell,nell]
     int ntheta, // output radial count
     int nphi // output angle count
   );

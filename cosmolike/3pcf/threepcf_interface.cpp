@@ -21,18 +21,41 @@ extern "C" void openblas_set_num_threads(int nthreads);
 namespace py = pybind11;
 namespace cosmolike_interface {
 
-// Production borrows C-contiguous float64 arrays and allocates its own
-// NumPy results. noconvert() on every argument prohibits hidden copies
-// from a different dtype or layout. Notebook entry points instead copy
-// into Armadillo, so sliced and Fortran-order inputs remain unchanged.
-// Both routes call the same C kernels; C++ owns no numerical integral.
+// ---------------------------------------------------------------------------
+// threepcf_interface.cpp: the pybind entry points of the aperture and
+// covariance stage of the shear three-point pipeline. Python supplies
+// natural components - the four complex three-shear correlators
+// Gamma_0..Gamma_3, distinguished by which of the three shears is
+// complex-conjugated (Gamma_0 conjugates none, Gamma_i the shear at
+// vertex i; Schneider & Lombardi, arXiv:astro-ph/0207454) - together
+// with aperture weights and pair correlations, and receives aperture
+// moments - third moments of circularly filtered aperture fields -
+// and their Gaussian covariances. Complex quantities travel
+// split-complex: the real and imaginary parts go as two separate real
+// arrays; the bindings name them wr/wi for the integration weights
+// and gr/gi for the natural-component grid.
+//
+// Two routes reach the same C kernels; C++ owns no numerical integral.
+// The production route borrows C-contiguous float64 arrays and
+// allocates its own NumPy results; noconvert() on every argument stops
+// pybind from copying a different dtype or layout silently. The
+// notebook route copies every input into Armadillo instead, so sliced
+// and Fortran-order arrays work unchanged.
 //
 // Cache invalidation:
-// No array or model state is retained. Prepared aperture weights belong
-// to the caller, which must rebuild them after changing bins or filters.
+// These bindings keep no array or model state. Prepared aperture
+// weights belong to the caller, who must rebuild them after changing
+// bins or filters.
+// ---------------------------------------------------------------------------
 using array_3pcf = py::array_t<double, py::array::c_style>;
 using int_array_3pcf = py::array_t<int, py::array::c_style>;
 
+
+// ============================================================================
+// [SECTION] VALIDATION HELPERS
+// ============================================================================
+
+// Abort with a diagnostic when an input breaks its contract.
 static void require_3pcf(
     const bool condition, // required shape or physical-domain condition
     const char* message // diagnostic for a violated input contract
@@ -45,6 +68,8 @@ static void require_3pcf(
 }
 
 
+// Check the rank and axis lengths of a borrowed NumPy argument, naming
+// the offending argument in the diagnostic.
 template <typename Array>
 static void rank_3pcf(
     const Array& values, // borrowed NumPy argument
@@ -66,9 +91,10 @@ static void rank_3pcf(
 }
 
 
-// C-contiguous describes strides, not pointer alignment. A NumPy buffer
-// created with a one-byte offset can be contiguous but cannot be read
-// through a C double*. Reject it before the first typed dereference.
+// C-contiguity describes strides, not pointer alignment. A NumPy
+// buffer built with a one-byte offset can be contiguous, yet a typed
+// read of a double through a misaligned pointer is undefined behavior
+// in C. Reject such a buffer before the first typed dereference.
 static void aligned_3pcf(
     const py::array& values, // borrowed array before typed data access
     const std::size_t alignment, // alignof its C element type
@@ -83,6 +109,8 @@ static void aligned_3pcf(
 }
 
 
+// Abort when any element of a real array is NaN or infinite. The
+// alignment check runs first, so the typed read below is defined.
 static void finite_3pcf(
     const array_3pcf& values, // real array in any physical units
     const char* name // argument name for the diagnostic
@@ -98,6 +126,9 @@ static void finite_3pcf(
 }
 
 
+// Compare the shapes of the two halves of a split-complex pair. The
+// pair is consistent only when the real and imaginary arrays agree
+// axis by axis.
 static bool same_shape_3pcf(
     const array_3pcf& first, // first split-complex component
     const array_3pcf& second // matching split-complex component
@@ -115,6 +146,8 @@ static bool same_shape_3pcf(
 }
 
 
+// Abort when a value falls below its physical lower bound; strict
+// excludes zero as well, for quantities such as side lengths.
 static void lower_bound_3pcf(
     const array_3pcf& values, // finite array already checked by the caller
     const bool strict, // true: >0, false: >=0
@@ -131,9 +164,18 @@ static void lower_bound_3pcf(
 }
 
 
-// A covariance reflected across its diagonal assumes K_ij=K_ji. Accept
-// rounding-scale input differences only, relative to the entries' size;
-// no unit-sized absolute tolerance hides asymmetry in small correlations.
+// The Gaussian kernel reflects one covariance triangle across the
+// diagonal, which assumes K_ij = K_ji. This check accepts only
+// rounding-scale differences relative to the entries themselves; an
+// absolute tolerance of order one would hide real asymmetry in small
+// correlations.
+//
+// Why 64 machine epsilons: the caller typically builds K_ij and K_ji
+// by two separate floating-point sums (filtered_pair evaluates every
+// ordered pair independently), so the two orderings can disagree by a
+// few dozen roundings even for an exactly symmetric model. The factor
+// 64 leaves that accumulation headroom while still rejecting genuine
+// asymmetry, which enters at a far larger scale.
 static bool symmetric_values_3pcf(
     const double first, // K_ij at a fixed separation
     const double second // K_ji at that separation
@@ -145,9 +187,19 @@ static bool symmetric_values_3pcf(
 }
 
 
-// Return real and imaginary weights [filter,4,triangle]. Triangle order
-// is (d2 index,d3 index,phi index), with phi adjacent in memory. The C
-// routine includes mirror terms and 1/4, so callers apply no extra factor.
+// ============================================================================
+// [SECTION] PRODUCTION ENTRY POINTS
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Finite triangle-bin aperture weights. The C kernel returns the real
+// and imaginary parts of the integration weights [filter, 4, triangle]
+// that contract natural components into aperture moments. A triangle's
+// flat index orders (d2 index, d3 index, phi index), with phi adjacent
+// in memory. The kernel already includes both mirrored triangle
+// configurations and the final factor 1/4, so callers apply no extra
+// factor.
+// ---------------------------------------------------------------------------
 static py::tuple aperture_weights_production_3pcf(
     const array_3pcf& d2, // [nd2], positive centers in radians
     const array_3pcf& d3, // [nd3], positive centers in radians
@@ -200,6 +252,15 @@ static py::tuple aperture_weights_production_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Contract prepared aperture weights with natural components for
+// several source triplets or model samples at once. The C routine
+// takes the real part of the product weight*gamma without conjugating
+// either factor, so the caller passes both imaginary halves as well:
+// the real part of a complex product mixes them with the real parts.
+// The output [sample, filter] holds one real aperture moment per
+// sample and radius triplet.
+// ---------------------------------------------------------------------------
 static array_3pcf aperture_apply_production_3pcf(
     const array_3pcf& weights_real, // [filter,4,triangle], real weights
     const array_3pcf& weights_imag, // matching imaginary weights
@@ -234,6 +295,19 @@ static array_3pcf aperture_apply_production_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Filtered pair correlation of two fields. The C kernel evaluates
+//
+//   K_ij(r) = integral dell ell/(2 pi) U_i(ell) U_j(ell) P_ij(ell)
+//             J0(ell r),
+//
+// where ell is the angular multipole, U_i is the Fourier filter of
+// field i, P_ij is the angular power spectrum of fields i and j, r is
+// the separation in radians and J0 is the cylindrical Bessel function
+// of the first kind and order zero. The caller supplies the d ell
+// quadrature weights; the kernel inserts the factor ell J0(ell r) and
+// the 1/(2 pi).
+// ---------------------------------------------------------------------------
 static array_3pcf filtered_pair_production_3pcf(
     const array_3pcf& ell, // [nell], nonnegative multipoles
     const array_3pcf& ell_weights, // [nell], d ell quadrature weights
@@ -271,8 +345,18 @@ static array_3pcf filtered_pair_production_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Weighted contraction of connected responses that the caller evaluates
+// on common quadrature nodes:
+//
+//   out[row, column] = sum_node weights[node] responses[row, node]
+//                      responses[column, node].
+//
+// The caller places the entire physical measure, any survey-area factor
+// included, in the weights; the kernel adds nothing of its own.
+// ---------------------------------------------------------------------------
 static array_3pcf connected_gram_production_3pcf(
-    const array_3pcf& responses, // [row,node], supplied halo responses
+    const array_3pcf& responses, // [row,node], caller's halo responses
     const array_3pcf& weights // [node], nonnegative integration measure
   )
 {
@@ -294,6 +378,15 @@ static array_3pcf connected_gram_production_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Gaussian covariance of raw cubic aperture fields. For Gaussian
+// fields, Wick's theorem splits the expectation of a product of six
+// fields into products of pair expectations; these splittings are the
+// Wick pairings, and the C kernel keeps all fifteen of them, the pairs
+// joining two fields at the same aperture center included. A catalogue
+// estimator over distinct galaxies drops its self-pair noise terms,
+// which this kernel does not subtract.
+// ---------------------------------------------------------------------------
 static array_3pcf gaussian_covariance_production_3pcf(
     const int_array_3pcf& triplets, // [row,3], zero-based field labels
     const array_3pcf& pair, // [field,field,r], symmetric correlations
@@ -320,6 +413,9 @@ static array_3pcf gaussian_covariance_production_3pcf(
   const int nfield = static_cast<int>(pair.shape(0));
   const int nr = static_cast<int>(pair.shape(2));
   const int nrow = static_cast<int>(triplets.shape(0));
+
+  // The C loop fills one covariance triangle and reflects it. That is
+  // the same Gaussian covariance only for symmetric field correlations.
   for (int first=0; first<nfield; first++) {
     for (int second=0; second<first; second++) {
       require_3pcf(symmetric_values_3pcf(*pair_zero.data(first, second),
@@ -339,10 +435,19 @@ static array_3pcf gaussian_covariance_production_3pcf(
 }
 
 
-// Copy notebook inputs before Armadillo sees them. A private Fortran-order
-// NumPy copy has the same first-index-fastest order as Armadillo. A second
-// explicit copy gives Armadillo ownership, including for small cubes whose
-// elements live inside the C++ object. Input CARMA casters are not used.
+// ============================================================================
+// [SECTION] NOTEBOOK INPUT CONVERSION
+// ============================================================================
+
+// Convert a notebook input into an owning Armadillo array. This
+// converter insists on a NumPy array and rejects everything else,
+// because a long Python list that enters through the binding-level
+// caster can arrive zero-filled; a caller converts a list safely with
+// numpy.asarray first. A private Fortran-order copy matches
+// Armadillo's first-index-fastest storage, and a second explicit copy
+// gives Armadillo ownership, including for small cubes whose elements
+// would otherwise live inside the C++ temporary. No input caster of
+// CARMA, the NumPy-Armadillo bridge library, runs on this route.
 template <typename Array>
 static Array notebook_input_3pcf(
     const py::object& input, // NumPy array; may be strided or read-only
@@ -386,6 +491,15 @@ static Array notebook_input_3pcf(
 }
 
 
+// ============================================================================
+// [SECTION] THREAD CONTROL
+// ============================================================================
+
+// Fix the OpenMP team size for later C calls. openblas_set_num_threads
+// pins BLAS to one thread first: the C kernels parallelize their own
+// loops with OpenMP, and a BLAS call that spawned its own team inside
+// an OpenMP region would oversubscribe the cores - more threads than
+// cores, all competing for them.
 static void set_threads_3pcf(
     const int nthreads // positive requested OpenMP team size
   )
@@ -401,14 +515,22 @@ static void set_threads_3pcf(
 }
 
 
-// Python names are identical across the two submodules. Only ownership
-// and storage conversion differ. Results keep the documented physical
-// axes; notebook matrices/cubes are exported in Fortran storage order.
+// ============================================================================
+// [SECTION] MODULE REGISTRATION
+// ============================================================================
+
+// Register both submodules. Python names repeat across the two routes;
+// only ownership and storage conversion differ between them. Results
+// keep the documented physical axes, and the notebook route exports
+// matrices and cubes in Fortran storage order.
 void bind_threepcf(
     py::module_& module // project extension receiving both interfaces
   )
 {
+  // Triplet labels cross the Python/C boundary as 32-bit C int.
   static_assert(sizeof(int) == 4, "triplets require 32-bit C int");
+  // Pin BLAS to one thread at import, before any OpenMP region runs
+  // (set_threads_3pcf explains why).
   openblas_set_num_threads(1);
   module.def("set_omp_threads", &set_threads_3pcf,
       "Set the positive OpenMP worker count; BLAS remains serial.",
@@ -422,40 +544,55 @@ void bind_threepcf(
   }, "Return the maximum OpenMP team size for subsequent C calls.");
 
   py::module_ production = module.def_submodule("production",
-      "C-contiguous float64/int32 NumPy interface; arrays are borrowed.");
+      "C-contiguous float64/int32 NumPy interface; the bindings borrow "
+      "the caller's arrays without copying them.");
   production.def("aperture_weights", &aperture_weights_production_3pcf,
-      "Return (wr,wi)[filter,4,triangle], including mirror and 1/4. "
-      "d2,d3,phi and filters are in radians; filters has shape [filter,3].",
+      "Finite triangle-bin aperture weights. The pair (wr, wi) holds "
+      "the real and imaginary parts of the integration weights "
+      "[filter, 4, triangle], including both mirrored triangle "
+      "configurations and the factor 1/4. d2, d3, phi and the "
+      "[filter, 3] aperture radii are in radians.",
       py::arg("d2").noconvert(), py::arg("d3").noconvert(),
       py::arg("phi").noconvert(), py::arg("dlnd"), py::arg("dphi"),
       py::arg("filters").noconvert());
   production.def("aperture_apply", &aperture_apply_production_3pcf,
-      "Contract wr/wi[filter,4,triangle] with gr/gi[sample,4,triangle]. "
-      "Return real aperture moments [sample,filter] without conjugation.",
+      "Contract prepared aperture weights with natural components. wr "
+      "and wi hold the real and imaginary parts of the integration "
+      "weights [filter, 4, triangle]; gr and gi hold the real and "
+      "imaginary parts of the natural-component grid "
+      "[sample, 4, triangle]. The result [sample, filter] is the real "
+      "part of the product, with neither factor conjugated.",
       py::arg("wr").noconvert(), py::arg("wi").noconvert(),
       py::arg("gr").noconvert(), py::arg("gi").noconvert());
   production.def("filtered_pair", &filtered_pair_production_3pcf,
-      "Return K[field,field,r] from supplied angular spectra. "
-      "ell_weights integrates d ell; C supplies ell J0(ell*r)/(2*pi).",
+      "Filtered pair correlations K[field, field, r] from the "
+      "caller's angular spectra: K_ij(r) = integral dell ell/(2 pi) "
+      "U_i U_j P_ij J0(ell r), with J0 the cylindrical Bessel function "
+      "of the first kind and order zero. ell_weights holds the d ell "
+      "quadrature; C inserts ell J0(ell r)/(2 pi).",
       py::arg("ell").noconvert(), py::arg("ell_weights").noconvert(),
       py::arg("r").noconvert(), py::arg("filters").noconvert(),
       py::arg("power").noconvert());
   production.def("connected_gram", &connected_gram_production_3pcf,
-      "Return sum_node weights*responses[row]*responses[column]. "
-      "Nonnegative weights already contain the desired physical measure.",
+      "Connected covariance from responses on common nodes: "
+      "out[row, column] = sum_node weights * responses[row] * "
+      "responses[column]. The nonnegative weights carry the entire "
+      "physical measure; the kernel adds no factor of its own.",
       py::arg("responses").noconvert(), py::arg("weights").noconvert());
   production.def("gaussian_aperture_covariance",
       &gaussian_covariance_production_3pcf,
-      "All fifteen Gaussian pairings for raw cubic aperture fields. "
-      "radial_weights contains the radial area/window measure. "
-      "pair and pair_zero must be symmetric to 64 machine epsilons. "
-      "Catalogue distinct-galaxy exclusions are not applied.",
+      "Gaussian covariance of raw cubic aperture fields, keeping all "
+      "fifteen Wick pairings: the splittings of a Gaussian six-field "
+      "expectation into products of pairs. radial_weights carries the "
+      "radial area and window measure. pair and pair_zero must be "
+      "symmetric to 64 machine epsilons. The kernel subtracts no "
+      "distinct-galaxy catalogue exclusions.",
       py::arg("triplets").noconvert(), py::arg("pair").noconvert(),
       py::arg("pair_zero").noconvert(),
       py::arg("radial_weights").noconvert());
 
   py::module_ notebook = module.def_submodule("notebook",
-      "Owning Armadillo copies over the same C numerical kernels.");
+      "Armadillo-owned copies of every input, over the same C kernels.");
   notebook.def("aperture_weights", [](
       const py::object& d2, // [nd2], radians
       const py::object& d3, // [nd3], radians
@@ -473,7 +610,9 @@ void bind_threepcf(
         dlnd, dphi, filters_input);
     return py::make_tuple(carma::cube_to_arr(std::move(result.real)),
         carma::cube_to_arr(std::move(result.imag)));
-  }, "Copy inputs; return aperture weights with the production axes.",
+  }, "Notebook twin of production.aperture_weights: copy the inputs "
+      "through Armadillo, then return the same weights on the "
+      "production axes.",
       py::arg("d2"), py::arg("d3"), py::arg("phi"), py::arg("dlnd"),
       py::arg("dphi"), py::arg("filters"));
 
@@ -489,7 +628,11 @@ void bind_threepcf(
     const auto gamma_imag = notebook_input_3pcf<arma::Cube<double>>(gi, 3);
     return carma::mat_to_arr(aperture_apply_cpp_3pcf(weights_real,
         weights_imag, gamma_real, gamma_imag));
-  }, "Copy split-complex inputs; return moments [sample,filter].",
+  }, "Notebook twin of production.aperture_apply: copy the "
+      "split-complex pairs - wr/wi, the real and imaginary parts of "
+      "the integration weights, and gr/gi, the real and imaginary "
+      "parts of the natural-component grid - through Armadillo, then "
+      "return the real moments [sample, filter].",
       py::arg("wr"), py::arg("wi"), py::arg("gr"), py::arg("gi"));
 
   notebook.def("filtered_pair", [](
@@ -510,12 +653,14 @@ void bind_threepcf(
         notebook_input_3pcf<arma::Cube<double>>(power, 3);
     return carma::cube_to_arr(filtered_pair_cpp_3pcf(ell_input,
         weight_input, radius_input, filters_input, power_input));
-  }, "Copy inputs; return filtered pair correlations [field,field,r].",
+  }, "Notebook twin of production.filtered_pair: copy the inputs "
+      "through Armadillo, then return the filtered pair correlations "
+      "[field, field, r].",
       py::arg("ell"), py::arg("ell_weights"), py::arg("r"),
       py::arg("filters"), py::arg("power"));
 
   notebook.def("connected_gram", [](
-      const py::object& responses, // [row,node], supplied responses
+      const py::object& responses, // [row,node], caller's responses
       const py::object& weights // [node], nonnegative measure
     ) {
     const auto response_input =
@@ -524,7 +669,9 @@ void bind_threepcf(
         notebook_input_3pcf<arma::Col<double>>(weights, 1);
     return carma::mat_to_arr(
         connected_gram_cpp_3pcf(response_input, weight_input));
-  }, "Copy inputs; return the supplied-response covariance [row,row].",
+  }, "Notebook twin of production.connected_gram: copy the responses "
+      "and weights through Armadillo, then return the covariance "
+      "[row, row].",
       py::arg("responses"), py::arg("weights"));
 
   notebook.def("gaussian_aperture_covariance", [](
@@ -543,8 +690,10 @@ void bind_threepcf(
         notebook_input_3pcf<arma::Col<double>>(radial_weights, 1);
     return carma::mat_to_arr(gaussian_aperture_covariance_cpp_3pcf(
         triplet_input, pair_input, zero_input, weight_input));
-  }, "Copy inputs; retain all fifteen raw-field Gaussian pairings. "
-      "Pair correlations must be symmetric to 64 machine epsilons.",
+  }, "Notebook twin of production.gaussian_aperture_covariance: copy "
+      "the inputs through Armadillo and keep all fifteen Wick "
+      "pairings. Pair correlations must be symmetric to 64 machine "
+      "epsilons.",
       py::arg("triplets"), py::arg("pair"), py::arg("pair_zero"),
       py::arg("radial_weights"));
 }

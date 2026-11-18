@@ -3,14 +3,25 @@
 
 namespace cosmolike_interface {
 
-// A source pointer is used only long enough to make the Armadillo-owned
-// copy. Moving a caller's NumPy array or changing it after the request
-// has been prepared cannot change this notebook calculation.
+// ---------------------------------------------------------------------------
+// Notebook wrappers of the 3PCF covariance kernels. A notebook wrapper
+// takes Armadillo-typed inputs (Armadillo is the C++ linear-algebra
+// library the interactive bindings use), copies them into buffers it
+// owns, calls the C kernel, and returns Armadillo containers. The
+// wrappers keep no state between calls, so an interactive session can
+// slice, move or overwrite its arrays freely between calls.
+// ---------------------------------------------------------------------------
+
+// The constructor reads each source pointer only long enough to make
+// the Armadillo-owned copy. Once it returns, moving or changing the
+// caller's NumPy array cannot change this notebook calculation.
 covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
   const covariance_input_3pcf& input, // validated arrays and scalars
   const int nsource // full physical source count, including unselected bins
 ) : request(input)
 {
+  // Each arrays[] entry is {name, {source pointer, element count}}:
+  // the name keys the owned copy, and the count sizes it.
   const std::pair<const char*, std::pair<const double*, size_t>> arrays[] = {
     {"ell", {input.ell, (size_t)input.nell}},
     {"dell", {input.dell, (size_t)input.nell}},
@@ -45,8 +56,9 @@ covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
     real.emplace("theta_edges", std::move(edges));
     request.theta_edges = real.at("theta_edges").memptr();
   }
-  // Source count comes from the model, not the selected field subset.
-  // The noise copy therefore retains every off-diagonal source pair.
+  // The source count comes from the model, not from the field subset
+  // the request selects, so the noise copy keeps every off-diagonal
+  // source pair.
   const std::pair<const char*, std::pair<const int*, size_t>> indices[] = {
     {"field_source", {input.field_source, (size_t)input.nfield}},
     {"row_kind", {input.row_kind, (size_t)input.nrow}},
@@ -86,6 +98,23 @@ const covariance_input_3pcf& covariance_request_cpp_3pcf::get() const
 }
 
 
+// ---------------------------------------------------------------------------
+// Notebook covariance: the mean and the six covariance families.
+//
+// The C engine writes the terms as one flat [term,row,column] array;
+// the loop below unpacks it into a cube indexed (row, column, term).
+//
+// Parameters:
+//   model - borrowed immutable physical tables
+//   input - privately owned quadrature arrays
+//
+// Returns:
+//   (mean, terms): mean[nrow], and an arma::Cube indexed
+//   (row, column, term) whose six slices are, in order: Gaussian,
+//   bispectrum-squared (BB), power times one-halo trispectrum, power
+//   times bispectrum, connected one-halo, and the chosen
+//   halo-abundance response (covariance_physics_3pcf.h).
+// ---------------------------------------------------------------------------
 std::pair<arma::Col<double>, arma::Cube<double>> covariance_physical_cpp_3pcf(
   const physics_model_3pcf* model, // borrowed immutable physical tables
   const covariance_request_cpp_3pcf& input // privately owned quadrature arrays
@@ -111,6 +140,20 @@ std::pair<arma::Col<double>, arma::Cube<double>> covariance_physical_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Notebook halo tables on the (z, M) grid.
+//
+// Parameters:
+//   model     - read-only cosmology
+//   input     - owned halo quadratures
+//   z         - redshift grid
+//   k_profile - nonnegative h/Mpc profile wavenumbers
+//
+// Returns:
+//   five flat C-order columns: sigma2 (the mass variance), dndm (the
+//   halo abundance), bias and concentration, each flattened [z,M],
+//   and then the normalized NFW profile u, flattened [z,M,k].
+// ---------------------------------------------------------------------------
 std::vector<arma::Col<double>> covariance_halos_cpp_3pcf(
   const physics_model_3pcf* model, // read-only cosmology
   const covariance_request_cpp_3pcf& input, // owned halo quadratures
@@ -133,6 +176,19 @@ std::vector<arma::Col<double>> covariance_halos_cpp_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Notebook bin-averaged xi from E/B angular power spectra.
+//
+// Parameters:
+//   ell, dell            - multipole nodes and their dell weights
+//   theta                - separation nodes [row,separation], radians
+//   theta_weight         - normalized bin weights, same shape
+//   spectra_e, spectra_b - E- and B-mode signal power [row,ell]
+//   sign                 - +1 selects xi+ (J0), -1 selects xi- (J4)
+//
+// Returns:
+//   arma::Col of length nrow: the bin-averaged xi of each row
+// ---------------------------------------------------------------------------
 arma::Col<double> covariance_xi_cpp_3pcf(
   const arma::Col<double>& ell, // multipoles
   const arma::Col<double>& dell, // integration weights in dell
