@@ -336,13 +336,16 @@ export BLIS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 ```
 
-**Step :four:**: run the array checks and render the figures from that core
-directory. Supply the actual project and output paths to the renderer.
+**Step :four:**: run the array checks from that core directory.
 
 ```bash
 python -m pytest --import-mode=importlib \
   cosmolike_notebook_utils/3pcf/tests/test_plots.py
+```
 
+**Step :five:**: render the figures. Supply the actual project and output paths.
+
+```bash
 python cosmolike_notebook_utils/3pcf/tests/render_examples.py \
   --project-dir /absolute/path/to/Cocoa/projects/des_3pcf \
   --output-dir /absolute/path/to/figure_output

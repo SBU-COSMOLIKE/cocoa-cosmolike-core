@@ -11,7 +11,7 @@
 9. [Preparation, interpolation and parallel work](#preparation)
 10. [Changing a calculation without restarting Python](#state)
 11. [Accuracy and independent checks](#checks)
-12. [Credits and scientific validation](#credits)
+12. [Acknowledgements](#credits)
 
 ## What can be calculated? <a name="scope"></a>
 
@@ -929,15 +929,46 @@ execution of the complete original survey pipeline. The project validation
 record states what was actually run; planned notebooks or unpublished
 survey inputs must not be counted as completed evidence.
 
-## Credits and scientific validation <a name="credits"></a>
+## Acknowledgements <a name="credits"></a>
 
-This work builds on Sunao Sugiyama's fastnc, Rafael Gomes's Y3 and Y6
-three-point pipelines, Mike Jarvis's TreeCorr aperture implementation,
-and the aperture formulas of Jarvis, Bernstein and Jain and of Schneider,
-Kilbinger and Lombardi. The two-Bessel transform follows Xiao Fang's
-FFTLog work and Sunao Sugiyama's modifications. The analytic covariance draws on the work
-of Linke, Heydenreich, Burger, Schneider, Wielders and Porth. Full source
-links, papers and retained notices are in [CREDITS.md](CREDITS.md).
+**We thank Sunao Sugiyama and Rafael C. H. Gomes for their scientific work
+and for making their three-point methods, implementations and analysis
+pipelines available to the community. Their work is the foundation of this
+CosmoLike port.**
+
+**Special thanks to:**
+
+- **Sunao Sugiyama**, for [fastnc](https://github.com/git-sunao/fastnc), its
+  shear three-point multipole method, and the numerical organization used
+  by the transforms in this directory. The
+  [TATT branch](https://github.com/git-sunao/fastnc/tree/tatt) and main branch
+  provide separately identified source comparisons.
+- **Rafael C. H. Gomes**, for the intrinsic-alignment modeling and DES
+  two-/three-point analysis, and for
+  [3pcf_integrator](https://github.com/rchgomes/3pcf_integrator) and
+  [desy6-3pcf](https://github.com/rchgomes/desy6-3pcf). Their aperture
+  integration and survey workflows guide the port and its companion project.
+- **Mike Jarvis**, for [TreeCorr](https://github.com/rmjarvis/TreeCorr),
+  its aperture kernels and shear-projection conventions, and **Xiao Fang**
+  for the two-dimensional FFTLog work credited by the original transforms.
+
+**Users of this implementation must give appropriate credit to the original
+software and scientific papers.** Cite the relevant works below alongside
+Cocoa/CosmoLike and the other methods used in the calculation.
+
+| Original scientific work | Contribution used here |
+|---|---|
+| Sunao Sugiyama, Rafael C. H. Gomes and Mike Jarvis, [Fast modeling of the shear three-point correlation function](https://arxiv.org/abs/2407.01798) | Bispectrum multipoles, natural shear components and the fastnc method |
+| Rafael C. H. Gomes and collaborators, [Cosmology with second and third-order shear statistics for the Dark Energy Survey: Methods and simulated analysis](https://arxiv.org/abs/2503.03964) | Joint two-/three-point analysis, aperture statistics and DES Y3 reference inputs |
+| Rafael C. H. Gomes, Kyle Miller, Sunao Sugiyama, Jonathan Blazek, Thomas Bakx and Bhuvnesh Jain, [Tidal alignment and tidal torquing modeling for the cosmic shear three-point correlation function and mass aperture skewness](https://arxiv.org/abs/2601.09133) | Three-point TATT and velocity-shear intrinsic-alignment modeling |
+
+The aperture formulas are due to Jarvis, Bernstein and Jain and to
+Schneider, Kilbinger and Lombardi. The analytic covariance draws on the
+work of Linke, Heydenreich, Burger, Schneider, Wielders and Porth. We also
+thank **Tim Eifler, Elisabeth Krause and the CosmoLike contributors** for
+the numerical framework, and the Cocoa contributors for the project and
+interface conventions. [CREDITS.md](CREDITS.md) gives the corresponding
+paper links, source revisions and retained license notices.
 
 The primary code references are
 [fastnc TATT](https://github.com/git-sunao/fastnc/tree/7b2336ce37a909bed51f07f32a2a4f096e71b6ce),
