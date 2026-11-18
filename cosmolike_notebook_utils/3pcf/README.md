@@ -302,17 +302,47 @@ contract. A returned plot is a presentation of supplied arrays, not a check of
 their physical units, source-kernel normalization, positive definiteness, or
 agreement with a published inference.
 
-**Step :three:**: check the displayed arrays and render the figures. Run the
-small array-only checks and renderer from the core directory:
+**Step :three:**: prepare the thread settings. Start in an activated `Cocoa/`
+directory, after `source start_cocoa.sh`, and enter
+`external_modules/code/cosmolike_core/`.
+
+On Linux:
 
 ```bash
-OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-BLIS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_THREAD_LIMIT=4 \
+export OMP_NUM_THREADS=1
+export OMP_THREAD_LIMIT=4
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
+export OMP_DYNAMIC=FALSE
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export BLIS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+```
+
+On macOS:
+
+```bash
+export OMP_NUM_THREADS=1
+export OMP_THREAD_LIMIT=4
+export OMP_PROC_BIND=disabled
+export OMP_PLACES=cores
+export OMP_DYNAMIC=FALSE
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export BLIS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+```
+
+**Step :four:**: run the array checks and render the figures from that core
+directory. Supply the actual project and output paths to the renderer.
+
+```bash
 python -m pytest --import-mode=importlib \
   cosmolike_notebook_utils/3pcf/tests/test_plots.py
 
-OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-BLIS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1 OMP_THREAD_LIMIT=4 \
 python cosmolike_notebook_utils/3pcf/tests/render_examples.py \
   --project-dir /absolute/path/to/Cocoa/projects/des_3pcf \
   --output-dir /absolute/path/to/figure_output
