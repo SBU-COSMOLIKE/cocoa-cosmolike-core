@@ -271,6 +271,28 @@ substitutions give -6.72% and -5.30%. The original step disagreements
 remain. These values belong to the project's stated demonstration and
 must not be turned into general accuracy tolerances.
 
+The project's `tests/studies/full_smaller_step_study.py` follows this
+with a full h/4 derivative matrix at unchanged numerical settings. The
+original archive supplies the center and outer +/-h/2 points; only
++/-h/4 are new. A matching two-column step study can supply four more
+saved means. Keep this lookup separate from the physical engine's cache.
+Passing the recorded vectors to the existing `differentiate` at spacing
+h/2 reconstructs the archived D_h2 and calculates D_h4. Require the
+former to agree bit for bit before publishing the latter. Save the
+result in its separate format with the original configuration and an
+explicit step divisor; do not relabel it as the old baseline.
+
+This reuse checks physical identities, absolute coordinates, producer
+hashes, shared nodes and receipt hashes. Existing saved points require
+their receipts, and a reused point must also match its verified source
+vector bit for bit. An interrupted partial file is refused rather than
+silently accepted. New means retain the original rows, covariance and
+priors, and every varied nuisance column enters the final Fisher matrix.
+The project tests include an analytic quintic whose derivative error
+decreases by sixteen on halving the spacing, as well as malformed-node
+and provenance refusals. None of these implementation checks certifies
+physical convergence of the chosen integration grids.
+
 The estimate assumes approximately independent evaluation jitter. Smooth
 fourth derivatives can contaminate it; odd coherent errors and correlated
 stencil errors can escape it. Report the omitted columns and measured
