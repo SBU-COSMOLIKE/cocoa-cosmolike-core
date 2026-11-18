@@ -296,6 +296,16 @@ ranges. `ylim` is an explicit display choice in the final displayed units.
 Set STIX fonts and figure resolution in the notebook or rendering script;
 the functions do not mutate global Matplotlib style.
 
+Call `check_figure_labels(figure=figure)` before saving a line figure.
+It draws the final layout and refuses labels or legends that touch the
+visible line segments or markers, including the zero reference line.
+The DES physical-feedback notebook uses this check after choosing empty
+corners for its panel labels. The helper supports rectangular clipping
+and markers at every supplied point; it refuses custom clip shapes and
+marker subsets whose visible locations it has not checked. Move a label
+or change the figure layout when the check fails, then render and inspect
+the saved image as well.
+
 The new functions follow the data-vector plotting error convention: malformed
 input prints a named `Bad Input` diagnostic and returns `0`. Valid calls return
 `(figure, axes)` when `show=None`; otherwise they display the figure and return

@@ -20,6 +20,7 @@ from ..plot_covariances import (
     plot_covariance_diagonal,
 )
 from .ia_components import plot_ia_operator_placement
+from .figure_checks import check_figure_labels
 
 __all__ = [
     "plot_Map3",
@@ -32,4 +33,5 @@ __all__ = [
     "plot_correlation",
     "plot_covariance_components",
     "plot_covariance_diagonal",
+    "check_figure_labels",
 ]

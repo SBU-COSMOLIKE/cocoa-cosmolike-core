@@ -34,6 +34,49 @@ The optional covariance `save_components` setting controls output persistence.
 The current C call still computes and returns six component matrices. Omitting
 those diagnostic files does not remove their integral work or peak C storage.
 
+## Use the installed physical feedback models before inventing inputs
+
+The DES project's `EXAMPLE_FEEDBACK_SCENARIOS.ipynb` and
+`interface/cosmolike_des_3pcf_feedback_wrappers.py` follow the LSST Y1/Roman
+`EXAMPLE_EVALUATE3` workflow. `configs/feedback_scenarios.yaml` declares
+seven bfmt points: three SP(k) relations, BCEmu, FLAMINGO, BACCO and
+BCemu2025. `python/des3pcf/baryon_scenarios.py` requests the existing
+`baryon_suppression` product, converting k from h/Mpc to 1/Mpc with h*k.
+It uses the saved CAMB As and exact neutrino density and refuses changed
+cosmology with stale metadata. These are physical power responses; the
+artificial `EXAMPLE_JOINT_FEEDBACK` pair is only an interface check.
+
+BACCO's installed Burger2025 models already include paired power and
+bispectrum weights. Select that model explicitly; Arico2021 is a different
+default. Both Burger2025 ratios describe CDM+baryons. They must not be
+relabeled total matter at nonzero neutrino mass. The ordinary Cocoa
+power-only prescription applies the cold ratio to total nonlinear P as
+an approximation. The physical-scenario notebook labels that choice and
+keeps its paired BACCO figure as a cold-matter diagnostic. Matter
+conversion, triangle-domain extensions and cosmology-dependent preparation
+remain separate requirements for a calibrated joint forecast.
+
+For the BACCO bispectrum API, pass omega_cold and sigma8_cold explicitly:
+its generic kwargs path does not propagate the derived cosmology inputs
+correctly. Use identical cold coordinates and five logarithmic feedback
+parameters for both responses. The API converts sides to float32, sorts
+legs and silently drops invalid triangles; check the triangle inequality,
+side bounds, returned row count and order. Side flags alone do not certify
+accuracy for highly squeezed shapes. The example uses equilateral and
+moderately scalene triangles. Missing local weights must fail before
+upstream constructors can download them.
+
+A bfmt failure can return unity after logging an error. Attach detection
+to the actual component's `.log`, whose name may be colorized by Cobaya;
+the plain logger name can miss it. Restore the previous handler/level and
+NumPy error policy after the call. Restore ordinary-core DMO tables even
+after a later scenario fails, and apply the caller's shear-calibration
+parameters once after xi integration. Tests cover these notebook-state
+cases as well as BACCO domain and permutation checks. The notebook saves
+the effective configuration overrides, theory/weight hashes and numerical
+arrays in a pickle-free NPZ. The large covariance simulation suite is not
+needed to generate these feedback examples.
+
 ## Thread ownership survives a reused notebook kernel
 
 Set every BLAS vendor to one thread before importing numerical libraries.
