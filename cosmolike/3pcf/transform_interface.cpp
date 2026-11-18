@@ -17,6 +17,7 @@
 #include "transform_interface.hpp"
 #include "transform_wrapper.hpp"
 #include "physics_interface.hpp"
+#include "cosmolike/basics.h"
 
 namespace py = pybind11;
 namespace cosmolike_interface {
@@ -756,7 +757,7 @@ void bind_threepcf_transform(
       py::arg("psi").noconvert(), py::arg("lmax"), py::arg("mmax"),
       py::arg("npsi")=200);
 
-  production.def("next_fft_size", &next_fft_size_3pcf,
+  production.def("next_fft_size", &next_even_fft_size,
       "Smallest even integer >= minimum whose only prime factors are "
       "2, 3 and 5. FFTW runs its fast small-radix kernels on such "
       "lengths, while a length with a large prime factor falls back to "

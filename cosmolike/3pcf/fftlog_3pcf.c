@@ -111,68 +111,6 @@ struct fftlog_workspace_3pcf {
 
 
 // ---------------------------------------------------------------------------
-// Return the smallest even length at or above the request whose only
-// prime factors are 2, 3 and 5.
-//
-// An FFT computes a length-N Fourier sum in far fewer than N*N steps
-// by factoring N: the Cooley-Tukey algorithm splits one length-N
-// transform into many short transforms whose lengths are the prime
-// factors of N. Each such factor is called a radix. FFTW ships
-// hand-tuned kernels for the small radices 2, 3 and 5, so a length
-// built only from these primes runs at full N*log(N) speed, while a
-// large prime factor pushes FFTW onto slower generic machinery.
-//
-// The caller uses the returned value as the padded transform length.
-// The cells beyond the physical grid hold zeros, so a longer length
-// changes only the amount of zero padding, never the physical samples.
-// The length must also be even, because the workspace's frequency
-// bookkeeping gives the Nyquist frequency - the highest frequency a
-// length-N grid resolves, at index N/2 - a single row of its own,
-// which only an even N provides.
-//
-// Parameters:
-//   minimum - smallest acceptable length, at least 2
-// Returns:
-//   the first even 2/3/5-smooth integer at or above minimum; the scan
-//   aborts rather than overflow int when no such length fits.
-// ---------------------------------------------------------------------------
-int next_fft_size_3pcf(
-  const int minimum // minimum even smooth transform length
-)
-{
-  if (!(minimum >= 2 && minimum < INT_MAX-2)) {
-    log_fatal("fftlog_3pcf: invalid minimum FFT length");
-    exit(1);
-  }
-
-  // Round the request up to an even number, then test even candidates
-  // only, since an odd candidate can never satisfy the evenness rule.
-  int candidate = minimum+(minimum%2);
-  for (; candidate < INT_MAX-2; candidate += 2) {
-    // Divide out every factor of 2, 3 and 5. A remainder of one means
-    // no other prime divides the candidate, so it is 2/3/5-smooth.
-    int remainder = candidate;
-    while (remainder%2 == 0) {
-      remainder /= 2;
-    }
-    while (remainder%3 == 0) {
-      remainder /= 3;
-    }
-    while (remainder%5 == 0) {
-      remainder /= 5;
-    }
-    if (remainder == 1) {
-      return candidate;
-    }
-  }
-
-  log_fatal("fftlog_3pcf: no representable FFT length");
-  exit(1);
-  return 0;
-}
-
-
-// ---------------------------------------------------------------------------
 // exp(value) - 1 at full double precision for a complex exponent.
 //
 // Purpose: keep the radial bin-average numerator exp(z*w) - 1 accurate

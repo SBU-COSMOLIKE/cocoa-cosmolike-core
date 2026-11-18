@@ -750,6 +750,31 @@ void hankel_kernel_FT_3D(
     int argc            // length of arg (unused, kept for callback signature)
   );
 
+// ---------------------------------------------------------------------------
+// Round a transform length up to the next FFT-friendly size.
+//
+// Returns the smallest m >= n whose prime factorization contains only
+// 2, 3, 5 and 7, the radices with fast dedicated FFTW kernels; the
+// comment above next_fft_size_scan in basics.c tells the full story.
+// A caller that also needs an even length retries from m + 1 when m
+// comes back odd.
+// ---------------------------------------------------------------------------
+long next_fft_size(
+    const long n        // minimum acceptable transform size
+  );
+
+// ---------------------------------------------------------------------------
+// Round a transform length up to the next even FFT-friendly size.
+//
+// Returns the smallest even m >= minimum whose prime factorization
+// contains only 2, 3 and 5, the radix set of the three-point FFTLog
+// grids. Terminates the program when minimum is below 2 or when no
+// such length is representable as an int, rather than overflow.
+// ---------------------------------------------------------------------------
+int next_even_fft_size(
+    const int minimum   // smallest acceptable even transform length
+  );
+
 #ifdef __cplusplus
 }
 #endif

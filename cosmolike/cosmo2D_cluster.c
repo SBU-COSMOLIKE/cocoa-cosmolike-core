@@ -2433,24 +2433,10 @@ static double** legendre_kernel_cluster(const int spin)
 #define CLUSTER_NL_CC 0  // statistic of C_cluster_nonlimber_core: w_cc
 #define CLUSTER_NL_CG 1  // w_cg
 
-// ---------------------------------------------------------------------------
-// next_fft_size of cosmo2D.c (static there): the smallest m >= n whose only
-// prime factors are 2, 3, 5 and 7, the sizes FFTW transforms fastest.
-// ---------------------------------------------------------------------------
-static long next_fft_size_cluster(long n)
-{
-  while (1) {
-    long m = n;
-    while (m % 2 == 0) m /= 2;
-    while (m % 3 == 0) m /= 3;
-    while (m % 5 == 0) m /= 5;
-    while (m % 7 == 0) m /= 7;
-    if (m == 1) {
-      return n;
-    }
-    n++;
-  }
-}
+// next_fft_size (basics.c) rounds the FFTLog grid length below up to
+// the next number whose only prime factors are 2, 3, 5 and 7, the
+// sizes FFTW transforms fastest; the call site retries from the next
+// integer when the result lands odd.
 
 
 // ---------------------------------------------------------------------------
@@ -2767,9 +2753,9 @@ static void C_cluster_nonlimber_core(
     N[s][1] = nchi;
     long raw = 2*N[s][0] + N[s][1];
     if (raw % 2) raw++;
-    N[s][2] = (int) next_fft_size_cluster(raw);
+    N[s][2] = (int) next_fft_size(raw);
     if (N[s][2] % 2) {
-      N[s][2] = (int) next_fft_size_cluster(N[s][2] + 1);
+      N[s][2] = (int) next_fft_size(N[s][2] + 1);
     }
     if (N[s][2] > Nmax) {
       Nmax = N[s][2];

@@ -1,8 +1,9 @@
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdlib.h> 
+#include <stdlib.h>
 
 #include <gsl/gsl_const_mksa.h>
 #include <gsl/gsl_deriv.h>
@@ -1936,4 +1937,79 @@ void hankel_kernel_FT_3D(
 
   (*res)[0] = pref*(co*d1-si*d2);
   (*res)[1] = pref*(si*d1+co*d2);
+}
+
+
+// ---------------------------------------------------------------------------
+// FFT-friendly transform lengths.
+//
+// An FFT computes a length-N Fourier sum in far fewer than N*N steps
+// by factoring N: the Cooley-Tukey algorithm splits one length-N
+// transform into many short transforms whose lengths are the prime
+// factors of N. Each such factor is called a radix. FFTW ships
+// hand-tuned kernels for small radices, so a length built only from
+// small primes runs at full N*log(N) speed, while a large prime
+// factor pushes FFTW onto slower generic machinery.
+//
+// The caller uses the returned value as the padded transform length.
+// The cells beyond the physical grid hold zeros, so a longer length
+// changes only the amount of zero padding, never the physical samples.
+// The padded length still fixes the grid that every later digit of a
+// transform depends on, so each caller keeps the radix set its
+// reference results were computed with. The one-dimensional FFTLog
+// convolutions of the Limber and cluster pipelines admit 7 to the
+// radix set, and impose any evenness requirement at the call site by
+// retrying from the next integer when the result lands odd. The
+// two-dimensional FFTLog of the three-point transform stays with 2, 3
+// and 5 and asks for an even length here, because its frequency
+// bookkeeping gives the Nyquist frequency - the highest frequency a
+// length-N grid resolves, at index N/2 - a single row of its own,
+// which only an even N provides.
+// ---------------------------------------------------------------------------
+
+// One upward scan serves both public entry points. Starting from
+// start, the scan steps by step and accepts the first candidate whose
+// division by every admitted radix leaves one. bound caps the scan
+// for a caller whose lengths must fit a narrower integer type than
+// long; the scan returns 0 when no admissible length lies below
+// bound, and the caller decides how to fail.
+static long next_fft_size_scan(const long start, const long step,
+                               const long bound, const int radix7)
+{
+  for (long candidate = start; candidate < bound; candidate += step) {
+    long remainder = candidate;
+    while (remainder % 2 == 0) remainder /= 2;
+    while (remainder % 3 == 0) remainder /= 3;
+    while (remainder % 5 == 0) remainder /= 5;
+    if (radix7) {
+      while (remainder % 7 == 0) remainder /= 7;
+    }
+    if (remainder == 1) {
+      return candidate;
+    }
+  }
+  return 0;
+}
+
+long next_fft_size(const long n)
+{
+  return next_fft_size_scan(n, 1, LONG_MAX, 1);
+}
+
+int next_even_fft_size(const int minimum)
+{
+  if (!(minimum >= 2 && minimum < INT_MAX-2)) {
+    log_fatal("next_even_fft_size: invalid minimum FFT length");
+    exit(1);
+  }
+
+  // Round the request up to an even start and test even candidates
+  // only, since an odd candidate can never satisfy the evenness rule.
+  const long found = next_fft_size_scan(minimum + (minimum%2), 2,
+                                        (long) INT_MAX - 2, 0);
+  if (found == 0) {
+    log_fatal("next_even_fft_size: no representable FFT length");
+    exit(1);
+  }
+  return (int) found;
 }

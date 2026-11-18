@@ -9060,45 +9060,10 @@ double C_kk_limber(const double l)
 //                          Limber-path values
 // ----------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// next_fft_size: Round up n to the next "FFT-friendly" number whose only
-// prime factors are 2, 3, 5, or 7.
-//
-// The FFT algorithm works by recursively splitting a size-N transform into
-// smaller sub-transforms based on N's prime factorization. FFTW has
-// highly optimized, SIMD-vectorized "codelets" for small prime factors
-// (2, 3, 5, 7), making these splits very fast.
-//
-// When N has a large prime factor p, FFTW cannot split it efficiently and
-// must fall back to generic algorithms, which are slower.
-//
-// For example:
-//   N = 10240 = 2^11 x 5  -> 11 radix-2 stages + 1 radix-5 stage, all fast
-//   N = 10201 = 101 x 101 -> two levels of prime-101 sub-transforms, slow
-//
-// Padding to a slightly larger FFT-friendly size does not affect the
-// convolution result: the extra elements are zeros, and the code reads
-// the same output indices regardless of the padded size.
-//
-// Parameters:
-//   n - minimum acceptable transform size
-//
-// Returns:
-//   the smallest m >= n whose prime factorization contains only 2, 3, 5
-//   and 7
-// ---------------------------------------------------------------------------
-static long next_fft_size(long n) {
-  while (1) {
-    long m = n;
-    while (m % 2 == 0) m /= 2;
-    while (m % 3 == 0) m /= 3;
-    while (m % 5 == 0) m /= 5;
-    while (m % 7 == 0) m /= 7;
-    if (m == 1) return n;
-    n++;
-  }
-  return n;
-}
+// next_fft_size (basics.c) rounds every FFTLog grid length here up to
+// the next number whose only prime factors are 2, 3, 5 and 7, the
+// radices FFTW transforms fastest; the call sites retry from the next
+// integer when they need an even length.
 
 // The FFTLog configuration of one radial component (cosmo2D.h,
 // cfftlog_config); config is this file's short name for it.

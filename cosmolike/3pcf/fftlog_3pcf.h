@@ -75,11 +75,6 @@ const double* fftlog_inverse_3pcf(
   int order2 // nonnegative second Bessel order
 );
 
-int next_fft_size_3pcf(
-  int minimum // smallest acceptable length; the result is the next
-              // even length whose only prime factors are 2, 3 and 5
-);
-
 #ifdef __cplusplus
 }
 #endif
