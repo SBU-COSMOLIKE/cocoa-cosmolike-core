@@ -187,6 +187,22 @@ Disk hashes do not inspect already-loaded executable memory or make
 concurrent writes atomic. Freeze calculation inputs and implementation
 while a scientific run is active.
 
+The mean CLI uses the same beginning/end check. Each accuracy candidate
+also rechecks the baseline archive, candidate configuration, plan, shared
+diagnostic and physical dependencies immediately before saving. In the
+notebook, `FisherWorkflow.ensure_result` means execute or reuse under the
+current files, so it rejects a missing or different saved identity.
+`load_result` is the explicitly historical reader; it must not imply that
+old results were calculated with today's source tables or binaries.
+
+Full accuracy comparisons also require identical archived physical-input
+and implementation identities across the baseline, selected-column scan
+and full candidate. Matching only row labels and covariance can mix two
+implementations and incorrectly attribute their difference to resolution.
+Historical readers compare the saved identities with one another; an
+executable `run_full_check` additionally checks current files before the
+child calculation starts. Keep those reading and execution contracts distinct.
+
 For a partial `--only` scan, reconstruct the summary from every existing
 current-plan case whose saved identity still matches. Compute means only
 for requested missing cases. Never discard earlier validated results merely
@@ -216,6 +232,19 @@ weight as a bound on unknown noise. Replacing selected derivative columns
 and recomputing the FoM is an additional partial test. Final acceptance still
 requires full derivatives at selected settings and both step sizes, together
 with integration-range, angular-truncation and external-table checks.
+
+In the current plan, `multipole_1p5` refines the multipole interpolation
+tables. It leaves Lmax and Mmax fixed. A historical xi quadrature plot
+using linear-midpoint sources motivates the Fourier-node increase but
+does not certify the later measured-edge PCHIP baseline. Each numerical
+evidence record must identify its source reconstruction and actual controls.
+
+Compare each derivative column in the full covariance metric. A maximum
+raw-component difference can hide aperture errors because xi and Map3
+have different numerical amplitudes. Whitening by the Cholesky factor of
+the joint covariance preserves cross correlations and makes the ratio
+`norm(D_h-D_h2)/norm(D_h2)` invariant under a change of observable units.
+Do not combine parameters with different units into one unweighted norm.
 
 The two-point Fourier transform also needs refinement. Its oscillating
 Bessel functions are not resolved merely because the input power spectrum
@@ -253,6 +282,14 @@ solves. Its sampled IA-kernel minima do not prove continuous positivity.
 Use that evidence to distinguish a reconstruction assumption from refinement
 of one fixed physical target before recomputing a full Fisher base.
 
+The project's `tests/studies/source_policy_validation.md` records the
+completed source, kernel and radial comparison. Its selected demonstration
+counts do not become core defaults. Step agreement within one source grid
+does not bound the change under another grid: the tested fourth difference
+can decrease on a coarser grid even when its derivative is farther from
+the refined result. Preserve the original source support and bin-probability
+qualification when choosing a smoother reconstruction.
+
 ## Observed inputs and inference examples
 
 The pinned integrator repository contains real unblinded Y3 measurements in
@@ -281,6 +318,34 @@ mean as its own prediction. An observed example remains a declared Gaussian
 demonstration until estimator, cuts, compression and finite-mock likelihood
 choices match the publication. A retained checkpoint requires verified target
 identity before resuming.
+
+## Match the estimator before claiming a paper reproduction
+
+The project's `tests/studies/estimator_conventions.md` distinguishes the
+published side-bin bank, the pinned theory quadrature and unknown catalogue
+weights. The Y3 paper starts with 20 logarithmic side bins over 0.5–80
+arcmin before its low-side cut. Ten replacement bins over 8–80 are a
+different quadrature. The pinned Y3 code also uses an empirical correction
+to the area-weighted representative side; a geometric midpoint does not
+reproduce that convention. The 63-angle description in the paper and the
+100-angle active pinned configuration remain different choices. State
+each one rather than infer it from the 80 packed aperture labels.
+
+The project's `ia_figure9_workflows` holds configured inputs fixed and supplies
+a common no-IA mean plus opposite-sign NLA and TATT means. Its finite
+sign-pair distance uses every selected row and the conditional Map3
+covariance through `finite_sign_pair_separation`. It is not a
+nuisance-profiled significance. The full Fisher
+experiment provides a separate local marginalization test.
+
+An overall Map3 sign transformation must act on both the mean and the
+covariance cross block. The inspected upstream likelihood applies no
+hidden sign conversion. Its public packing notebook copies the selected
+joint covariance from an earlier NPY; the realization-level producer of
+that NPY has not been traced. This is a provenance limit, not evidence
+that the provided covariance is wrong. Preserve the paired-file convention
+until its generating inputs establish a reason to change it. Neither
+positive definiteness nor agreement of the C33 block settles the C23 sign.
 
 ## Distinguish the precision-expansion simulation designs
 

@@ -804,6 +804,17 @@ zero; logarithmic storage is used only where the selected baseline admits
 it. Source-reference readers retain named upstream interpolation choices
 for controlled comparisons.
 
+The corrected DES demonstration selects these options explicitly:
+`signed_baseline=1`, `residual_scaling=1`, `shape_stretch=10.1062201`
+and `psi_scale=0.02`. They preserve signed NLA values, scale the signed
+TATT residual by an equilateral gravity projection at the same perimeter,
+and resolve narrow regions of triangle shape and projection angle. The
+C defaults remain `0`, `0`, `3` and `0`, respectively, for existing callers.
+Those defaults are not the corrected survey configuration. The settings
+and their separate convergence questions are explained in
+[the numerical guide](NUMERICS.md#interpolation); an explicit option set
+still needs resolution and derivative tests for the chosen observable.
+
 Integration is a separate operation. Fourier, angular, mass and radial
 integrals use fixed nodes and weights. A Gauss–Legendre quadrature may
 have nonuniform nodes while the function it reads lives on a uniform
