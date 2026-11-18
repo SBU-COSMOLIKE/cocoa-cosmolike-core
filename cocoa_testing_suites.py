@@ -2072,7 +2072,8 @@ W_GG_SCALE_CUT_PARTITION_KMAX = (0.1, 0.3, 1.0)
 # terms of angular bin i. w itself is no usable scale: at large angles
 # it cancels down to ~2e-3 of S_i near its zero crossing, and a bound
 # relative to |w| must be loosened everywhere to cover that one place.
-# Measured: at most 1.9e-3 of S_i in the four real-space projects;
+# Measured: up to 2.25e-3 of S_i (des_y3, the largest of the four
+# real-space projects; the other three stay at or below 1.1e-3);
 # doubling the table nodes (accuracyboost 2) shrinks the window-off
 # error fourfold, the signature of linear interpolation.
 W_GG_SCALE_CUT_LIMBER_RTOL = 1.0e-2

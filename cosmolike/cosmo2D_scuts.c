@@ -2914,7 +2914,9 @@ void gg_scale_cuts_tomo_ells_work(
 // ---------------------------------------------------------------------------
 // The cut of the Fourier gg section above, applied to cosmic shear C_ss
 // and galaxy-galaxy lensing C_gs: the same split C_l = C_l^IR + C_l^UV by
-// a step on the 3D power spectrum at kmax/D(z), the same criterion
+// a step on the 3D power spectrum at kmax/D(z) - D the linear growth
+// factor normalized to D(0) = 1, kmax quoted at z = 0 in h/Mpc, as in
+// the gg section - and the same criterion
 //
 //   |C_l^UV| / (|C_l^UV| + |C_l^IR|) < alpha,
 //
@@ -2949,7 +2951,8 @@ void gg_scale_cuts_tomo_ells_work(
 // low-rank engine, so UV = full - IR is exact by the window being a
 // partition. Running the cut never changes the engine the likelihood
 // selected. The BB part of shear is not cut: the data vector carries EE
-// only, and the NLA BB spectrum vanishes identically.
+// only, and the NLA BB spectrum vanishes identically (a BB criterion
+// under TATT is outside the scope of these drivers).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
