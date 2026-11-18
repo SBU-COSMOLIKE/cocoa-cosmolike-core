@@ -30,9 +30,17 @@ and `ddv` parameters of the Fisher helpers). Shared groups:
   plot_response      plot_response_function: curves of a data
                      vector's response to the matter power spectrum,
                      both d ln DV / d ln k and cumulative R(k_max).
+  plot_scale_cuts    plot_scale_cuts: a per-bin scale cut (l_max of the
+                     Fourier band powers, theta_min in real space)
+                     against k_max at z = 0, one curve per bin, from
+                     the cuts the compiled interface computed.
   fisher             finite-difference and derivkit derivatives of a
                      data-vector function passed as an argument,
-                     Fisher-matrix assembly, figures of merit, and
+                     Fisher-matrix assembly, figures of merit, the
+                     FoM-noise estimate (get_stencil_noise,
+                     get_fom_noise_weights, predict_fom_noise: the
+                     numerical noise of a derivative column and the
+                     change of a figure of merit it predicts), and
                      Fisher contour plots via getdist.
 
 The two covariance modules are not imported by this file, so
@@ -61,6 +69,9 @@ from .plot_datavectors import (plot_C_gg_tomo, plot_C_gs_tomo_limber,
                                plot_gammat_tomo_limber, plot_wtheta_tomo,
                                plot_xi)
 from .fisher import (add_gaussian_priors, get_Fisher, get_Fisher2,
-                     get_FoM, get_ddv, get_ddv_dkit, plot_Fisher,
-                     plot_Fisher_amplitude_cut, plot_Fisher_prior_walls)
+                     get_FoM, get_ddv, get_ddv_dkit,
+                     get_fom_noise_weights, get_stencil_noise,
+                     plot_Fisher, plot_Fisher_amplitude_cut,
+                     plot_Fisher_prior_walls, predict_fom_noise)
 from .plot_response import plot_response_function
+from .plot_scale_cuts import plot_scale_cuts

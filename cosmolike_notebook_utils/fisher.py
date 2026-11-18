@@ -43,6 +43,17 @@ Contents:
   add_gaussian_priors add 1/sigma^2 to the diagonal for Gaussian
                       priors
   get_FoM             figure of merit of one parameter pair
+  get_stencil_noise   numerical noise of one evaluation along one
+                      parameter, measured from the five stencil points
+                      (fourth difference), the spurious Fisher prior a
+                      it implies, and the five-point derivative from the
+                      same evaluations
+  get_fom_noise_weights
+                      R_j^2, sigma_j^2 and the lever of every column of
+                      F: how strongly the noise of column j reaches the
+                      FoM of one pair
+  predict_fom_noise   change of the FoM of one pair from diagonal
+                      additions a_j to F, to first order and exactly
   plot_Fisher         getdist triangle plot of Fisher contours,
                       optionally against MCMC chains
   plot_Fisher_amplitude_cut
@@ -330,6 +341,445 @@ def get_FoM(i, j, F):
         w = np.clip(np.linalg.eigvalsh(C), 0, None)
         detC = w.prod()
     return float(1.0/np.sqrt(detC))
+
+
+def get_stencil_noise(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0,
+                      invcov=None):
+    """Measure the numerical noise of one derivative column from its stencil.
+
+    A computed data vector is the smooth model plus a small numerical
+    error (integration grids, distance grids, CAMB tolerances) that
+    changes irregularly from one parameter value to the next. A finite
+    difference divides that error by the step, and the Fisher matrix
+    F = D^T C^-1 D built from noisy columns exceeds the true one on its
+    diagonal, on average: noise looks like information. This function
+    measures the error of one evaluation along the parameter
+    p = CV[index] from the five equally spaced points
+
+        p0 + k eps,   k = -2, -1, 0, 1, 2,
+
+    with the step convention of get_ddv (eps = h p0 for a relative
+    step, eps = h when |p0| <= 1e-12), and it also returns the
+    five-point derivative from the same evaluations: a caller that
+    wants both pays five evaluations, not nine.
+
+    The estimate (the Fisher note of the lssty1xdesi project,
+    projects/lssty1xdesi/notes/fisher_machinery, section "Derivative
+    accuracy") takes three steps:
+      - the fourth difference
+            Delta4 m = m(-2) - 4 m(-1) + 6 m(0) - 4 m(1) + m(2)
+        removes the smooth part of the model: expanding each point in a
+        Taylor series, every derivative below the fourth cancels, so a
+        smooth vector leaves only eps^4 m''''(p0) + O(eps^6), which the
+        few-percent steps used here suppress to a negligible size.
+        Noise that is independent from point to point, with a common
+        size, passes with 1 + 16 + 36 + 16 + 1 = 70 times the variance
+        of one point;
+      - whitening (transforming a vector so its errors become unit and
+        uncorrelated; its squared length is then a chi^2) gives the
+        noise of one evaluation in the data's own error bars,
+            sigma = sqrt(Delta4 m^T C^-1 Delta4 m / 70),
+        in sqrt(chi^2) units;
+      - the noise the stencil leaves in the derivative column,
+            e = (n(-2) - 8 n(-1) + 8 n(1) - n(2))/(12 eps),
+        adds on average e^T C^-1 e to F[index, index]; its four
+        independent errors add through the squared weights
+        1 + 64 + 64 + 1 = 130, so
+            a = <e^T C^-1 e> = (130/144) (sigma/eps)^2.
+        Off the diagonal nothing is added on average, so the noise acts
+        exactly like a Gaussian prior of width a^-1/2 on p -- a prior
+        the data do not carry. predict_fom_noise turns a into a change
+        of a figure of merit.
+
+    What the estimate does not see: an error that varies smoothly
+    across the five points, or that is odd about p0, cancels in
+    Delta4 m but can still bias the derivative; errors correlated
+    between neighbouring points partly cancel and are under-counted.
+    A small sigma therefore excludes the point-to-point jitter only,
+    not every numerical error.
+
+    Arguments:
+      dv    = the data-vector function, called as
+              dv(param=<1D array>, AccuracyBoost=AccuracyBoost); it must
+              return a finite 1D array of length n_data (the size of
+              invcov).
+      index = position of the parameter inside CV, 0 <= index < len(CV).
+      h     = relative step (0.02 = two percent); the absolute step when
+              |p0| <= 1e-12. Finite and > 0.
+      CV    = 1D array of fiducial parameter values (required; the None
+              default is a placeholder). Never modified: each evaluation
+              works on a copy.
+      AccuracyBoost = forwarded to every dv evaluation.
+      invcov = inverse covariance of the data vector, a 2D
+              (n_data, n_data) array (required); it sets the units of
+              sigma. A masked inverse covariance whose masked rows and
+              columns are zero (positive semi-definite) is accepted.
+
+    Returns:
+      dict with
+        "sigma" = float >= 0, the whitened noise of one evaluation, in
+                  sqrt(chi^2) units;
+        "eps"   = float > 0, the step in the parameter's own units:
+                  h |p0| for a relative step, h for an absolute one;
+        "a"     = float >= 0, (130/144) (sigma/eps)^2, the average
+                  spurious addition to F[index, index], in one over the
+                  parameter's unit squared (the units of F_pp);
+        "ddv"   = 1D array (n_data,), the five-point derivative
+                  d(data vector)/d(parameter) from the four off-center
+                  evaluations, computed with get_ddv's steps, weights
+                  and accumulation order, so for the same dv it equals
+                  get_ddv's result bit for bit.
+      The call evaluates dv five times: the four points of get_ddv,
+      then the center (which the derivative does not use; only the
+      fourth difference reads it).
+
+    Raises:
+      ValueError when CV or invcov is missing or malformed, when index
+      is not an integer inside CV, when h is not finite and positive,
+      when a dv result is not a finite 1D array of length n_data, or
+      when Delta4 m^T C^-1 Delta4 m is negative (invcov is not positive
+      semi-definite).
+    """
+    if CV is None:
+        raise ValueError(
+            "get_stencil_noise: CV is None; pass the 1D array of fiducial "
+            "parameter values")
+    fiducial = np.asarray(CV, dtype=np.float64)
+    if fiducial.ndim != 1:
+        raise ValueError(
+            f"get_stencil_noise: CV has shape {fiducial.shape}; it must be "
+            "a 1D array of fiducial parameter values")
+    if not np.all(np.isfinite(fiducial)):
+        raise ValueError(
+            f"get_stencil_noise: CV = {fiducial} has a nonfinite entry; "
+            "every fiducial value must be finite")
+    if not isinstance(index, (int, np.integer)):
+        raise ValueError(
+            f"get_stencil_noise: index = {index!r} is not an integer; pass "
+            "the position of the parameter inside CV")
+    if index < 0 or index >= len(fiducial):
+        raise ValueError(
+            f"get_stencil_noise: index = {index} is outside CV, which has "
+            f"{len(fiducial)} entries; pass 0 <= index < {len(fiducial)}")
+    if not isinstance(h, (int, float, np.integer, np.floating)):
+        raise ValueError(
+            f"get_stencil_noise: h = {h!r} is not a number; pass the "
+            "relative step as a float (0.02 = two percent)")
+    if not np.isfinite(h) or h <= 0.0:
+        raise ValueError(
+            f"get_stencil_noise: h = {h}; the step must be finite and > 0 "
+            "(0.02 = a two-percent relative step)")
+    if invcov is None:
+        raise ValueError(
+            "get_stencil_noise: invcov is None; pass the inverse covariance "
+            "of the data vector, which sets the units of the noise")
+    inverse_covariance = np.asarray(invcov, dtype=np.float64)
+    if (inverse_covariance.ndim != 2
+            or inverse_covariance.shape[0] != inverse_covariance.shape[1]):
+        raise ValueError(
+            f"get_stencil_noise: invcov has shape {inverse_covariance.shape}; "
+            "it must be a square (n_data, n_data) matrix")
+    if not np.all(np.isfinite(inverse_covariance)):
+        raise ValueError(
+            "get_stencil_noise: invcov has a nonfinite entry; pass a finite "
+            "inverse covariance")
+    n_data = inverse_covariance.shape[0]
+
+    def evaluate(param):
+        """Call dv at one point and check its result (shape, finiteness)."""
+        vector = np.asarray(dv(param=param, AccuracyBoost=AccuracyBoost),
+                            dtype=np.float64)
+        if vector.ndim != 1 or vector.shape[0] != n_data:
+            raise ValueError(
+                f"get_stencil_noise: dv returned shape {vector.shape} at "
+                f"param[{index}] = {param[index]}, but invcov is "
+                f"({n_data}, {n_data}); dv must return the 1D data vector "
+                "that invcov describes")
+        if not np.all(np.isfinite(vector)):
+            raise ValueError(
+                f"get_stencil_noise: dv returned a nonfinite entry at "
+                f"param[{index}] = {param[index]}; the data vector must be "
+                "finite at every stencil point")
+        return vector
+
+    # the four off-center points of get_ddv, in its order and with its
+    # arithmetic (the same steps, the same weights, the same
+    # accumulation), so the derivative below equals get_ddv's bit for
+    # bit: steps (2h, h, -h, -2h), derivative weights (-1, 8, -8, 1)/12.
+    # The fourth difference takes the same four vectors with the weights
+    # (1, -4, -4, 1); the center enters it alone, with weight 6.
+    coeffs = np.array([-1.0/12.0, 8.0/12.0, -8.0/12.0, +1.0/12.0],
+                      dtype=np.float64)
+    steps  = np.array([2*h, h, -h, -2*h], dtype=np.float64)
+    fourth_weights = np.array([1.0, -4.0, -4.0, 1.0], dtype=np.float64)
+    p0 = float(fiducial[index])
+    absolute_step = np.isclose(p0, 0.0, atol=1e-12)
+    derivative = None
+    fourth_difference = None
+    # zip walks the three arrays in step, handing one triple (step,
+    # derivative weight, fourth-difference weight) per loop turn
+    for s, c, c4 in zip(steps, coeffs, fourth_weights):
+        p = np.array(fiducial, dtype=np.float64, copy=True)
+        p[index] = p0 + s if absolute_step else p0 * (1.0 + s)
+        vec = evaluate(param=p)
+        derivative = c*vec if derivative is None else derivative + c*vec
+        if fourth_difference is None:
+            fourth_difference = c4*vec
+        else:
+            fourth_difference = fourth_difference + c4*vec
+    center = evaluate(param=np.array(fiducial, dtype=np.float64, copy=True))
+    fourth_difference = fourth_difference + 6.0*center
+    derivative = derivative / (h if absolute_step else h * p0)
+
+    # Delta4 m^T C^-1 Delta4 m: the squared whitened length of the
+    # fourth difference, a chi^2. It is >= 0 for any positive
+    # semi-definite invcov, so a negative value means invcov is not one
+    weighted = inverse_covariance @ fourth_difference
+    chi2_fourth = float(fourth_difference @ weighted)
+    if chi2_fourth < 0.0:
+        raise ValueError(
+            f"get_stencil_noise: Delta4 m^T invcov Delta4 m = {chi2_fourth} "
+            "< 0; invcov is not positive semi-definite. Pass the inverse "
+            "covariance of the data vector")
+    # 70 = 1 + 16 + 36 + 16 + 1, the sum of the squared fourth-difference
+    # weights: independent noise of variance sigma^2 per point gives the
+    # fourth difference the variance 70 sigma^2
+    sigma = np.sqrt(chi2_fourth/70.0)
+    # the step in the parameter's own units; the stencil above moves by
+    # h p0, which is negative for a negative fiducial, so the magnitude
+    # is taken
+    eps = h if absolute_step else h*abs(p0)
+    # 130/144 = (1 + 64 + 64 + 1)/12^2, the sum of the squared five-point
+    # weights (-1, 8, -8, 1)/12: the average e^T C^-1 e of the derivative
+    # noise is (130/144) (sigma/eps)^2
+    spurious_prior = (130.0/144.0)*(sigma/eps)**2
+    return {
+        "sigma": float(sigma),
+        "eps": float(eps),
+        "a": float(spurious_prior),
+        "ddv": derivative,
+    }
+
+
+def get_fom_noise_weights(F, i, j, eps=None):
+    """Weigh every column of F by how strongly its noise reaches FoM(i, j).
+
+    Write w = (p_i, p_j) for the pair, C_w = (F^-1)_ww for its 2x2
+    marginalized covariance (the block get_FoM reads,
+    FoM = det(C_w)^-1/2) and sigma_k^2 = (F^-1)_kk for the
+    marginalized variance of parameter k. For every column k,
+
+        R_k^2 = (F^-1)_{k,w} C_w^-1 (F^-1)_{w,k} / sigma_k^2,
+
+    with (F^-1)_{w,k} the two entries of column k of F^-1 in the
+    pair's rows. R_k^2 is the squared multiple correlation of p_k with
+    the pair: the share of p_k's forecast variance that a linear fit to
+    (p_i, p_j) explains. It is 1 for p_i and p_j themselves, 0 for a
+    parameter uncorrelated with the pair, and between 0 and 1
+    otherwise. To first order, an addition a_k to F_kk changes
+    ln FoM(i, j) by R_k^2 a_k sigma_k^2 / 2 (predict_fom_noise): a
+    column's noise reaches the figure of merit only through the
+    column's correlation with the pair. With
+    a_k = (130/144) (sigma_hat_k/eps_k)^2 from get_stencil_noise
+    (sigma_hat_k the measured noise of one evaluation, not to be
+    confused with the forecast error sigma_k), the change from
+    column k is (130/288) sigma_hat_k^2 W_k, with the dimensionless
+    lever
+
+        W_k = R_k^2 sigma_k^2 / eps_k^2 = R_k^2 (sigma_k/eps_k)^2.
+
+    The lever needs F and the steps only, so it ranks the columns
+    before any noise is measured: at each candidate accuracy setting,
+    only the columns with the largest levers need get_stencil_noise;
+    the rest cannot move the figure of merit even if their noise is
+    sizable.
+
+    F is symmetrized as get_FoM symmetrizes it, 0.5 (F + F^T), and
+    must be positive definite, so that the forecast covariance F^-1
+    exists.
+
+    Arguments:
+      F    = Fisher matrix, a 2D (n, n) array, priors included.
+      i, j = the indices of the pair, two distinct integers in [0, n).
+      eps  = None, or a 1D array (n,) with the step of every column in
+             the parameters' own units (the "eps" of get_stencil_noise:
+             h |p0_k|, or h when |p0_k| <= 1e-12); finite and > 0.
+
+    Returns:
+      dict with
+        "R2"     = 1D array (n,), R_k^2, dimensionless;
+        "sigma2" = 1D array (n,), sigma_k^2 = (F^-1)_kk, in the unit of
+                   p_k squared;
+        "lever"  = 1D array (n,), W_k, dimensionless, or None when eps
+                   is None.
+
+    Raises:
+      ValueError when F is not a finite square matrix, when F is not
+      positive definite, when i or j is not an integer in [0, n) or
+      i == j, or when eps has the wrong shape or an entry that is not
+      finite and positive.
+    """
+    fisher = np.asarray(F, dtype=np.float64)
+    if fisher.ndim != 2 or fisher.shape[0] != fisher.shape[1]:
+        raise ValueError(
+            f"get_fom_noise_weights: F has shape {fisher.shape}; it must be "
+            "a square (n, n) Fisher matrix")
+    if not np.all(np.isfinite(fisher)):
+        raise ValueError(
+            "get_fom_noise_weights: F has a nonfinite entry; check its "
+            "derivatives and priors")
+    n_params = fisher.shape[0]
+    for name, value in (("i", i), ("j", j)):
+        if not isinstance(value, (int, np.integer)):
+            raise ValueError(
+                f"get_fom_noise_weights: {name} = {value!r} is not an "
+                "integer; pass a parameter index")
+        if value < 0 or value >= n_params:
+            raise ValueError(
+                f"get_fom_noise_weights: {name} = {value} is outside F, "
+                f"which has {n_params} parameters; pass 0 <= {name} < "
+                f"{n_params}")
+    if i == j:
+        raise ValueError(
+            f"get_fom_noise_weights: i = j = {i}; a figure of merit needs "
+            "two different parameters")
+    steps = None
+    if eps is not None:
+        steps = np.asarray(eps, dtype=np.float64)
+        if steps.shape != (n_params,):
+            raise ValueError(
+                f"get_fom_noise_weights: eps has shape {steps.shape}, but F "
+                f"has {n_params} parameters; pass one step per column")
+        if not np.all(np.isfinite(steps)) or np.any(steps <= 0.0):
+            raise ValueError(
+                f"get_fom_noise_weights: eps = {steps}; every step must be "
+                "finite and > 0 (the 'eps' of get_stencil_noise)")
+    fisher = 0.5 * (fisher + fisher.T)
+    # the Cholesky factorization F = L L^T exists only for a positive
+    # definite F, so it doubles as the test; "from None" drops numpy's
+    # own traceback, which the message below replaces
+    try:
+        np.linalg.cholesky(fisher)
+    except np.linalg.LinAlgError:
+        raise ValueError(
+            "get_fom_noise_weights: F is not positive definite, so no "
+            "forecast covariance F^-1 exists; check its derivatives, priors "
+            "and parameter list") from None
+
+    covariance = np.linalg.inv(fisher)
+    # np.diag of a 2D array returns a read-only view of its diagonal;
+    # the copy is an independent array
+    sigma2 = np.diag(covariance).copy()
+    pair = [i, j]
+    pair_covariance = covariance[np.ix_(pair, pair)]
+    pair_information = np.linalg.inv(pair_covariance)
+    # cross[:, k] = (F^-1)_{w,k}, the pair's rows of column k of F^-1:
+    # shape (2, n). The product with pair_information is (2, n) as well,
+    # and the sum over axis 0 of the elementwise product gives, column
+    # by column, the quadratic form (F^-1)_{k,w} C_w^-1 (F^-1)_{w,k}
+    cross = covariance[pair, :]
+    quadratic = np.sum(cross * (pair_information @ cross), axis=0)
+    R2 = quadratic / sigma2
+    lever = None
+    if steps is not None:
+        lever = R2 * sigma2 / steps**2
+    return {
+        "R2": R2,
+        "sigma2": sigma2,
+        "lever": lever,
+    }
+
+
+def predict_fom_noise(F, i, j, a):
+    """Predict the change of FoM(i, j) from diagonal additions a to F.
+
+    The noise of derivative column k adds, on average, a_k to F_kk and
+    nothing elsewhere (get_stencil_noise), so the average noisy Fisher
+    matrix is F + diag(a). Two predictions of what that does to the
+    figure of merit of get_FoM, FoM = det(C_w)^-1/2 with
+    C_w = (F^-1)_ww the pair's marginalized covariance:
+      - first order,
+            dlnFoM = 1/2 sum_k R_k^2 a_k sigma_k^2,
+        with R_k^2 and sigma_k^2 from get_fom_noise_weights. It follows
+        from delta(F^-1) = -F^-1 diag(a) F^-1 and
+        delta ln det C_w = tr(C_w^-1 delta C_w). Each term
+        a_k sigma_k^2 is the squared ratio of the marginalized error
+        sigma_k to the spurious prior width a_k^-1/2 -- how informative
+        the fake prior is against what the data leave after
+        marginalization -- and R_k^2 passes it to the pair;
+      - exact,
+            ratio = FoM(F + diag(a)) / FoM(F),
+        the same diagonal addition without the expansion. Once the
+        terms are of order one the first order overshoots and only the
+        ratio holds. To compare an accuracy setting with a reference
+        setting, divide the setting's ratio by the reference's own
+        ratio: the reference is not noise free.
+
+    Both keep only the average addition: the zero-mean parts of the
+    noise (the cross terms 2 d_k^T C^-1 e_k, the off-diagonal gains
+    e_k^T C^-1 e_l) move one computed forecast by a random amount that
+    is not predicted here. The estimate is a convergence diagnostic,
+    not a correction: a setting has settled when
+    sum_k R_k^2 a_k sigma_k^2 (= 2 dlnFoM) is below about 1e-2, which
+    keeps the figure of merit within about half a percent. And it sees
+    only the point-to-point jitter that get_stencil_noise measures:
+    numerical errors that vary smoothly with the parameters sit
+    outside it.
+
+    Arguments:
+      F    = Fisher matrix, a 2D (n, n) array, priors included, at a
+             normal accuracy: R_k and sigma_k barely depend on the
+             accuracy setting, so one F serves every setting.
+      i, j = the indices of the pair (as in get_FoM).
+      a    = 1D array (n,) of the diagonal additions, in one over the
+             unit of p_k squared (the "a" of get_stencil_noise for each
+             measured column), with zeros for the columns whose noise
+             was not measured; finite and >= 0.
+
+    Returns:
+      dict with
+        "dlnFoM" = float, the first-order change of ln FoM(i, j);
+        "terms"  = 1D array (n,), R_k^2 a_k sigma_k^2 per column,
+                   dimensionless (dlnFoM = sum(terms)/2);
+        "ratio"  = float, FoM(F + diag(a)) / FoM(F);
+        "R2", "sigma2" = the arrays of get_fom_noise_weights.
+
+    Raises:
+      ValueError from get_fom_noise_weights (a malformed F, i or j),
+      when a has the wrong shape or an entry that is negative or not
+      finite, and from get_FoM.
+    """
+    # get_fom_noise_weights validates F, i and j before computing
+    weights = get_fom_noise_weights(F=F, i=i, j=j)
+    n_params = len(weights["R2"])
+    additions = np.asarray(a, dtype=np.float64)
+    if additions.shape != (n_params,):
+        raise ValueError(
+            f"predict_fom_noise: a has shape {additions.shape}, but F has "
+            f"{n_params} parameters; pass one addition per column, 0 for "
+            "the columns whose noise was not measured")
+    if not np.all(np.isfinite(additions)):
+        raise ValueError(
+            f"predict_fom_noise: a = {additions} has a nonfinite entry; "
+            "every addition must be finite")
+    if np.any(additions < 0.0):
+        raise ValueError(
+            f"predict_fom_noise: a = {additions} has a negative entry; an "
+            "average noise addition e^T C^-1 e is >= 0")
+    terms = weights["R2"] * additions * weights["sigma2"]
+    dlnFoM = 0.5 * float(np.sum(terms))
+    fisher = np.asarray(F, dtype=np.float64)
+    # get_FoM symmetrizes each matrix itself; np.diag of a 1D array
+    # builds the diagonal matrix diag(a)
+    fom = get_FoM(i, j, fisher)
+    fom_noisy = get_FoM(i, j, fisher + np.diag(additions))
+    return {
+        "dlnFoM": dlnFoM,
+        "terms": terms,
+        "ratio": fom_noisy / fom,
+        "R2": weights["R2"],
+        "sigma2": weights["sigma2"],
+    }
 
 
 def plot_Fisher(F, mu, F2=None, root=None, select=None, labels=None,
