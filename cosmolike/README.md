@@ -16,6 +16,11 @@
 
 # What this directory calculates <a name="overview"></a>
 
+The separate [3pcf/ guide](3pcf/README.md) describes the new three-point
+aperture and covariance components. Their numerical C files and both C++
+adapters live entirely in that directory; they do not alter the established
+data-vector routines described below.
+
 These C and C++ files predict the **mean data vector** used by Cocoa's
 CosmoLike likelihoods. A data vector collects measurements at several
 angular scales and in several redshift bins. Splitting a galaxy sample

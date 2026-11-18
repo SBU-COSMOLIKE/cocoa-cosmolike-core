@@ -185,6 +185,7 @@ comments define their inputs, units and equations.
 | --- | --- |
 | [cosmolike/](cosmolike/README.md) | Source guide to data-vector physics, halo statistics, cluster extensions and C++ interfaces. |
 | [cosmolike/covariances/](cosmolike/covariances/README.md) | Covariance components with their own numerical grids and integrations. |
+| [cosmolike/3pcf/](cosmolike/3pcf/README.md) | Physical three-point predictions and the declared joint covariance model, with separate production and notebook adapters. |
 | [cfastpt/](cfastpt/) | C implementation of FAST-PT mode-coupling integrals. |
 | [cosmolike_notebook_utils/](cosmolike_notebook_utils/) | Shared cosmology preparation, plotting, Fisher and covariance tools. |
 | [cocoa_hybrid_sampling.py](cocoa_hybrid_sampling.py) | Shared CPU/MPI hybrid minimization, profiles and Nautilus entry points, reading each project's evaluate YAML. |

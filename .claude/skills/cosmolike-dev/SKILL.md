@@ -5,7 +5,8 @@ description: >-
   Python. Use for C patches, hot loops, OpenMP/SIMD, GSL, FFTW/FAST-PT,
   nondeterministic chi2, perf benchmarks and performance claims. Applies to
   Limber and non-Limber calculations, TATT, NLA, 3x2pt, Legendre sums,
-  tomographic C_ell, halo models and HOD, even without optimization work.
+  tomographic C_ell, halo models, HOD, 3PCF and fastnc, even without
+  optimization work.
   Also covers cosmolike_notebook_utils (data-vector and covariance plotting,
   CAMB and Fisher helpers), cocoa_testing.py, and each project's likelihoods,
   notebook wrappers, notebooks, tests and scripts.
@@ -122,7 +123,23 @@ implementation remain separate decisions. p_mm/p_my/p_yy remain outside
 the compiled code. The cfastpt frequency-window comments already describe
 the tapered top fraction correctly.
 
-**Covariance rewrite.** Before covariance work,
+**Three-point predictions and joint covariance.** Before work on fastnc,
+3PCF, third-order aperture statistics, or their two-point cross-covariance,
+read `references/threepcf.md`. It records the implemented C components,
+the production/notebook adapters and their verification limits, then routes
+to the portable 25-file design study in `references/threepcf_study/`.
+Both the mean and its covariance numerical work belong in
+`cosmolike/3pcf/`. Archived proposals are not completed features; retain
+separate DES Y3 and Y6 reproduction and forecast configurations.
+For numerical controls, cache invalidation or notebook reuse, also read
+`references/threepcf_state_and_accuracy.md`: it maps allocation sizes,
+refill values and reset behavior onto the model/plan owners, documents the
+global and stage-specific boosts, and names the fresh-process state tests.
+Preserve the distinction between upstream finite-operator comparisons,
+independent physical references and survey-level reproduction claims.
+
+**Two-point covariance rewrite.** Before work on the existing two-point
+covariance module,
 read `references/covariance_rewrite.md` and the external study at
 `test/cosmocov_port_study/PLAN.md`. The implementation lives in the plural
 `cosmolike/covariances/` directory. Do not modify any existing C file
