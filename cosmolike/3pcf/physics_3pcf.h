@@ -132,6 +132,7 @@ double physics_feedback_power_3pcf(
   double z,
   double amplitude
 );
+
 double physics_feedback_bispectrum_3pcf(
   const physics_model_3pcf* model,
   const double* sides,
@@ -192,6 +193,7 @@ physics_projection_3pcf* physics_projector_create_3pcf(
   const int* bins
 );
 void physics_projector_destroy_3pcf(physics_projection_3pcf* projection);
+
 double physics_projected_3pcf(
   const physics_projection_3pcf* projection,
   double ell1,
@@ -240,6 +242,7 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
   int nprojection, // number of ordered source triplets
   physics_projection_3pcf* const* projections // consumed during construction
 );
+
 void physics_projection_batch_evaluate_3pcf(
   const physics_projection_batch_3pcf* batch, // shared immutable preparation
   double ell1, // first angular Fourier side
@@ -249,6 +252,7 @@ void physics_projection_batch_evaluate_3pcf(
   int puv_extension, // nonzero keeps fastnc's PUV corner continuation
   double* out // [nprojection], one private buffer per caller
 );
+
 void physics_projection_batch_destroy_3pcf(
   physics_projection_batch_3pcf* batch // releases owned weights; NULL allowed
 );
@@ -263,6 +267,7 @@ typedef double (*physics_projection_reader_3pcf)(
   double ell2,
   double ell3
 );
+
 void physics_aperture_integrate_3pcf(
   const void* context,
   physics_projection_reader_3pcf reader,
@@ -339,12 +344,14 @@ double physics_omega_m_z_3pcf(
   const physics_model_3pcf* model,
   double z
 );
+
 void physics_nla_kernel_3pcf(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
   int bin,
   double* out // physical W(chi), [nlos], includes chi*(1+z)
 );
+
 // The Limber angular power of the combined lensing + NLA intrinsic
 // kernel G + C_1 W at k = ell/chi, using the nonlinear power
 // interpolated in redshift; a nonzero feedback amplitude applies its
@@ -357,6 +364,7 @@ double physics_nla_power_3pcf(
   int bin2,
   double ell
 );
+
 void physics_nla_power_batch_3pcf(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,

@@ -117,14 +117,17 @@ void filtered_pair_3pcf(
     log_fatal("filtered_pair_3pcf: invalid dimensions or pointer");
     exit(1);
   }
+
   // 1/(2*pi) written to 20 digits, more than double precision holds,
   // so the compiler stores the nearest double to the exact flat-sky
   // measure factor in dell*ell/(2*pi).
   const double inverse_two_pi = 0.15915494309189533577;
+
   if ((size_t)nell > (size_t)INT_MAX/(size_t)nr) {
     log_fatal("filtered_pair_3pcf: Bessel table size overflow");
     exit(1);
   }
+
   double* bessel_table = malloc1d((int)((size_t)nell*nr));
 
   // J0 depends only on the two geometric coordinates. Calculate it once
@@ -158,6 +161,7 @@ void filtered_pair_3pcf(
       for (int radial=0; radial<nr; radial++) {
         correlation[radial] = 0.0;
       }
+
       for (int multipole=0; multipole<nell; multipole++) {
         double coefficient = ell_weights[multipole]*ell[multipole]
           *inverse_two_pi;
@@ -165,12 +169,14 @@ void filtered_pair_3pcf(
         coefficient *= spectrum[multipole];
         const double* restrict bessel_row =
           bessel_table + (size_t)multipole*nr;
+
         // Each radius shares the same filter/power coefficient. Hoisting
         // it outside the radius loop avoids recomputing it for every pair
         // of lanes. Node order for each output remains increasing ell.
         // Broadcast that one coefficient into both lanes of a vector.
         const v2d amplitude = simde_mm_set1_pd(coefficient);
         int radial = 0;
+
         // Lanes hold neighboring radii: the low lane accumulates the
         // output at r[radial], the high lane at r[radial + 1]. Each sum
         // stays in its own lane; nothing crosses between them.
@@ -188,6 +194,7 @@ void filtered_pair_3pcf(
           // Store both updated sums back over the two slots just read.
           simde_mm_storeu_pd(correlation + radial, updated);
         }
+
         // An odd radial count leaves one value with the identical scalar
         // expression. It is updated at this same multipole node.
         if (radial < nr) {
@@ -196,6 +203,7 @@ void filtered_pair_3pcf(
       }
     }
   }
+
   free(bessel_table);
 }
 
@@ -246,6 +254,7 @@ void connected_gram_3pcf(
     log_fatal("connected_gram_3pcf: invalid dimensions or pointer");
     exit(1);
   }
+
   // All output writes use this restrict-qualified pointer. No input
   // aliases its storage; the binding checks the weight domain and sizes.
   double* restrict covariance = out;
@@ -264,6 +273,7 @@ void connected_gram_3pcf(
       const double* restrict response_j = responses + (size_t)j*nnode;
       const double* restrict response_next =
         responses + (size_t)(j + 1)*nnode;
+
       // Zero the sums for columns j (low lane) and j+1 (high lane).
       v2d sum = simde_mm_setzero_pd();
 
@@ -281,6 +291,7 @@ void connected_gram_3pcf(
         // Add each product to its own ordered node sum.
         sum = simde_mm_add_pd(sum, contribution);
       }
+
       double values[2];
       // Extract the two ordered node sums into a local array:
       // values[0] is column j (low lane), values[1] is column j+1.
@@ -401,6 +412,7 @@ void gaussian_aperture_covariance_3pcf(
     {1, 2, 0}, {2, 0, 1}, {2, 1, 0}
   };
   const int remaining[3][2] = {{1, 2}, {0, 2}, {0, 1}};
+
   double* restrict covariance = out;
 
   // Row i owns each upper-triangle pair (i,j) and the reflected (j,i).
@@ -474,11 +486,13 @@ void gaussian_aperture_covariance_3pcf(
           // Add this one-cross pairing to both radial integrands.
           density = simde_mm_add_pd(density, contribution);
         }
+
         // Load the two radial window/quadrature weights; the measure
         // already carries any area factor.
         const v2d measure = simde_mm_loadu_pd(radial_weights + ir);
         // Weight each radial integrand with its own integration measure.
         const v2d weighted = simde_mm_mul_pd(measure, density);
+
         double values[2];
         // Store both weighted samples in their radial order.
         simde_mm_storeu_pd(values, weighted);
@@ -501,6 +515,7 @@ void gaussian_aperture_covariance_3pcf(
         }
         sum += radial_weights[ir]*density;
       }
+
       covariance[(size_t)i*nrow + j] = sum;
       covariance[(size_t)j*nrow + i] = sum;
     }

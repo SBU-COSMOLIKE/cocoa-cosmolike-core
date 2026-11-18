@@ -57,6 +57,7 @@ struct feedback_3pcf {
 static size_t table_size(const int* counts, const int dimensions)
 {
   size_t size = 1;
+
   for (int axis=0; axis<dimensions; axis++) {
     if (!(counts[axis] > 0
           && size <= (size_t)INT_MAX/(size_t)counts[axis])) {
@@ -66,6 +67,7 @@ static size_t table_size(const int* counts, const int dimensions)
     }
     size *= (size_t)counts[axis];
   }
+
   return size;
 }
 
@@ -108,6 +110,7 @@ static double* dense_table(
   memcpy(current, counts, sizeof(current));
   const size_t size = table_size(current, dimensions);
   double* table = malloc1d((int)size);
+
   for (size_t index=0; index<size; index++) {
     if (!(isfinite(source[index]))) {
       log_fatal("feedback_3pcf: nonfinite log response");
@@ -115,9 +118,11 @@ static double* dense_table(
     }
     table[index] = source[index];
   }
+
   if (boost == 1) {
     return table;
   }
+
   // Loop overview: each pass densifies one axis while every other axis
   // keeps its current count. To reach every line of the current axis,
   // the pass views the flat table as [blocks][old_count][stride]:
@@ -139,6 +144,7 @@ static double* dense_table(
     const size_t old_size = table_size(current, dimensions);
     const size_t blocks = old_size/((size_t)old_count*stride);
     current[axis] = new_count;
+
     double* dense = malloc1d((int)table_size(current, dimensions));
     double* line = malloc1d(old_count);
     gsl_spline* spline = gsl_spline_alloc(gsl_interp_cspline, old_count);
@@ -147,6 +153,7 @@ static double* dense_table(
       log_fatal("feedback_3pcf: spline preparation allocation failed");
       exit(1);
     }
+
     for (size_t block=0; block<blocks; block++) {
       for (size_t inner=0; inner<stride; inner++) {
         for (int node=0; node<old_count; node++) {
@@ -175,12 +182,14 @@ static double* dense_table(
         }
       }
     }
+
     gsl_interp_accel_free(search);
     gsl_spline_free(spline);
     free(line);
     free(table);
     table = dense;
   }
+
   return table;
 }
 
@@ -217,14 +226,17 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
       "are required");
     exit(1);
   }
+
   const int counts[4] = {input->nz, input->nk, input->nu, input->nv};
   const double* axes[4] = {input->z, input->logk, input->logu, input->v};
+
   feedback_3pcf* response = calloc(1, sizeof(*response));
   if (!(response != NULL)) {
     log_fatal("feedback_3pcf: response owner allocation failed");
     exit(1);
   }
   response->clamp = input->clamp;
+
   for (int axis=0; axis<4; axis++) {
     const int count = counts[axis];
     if (!(count >= 4 && axes[axis]
@@ -233,17 +245,20 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
         "representable dense size");
       exit(1);
     }
+
     const double low = axes[axis][0];
     const double high = axes[axis][count - 1];
     if (!(isfinite(low) && isfinite(high) && high > low)) {
       log_fatal("feedback_3pcf: response coordinates must increase");
       exit(1);
     }
+
     const double step = (high - low)/(count - 1);
     if (!(isfinite(step) && step > 0.0)) {
       log_fatal("feedback_3pcf: response spacing is not representable");
       exit(1);
     }
+
     // Purpose of this uniformity check: the query path converts a
     // coordinate to a grid index by multiplying with one stored
     // inverse spacing, and that shortcut is correct only on a uniform
@@ -263,6 +278,7 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
         exit(1);
       }
     }
+
     response->count[axis] = input->boost*(count - 1) + 1;
     response->lower[axis] = low;
     response->upper[axis] = high;
@@ -274,16 +290,19 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
       exit(1);
     }
   }
+
   if (!(input->z[0] >= 0.0 && input->logu[input->nu - 1] <= 0.0
         && input->v[0] >= 0.0 && input->v[input->nv - 1] <= 1.0)) {
     log_fatal("feedback_3pcf: response z/u/v axes must describe physical "
       "sorted triangles");
     exit(1);
   }
+
   response->power = dense_table(input->log_power, counts, axes, 2,
     input->boost);
   response->bispectrum = dense_table(input->log_bispectrum, counts, axes, 4,
     input->boost);
+
   return response;
 }
 
@@ -338,12 +357,15 @@ static double read_response(
     log_fatal("feedback_3pcf: nonzero feedback needs paired tables");
     exit(1);
   }
+
   int cells[4];
   double fractions[4];
+
   for (int axis=0; axis<dimensions; axis++) {
     const double low = response->lower[axis];
     const double high = response->upper[axis];
     const double value = coordinates[axis];
+
     // Purpose of this domain tolerance: a caller often queries exactly
     // at a table edge, and the coordinate it computed - a log(k), for
     // example - can land a few rounding errors outside the stored
@@ -359,14 +381,17 @@ static double read_response(
         "domain");
       exit(1);
     }
+
     const double position = (fmax(low, fmin(high, value)) - low)
       *response->inverse[axis];
     cells[axis] = (int)fmin(response->count[axis] - 2, floor(position));
     fractions[axis] = position - cells[axis];
   }
+
   const double* table = dimensions == 2
     ? response->power : response->bispectrum;
   double logarithm = 0.0;
+
   // A 2D cell has four corners and a 4D cell has sixteen. Products of
   // one-dimensional linear weights sum to one and preserve constant ratios.
   // Loop overview: multilinear interpolation averages the values at
@@ -389,12 +414,14 @@ static double read_response(
     }
     logarithm += weight*table[index];
   }
+
   const double result = exp(amplitude*logarithm);
   if (!(isfinite(result) && result > 0.0)) {
     log_fatal("feedback_3pcf: feedback amplitude produces an "
       "unrepresentable positive ratio");
     exit(1);
   }
+
   return result;
 }
 
@@ -452,19 +479,23 @@ double feedback_bispectrum_3pcf(
   if (amplitude == 0.0) {
     return 1.0;
   }
+
   const double small = fmin(sides[0], fmin(sides[1], sides[2]));
   const double large = fmax(sides[0], fmax(sides[1], sides[2]));
+
   // The middle side comes from comparisons alone. The algebraic
   // shortcut - subtracting the two extremes from the sum of all three
   // sides - cancels large numbers in a very squeezed triangle and
   // loses the middle side to roundoff; comparisons cancel nothing.
   const double middle = fmax(fmin(sides[0], sides[1]),
     fmin(fmax(sides[0], sides[1]), sides[2]));
+
   // Purpose of this clip: a valid physical triangle that is nearly
   // degenerate can round to a v a few machine epsilons above 1. The
   // fmin keeps the shape coordinate inside its mathematical [0, 1]
   // range and absorbs only that roundoff.
   const double v = fmin(1.0, (large - middle)/small);
+
   const double coordinates[4] = {z, log(middle), log(small/middle),
     v};
   return read_response(response, coordinates, 4, amplitude);

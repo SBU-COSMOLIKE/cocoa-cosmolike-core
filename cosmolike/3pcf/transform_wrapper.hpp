@@ -4,6 +4,7 @@
 #include "transform_3pcf.h"
 
 namespace cosmolike_interface {
+
 // Notebook adapters for the angular coupling, the double-Bessel FFTLog
 // transform and the natural-component reconstruction. Every Armadillo
 // argument owns its storage: the pybind layer copies the caller's NumPy
@@ -67,5 +68,6 @@ arma::Col<double> aperture_grid_cpp_3pcf(
     const arma::Cube<double>& imag, // same shape, copied notebook values
     int ntriangle // expected triangle count from the owning plan
   );
+
 }
 #endif

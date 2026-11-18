@@ -153,6 +153,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
       source[row*sources.n_cols + column] = sources(row, column);
     }
   }
+
   physics_input_3pcf input = {};
   input.nk = static_cast<int>(k.n_elem);
   input.nz = static_cast<int>(z.n_elem);
@@ -181,6 +182,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   input.wa = wa;
   input.ns = ns;
   input.sigma8 = sigma8;
+
   feedback_input_3pcf response = {};
   if (feedback != nullptr) {
     // The four axis counts must fit the C int fields before any size_t
@@ -193,6 +195,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
         "integer storage");
       std::exit(1);
     }
+
     const size_t nz = feedback->z.n_elem;
     const size_t nk = feedback->logk.n_elem;
     const size_t nu = feedback->logu.n_elem;
@@ -211,6 +214,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
         "arrays disagree with their axes");
       std::exit(1);
     }
+
     response.nz = static_cast<int>(nz);
     response.nk = static_cast<int>(nk);
     response.nu = static_cast<int>(nu);
@@ -225,6 +229,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     response.clamp = feedback->clamp;
     input.feedback = &response;
   }
+
   if (pixel_window != nullptr) {
     // The window reader interpolates linearly between integer
     // multipoles, so it needs at least two samples.
@@ -237,6 +242,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     input.nwindow = static_cast<int>(pixel_window->n_elem);
     input.window = pixel_window->memptr();
   }
+
   return std::make_shared<physics_owner_3pcf>(input);
 }
 
@@ -329,12 +335,15 @@ arma::Mat<double> physics_points_cpp_3pcf(
         result(point, component) = values[point*19 + component];
       }
     }
+
     if (!(result.is_finite())) {
       spdlog::critical("3pcf physics wrapper: nonfinite common-shape IA");
       std::exit(1);
     }
+
     return result;
   }
+
   physics_projection_3pcf* projection = operation == 2
     ? physics_projector_create_3pcf(owner.get(), &parameters, bins.memptr())
     : nullptr;
@@ -370,7 +379,9 @@ arma::Mat<double> physics_points_cpp_3pcf(
       result(point, index) = values[index];
     }
   }
+
   physics_projector_destroy_3pcf(projection);
+
   return result;
 }
 
@@ -400,11 +411,13 @@ arma::Col<double> physics_feedback_power_cpp_3pcf(
     spdlog::critical("3pcf physics wrapper: power response axes disagree");
     std::exit(1);
   }
+
   arma::Col<double> result(k.n_elem);
   for (arma::uword index=0; index<k.n_elem; index++) {
     result[index] = physics_feedback_power_3pcf(owner.get(), k[index],
       z[index], amplitude);
   }
+
   return result;
 }
 
@@ -435,6 +448,7 @@ arma::Cube<double> physics_multipoles_cpp_3pcf(
     spdlog::critical("3pcf physics wrapper: invalid multipole dimensions");
     std::exit(1);
   }
+
   const size_t nell = ell.n_elem;
 
   // Overflow guards before allocating [lmax+1,nell,nell]: first
@@ -451,7 +465,9 @@ arma::Cube<double> physics_multipoles_cpp_3pcf(
       "overflows");
     std::exit(1);
   }
+
   std::vector<double> buffer(static_cast<size_t>(lmax + 1)*nell*nell);
+
   physics_multipoles_3pcf(owner.get(), &parameters, bins.memptr(),
     static_cast<int>(nell), ell.memptr(), lmax, nmu, component, buffer.data());
 
@@ -473,6 +489,7 @@ arma::Cube<double> physics_multipoles_cpp_3pcf(
       }
     }
   }
+
   return result;
 }
 
@@ -519,15 +536,18 @@ arma::Col<double> physics_aperture_full_cpp_3pcf(
       radii[filter*3 + leg] = filters(filter, leg);
     }
   }
+
   arma::Col<double> result(filters.n_rows);
   physics_aperture_full_3pcf(owner.get(), &parameters, bins.memptr(),
     static_cast<int>(ell.n_elem), ell.memptr(), dell.memptr(),
     static_cast<int>(phi.n_elem), phi.memptr(), dphi.memptr(),
     static_cast<int>(filters.n_rows), radii.data(), result.memptr());
+
   if (!(result.is_finite())) {
     spdlog::critical("3pcf physics wrapper: nonfinite full-aperture mean");
     std::exit(1);
   }
+
   return result;
 }
 
@@ -554,15 +574,18 @@ arma::Col<double> physics_grid_projected_cpp_3pcf(
     spdlog::critical("3pcf physics wrapper: invalid grid-query sides");
     std::exit(1);
   }
+
   arma::Col<double> result(sides.n_rows);
   for (arma::uword row=0; row<sides.n_rows; row++) {
     result(row) = physics_grid_projected_3pcf(owner.get(), sides(row, 0),
       sides(row, 1), sides(row, 2), component);
   }
+
   if (!(result.is_finite())) {
     spdlog::critical("3pcf physics wrapper: nonfinite interpolated bispectrum");
     std::exit(1);
   }
+
   return result;
 }
 
@@ -589,8 +612,10 @@ arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
       "dimensions");
     std::exit(1);
   }
+
   const size_t count = ell.n_elem;
   const size_t norder = static_cast<size_t>(owner.lmax() + 1);
+
   if (!(count <= SIZE_MAX/count
         && norder <= SIZE_MAX/(count*count)
         && norder*count*count <= SIZE_MAX/sizeof(double))) {
@@ -598,7 +623,9 @@ arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
       "allocation overflows");
     std::exit(1);
   }
+
   std::vector<double> packed(norder*count*count);
+
   physics_grid_multipoles_3pcf(owner.get(), static_cast<int>(count),
     ell.memptr(), component, packed.data());
 
@@ -613,10 +640,12 @@ arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
       }
     }
   }
+
   if (!(result.is_finite())) {
     spdlog::critical("3pcf physics wrapper: nonfinite interpolated multipole");
     std::exit(1);
   }
+
   return result;
 }
 
@@ -657,16 +686,19 @@ physics_grids_cpp_3pcf(
       ordered[row*3 + leg] = bins(row, leg);
     }
   }
+
   std::vector<physics_grid_3pcf*> prepared(bins.n_rows);
   physics_grid_create_many_3pcf(owner.get(), &parameters,
     static_cast<int>(bins.n_rows), ordered.data(), &settings,
     prepared.data());
+
   std::vector<std::shared_ptr<physics_grid_owner_3pcf>> result;
   result.reserve(bins.n_rows);
   for (physics_grid_3pcf* table : prepared) {
     result.push_back(std::make_shared<physics_grid_owner_3pcf>(table,
       settings.lmax));
   }
+
   return result;
 }
 
@@ -713,15 +745,18 @@ arma::Col<double> physics_grid_aperture_cpp_3pcf(
       radii[filter*3 + leg] = filters(filter, leg);
     }
   }
+
   arma::Col<double> result(filters.n_rows);
   physics_grid_aperture_full_3pcf(owner.get(), static_cast<int>(ell.n_elem),
     ell.memptr(), dell.memptr(), static_cast<int>(phi.n_elem), phi.memptr(),
     dphi.memptr(), static_cast<int>(filters.n_rows), radii.data(),
     result.memptr());
+
   if (!(result.is_finite())) {
     spdlog::critical("3pcf physics wrapper: nonfinite grid aperture mean");
     std::exit(1);
   }
+
   return result;
 }
 
@@ -750,13 +785,16 @@ arma::Col<double> physics_nla_power_cpp_3pcf(
     spdlog::critical("3pcf physics wrapper: invalid NLA power arrays");
     std::exit(1);
   }
+
   arma::Col<double> result(ell.n_elem);
   physics_nla_power_batch_3pcf(owner.get(), &parameters, bins[0], bins[1],
     static_cast<int>(ell.n_elem), ell.memptr(), result.memptr());
+
   if (!(result.is_finite())) {
     spdlog::critical("3pcf physics wrapper: nonfinite NLA power result");
     std::exit(1);
   }
+
   return result;
 }
 

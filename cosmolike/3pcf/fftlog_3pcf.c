@@ -144,6 +144,7 @@ int next_fft_size_3pcf(
     log_fatal("fftlog_3pcf: invalid minimum FFT length");
     exit(1);
   }
+
   // Round the request up to an even number, then test even candidates
   // only, since an odd candidate can never satisfy the evenness rule.
   int candidate = minimum+(minimum%2);
@@ -164,6 +165,7 @@ int next_fft_size_3pcf(
       return candidate;
     }
   }
+
   log_fatal("fftlog_3pcf: no representable FFT length");
   exit(1);
   return 0;
@@ -197,6 +199,7 @@ static double complex expm1_complex_3pcf(
     }
     return sum;
   }
+
   return cexp(value)-1.0;
 }
 
@@ -232,6 +235,7 @@ static double taper_fftlog_3pcf(
   if (!enabled) {
     return 1.0;
   }
+
   const int cutoff = (int)floor(width*length/2.0);
   const int absolute = abs(frequency);
   const int edge = length/2;
@@ -243,6 +247,7 @@ static double taper_fftlog_3pcf(
     // only the Nyquist coefficient itself turns off.
     return 0.0;
   }
+
   // x measures how far this frequency sits from the Nyquist end of the
   // taper region, as a fraction of the region's width.
   const double fraction = (double)(edge-absolute)/(cutoff-1);
@@ -314,18 +319,22 @@ static double complex kernel_fftlog_3pcf(
   gsl_sf_result numerator_phase;
   gsl_sf_result denominator_log;
   gsl_sf_result denominator_phase;
+
   const int status1 = gsl_sf_lngamma_complex_e((order-0.5+nu)/2.0,
       eta/2.0, &numerator_log, &numerator_phase);
   const int status2 = gsl_sf_lngamma_complex_e((order+2.5-nu)/2.0,
       -eta/2.0, &denominator_log, &denominator_phase);
+
   if (!(status1 == GSL_SUCCESS && status2 == GSL_SUCCESS)) {
     log_fatal("fftlog_3pcf: complex gamma evaluation failed");
     exit(1);
   }
+
   const double complex logarithm = exponent*log(2.0)
       +numerator_log.val-denominator_log.val
       +I*(numerator_phase.val-denominator_phase.val-eta*phase_origin);
   double complex value = cexp(logarithm);
+
   if (dlnt > 0.0) {
     // Multiply the bin-average factor S(2-s,dlnt)/S(2,dlnt) derived in
     // the header; slope holds 2 - s written through exponent = s + 1/2.
@@ -333,10 +342,12 @@ static double complex kernel_fftlog_3pcf(
     const double denominator = expm1(2.0*dlnt)/2.0;
     value *= expm1_complex_3pcf(slope*dlnt)/(slope*denominator);
   }
+
   if (!(isfinite(creal(value)) && isfinite(cimag(value)))) {
     log_fatal("fftlog_3pcf: nonfinite Mellin kernel");
     exit(1);
   }
+
   return value;
 }
 
@@ -401,11 +412,13 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       exit(1);
     }
   }
+
   const double step = log(ell[1]/ell[0]);
   if (!(isfinite(step) && step > 0.0)) {
     log_fatal("fftlog_3pcf: ell must increase");
     exit(1);
   }
+
   // The tolerance 1.0e-10*step accepts grids a caller built by
   // exponentiating a uniform array, whose spacing wobbles at roundoff
   // level; a genuinely nonuniform grid still fails by a wide margin.
@@ -427,6 +440,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
     log_fatal("fftlog_3pcf: workspace allocation failed");
     exit(1);
   }
+
   work->n = n;
   work->padded = n+2*padding;
   work->padding = padding;
@@ -438,6 +452,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
     log_fatal("fftlog_3pcf: FFT array size overflow");
     exit(1);
   }
+
   work->input_stride = (((size_t)n*n+7)/8)*8;
   work->real_stride = ((nfft*nfft+7)/8)*8;
   work->complex_stride = ((nfft*nfrequency+3)/4)*4;
@@ -449,6 +464,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
     log_fatal("fftlog_3pcf: worker or Mellin table size overflow");
     exit(1);
   }
+
   // FFTW's allocator returns memory aligned for its vector code. All
   // numeric blocks are flat, with an explicitly rounded worker stride,
   // so no hidden row-pointer padding exists anywhere in the workspace.
@@ -495,6 +511,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   const double origin = log(xy)-(nfft-1)*step;
   const double frequency_step = 2.0*acos(-1.0)/(nfft*step);
   const size_t axis1 = (size_t)(max_order+1)*nfft;
+
   for (int order=0; order<=max_order; order++) {
     for (int index=0; index<work->padded; index++) {
       // Rows above padded/2 hold negative frequencies; the Nyquist row
@@ -524,6 +541,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
             *(order-2.5+exponent)/(order+0.5-exponent);
       }
     }
+
     for (size_t index=0; index<nfrequency; index++) {
       const double taper = taper_fftlog_3pcf(
           (int)index, work->padded, window, window_width);
@@ -562,6 +580,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
     log_fatal("fftlog_3pcf: FFTW planning failed");
     exit(1);
   }
+
   return work;
 }
 
@@ -576,8 +595,10 @@ void fftlog_destroy_3pcf(
   if (work == NULL) {
     return;
   }
+
   fftw_destroy_plan(work->forward_plan);
   fftw_destroy_plan(work->inverse_plan);
+
   fftw_free(work->input);
   fftw_free(work->real);
   fftw_free(work->forward);
@@ -588,6 +609,7 @@ void fftlog_destroy_3pcf(
   fftw_free(work->selected_offsets);
   fftw_free(work->selected_first);
   fftw_free(work->selected_second);
+
   free(work);
 }
 
@@ -622,11 +644,13 @@ void fftlog_select_3pcf(
       exit(1);
     }
   }
+
   work->selected_count = (size_t)ntheta*ntheta;
   if (!(work->selected_count <= SIZE_MAX/sizeof(double))) {
     log_fatal("fftlog_3pcf: allocation size overflow");
     exit(1);
   }
+
   work->selected_offsets =
       fftw_malloc(sizeof(size_t)*work->selected_count);
   work->selected_first = fftw_malloc(sizeof(double)*work->selected_count);
@@ -636,6 +660,7 @@ void fftlog_select_3pcf(
     log_fatal("fftlog_3pcf: allocation failed");
     exit(1);
   }
+
   for (int first=0; first<ntheta; first++) {
     for (int second=0; second<ntheta; second++) {
       const size_t cell = (size_t)first*ntheta+second;
@@ -663,6 +688,7 @@ double* fftlog_input_3pcf(
     log_fatal("fftlog_3pcf: worker exceeds allocated scratch");
     exit(1);
   }
+
   return work->input+(size_t)worker*work->input_stride;
 }
 
@@ -690,6 +716,7 @@ void fftlog_forward_3pcf(
   double* real = work->real+(size_t)worker*work->real_stride;
   fftw_complex* forward =
       work->forward+(size_t)worker*work->complex_stride;
+
   // The fill loop below overwrites every cell inside the physical n*n
   // block of the FFT buffer. Without padding that block is the whole
   // transform, so only the alignment tail after it needs clearing.
@@ -699,6 +726,7 @@ void fftlog_forward_3pcf(
   for (size_t index=clear_start; index<work->real_stride; index++) {
     real[index] = 0.0;
   }
+
   // Scalar meaning of one iteration, for row first and the column
   // pair second and second+1:
   //   real[first+padding][second+padding] =
@@ -732,6 +760,7 @@ void fftlog_forward_3pcf(
           simde_mm_mul_pd(first_product, second_bias));
     }
   }
+
   fftw_execute_dft_r2c(work->forward_plan, real, forward);
 }
 
@@ -770,11 +799,13 @@ const double* fftlog_inverse_3pcf(
 )
 {
   double* output = fftlog_input_3pcf(work, worker);
+
   if (!(order1 >= 0 && order1 <= work->max_order
         && order2 >= 0 && order2 <= work->max_order)) {
     log_fatal("fftlog_3pcf: Bessel order exceeds prepared kernels");
     exit(1);
   }
+
   const size_t nfrequency = (size_t)work->padded/2+1;
   const size_t axis1 = (size_t)(work->max_order+1)*work->padded;
   const fftw_complex* forward =
@@ -782,6 +813,7 @@ const double* fftlog_inverse_3pcf(
   fftw_complex* scratch =
       work->scratch+(size_t)worker*work->complex_stride;
   double* real = work->real+(size_t)worker*work->real_stride;
+
   // Scalar meaning for each coefficient c = forward[index] and the
   // combined kernel k = (axis 0 kernel at the row frequency)*(axis 1
   // kernel at the column frequency):
@@ -828,7 +860,9 @@ const double* fftlog_inverse_3pcf(
       simde_mm_storeu_pd((double*)(scratch+index), conjugated);
     }
   }
+
   fftw_execute_dft_c2r(work->inverse_plan, scratch, real);
+
   // Undo the two conventions the pipeline carried. FFTW scales neither
   // direction, so the forward and inverse transforms together multiply
   // every value by the cell count padded*padded. Each axis kernel also
@@ -836,6 +870,7 @@ const double* fftlog_inverse_3pcf(
   // kernel_fftlog_3pcf), and the two axes contribute
   // 2^(3/2)*2^(3/2) = 8.
   const double normalization = 1.0/(8.0*work->padded*work->padded);
+
   if (work->selected_count > 0) {
     // A finite triangle measurement keeps only ntheta of the n radial
     // nodes per axis, so most cells of the padded inverse grid go
@@ -882,6 +917,7 @@ const double* fftlog_inverse_3pcf(
     }
     return output;
   }
+
   // Full-grid output: normalize every cell of the physical n*n block
   // and restore the theta^(1/2-nu) powers on both axes, reading from
   // the padded inverse grid and writing the compact worker output.
@@ -912,5 +948,6 @@ const double* fftlog_inverse_3pcf(
           simde_mm_mul_pd(first_product, second_factor));
     }
   }
+
   return output;
 }

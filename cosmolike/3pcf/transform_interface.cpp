@@ -20,6 +20,7 @@
 
 namespace py = pybind11;
 namespace cosmolike_interface {
+
 using transform_array = py::array_t<double, py::array::c_style>;
 using transform_indices = py::array_t<int, py::array::c_style>;
 
@@ -65,6 +66,7 @@ using transform_indices = py::array_t<int, py::array::c_style>;
 // ---------------------------------------------------------------------------
 
 
+
 // ============================================================================
 // [SECTION] VALIDATION HELPERS
 // ============================================================================
@@ -84,6 +86,7 @@ static void shape_transform(
     spdlog::critical("3pcf transform: array has wrong rank");
     std::exit(1);
   }
+
   for (int axis=0; axis<rank; axis++) {
     if (!(values.shape(axis) > 0
           && values.shape(axis) <= INT_MAX)) {
@@ -91,6 +94,7 @@ static void shape_transform(
       std::exit(1);
     }
   }
+
   using scalar = typename Array::value_type;
   const auto address = reinterpret_cast<std::uintptr_t>(values.data());
   if (!(address%alignof(scalar) == 0)) {
@@ -149,6 +153,7 @@ static int projection_transform(
 }
 
 
+
 // ============================================================================
 // [SECTION] NOTEBOOK INPUT CONVERSION
 // ============================================================================
@@ -173,6 +178,7 @@ static Array notebook_transform_input(
   py::object converted = numpy.attr("asarray")(values).attr("astype")(
       numpy.attr("float64"), py::arg("order")="F", py::arg("copy")=true);
   py::array_t<double, py::array::f_style> input(converted);
+
   if (!(input.ndim() == rank)) {
     spdlog::critical("3pcf transform: wrong notebook array rank");
     std::exit(1);
@@ -184,6 +190,7 @@ static Array notebook_transform_input(
       std::exit(1);
     }
   }
+
   Array output;
   if constexpr (std::is_same_v<Array, arma::Col<double>>) {
     output.set_size(input.shape(0));
@@ -192,13 +199,17 @@ static Array notebook_transform_input(
   } else {
     output.set_size(input.shape(0), input.shape(1), input.shape(2));
   }
+
   std::copy_n(input.data(), input.size(), output.memptr());
+
   if (!(output.is_finite())) {
     spdlog::critical("3pcf transform: nonfinite notebook input");
     std::exit(1);
   }
+
   return output;
 }
+
 
 
 // ============================================================================
@@ -256,6 +267,7 @@ class transform_owner_3pcf {
     shape_transform(indices, 1);
     finite_transform(ell);
     finite_transform(phi);
+
     if (!(lmax >= 0 && lmax < INT_MAX-1)) {
       spdlog::critical("3pcf transform: invalid Legendre cutoff");
       std::exit(1);
@@ -264,10 +276,12 @@ class transform_owner_3pcf {
       spdlog::critical("3pcf transform: convention must be fastnc or treecorr");
       std::exit(1);
     }
+
     nell_ = static_cast<int>(ell.size());
     ntheta_ = static_cast<int>(indices.size());
     nphi_ = static_cast<int>(phi.size());
     lmax_ = lmax;
+
     plan_ = transform_create_3pcf(nell_, ell.data(), ntheta_,
         indices.data(), nphi_, phi.data(), lmax, mmax,
         worker_count_transform(), nu1, nu2, xy, dlnt, padding, window,
@@ -282,9 +296,11 @@ class transform_owner_3pcf {
     // increasing order, so these reads stay inside the table.
     theta_ = transform_array(ntheta_);
     theta_full_ = transform_array(nell_);
+
     for (int index=0; index<nell_; index++) {
       theta_full_.mutable_data()[index] = xy/ell.data()[nell_-1-index];
     }
+
     for (int index=0; index<ntheta_; index++) {
       theta_.mutable_data()[index] =
           theta_full_.data()[indices.data()[index]];
@@ -307,12 +323,16 @@ class transform_owner_3pcf {
     )
   {
     validate(multipoles);
+
     transform_array real({4, ntheta_, ntheta_, nphi_});
     transform_array imag({4, ntheta_, ntheta_, nphi_});
+
     transform_natural_3pcf(plan_, multipoles.data(), real.mutable_data(),
         imag.mutable_data());
+
     finite_transform(real);
     finite_transform(imag);
+
     return py::make_tuple(real, imag);
   }
 
@@ -325,12 +345,14 @@ class transform_owner_3pcf {
   {
     const auto input =
         notebook_transform_input<arma::Cube<double>>(multipoles, 3);
+
     if (!(input.n_rows == static_cast<arma::uword>(lmax_+1)
           && input.n_cols == static_cast<arma::uword>(nell_)
           && input.n_slices == static_cast<arma::uword>(nell_))) {
       spdlog::critical("3pcf transform: notebook multipoles mismatch plan");
       std::exit(1);
     }
+
     auto output = natural_cpp_3pcf(plan_, input, ntheta_, nphi_);
     py::object real = carma::cube_to_arr(std::move(output.real));
     py::object imag = carma::cube_to_arr(std::move(output.imag));
@@ -359,6 +381,7 @@ class transform_owner_3pcf {
     validate(multipoles);
     shape_transform(real, 3);
     shape_transform(imag, 3);
+
     const int triangles = ntheta_*ntheta_*nphi_;
     if (!(real.shape(1) == 4 && real.shape(2) == triangles)) {
       spdlog::critical("3pcf transform: weights do not match this plan's "
@@ -372,13 +395,17 @@ class transform_owner_3pcf {
         std::exit(1);
       }
     }
+
     finite_transform(real);
     finite_transform(imag);
+
     const int nfilter = static_cast<int>(real.shape(0));
     transform_array output(nfilter);
     transform_aperture_3pcf(plan_, multipoles.data(), nfilter, real.data(),
         imag.data(), output.mutable_data());
+
     finite_transform(output);
+
     return output;
   }
 
@@ -402,6 +429,7 @@ class transform_owner_3pcf {
   {
     shape_transform(real, 3);
     shape_transform(imag, 3);
+
     const int triangles = ntheta_*ntheta_*nphi_;
     if (!(real.shape(1) == 4 && real.shape(2) == triangles)) {
       spdlog::critical("3pcf transform: weights do not match this plan's "
@@ -415,17 +443,22 @@ class transform_owner_3pcf {
         std::exit(1);
       }
     }
+
     finite_transform(real);
     finite_transform(imag);
+
     const auto* physical = borrow_physics_grid_3pcf(grid);
     const int nfilter = static_cast<int>(real.shape(0));
     transform_array result(nfilter);
+
     // This call keeps the GIL, like every method here: the plan owns
     // one set of mutable FFT and interpolation scratch, and the lock
     // keeps a second Python thread out of it until the method returns.
     transform_aperture_grid_3pcf(plan_, physical, nfilter, real.data(),
         imag.data(), result.mutable_data());
+
     finite_transform(result);
+
     return result;
   }
 
@@ -441,9 +474,11 @@ class transform_owner_3pcf {
         notebook_transform_input<arma::Cube<double>>(real, 3);
     const auto imag_copy =
         notebook_transform_input<arma::Cube<double>>(imag, 3);
+
     const auto* physical = borrow_physics_grid_3pcf(grid);
     py::object output = carma::col_to_arr(aperture_grid_cpp_3pcf(plan_,
         physical, real_copy, imag_copy, ntheta_*ntheta_*nphi_));
+
     // Armadillo columns arrive as [nfilter,1]. Both adapters expose the
     // same one-dimensional [nfilter] aperture vector to Python callers.
     return output.attr("reshape")(py::make_tuple(real_copy.n_rows));
@@ -483,6 +518,7 @@ class transform_owner_3pcf {
 };
 
 
+
 // ============================================================================
 // [SECTION] NOTEBOOK REGISTRATION
 // ============================================================================
@@ -495,6 +531,7 @@ static void bind_transform_notebook_3pcf(
   )
 {
   py::module_ notebook = module.attr("notebook").cast<py::module_>();
+
   notebook.def("legendre_coupling", [](
       const py::object& psi, // opening angles in radians
       const int lmax, // Legendre cutoff
@@ -509,6 +546,7 @@ static void bind_transform_notebook_3pcf(
       "table G[M, L, psi].",
       py::arg("psi"), py::arg("lmax"), py::arg("mmax"),
       py::arg("npsi")=200);
+
   notebook.def("two_bessel", [](
       const py::object& ell, // logarithmic Fourier grid
       const py::object& integrand, // dln ell integrand
@@ -535,6 +573,7 @@ static void bind_transform_notebook_3pcf(
       py::arg("order2"), py::arg("nu1")=1.01, py::arg("nu2")=1.01,
       py::arg("xy")=1.0, py::arg("dlnt")=0.0, py::arg("padding")=0,
       py::arg("window")=false, py::arg("window_width")=0.25);
+
   notebook.def("natural_components", [](
       transform_owner_3pcf& plan, // already prepared geometry
       const py::object& multipoles // copied, arbitrary-stride b_L
@@ -544,6 +583,7 @@ static void bind_transform_notebook_3pcf(
       "bispectrum Legendre coefficients b_l through Armadillo, then "
       "run the same prepared C plan.",
       py::arg("plan"), py::arg("b_l"));
+
   notebook.def("aperture_from_grid", [](
       transform_owner_3pcf& plan, // already prepared geometry
       const py::object& grid, // prepared physical grid
@@ -557,6 +597,7 @@ static void bind_transform_notebook_3pcf(
       py::arg("plan"), py::arg("grid"), py::arg("weights_real"),
       py::arg("weights_imag"));
 }
+
 
 
 // ============================================================================
@@ -592,17 +633,22 @@ static transform_array coupling_production(
 {
   shape_transform(psi, 1);
   finite_transform(psi);
+
   if (!(lmax >= 0 && lmax < INT_MAX-1
         && mmax >= 0 && mmax < INT_MAX-1
         && lmax <= INT_MAX-1-mmax)) {
     spdlog::critical("3pcf transform: invalid coupling cutoffs");
     std::exit(1);
   }
+
   const int nquery = static_cast<int>(psi.size());
   transform_array output({mmax+1, lmax+1, nquery});
+
   legendre_coupling_3pcf(lmax, mmax, nquery, psi.data(), npsi,
       output.mutable_data());
+
   finite_transform(output);
+
   return output;
 }
 
@@ -644,6 +690,7 @@ static transform_array bessel_production(
   shape_transform(integrand, 2);
   finite_transform(ell);
   finite_transform(integrand);
+
   if (!(integrand.shape(0) == ell.size()
         && integrand.shape(1) == ell.size())) {
     spdlog::critical("3pcf transform: integrand shape mismatch");
@@ -653,6 +700,7 @@ static transform_array bessel_production(
     spdlog::critical("3pcf transform: negative Bessel order");
     std::exit(1);
   }
+
   const int nell = static_cast<int>(ell.size());
 
   // Create a one-shot workspace. The literal 1 is the worker count:
@@ -678,9 +726,12 @@ static transform_array bessel_production(
   transform_array output({nell, nell});
   std::copy_n(result, integrand.size(), output.mutable_data());
   fftlog_destroy_3pcf(work);
+
   finite_transform(output);
+
   return output;
 }
+
 
 
 // ============================================================================
@@ -695,6 +746,7 @@ void bind_threepcf_transform(
   )
 {
   py::module_ production = module.attr("production").cast<py::module_>();
+
   production.def("legendre_coupling", &coupling_production,
       "Angular coupling table G[M, L, psi]: the coefficients that "
       "couple Legendre degree L and angular Fourier mode M at opening "
@@ -703,6 +755,7 @@ void bind_threepcf_transform(
       "fastnc's 200-node linear interpolation table.",
       py::arg("psi").noconvert(), py::arg("lmax"), py::arg("mmax"),
       py::arg("npsi")=200);
+
   production.def("next_fft_size", &next_fft_size_3pcf,
       "Smallest even integer >= minimum whose only prime factors are "
       "2, 3 and 5. FFTW runs its fast small-radix kernels on such "
@@ -710,6 +763,7 @@ void bind_threepcf_transform(
       "a much slower general algorithm, so padding to this size buys "
       "speed for little memory.",
       py::arg("minimum"));
+
   production.def("two_bessel", &bessel_production,
       "Double-Bessel transform: integral dln(ell1) dln(ell2) "
       "f(ell1, ell2) J_order1(ell1 theta1) J_order2(ell2 theta2), with "
@@ -723,6 +777,7 @@ void bind_threepcf_transform(
       py::arg("nu2")=1.01, py::arg("xy")=1.0, py::arg("dlnt")=0.0,
       py::arg("padding")=0, py::arg("window")=false,
       py::arg("window_width")=0.25);
+
   py::class_<transform_owner_3pcf>(production, "TransformPlan")
       .def(py::init<const transform_array&, const transform_array&,
           const transform_indices&, int, int, double, double, double,
@@ -779,6 +834,8 @@ void bind_threepcf_transform(
           py::arg("weights_imag").noconvert())
       .def_property_readonly("theta", &transform_owner_3pcf::theta)
       .def_property_readonly("theta_full", &transform_owner_3pcf::theta_full);
+
   bind_transform_notebook_3pcf(module);
 }
+
 }

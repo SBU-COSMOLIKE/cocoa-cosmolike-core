@@ -130,6 +130,7 @@ static double complex spin_phase_3pcf(
     log_fatal("transform_3pcf: centroid direction is not representable");
     exit(1);
   }
+
   const double complex unit = side/length;
   return unit*unit;
 }
@@ -209,6 +210,7 @@ transform_plan_3pcf* transform_create_3pcf(
     log_fatal("transform_3pcf: invalid opening-angle bin width");
     exit(1);
   }
+
   // One grid point cannot define an interpolation segment, so the
   // coupling accepts zero (exact evaluation) or at least two points.
   if (!(npsi >= 0 && npsi != 1)) {
@@ -228,6 +230,7 @@ transform_plan_3pcf* transform_create_3pcf(
     log_fatal("transform_3pcf: allocation failed");
     exit(1);
   }
+
   plan->nell = nell;
   plan->ntheta = ntheta;
   plan->nphi = nphi;
@@ -237,12 +240,14 @@ transform_plan_3pcf* transform_create_3pcf(
   plan->projection = projection;
   plan->convention = convention;
   plan->ordered_legs = ordered_legs;
+
   const int nmodes = ordered_legs ? 2*mmax+1 : mmax+1;
   plan->fft_workers = workers < nmodes ? workers : nmodes;
   const size_t nratio = 2*(size_t)nell-1;
   const size_t radial_pairs = (size_t)ntheta*ntheta;
   const size_t triangles = radial_pairs*nphi;
   plan->workers = workers < (int)triangles ? workers : (int)triangles;
+
   if (!(triangles <= INT_MAX/8)) {
     log_fatal("transform_3pcf: too many triangles");
     exit(1);
@@ -259,6 +264,7 @@ transform_plan_3pcf* transform_create_3pcf(
     log_fatal("transform_3pcf: angular phase table is too large");
     exit(1);
   }
+
   plan->indices = malloc1d_int(ntheta);
   plan->ell = calloc1d(nell);
   plan->ell2 = calloc1d(nell);
@@ -289,9 +295,11 @@ transform_plan_3pcf* transform_create_3pcf(
     }
     plan->indices[index] = indices[index];
   }
+
   plan->fft = fftlog_create_3pcf(nell, ell, mmax+3, plan->fft_workers,
       nu1, nu2, xy, dlnt, padding, window, window_width);
   fftlog_select_3pcf(plan->fft, ntheta, plan->indices);
+
   // The squared radii ell1^2 ell2^2 weight the transform input: each
   // Fourier plane contributes the polar measure
   // d^2(ell) = ell^2 dln(ell) d(angle) in logarithmic variables.
@@ -313,6 +321,7 @@ transform_plan_3pcf* transform_create_3pcf(
   // table stores them at index (j-i)+nell-1, and the transform reads
   // the coupling with that same offset.
   double* psi = calloc1d((int)nratio);
+
   for (int difference=1-nell; difference<nell; difference++) {
     // atan2(ell2, ell1) equals arctan(ell2/ell1) for positive legs,
     // without an explicit ratio that could overflow. first and second
@@ -322,8 +331,10 @@ transform_plan_3pcf* transform_create_3pcf(
     const int second = first+difference;
     psi[difference+nell-1] = atan2(ell[second], ell[first]);
   }
+
   legendre_coupling_3pcf(lmax, mmax, (int)nratio, psi, npsi,
       plan->coupling);
+
   // Fold the Legendre parity factor (-1)^L into the stored coupling.
   // The factor converts the Legendre expansion in mu to the coupling
   // integral's own angle variable (file head, step 2); it is pure
@@ -338,6 +349,7 @@ transform_plan_3pcf* transform_create_3pcf(
       }
     }
   }
+
   free(psi);
 
   // --- 5. OPENING-ANGLE FOURIER TABLE ---
@@ -426,6 +438,7 @@ transform_plan_3pcf* transform_create_3pcf(
           phase1*conj(phase2)*phase3*rotation3,
           phase1*phase2*conj(phase3)/rotation
         };
+
         const size_t triangle =
             ((size_t)first*ntheta+second)*nphi+angle;
         for (int component=0; component<4; component++) {
@@ -441,6 +454,7 @@ transform_plan_3pcf* transform_create_3pcf(
       }
     }
   }
+
   return plan;
 }
 
@@ -454,6 +468,7 @@ void transform_destroy_3pcf(
   if (plan == NULL) {
     return;
   }
+
   fftlog_destroy_3pcf(plan->fft);
   free(plan->indices);
   free(plan->ell);
@@ -499,6 +514,7 @@ void transform_natural_3pcf(
     log_fatal("transform_3pcf: null array");
     exit(1);
   }
+
   const int nell = plan->nell;
   const int ntheta = plan->ntheta;
   const int nphi = plan->nphi;
@@ -506,6 +522,7 @@ void transform_natural_3pcf(
   const size_t radial_pairs = (size_t)ntheta*ntheta;
   const size_t triangles = radial_pairs*nphi;
   const double two_pi = 2.0*acos(-1.0);
+
   // Each Fourier leg contributes a plane measure d^2(ell)/(2*pi)^2,
   // giving (2*pi)^-4 in total. The fastnc paper books three of those
   // powers on each multipole and the fourth on the resummation
@@ -551,14 +568,17 @@ void transform_natural_3pcf(
     } else if (plan->mmax > 0) {
       mode = job == nmodes - 1 ? 1 : (job == 0 ? 0 : job + 1);
     }
+
     // The storage slot always follows physical M, whatever the job
     // order: slot mode+mmax with ordered legs, slot mode without.
     const int task = plan->ordered_legs ? mode + plan->mmax : mode;
+
     int worker = 0;
     #ifdef _OPENMP
     worker = omp_get_thread_num();
     #endif
     double* input = fftlog_input_3pcf(plan->fft, worker);
+
     // Scalar meaning for one Fourier cell (first, second):
     //   sum = 0;
     //   for (degree = 0; degree <= lmax; degree++) {
@@ -694,7 +714,9 @@ void transform_natural_3pcf(
         simde_mm_storeu_pd(input+cell, weighted_second);
       }
     }
+
     fftlog_forward_3pcf(plan->fft, worker);
+
     // Bessel-order pairs of the four natural components, from the
     // fastnc paper's multipole formulas (Sugiyama, Gomes & Jarvis,
     // arXiv:2407.01798), with J the cylindrical Bessel function:
@@ -718,6 +740,7 @@ void transform_natural_3pcf(
     const int order1[4] = {mode-3, -mode-1, mode+1, mode-3};
     const int order2[4] = {-mode-3, mode-1, -mode-3, -mode+1};
     const double* completed[4] = {NULL, NULL, NULL, NULL};
+
     for (int component=0; component<4; component++) {
       const int first_order = order1[component];
       const int second_order = order2[component];
@@ -737,6 +760,7 @@ void transform_natural_3pcf(
       }
       double* target =
           plan->modes+((size_t)destination*4+component)*radial_pairs;
+
       int reuse = -1;
       for (int previous=0; previous<component; previous++) {
         if (order1[previous] == first_order
@@ -744,6 +768,7 @@ void transform_natural_3pcf(
           reuse = previous;
         }
       }
+
       // At M = +1 and M = -1 two component pairs carry the same
       // Bessel orders up to even-order sign flips, so their
       // transforms coincide; copying the finished values spares a
@@ -770,6 +795,7 @@ void transform_natural_3pcf(
           target[cell] = normalization*sign1*sign2*transformed[cell];
         }
       }
+
       completed[component] = target;
     }
   }
@@ -792,6 +818,7 @@ void transform_natural_3pcf(
     const size_t transpose = (pair%ntheta)*ntheta+pair/ntheta;
     double real[4] = {0.0, 0.0, 0.0, 0.0};
     double imag[4] = {0.0, 0.0, 0.0, 0.0};
+
     if (plan->ordered_legs) {
       // General route: every signed M has its own stored block. The
       // real part of Gamma accumulates value*cos(M*phi) and the
@@ -835,6 +862,7 @@ void transform_natural_3pcf(
       real[1] = plan->modes[radial_pairs+pair];
       real[2] = plan->modes[3*radial_pairs+transpose];
       real[3] = plan->modes[3*radial_pairs+pair];
+
       for (int mode=1; mode<=plan->mmax; mode++) {
         const double* values = plan->modes+(size_t)mode*4*radial_pairs;
         // Gamma_mu^(+M) at this radial pair: components 0, 2 and 3
@@ -844,6 +872,7 @@ void transform_natural_3pcf(
         const double positive[4] = {values[pair],
           values[radial_pairs+transpose], values[2*radial_pairs+pair],
           values[3*radial_pairs+pair]};
+
         // Gamma_mu^(-M) through the identities above: component 0
         // transposes its own block, component 1 reads directly, and
         // components 2 and 3 read each other's transposed entries.
@@ -851,6 +880,7 @@ void transform_natural_3pcf(
           values[radial_pairs+pair], values[3*radial_pairs+transpose],
           values[2*radial_pairs+transpose]};
         const size_t offset = ((size_t)mode*nphi+angle)*2;
+
         // Pair the +M and -M terms of the Fourier series. The stored
         // multipoles are real, so the cosine collects their sum in
         // the real part and the sine their difference in the
@@ -863,6 +893,7 @@ void transform_natural_3pcf(
         }
       }
     }
+
     // Component order and sign of the output. fastnc reports
     // [Gamma_0, Gamma_1, Gamma_2, Gamma_3]; TreeCorr's natural
     // components equal -[Gamma_0, Gamma_1, Gamma_3, Gamma_2] in that
@@ -911,10 +942,13 @@ void transform_aperture_3pcf(
       "projection");
     exit(1);
   }
+
   const int triangles = plan->ntheta*plan->ntheta*plan->nphi;
   double* real = plan->gamma;
   double* imag = plan->gamma+4*(size_t)triangles;
+
   transform_natural_3pcf(plan, multipoles, real, imag);
+
   if (plan->convention == 0) {
     // The aperture weights follow TreeCorr, whose natural components
     // read -[Gamma_0, Gamma_1, Gamma_3, Gamma_2]. A fastnc-convention
@@ -933,6 +967,7 @@ void transform_aperture_3pcf(
       }
     }
   }
+
   aperture_apply_3pcf(nfilter, triangles, 1, weights_real, weights_imag,
       real, imag, output);
 }
@@ -961,10 +996,12 @@ void transform_aperture_grid_3pcf(
     log_fatal("transform_3pcf: invalid prepared-grid aperture input");
     exit(1);
   }
+
   if (!physics_grid_query_matches_3pcf(plan->query, grid)) {
     physics_grid_query_destroy_3pcf(plan->query);
     plan->query = physics_grid_query_create_3pcf(grid, plan->nell, plan->ell);
   }
+
   if (!(physics_grid_query_lmax_3pcf(plan->query) == plan->lmax
         && physics_grid_query_nell_3pcf(plan->query) == plan->nell)) {
     log_fatal("transform_3pcf: projected-grid multipoles mismatch the "
@@ -980,20 +1017,24 @@ void transform_aperture_grid_3pcf(
     log_fatal("transform_3pcf: prepared-grid multipole size overflow");
     exit(1);
   }
+
   const size_t count = (size_t)(plan->lmax + 1)*pairs;
   if (plan->grid_multipoles == NULL) {
     plan->grid_multipoles = calloc1d((int)count);
   }
+
   // Keeping this buffer between calls reuses the allocation only: the
   // query overwrites the entire prediction even when geometry, IA
   // settings or source bins agree with the previous call.
   physics_grid_query_evaluate_3pcf(plan->query, grid, 0, plan->grid_multipoles);
+
   int finite = 1;
   #pragma omp parallel for num_threads(plan->workers) if(count > 4096) \
       reduction(&:finite) schedule(static)
   for (size_t index=0; index<count; index++) {
     finite &= isfinite(plan->grid_multipoles[index]) ? 1 : 0;
   }
+
   // The reduction combines integer validity flags only. No
   // floating-point sum is reordered; the interpolation and the
   // transforms behind it are unchanged by the worker count.
@@ -1001,6 +1042,7 @@ void transform_aperture_grid_3pcf(
     log_fatal("transform_3pcf: nonfinite prepared-grid multipoles");
     exit(1);
   }
+
   transform_aperture_3pcf(plan, plan->grid_multipoles, nfilter,
       weights_real, weights_imag, output);
 }

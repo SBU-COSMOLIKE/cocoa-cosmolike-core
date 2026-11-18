@@ -145,6 +145,7 @@ static inline void aperture_kernel_3pcf(
       "length/radius ratios");
     exit(1);
   }
+
   const double radius2_sq = ratio2*ratio2;
   const double radius3_sq = ratio3*ratio3;
   if (!isfinite(radius2_sq)
@@ -156,6 +157,7 @@ static inline void aperture_kernel_3pcf(
       "length/radius ratios");
     exit(1);
   }
+
   const double theta_argument = (radius2_sq + radius3_sq
                                 + radius2_sq*radius3_sq)/3.0;
   if (!isfinite(theta_argument)
@@ -165,6 +167,7 @@ static inline void aperture_kernel_3pcf(
       "triangles and length/radius ratios");
     exit(1);
   }
+
   const double theta2 = sqrt(theta_argument);
   const double theta4 = theta2*theta2;
   const double theta6 = theta4*theta2;
@@ -177,6 +180,7 @@ static inline void aperture_kernel_3pcf(
       "length/radius ratios");
     exit(1);
   }
+
   const double aperture_sq[3] = {
     1.0/theta2, radius2_sq/theta2, radius3_sq/theta2
   };
@@ -216,6 +220,7 @@ static inline void aperture_kernel_3pcf(
         "triangles and length/radius ratios");
       exit(1);
     }
+
     const double complex direction =
       (centroid[next] - centroid[last])/centroid[vertex];
 
@@ -240,6 +245,7 @@ static inline void aperture_kernel_3pcf(
        *distance_sq[2])/(6.0*theta2);
   const double radial_product =
     distance_sq[0]*distance_sq[1]*distance_sq[2];
+
   // This guard protects the conjugated-shear kernels, which divide by
   // this product: three individually representable distances can
   // still multiply to an overflowing or underflowing product.
@@ -250,6 +256,7 @@ static inline void aperture_kernel_3pcf(
       "and length/radius ratios");
     exit(1);
   }
+
   const double prefactor = -aperture_sq[0]*aperture_sq[1]
     *aperture_sq[2]*exp(-exponent)/theta4;
   const double complex all_f_conj =
@@ -350,6 +357,7 @@ void aperture_weights_3pcf(
 {
   const double two_pi = 6.283185307179586476925286766559;
   const size_t ntriangle = (size_t)nd2*(size_t)nd3*(size_t)nphi;
+
   // bin_factor carries the constant part of the bin measure and the
   // final factor 1/4 of the aperture estimator; the loop multiplies
   // in the s^2 |t|^2 part separately for each triangle.
@@ -383,6 +391,7 @@ void aperture_weights_3pcf(
       // uses that both share the logarithmic width dlnd.
       for (int second=0; second<nd3; second++) {
         const double other_length = d3[second]/radius1;
+
         // This guard protects the triangle construction: a physical
         // length can be finite while its ratio to the aperture radius
         // overflows or underflows. The check refuses both cases before
@@ -397,6 +406,7 @@ void aperture_weights_3pcf(
             "triangles and length/radius ratios");
           exit(1);
         }
+
         const double measure = bin_factor*side*side
           *other_length*other_length;
 
@@ -478,6 +488,7 @@ void aperture_apply_3pcf(
 )
 {
   const size_t row_size = 4*(size_t)ntriangle;
+
   // The number of lane pairs is the integer ceiling of nfilter/2, so
   // an odd aperture count gets one final pair that duplicates its
   // single aperture (see the lane comment below).

@@ -80,6 +80,8 @@ static int omp_get_thread_num(void) { return 0; }
 // 1e-8. That tolerance absorbs floating-point rounding and nothing
 // more: lensing with curved-space distances is not implemented.
 
+
+
 // ===========================================================================
 // [SECTION] MODEL STORAGE AND SPLINE TABLES
 // ===========================================================================
@@ -281,6 +283,7 @@ static void increasing_physics(
     log_fatal("physics_3pcf: missing grid");
     exit(1);
   }
+
   for (int index=0; index<count; index++) {
     if (!(isfinite(values[index]))) {
       log_fatal("physics_3pcf: nonfinite grid value");
@@ -327,6 +330,7 @@ static physics_spline make_spline(
 {
   physics_spline result = {0};
   increasing_physics(x, count, 0);
+
   result.n = count;
   result.x = calloc1d(count);
   result.y = calloc1d(count);
@@ -336,12 +340,14 @@ static physics_spline make_spline(
   result.slope_low = (y[1] - y[0])/(x[1] - x[0]);
   result.slope_high = (y[count - 1] - y[count - 2])
     /(x[count - 1] - x[count - 2]);
+
   for (int index=0; index<count; index++) {
     if (!(isfinite(y[index]))) {
       log_fatal("physics_3pcf: nonfinite spline data");
       exit(1);
     }
   }
+
   if (count == 2) {
     return result;
   }
@@ -354,10 +360,12 @@ static physics_spline make_spline(
     }
     return result;
   }
+
   const int interior = count - 2;
   double* diagonal = calloc1d(interior);
   double* upper = calloc1d(interior);
   double* rhs = calloc1d(interior);
+
   // Assemble the interior rows and eliminate on the fly: each row
   // folds its subdiagonal entry into the previous pivot, so one pass
   // both builds and forward-eliminates the tridiagonal system.
@@ -393,12 +401,14 @@ static physics_spline make_spline(
       rhs[row] -= multiplier*rhs[row - 1];
     }
   }
+
   // Back substitution fills the interior second derivatives from the
   // last row upward.
   for (int row=interior - 1; row>=0; row--) {
     const double next = row + 1 < interior ? result.second[row + 2] : 0;
     result.second[row + 1] = (rhs[row] - upper[row]*next)/diagonal[row];
   }
+
   // Recover the endpoint second derivatives from the not-a-knot
   // relations the elimination removed: each endpoint extrapolates
   // linearly from its two neighboring interior values.
@@ -410,9 +420,11 @@ static physics_spline make_spline(
   const double previous = x[count - 2] - x[count - 3];
   result.second[count - 1] = ((last + previous)*result.second[count - 2]
     - last*result.second[count - 3])/previous;
+
   free(diagonal);
   free(upper);
   free(rhs);
+
   return result;
 }
 
@@ -457,6 +469,7 @@ static physics_spline make_natural_uniform_spline(
   physics_spline result = make_spline(x, y, count);
   double* diagonal = calloc1d(count);
   const double inverse_square = pow((count - 1)/(x[count - 1] - x[0]), 2);
+
   result.second[0] = 0.0;
   result.second[count - 1] = 0.0;
   for (int index=1; index<count - 1; index++) {
@@ -465,10 +478,12 @@ static physics_spline make_natural_uniform_spline(
       *inverse_square - (index == 1 ? 0.0
       : result.second[index - 1]/diagonal[index - 1]);
   }
+
   for (int index=count - 2; index>=1; index--) {
     result.second[index] = (result.second[index] - result.second[index + 1])
       /diagonal[index];
   }
+
   free(diagonal);
   return result;
 }
@@ -517,6 +532,7 @@ static double read_spline(
       || coordinate > spline->x[spline->n - 1])) {
     return 0.0;
   }
+
   if (spline->inverse_spacing > 0.0) {
     const double position = (coordinate - spline->x[0])*spline->inverse_spacing;
     int index = (int)floor(fmax(0.0, fmin(spline->n - 2.0, position)));
@@ -524,6 +540,7 @@ static double read_spline(
     return spline->y[index]
       + fraction*(spline->y[index + 1] - spline->y[index]);
   }
+
   const int index = interval_physics(spline->x, spline->n, coordinate);
   const double width = spline->x[index + 1] - spline->x[index];
   const double right = (coordinate - spline->x[index])/width;
@@ -554,6 +571,7 @@ static double read_power(
     const int endpoint = index == 0 ? 0 : last;
     return exp(spline->y[endpoint] + slope*(logk - spline->x[endpoint]));
   }
+
   return exp(read_spline(spline, logk, 0));
 }
 
@@ -577,10 +595,12 @@ static physics_spline uniform_storage(
     log_fatal("physics_3pcf: invalid uniform table");
     exit(1);
   }
+
   result.n = count;
   result.x = calloc1d(count);
   result.y = calloc1d(count);
   result.inverse_spacing = (count - 1)/(upper - lower);
+
   for (int index=0; index<count; index++) {
     result.x[index] = lower + (upper - lower)*index/(count - 1);
   }
@@ -616,9 +636,11 @@ static void uniformize_spline(physics_spline* spline, const int boost)
     spline->x[spline->n - 1]);
   dense.slope_low = spline->slope_low;
   dense.slope_high = spline->slope_high;
+
   for (int index=0; index<count; index++) {
     dense.y[index] = read_spline(spline, dense.x[index], 0);
   }
+
   destroy_spline(spline);
   *spline = dense;
 }
@@ -638,6 +660,7 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
   if (model->source_readers) {
     return;
   }
+
   const int boost = model->table_boost;
   uniformize_spline(&model->linear, boost);
   uniformize_spline(&model->growth, boost);
@@ -648,21 +671,25 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
   for (int redshift=0; redshift<model->npower_z; redshift++) {
     uniformize_spline(model->nonlinear + redshift, boost);
   }
+
   const int old_count = model->npower_z;
   const int new_count = boosted_count(old_count, boost);
   const int nk = model->nonlinear[0].n;
+
   physics_spline* dense = calloc((size_t)new_count,
     sizeof(physics_spline));
   if (dense == NULL) {
     log_fatal("physics_3pcf: allocation failed");
     exit(1);
   }
+
   double* new_z = calloc1d(new_count);
   for (int redshift=0; redshift<new_count; redshift++) {
     new_z[redshift] = model->zmax*redshift/(new_count - 1);
     dense[redshift] = uniform_storage(nk, model->nonlinear[0].x[0],
       model->nonlinear[0].x[nk - 1]);
   }
+
   double* column = calloc1d(old_count);
   // Two extra columns carry the endpoint power-law slopes. Extrapolation
   // therefore does not change when the interior log-k grid is refined.
@@ -688,12 +715,14 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
     }
     destroy_spline(&along_z);
   }
+
   for (int redshift=0; redshift<old_count; redshift++) {
     destroy_spline(model->nonlinear + redshift);
   }
   free(model->nonlinear);
   free(model->power_z);
   free(column);
+
   model->nonlinear = dense;
   model->power_z = new_z;
   model->npower_z = new_count;
@@ -716,6 +745,7 @@ static double linear_read(
   if (coordinate < x[0] || coordinate > x[count - 1]) {
     return 0.0;
   }
+
   const int index = interval_physics(x, count, coordinate);
   const double fraction = (coordinate - x[index])/(x[index + 1] - x[index]);
   return y[index] + fraction*(y[index + 1] - y[index]);
@@ -759,12 +789,15 @@ static double simpson_uniform(
     sum += (index%2 == 1 ? 4.0 : 2.0)*values[index];
   }
   sum *= spacing/3.0;
+
   if (count%2 == 0) {
     sum += spacing*(5.0*values[count - 1]/12.0
       + 2.0*values[count - 2]/3.0 - values[count - 3]/12.0);
   }
+
   return sum;
 }
+
 
 
 // ===========================================================================
@@ -807,9 +840,11 @@ static double variance_physics(
     log_fatal("physics_3pcf: invalid variance grid");
     exit(1);
   }
+
   const double logk_max = log(100.0);
   const double spacing = (logk_max - logk_min)/(count - 1);
   const double inverse_two_pi_squared = 0.05066059182116888572;
+
   for (int index=0; index<count; index++) {
     const double logk = logk_min + spacing*index;
     const double k = exp(logk);
@@ -828,7 +863,9 @@ static double variance_physics(
     values[index] = read_power(&model->linear, logk)*k*k*k
       *inverse_two_pi_squared*growth_squared*filter*filter;
   }
+
   double sum = simpson_uniform(values, count, spacing);
+
   if (tail) {
     // Gaussian tail: account for the integral above k = 100 exactly
     // enough that the nonlinear-radius solve never feels the cutoff.
@@ -860,10 +897,12 @@ static double variance_physics(
       *pow(radius, -slope)*upper_gamma.val
       *inverse_two_pi_squared*growth_squared;
   }
+
   if (!(isfinite(sum) && sum > 0.0)) {
     log_fatal("physics_3pcf: invalid variance");
     exit(1);
   }
+
   return sum;
 }
 
@@ -928,6 +967,7 @@ static physics_bh_coefficients bh_coefficients(
   const double amplitude3 = amplitude2*amplitude;
   const double matter = read_spline(&model->omega_m_z, z, 0);
   coefficients.radius = read_spline(&model->radius, z, 0);
+
   coefficients.loga = -2.167 - 2.944*amplitude - 1.106*amplitude2
     - 2.865*amplitude3;
   coefficients.b = pow(10.0, -3.428 - 2.681*amplitude
@@ -950,6 +990,7 @@ static physics_bh_coefficients bh_coefficients(
   coefficients.p = pow(10.0, 0.071 - 0.433*spectral);
   coefficients.e = pow(10.0, -0.632 + 0.646*spectral);
   coefficients.d = pow(10.0, -0.483 + 0.892*amplitude - 0.086*matter);
+
   return coefficients;
 }
 
@@ -971,9 +1012,11 @@ static void prepare_bihalofit(physics_model_3pcf* model)
     log_fatal("physics_3pcf: BiHalofit coefficient grid is too large");
     exit(1);
   }
+
   const int capacity = model->source_readers
     ? (int)ceil(zmax/0.15) + 8 : model->fit_nz;
   double* redshift = calloc1d(capacity);
+
   int count = 0;
   if (model->source_readers) {
     for (int index=0; 0.15*index < fmin(0.5, zmax); index++) {
@@ -997,15 +1040,18 @@ static void prepare_bihalofit(physics_model_3pcf* model)
       redshift[index] = zmax*index/(count - 1);
     }
   }
+
   double* radius = calloc1d(count);
   double* spectral = calloc1d(count);
   double* sigma8z = calloc1d(count);
   double* matter = calloc1d(count);
+
   for (int index=0; index<count; index++) {
     const double growth = read_spline(&model->growth, redshift[index], 0);
     const double growth_squared = growth*growth;
     double lower = 0.01;
     double upper = 1.0e4;
+
     double at_lower = variance_physics(model, lower, growth_squared,
       log(1.0e-4), 1000, 1, 1) - 1.0;
     for (int retry=0; at_lower < 0.0 && retry<10; retry++) {
@@ -1013,6 +1059,7 @@ static void prepare_bihalofit(physics_model_3pcf* model)
       at_lower = variance_physics(model, lower, growth_squared,
         log(1.0e-4), 1000, 1, 1) - 1.0;
     }
+
     const double at_upper = variance_physics(model, upper, growth_squared,
       log(1.0e-4), 1000, 1, 1) - 1.0;
     if (!(at_lower >= 0.0 && at_upper <= 0.0)) {
@@ -1020,6 +1067,7 @@ static void prepare_bihalofit(physics_model_3pcf* model)
         "BiHalofit domain");
       exit(1);
     }
+
     for (int iteration=0; iteration<100; iteration++) {
       const double middle = 0.5*(lower + upper);
       const double value = variance_physics(model, middle, growth_squared,
@@ -1033,6 +1081,7 @@ static void prepare_bihalofit(physics_model_3pcf* model)
         break;
       }
     }
+
     radius[index] = 0.5*(lower + upper);
     spectral[index] = -3.0 + 2.0*variance_physics(model,
       radius[index], growth_squared, log(1.0e-4), 2000, 2, 0);
@@ -1040,6 +1089,7 @@ static void prepare_bihalofit(physics_model_3pcf* model)
       log(1.0e-4), 1000, 0, 0));
     matter[index] = omega_m_physics(model, redshift[index]);
   }
+
   if (model->source_readers) {
     model->radius = make_spline(redshift, radius, count);
     model->neff = make_spline(redshift, spectral, count);
@@ -1051,12 +1101,14 @@ static void prepare_bihalofit(physics_model_3pcf* model)
     model->sigma8z = make_natural_uniform_spline(redshift, sigma8z, count);
     model->omega_m_z = make_natural_uniform_spline(redshift, matter, count);
   }
+
   free(redshift);
   free(radius);
   free(spectral);
   free(sigma8z);
   free(matter);
 }
+
 
 
 // ===========================================================================
@@ -1099,12 +1151,14 @@ static void prepare_radial(physics_model_3pcf* model)
   // Kernel and LOS support belong to the background, independently of
   // how many samples describe the source distribution within it.
   const double zmax = model->zmax;
+
   if (!((size_t)model->nbin*nkernel <= INT_MAX
         && (size_t)model->nbin*nlos <= INT_MAX)) {
     log_fatal("physics_3pcf: lensing kernel tables exceed the core "
       "allocator count");
     exit(1);
   }
+
   model->kernel_z = calloc1d(nkernel);
   model->kernel_chi = calloc1d(nkernel);
   model->kernel_growth = calloc1d(nkernel);
@@ -1120,6 +1174,7 @@ static void prepare_radial(physics_model_3pcf* model)
     log_fatal("physics_3pcf: allocation failed");
     exit(1);
   }
+
   // Sample the background once on the uniform kernel grid: redshift,
   // comoving distance and growth at every node.
   for (int node=0; node<nkernel; node++) {
@@ -1150,13 +1205,16 @@ static void prepare_radial(physics_model_3pcf* model)
     model->los_dchi[node] = 0.5*(model->los_chi[upper]
       - model->los_chi[lower]);
   }
+
   double* integrand = calloc1d(nz);
   double* source_shape = calloc1d(nz);
+
   // Lensing prefactor (3/2) Omega_m (H0/c)^2 of the Poisson equation.
   // With H0 = 100 h km/s/Mpc and c = 299792 km/s, the ratio
   // 100/299792 is H0/c in h/Mpc, matching the Mpc/h distances, so the
   // prefactor carries units of (h/Mpc)^2.
   const double prefactor = 1.5*pow(100.0/299792.0, 2)*model->omega_m;
+
   // One pass per source bin: normalize the bin's source distribution,
   // build its lensing efficiency and NLA kernel on the kernel grid,
   // build the source-grid shape kernel, and resample both kernels
@@ -1174,6 +1232,7 @@ static void prepare_radial(physics_model_3pcf* model)
       log_fatal("physics_3pcf: empty source distribution");
       exit(1);
     }
+
     for (int node=0; node<nkernel; node++) {
       const double distance = model->kernel_chi[node];
       for (int source=0; source<nz; source++) {
@@ -1194,6 +1253,7 @@ static void prepare_radial(physics_model_3pcf* model)
         model->kernel_z[node])*read_spline(&model->dz_dchi,
         model->kernel_z[node], 0);
     }
+
     // Normalize the NLA kernel to unit integral over chi, then remove
     // the common chi (1 + z) factor that field_kernel_physics
     // restores on the combined kernel.
@@ -1207,6 +1267,7 @@ static void prepare_radial(physics_model_3pcf* model)
       nla_shape[node] /= nla_norm*model->kernel_chi[node]
         *(1.0 + model->kernel_z[node]);
     }
+
     // The TATT residual reads the shape kernel on the source grid
     // itself, normalized over chi there: fastnc keeps this grid
     // separate from the kernel-grid NLA baseline, and so does this
@@ -1214,11 +1275,13 @@ static void prepare_radial(physics_model_3pcf* model)
     for (int source=0; source<nz; source++) {
       integrand[source] = density[source]*model->source_jacobian[source];
     }
+
     const double shape_norm = trapezoid(source_chi, integrand, nz);
     if (!(shape_norm > 0.0)) {
       log_fatal("physics_3pcf: empty shape source kernel");
       exit(1);
     }
+
     for (int source=0; source<nz; source++) {
       // Only the actual observer sits at zero distance, where the
       // 1/chi factor would diverge; the observer hosts no sources, so
@@ -1228,20 +1291,24 @@ static void prepare_radial(physics_model_3pcf* model)
       source_shape[source] = source_chi[source] == 0.0 ? 0.0 : integrand[source]
         /(shape_norm*source_chi[source]*(1.0 + source_z[source]));
     }
+
     // Resample both kernels onto the LOS nodes by cubic spline; the
     // zero-outside read keeps a node beyond the sources empty.
     physics_spline lens_spline = make_spline(model->kernel_chi,
       lens, nkernel);
     physics_spline shape_spline = make_spline(source_chi, source_shape, nz);
+
     for (int node=0; node<nlos; node++) {
       model->los_lens[(size_t)bin*nlos + node]
         = read_spline(&lens_spline, model->los_chi[node], 1);
       model->los_shape[(size_t)bin*nlos + node]
         = read_spline(&shape_spline, model->los_chi[node], 1);
     }
+
     destroy_spline(&lens_spline);
     destroy_spline(&shape_spline);
   }
+
   free(integrand);
   free(source_shape);
 }
@@ -1269,10 +1336,12 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: insufficient model grid dimensions");
     exit(1);
   }
+
   increasing_physics(input->k, input->nk, 1);
   increasing_physics(input->z, input->nz, 0);
   increasing_physics(input->chi, input->nz, 0);
   increasing_physics(input->los_z, input->nlos, 1);
+
   if (!(input->z[0] == 0.0 && input->chi[0] == 0.0)) {
     log_fatal("physics_3pcf: background tables must start at z=chi=0");
     exit(1);
@@ -1305,6 +1374,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       "- 1) <= 1e-8");
     exit(1);
   }
+
   if (!(input->source_readers == 0 || input->source_readers == 1)) {
     log_fatal("physics_3pcf: source_readers must be zero or one");
     exit(1);
@@ -1313,6 +1383,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: nsource requires an independent source_z array");
     exit(1);
   }
+
   const int nsource = input->source_z ? input->nsource : input->nz;
   const double* source_z = input->source_z ? input->source_z : input->z;
   if (!(nsource >= 4)) {
@@ -1325,11 +1396,13 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: source grid lies outside the background range");
     exit(1);
   }
+
   physics_model_3pcf* model = calloc(1, sizeof(*model));
   if (model == NULL) {
     log_fatal("physics_3pcf: allocation failed");
     exit(1);
   }
+
   if (!(input->nwindow == 0
         || (input->nwindow >= 2 && input->window != NULL))) {
     log_fatal("physics_3pcf: pixel window needs at least two integer-ell "
@@ -1349,6 +1422,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       model->window[index] = input->window[index];
     }
   }
+
   model->feedback = feedback_create_3pcf(input->feedback);
   model->nk = input->nk;
   model->nz = input->nz;
@@ -1377,6 +1451,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->wa = input->wa;
   model->ns = input->ns;
   model->sigma8 = input->sigma8;
+
   const int nk = model->nk;
   const int nz = model->nz;
   double* logk = calloc1d(nk);
@@ -1390,6 +1465,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     logk[index] = log(input->k[index]);
     logpower[index] = log(input->p_linear0[index]);
   }
+
   model->linear = make_spline(logk, logpower, nk);
   const double variance = variance_physics(model, 8.0, 1.0,
     log(1.0e-3), 1000, 0, 0);
@@ -1397,11 +1473,13 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   for (int index=0; index<nk; index++) {
     model->linear.y[index] += log_normalization;
   }
+
   model->nonlinear = calloc((size_t)nz, sizeof(physics_spline));
   if (model->nonlinear == NULL) {
     log_fatal("physics_3pcf: allocation failed");
     exit(1);
   }
+
   for (int redshift=0; redshift<nz; redshift++) {
     if (!(input->growth[redshift] > 0.0
           && input->dz_dchi[redshift] > 0.0)) {
@@ -1418,13 +1496,16 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     }
     model->nonlinear[redshift] = make_spline(logk, logpower, nk);
   }
+
   model->distance = make_spline(input->z, input->chi, nz);
   model->growth = make_spline(input->z, input->growth, nz);
   model->dz_dchi = make_spline(input->z, input->dz_dchi, nz);
+
   model->source_z = calloc1d(nsource);
   model->source_chi = calloc1d(nsource);
   model->source_jacobian = calloc1d(nsource);
   memcpy(model->source_z, source_z, (size_t)nsource*sizeof(double));
+
   // When the source grid is the background redshift grid itself, copy
   // chi and dz/dchi directly, so this shared source/background grid
   // preparation keeps its original arithmetic bit for bit. An
@@ -1445,6 +1526,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       exit(1);
     }
   }
+
   increasing_physics(model->source_chi, nsource, 0);
   if (!(model->source_chi[0] >= 0.0)) {
     log_fatal("physics_3pcf: source distance is negative");
@@ -1455,6 +1537,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       "allocator count");
     exit(1);
   }
+
   model->sources = calloc1d((int)((size_t)input->nbin*nsource));
   for (size_t index=0; index<(size_t)input->nbin*nsource; index++) {
     if (!(isfinite(input->sources[index])
@@ -1464,6 +1547,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     }
     model->sources[index] = input->sources[index];
   }
+
   for (int bin=0; bin<input->nbin; bin++) {
     if (!(source_z[0] != 0.0
           || model->sources[(size_t)bin*nsource] == 0.0)) {
@@ -1471,11 +1555,14 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       exit(1);
     }
   }
+
   model->los_z = calloc1d(input->nlos);
   memcpy(model->los_z, input->los_z, (size_t)input->nlos*sizeof(double));
+
   prepare_bihalofit(model);
   prepare_radial(model);
   prepare_uniform_readers(model);
+
   // The per-LOS fit coefficients and the kernel growth samples must
   // come from the reader that production will use, so projected means
   // and covariance B queries read identical model values at an
@@ -1486,6 +1573,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: allocation failed");
     exit(1);
   }
+
   for (int node=0; node<model->nlos; node++) {
     model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
     for (int mode=0; mode<3; mode++) {
@@ -1493,12 +1581,15 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
         = prepare_power_row(model, model->los_z[node], mode);
     }
   }
+
   for (int node=0; node<model->kernel_nz; node++) {
     model->kernel_growth[node] = read_spline(&model->growth,
       model->kernel_z[node], 0);
   }
+
   free(logk);
   free(logpower);
+
   return model;
 }
 
@@ -1511,6 +1602,7 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
   if (model == NULL) {
     return;
   }
+
   destroy_spline(&model->linear);
   for (int index=0; index<model->npower_z; index++) {
     destroy_spline(model->nonlinear + index);
@@ -1560,6 +1652,7 @@ void physics_default_ia_3pcf(physics_ia_3pcf* parameters)
     log_fatal("physics_3pcf: missing alignment parameters");
     exit(1);
   }
+
   memset(parameters, 0, sizeof(*parameters));
   parameters->zpivot = 0.62;
   parameters->c1rho = 0.0134;
@@ -1592,6 +1685,7 @@ double physics_window_value_3pcf(
   if (ell == count - 1) {
     return window[count - 1];
   }
+
   const int index = (int)ell;
   const double fraction = ell - index;
   return (1.0 - fraction)*window[index] + fraction*window[index + 1];
@@ -1635,6 +1729,7 @@ static physics_power_row prepare_power_row(
     row.growth = read_spline(&model->growth, z, 0);
     return row;
   }
+
   int index;
   if (model->source_readers) {
     index = interval_physics(model->power_z, model->npower_z, z);
@@ -1642,6 +1737,7 @@ static physics_power_row prepare_power_row(
     const double position = z*(model->npower_z - 1)/model->zmax;
     index = (int)floor(fmax(0.0, fmin(model->npower_z - 2.0, position)));
   }
+
   row.lower = model->nonlinear + index;
   row.upper = row.lower + 1;
   row.fraction = (z - model->power_z[index])
@@ -1664,6 +1760,7 @@ static double read_power_row_log(
   if (row->upper == NULL) {
     return read_power(row->lower, logk)*row->growth*row->growth;
   }
+
   const physics_spline* lower = row->lower;
   const physics_spline* upper = row->upper;
   if (lower->inverse_spacing > 0.0 && logk >= lower->x[0]
@@ -1680,6 +1777,7 @@ static double read_power_row_log(
       + fraction*(upper->y[index + 1] - upper->y[index]);
     return exp(first + row->fraction*(second - first));
   }
+
   // The source-comparison mode and the out-of-range endpoint power
   // laws keep this explicit scalar path; a production in-range query
   // never reaches it and never searches a grid.
@@ -1713,6 +1811,7 @@ double physics_power_3pcf(
     log_fatal("physics_3pcf: invalid power query");
     exit(1);
   }
+
   const physics_power_row row = prepare_power_row(model, z, mode);
   return read_power_row(&row, k);
 }
@@ -1733,6 +1832,7 @@ double physics_feedback_power_3pcf(
     log_fatal("physics_3pcf: invalid power-response coordinates");
     exit(1);
   }
+
   return feedback_power_3pcf(model->feedback, k, z, amplitude);
 }
 
@@ -1751,9 +1851,11 @@ double physics_feedback_bispectrum_3pcf(
     log_fatal("physics_3pcf: invalid bispectrum-response coordinates");
     exit(1);
   }
+
   triangle_physics(sides[0], sides[1], sides[2]);
   return feedback_bispectrum_3pcf(model->feedback, sides, z, amplitude);
 }
+
 
 
 // ===========================================================================
@@ -1800,6 +1902,7 @@ static double f2_physics(
   const double small = fmin(first, second);
   const double large = fmax(first, second);
   const double cosine = pair_cosine_physics(small, large, opposite);
+
   if (cosine < -0.5) {
     // For nearly antiparallel equal sides F2 tends to zero, and its
     // usual three terms cancel at order unity. The code forms
@@ -1812,6 +1915,7 @@ static double f2_physics(
     return one_plus*(3.0 + 2.0*one_plus)/7.0
       + 0.5*cosine*(difference/small)*(difference/large);
   }
+
   return 5.0/7.0 + 0.5*(cosine*(small/large)
     + (cosine/small)*large) + 2.0/7.0*cosine*cosine;
 }
@@ -1849,6 +1953,7 @@ static physics_triangle_geometry triangle_geometry(
   physics_triangle_geometry geometry;
   const double minimum = fmin(sides[0], fmin(sides[1], sides[2]));
   const double maximum = fmax(sides[0], fmax(sides[1], sides[2]));
+
   // Rescale by a power of two to prevent overflow in side products.
   // For normal, non-subnormal doubles the rescaling only shifts the
   // exponent field, so it is exact and cannot round away the small
@@ -1863,6 +1968,7 @@ static physics_triangle_geometry triangle_geometry(
       exit(1);
     }
   }
+
   const double small = fmin(geometry.sides[0],
     fmin(geometry.sides[1], geometry.sides[2]));
   const double large = fmax(geometry.sides[0],
@@ -1870,8 +1976,10 @@ static physics_triangle_geometry triangle_geometry(
   // The median uses comparisons only, so (epsilon,1,1) retains 1.
   const double middle = fmax(fmin(geometry.sides[0], geometry.sides[1]),
     fmin(fmax(geometry.sides[0], geometry.sides[1]), geometry.sides[2]));
+
   const double gap = large - middle;
   const int physical = gap <= small;
+
   double twice_area = 0.0;
   if (physical) {
     // Kahan's ordered form of Heron's formula gives 16*area squared.
@@ -1880,8 +1988,10 @@ static physics_triangle_geometry triangle_geometry(
     twice_area = 0.5*sqrt(large + (middle + small))*sqrt(small - gap)
       *sqrt(small + gap)*sqrt(large + (middle - small));
   }
+
   geometry.minimum_ratio = minimum/maximum;
   geometry.flattened_ratio = (small - gap)/large;
+
   for (int cyclic=0; cyclic<3; cyclic++) {
     const double first = geometry.sides[cyclic];
     const double second = geometry.sides[(cyclic + 1)%3];
@@ -1921,10 +2031,13 @@ static physics_triangle_geometry triangle_geometry(
       geometry.sine_squared[cyclic]
         = 1.0 - geometry.dot[cyclic]*geometry.dot[cyclic];
     }
+
     geometry.gravity[cyclic] = f2_physics(first, second, third);
+
     geometry.ia_quadratic_shape[cyclic] = 0.0;
     geometry.ia_density_zero_shape[cyclic] = 0.0;
     geometry.ia_density_two_shape[cyclic] = 0.0;
+
     if (with_ia) {
       // Keep each of fastnc's parenthesized vertex expressions with
       // its original operation order; the IA coefficients multiply
@@ -1946,6 +2059,7 @@ static physics_triangle_geometry triangle_geometry(
         = first_y*first_y + second_y*second_y;
     }
   }
+
   return geometry;
 }
 
@@ -1976,6 +2090,7 @@ static double tree_sum_physics(
       shortest = leg;
     }
   }
+
   const int next = (shortest + 1)%3;
   const int last = (shortest + 2)%3;
   const double small = geometry->sides[shortest];
@@ -1987,11 +2102,13 @@ static double tree_sum_physics(
     + 0.5*cosine1*(small/first);
   const double regular2 = 13.0/28.0 + 2.0*cosine2*cosine2/7.0
     + 0.5*cosine2*(small/second);
+
   double difference = 0.0;
   if (first != second) {
     difference = 0.25*((second - first)/small)
       *(((second + first)/small)*(power[next] - power[last]));
   }
+
   return 2.0*(power[shortest]*(regular1*power[next]
     + regular2*power[last] + difference)
     + geometry->gravity[next]*power[next]*power[last]);
@@ -2014,12 +2131,14 @@ static void triangle_physics(
 {
   const double largest = fmax(first, fmax(second, third));
   const double sum = first + second + third;
+
   if (!(isfinite(sum) && first > 0.0 && second > 0.0
         && third > 0.0 && 2.0*largest <= sum*(1.0 + 32.0*DBL_EPSILON))) {
     log_fatal("physics_3pcf: wavevector lengths do not form a finite triangle");
     exit(1);
   }
 }
+
 
 
 // ===========================================================================
@@ -2052,6 +2171,7 @@ static double baryon_physics(
   if (fb == 0.0 || z >= 5.0) {
     return 1.0;
   }
+
   const double scale = 1.0/(1.0 + z);
   const double amplitude0 = scale > 0.5
     ? 0.068*pow(scale - 0.5, 0.47) : 0.0;
@@ -2063,6 +2183,7 @@ static double baryon_physics(
   const double width1 = (0.494 - 0.039*scale)*mean1;
   const double turnover = 29.90 - 38.73*scale + 24.30*scale*scale;
   const double exponent = 0.563/(pow(scale/0.06, 0.02) + 1.0)/2.25;
+
   double transfer = 1.0;
   for (int leg=0; leg<3; leg++) {
     const double logk = log10(sides[leg]);
@@ -2071,9 +2192,11 @@ static double baryon_physics(
       - amplitude1*exp(-scaled1*scaled1)
       + pow(1.0 + pow(sides[leg]/turnover, 2.25), exponent);
   }
+
   if (suppress_only) {
     transfer = fmin(transfer, 1.0);
   }
+
   return 1.0 + fb*(transfer - 1.0);
 }
 
@@ -2125,8 +2248,10 @@ static double matter_prepared(
     local_geometry = triangle_geometry(sides, 0);
     geometry = &local_geometry;
   }
+
   const physics_power_row row = prepared ? *prepared
     : prepare_power_row(model, z, 0);
+
   double linear[3];
   double effective[3];
   double scaled[3];
@@ -2134,9 +2259,11 @@ static double matter_prepared(
     linear[leg] = read_power_row(&row, sides[leg]);
     scaled[leg] = sides[leg]*coefficients->radius;
   }
+
   if (component == 1) {
     return tree_sum_physics(geometry, linear);
   }
+
   const double ratio1 = geometry->minimum_ratio;
   const double ratio2 = geometry->flattened_ratio;
   const double amplitude = pow(10.0, coefficients->loga
@@ -2144,6 +2271,7 @@ static double matter_prepared(
   const double alpha = fmin(pow(10.0, coefficients->logalpha
     + coefficients->alpha_shape*ratio2*ratio2), 1.0 - 2.0*model->ns/3.0);
   const double beta = pow(10.0, coefficients->logbeta + 0.007*ratio2);
+
   double one_halo = 1.0;
   double damping = 1.0;
   for (int leg=0; leg<3; leg++) {
@@ -2157,6 +2285,7 @@ static double matter_prepared(
       *(1.0 + pow(coefficients->p*q, -3.0)));
     damping /= 1.0 + coefficients->e*q;
   }
+
   double three_halo = tree_sum_physics(geometry, effective);
   for (int leg=0; leg<3; leg++) {
     const int next = (leg + 1)%3;
@@ -2164,7 +2293,9 @@ static double matter_prepared(
     three_halo += 2.0*coefficients->d*scaled[opposite]
       *effective[leg]*effective[next];
   }
+
   three_halo *= damping;
+
   if (component == 2) {
     return one_halo;
   }
@@ -2196,12 +2327,15 @@ double physics_matter_3pcf(
     log_fatal("physics_3pcf: invalid matter query");
     exit(1);
   }
+
   triangle_physics(k1, k2, k3);
   const double sides[3] = {k1, k2, k3};
   const physics_bh_coefficients coefficients = bh_coefficients(model, z);
+
   return matter_prepared(model, &coefficients, sides, z, component, NULL, NULL)
     *baryon_physics(sides, z, fb, 0);
 }
+
 
 
 // ===========================================================================
@@ -2289,6 +2423,7 @@ static physics_ia_coefficients ia_coefficients(
   coefficients.velocity = -2.0*ct/5.0;
   coefficients.quadratic = c2;
   coefficients.density = parameters->bta*c1 - 2.0*c2/3.0;
+
   // Diagnostics select one physical operator. The density-shaped
   // vertex contains the trace part of the tidal torque, so selecting
   // C_2 alone would assign that part to the wrong operator; the
@@ -2305,6 +2440,7 @@ static physics_ia_coefficients ia_coefficients(
       coefficients.density = -2.0*c2/3.0;
     }
   }
+
   return coefficients;
 }
 
@@ -2332,6 +2468,7 @@ static void ia_vertices(
 )
 {
   const double root_two_thirds = sqrt(2.0/3.0);
+
   for (int cyclic=0; cyclic<3; cyclic++) {
     const int next = (cyclic + 1)%3;
     const double first_x = geometry->first_x[cyclic];
@@ -2458,14 +2595,17 @@ static void ia_prepared(
     }
     return;
   }
+
   const physics_power_row row = prepared ? *prepared
     : prepare_power_row(model, z, parameters->power_mode);
+
   double power[3];
   double vertices[3][3];
   double tree[3];
   for (int leg=0; leg<3; leg++) {
     power[leg] = read_power_row(&row, sides[leg]);
   }
+
   // A projection owns one immutable triangle geometry for its whole
   // LOS sum and lends it here; a scalar query builds an identical
   // local one. Nothing keeps the geometry after this synchronous call
@@ -2476,9 +2616,11 @@ static void ia_prepared(
     local_geometry = triangle_geometry(sides, 1);
     geometry = &local_geometry;
   }
+
   ia_vertices(geometry, power, coefficients, vertices, tree, e_only);
   const double linear = coefficients->linear;
   const double root_three_halves = sqrt(3.0/2.0);
+
   // Slot arrays: map cyclic ordering c to the public 19-entry order
   // ddE,dEd,Edd,dEE,EEd,EdE,EEE,ddB,dBd,Bdd,dEB,dBE,EBd,BEd,BdE,EdB,
   // EEB,EBE,BEE, where d is density, E and B are the shape modes, and
@@ -2495,6 +2637,7 @@ static void ia_prepared(
   const int mixed_eb[3] = {10, 14, 12};
   const int mixed_be[3] = {11, 15, 13};
   const int double_e_b[3] = {16, 18, 17};
+
   for (int cyclic=0; cyclic<3; cyclic++) {
     out[single_e[cyclic]] = 0.5*(root_three_halves
       *tensor002(vertices, tree, linear, cyclic, 0)
@@ -2516,11 +2659,13 @@ static void ia_prepared(
         *tensor222(vertices, linear, cyclic, 0, 0, 1);
     }
   }
+
   out[6] = 3.0/16.0*(root_three_halves
     *tensor222(vertices, linear, 0, 0, 0, 0)
     - tensor222(vertices, linear, 0, 0, 0, 2)
     - tensor222(vertices, linear, 0, 2, 0, 0)
     - tensor222(vertices, linear, 0, 0, 2, 0));
+
   if (!remove_alignment && parameters->operator_component <= 1) {
     // Linear shapes carry helicity zero only, so the linear-alignment
     // contribution to an all-E correlator is C_1 to the number of
@@ -2561,10 +2706,12 @@ void physics_ia_bispectra_3pcf(
   }
   check_ia(parameters);
   triangle_physics(k1, k2, k3);
+
   const double sides[3] = {k1, k2, k3};
   const double growth = read_spline(&model->growth, z, 0);
   const physics_ia_coefficients coefficients = ia_coefficients(model,
     parameters, z, growth);
+
   ia_prepared(model, parameters, &coefficients, sides, z,
     remove_alignment, out, NULL, NULL, 0);
 }
@@ -2591,8 +2738,10 @@ void physics_ia_same_shape_3pcf(
     exit(1);
   }
   check_ia(parameters);
+
   triangle_physics(sides[0], sides[1], sides[2]);
   const physics_triangle_geometry geometry = triangle_geometry(sides, 1);
+
   for (int point=0; point<npoint; point++) {
     const double* triangle = sides + (size_t)point*3;
     triangle_physics(triangle[0], triangle[1], triangle[2]);
@@ -2618,6 +2767,7 @@ void physics_ia_same_shape_3pcf(
       }
     }
   }
+
   // Every point evaluates the same triangle shape at its own scale
   // and redshift: the workers share the one prepared geometry
   // read-only and write disjoint 19-entry output rows, so the
@@ -2662,6 +2812,7 @@ static void field_kernel_physics(
     exit(1);
   }
   check_ia(parameters);
+
   const int count = model->kernel_nz;
   double* kernel = calloc1d(count);
   for (int node=0; node<count; node++) {
@@ -2676,11 +2827,13 @@ static void field_kernel_physics(
       kernel[node] = coefficients.c1*model->kernel_shape[index];
     }
   }
+
   physics_spline spline = make_spline(model->kernel_chi, kernel, count);
   for (int node=0; node<model->nlos; node++) {
     out[node] = read_spline(&spline, model->los_chi[node], 1)
       *model->los_chi[node]*(1.0 + model->los_z[node]);
   }
+
   destroy_spline(&spline);
   free(kernel);
 }
@@ -2698,6 +2851,7 @@ void physics_nla_kernel_3pcf(
 {
   field_kernel_physics(model, parameters, bin, -1, out);
 }
+
 
 
 // ===========================================================================
@@ -2756,12 +2910,14 @@ physics_projection_3pcf* physics_projector_create_3pcf(
       exit(1);
     }
   }
+
   const int count = model->nlos;
   if (!((size_t)8*count <= INT_MAX)) {
     log_fatal("physics_3pcf: projector weight tables exceed the core "
       "allocator count");
     exit(1);
   }
+
   physics_projection_3pcf* projection = calloc(1,
     sizeof(*projection));
   if (projection == NULL) {
@@ -2777,6 +2933,7 @@ physics_projection_3pcf* physics_projector_create_3pcf(
     log_fatal("physics_3pcf: allocation failed");
     exit(1);
   }
+
   double* kernels = calloc1d((int)((size_t)3*count));
   for (int leg=0; leg<3; leg++) {
     const int field = parameters->intrinsic_legs < 0 ? -1
@@ -2787,6 +2944,7 @@ physics_projection_3pcf* physics_projector_create_3pcf(
     field_kernel_physics(model, parameters, bins[leg], field,
       kernels + (size_t)leg*count);
   }
+
   // One pass per LOS node: evaluate the IA coefficients at the node's
   // redshift, then form the baseline weight and the seven residual
   // placement weights from the stored kernel rows.
@@ -2796,12 +2954,14 @@ physics_projection_3pcf* physics_projector_create_3pcf(
     const double growth = read_spline(&model->growth, redshift, 0);
     projection->coefficients[node] = ia_coefficients(model,
       parameters, redshift, growth);
+
     double lens[3];
     double shape[3];
     for (int leg=0; leg<3; leg++) {
       lens[leg] = model->los_lens[(size_t)bins[leg]*count + node];
       shape[leg] = model->los_shape[(size_t)bins[leg]*count + node];
     }
+
     projection->weights[node] = model->los_dchi[node]
       *kernels[node]*kernels[count + node]*kernels[2*count + node]
       /pow(distance, 4);
@@ -2810,6 +2970,7 @@ physics_projection_3pcf* physics_projector_create_3pcf(
     if (parameters->operator_component >= 2) {
       projection->weights[node] = 0.0;
     }
+
     const double measure = model->los_dchi[node]
       *pow(1.0 + redshift, 3)/distance;
     const double residual[7] = {
@@ -2821,6 +2982,7 @@ physics_projection_3pcf* physics_projector_create_3pcf(
       shape[0]*lens[1]*shape[2],
       shape[0]*shape[1]*shape[2]
     };
+
     for (int term=0; term<7; term++) {
       // placement[term] encodes which legs of residual[term] carry
       // the intrinsic kernel: bit j (value 2^j) is set when ordered
@@ -2837,7 +2999,9 @@ physics_projection_3pcf* physics_projector_create_3pcf(
       }
     }
   }
+
   free(kernels);
+
   return projection;
 }
 
@@ -2872,12 +3036,15 @@ double physics_projected_3pcf(
     log_fatal("physics_3pcf: invalid projected component");
     exit(1);
   }
+
   triangle_physics(ell1, ell2, ell3);
+
   const physics_model_3pcf* model = projection->model;
   const int count = model->nlos;
   const double angular_sides[3] = {ell1, ell2, ell3};
   const physics_triangle_geometry geometry = triangle_geometry(angular_sides,
     component != 1);
+
   double baseline = 0.0;
   double residual = 0.0;
   // Walk the LOS nodes in fixed order: each node scales the angular
@@ -2890,6 +3057,7 @@ double physics_projected_3pcf(
     const double distance = model->los_chi[node];
     const double redshift = model->los_z[node];
     const double sides[3] = {ell1/distance, ell2/distance, ell3/distance};
+
     if (component != 2) {
       baseline += projection->weights[node]*matter_prepared(model,
         model->los_bh + node, sides, redshift, 0, model->los_power + node,
@@ -2899,6 +3067,7 @@ double physics_projected_3pcf(
         *feedback_bispectrum_3pcf(model->feedback, sides, redshift,
         projection->ia.feedback_amplitude);
     }
+
     if (component != 1) {
       double intrinsic[19];
       ia_prepared(model, &projection->ia, projection->coefficients + node,
@@ -2910,6 +3079,7 @@ double physics_projected_3pcf(
       }
     }
   }
+
   return baseline + residual;
 }
 
@@ -2933,14 +3103,17 @@ double physics_projected_puv_extension_3pcf(
     log_fatal("physics_3pcf: invalid source PUV interpolation corner");
     exit(1);
   }
+
   if (ell3 == 0.0) {
     return 0.0;
   }
+
   const physics_model_3pcf* model = projection->model;
   const int count = model->nlos;
   const double angular_sides[3] = {ell1, ell2, ell3};
   const physics_triangle_geometry geometry = triangle_geometry(angular_sides,
     1);
+
   double sum = 0.0;
   for (int node=0; node<count; node++) {
     const double distance = model->los_chi[node];
@@ -2960,6 +3133,7 @@ double physics_projected_puv_extension_3pcf(
       }
     }
   }
+
   return sum;
 }
 
@@ -3001,8 +3175,10 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
     log_fatal("physics_3pcf: invalid prepared projection batch");
     exit(1);
   }
+
   const physics_projection_3pcf* first = projections[0];
   const int count = first->model->nlos;
+
   if (!(count > 0 && (size_t)count <= SIZE_MAX/8)) {
     log_fatal("physics_3pcf: prepared projection radial size overflows");
     exit(1);
@@ -3018,6 +3194,7 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
       "allocator count");
     exit(1);
   }
+
   for (int triplet=0; triplet<nprojection; triplet++) {
     if (!(projections[triplet]
           && projections[triplet]->model == first->model
@@ -3027,14 +3204,17 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
       exit(1);
     }
   }
+
   physics_projection_batch_3pcf* batch = calloc(1, sizeof(*batch));
   if (batch == NULL) {
     log_fatal("physics_3pcf: allocation failed");
     exit(1);
   }
+
   batch->first = first;
   batch->nprojection = nprojection;
   batch->weights = calloc1d((int)nweight);
+
   // Transpose the per-projector [term,node] storage into the packed
   // [node][term][triplet] order, copying every weight exactly once
   // during this serial construction.
@@ -3047,6 +3227,7 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
       }
     }
   }
+
   return batch;
 }
 
@@ -3085,6 +3266,7 @@ static double projected_node_physics(
   const double redshift = model->los_z[node];
   const double sides[3] = {angular_sides[0]/distance,
     angular_sides[1]/distance, angular_sides[2]/distance};
+
   double baseline = 0.0;
   if (component != 2) {
     baseline = matter_prepared(model, model->los_bh + node,
@@ -3094,6 +3276,7 @@ static double projected_node_physics(
       *feedback_bispectrum_3pcf(model->feedback, sides, redshift,
       first->ia.feedback_amplitude);
   }
+
   if (component != 1) {
     ia_prepared(model, &first->ia, first->coefficients + node,
       sides, redshift, 1, intrinsic, model->los_power
@@ -3106,6 +3289,7 @@ static double projected_node_physics(
       }
     }
   }
+
   return baseline;
 }
 
@@ -3139,6 +3323,7 @@ void physics_projected_batch_3pcf(
   if (!(first != NULL)) {
     log_fatal("physics_3pcf: missing batch projection");
     exit(1);
+
   }
   if (!puv_extension) {
     triangle_physics(ell1, ell2, ell3);
@@ -3149,6 +3334,7 @@ void physics_projected_batch_3pcf(
       exit(1);
     }
   }
+
   for (int triplet=0; triplet<nprojection; triplet++) {
     if (!(projections[triplet]
           && projections[triplet]->model == first->model
@@ -3159,9 +3345,11 @@ void physics_projected_batch_3pcf(
     }
     out[triplet] = 0.0;
   }
+
   if (puv_extension && ell3 == 0.0) {
     return;
   }
+
   const physics_model_3pcf* model = first->model;
   const int count = model->nlos;
   const double angular_sides[3] = {ell1, ell2, ell3};
@@ -3171,6 +3359,7 @@ void physics_projected_batch_3pcf(
     double intrinsic[19] = {0.0};
     const double baseline = projected_node_physics(first, angular_sides,
       &geometry, node, component, puv_extension, intrinsic);
+
     // scalar: at this node every ordered source triplet t adds
     //   out[t] += weights_t[node]*baseline;                  (matter)
     //   out[t] += weights_t[(term+1)*count + node]*b_E[term]; (7 IA)
@@ -3222,6 +3411,7 @@ void physics_projected_batch_3pcf(
       // these triplets alone.
       simde_mm_storeu_pd(out + triplet, sum);
     }
+
     if (triplet < nprojection) {
       const double* restrict weights = projections[triplet]->weights;
       if (component != 2) {
@@ -3270,13 +3460,16 @@ void physics_projection_batch_evaluate_3pcf(
       exit(1);
     }
   }
+
   const int nprojection = batch->nprojection;
   for (int triplet=0; triplet<nprojection; triplet++) {
     out[triplet] = 0.0;
   }
+
   if (puv_extension && ell3 == 0.0) {
     return;
   }
+
   const physics_projection_3pcf* first = batch->first;
   const int count = first->model->nlos;
   const double angular_sides[3] = {ell1, ell2, ell3};
@@ -3286,8 +3479,10 @@ void physics_projection_batch_evaluate_3pcf(
     double intrinsic[19] = {0.0};
     const double baseline = projected_node_physics(first, angular_sides,
       &geometry, node, component, puv_extension, intrinsic);
+
     const double* restrict weights = batch->weights
       + (size_t)node*8*nprojection;
+
     // scalar: at this node every ordered source triplet t adds
     //   out[t] += weights[t]*baseline;                      (matter)
     //   out[t] += weights[(term+1)*nprojection + t]*b_E[term]; (7 IA)
@@ -3326,6 +3521,7 @@ void physics_projection_batch_evaluate_3pcf(
       // Store both updated sums back to their private output cells.
       simde_mm_storeu_pd(out + triplet, sum);
     }
+
     if (triplet < nprojection) {
       if (component != 2) {
         // The odd triplet rounds its product before adding, exactly as
@@ -3343,6 +3539,7 @@ void physics_projection_batch_evaluate_3pcf(
     }
   }
 }
+
 
 
 // ===========================================================================
@@ -3396,6 +3593,7 @@ static void gauss_legendre_physics(
         exit(1);
       }
     }
+
     nodes[root] = -coordinate;
     nodes[count - 1 - root] = coordinate;
     // Gauss-Legendre weight w = 2/[(1 - x^2) P'_n(x)^2]; the mirrored
@@ -3443,23 +3641,28 @@ void physics_multipoles_3pcf(
     log_fatal("physics_3pcf: multipole output size overflows");
     exit(1);
   }
+
   for (int index=0; index<nell; index++) {
     if (!(isfinite(ell[index]) && ell[index] > 0.0)) {
       log_fatal("physics_3pcf: multipoles require positive ell");
       exit(1);
     }
   }
+
   physics_projection_3pcf* projection = physics_projector_create_3pcf(
     model, parameters, bins);
+
   if (!((size_t)(lmax + 1)*nmu <= INT_MAX)) {
     log_fatal("physics_3pcf: Legendre table exceeds the core allocator "
       "count");
     exit(1);
   }
+
   double* nodes = calloc1d(nmu);
   double* weights = calloc1d(nmu);
   double* legendre = calloc1d((int)((size_t)(lmax + 1)*nmu));
   gauss_legendre_physics(nmu, nodes, weights);
+
   // Tabulate the quadrature-ready Legendre factors: entry [L][node]
   // holds (L + 1/2) w_node P_L(mu_node), so each b_L below is a plain
   // dot product of a table row with the bispectrum values. The
@@ -3498,6 +3701,7 @@ void physics_multipoles_3pcf(
     exit(1);
   }
   double* scratch = calloc1d((int)(worker_stride*workers));
+
   #pragma omp parallel if(!omp_in_parallel())
   {
     double* values = scratch + (size_t)omp_get_thread_num()*worker_stride;
@@ -3547,6 +3751,7 @@ void physics_multipoles_3pcf(
           output[(size_t)order*nell*nell] = pair[0];
           output[(size_t)(order + 1)*nell*nell] = pair[1];
         }
+
         if (order <= lmax) {
           double sum = 0.0;
           for (int node=0; node<nmu; node++) {
@@ -3561,6 +3766,7 @@ void physics_multipoles_3pcf(
       }
     }
   }
+
   free(scratch);
   free(nodes);
   free(weights);
@@ -3588,6 +3794,7 @@ void physics_radial_3pcf(
     log_fatal("physics_3pcf: missing radial output pointer");
     exit(1);
   }
+
   *nbin = model->nbin;
   *nlos = model->nlos;
   *z = model->los_z;
@@ -3622,6 +3829,7 @@ double physics_omega_m_z_3pcf(
     log_fatal("physics_3pcf: invalid background matter-fraction query");
     exit(1);
   }
+
   return omega_m_physics(model, z);
 }
 
@@ -3665,6 +3873,7 @@ static physics_v2d nla_power_pair(
     }
     // The first argument goes in the high lane (ell index + 1).
     return simde_mm_set_pd(values[1], values[0]);
+
   }
   const int index0 = indices[0];
   const int index1 = indices[1];
@@ -3734,20 +3943,24 @@ void physics_nla_power_batch_3pcf(
       "bispectrum-only fb");
     exit(1);
   }
+
   const int count = model->nlos;
   double* first = calloc1d(count);
   double* second = calloc1d(count);
   double* radial_weight = calloc1d(count);
   double* logchi = calloc1d(count);
   double* logell = calloc1d(nell);
+
   physics_nla_kernel_3pcf(model, parameters, bin1, first);
   physics_nla_kernel_3pcf(model, parameters, bin2, second);
+
   for (int node=0; node<count; node++) {
     const double distance = model->los_chi[node];
     radial_weight[node] = model->los_dchi[node]*first[node]*second[node]
       /(distance*distance);
     logchi[node] = log(distance);
   }
+
   for (int index=0; index<nell; index++) {
     if (!(isfinite(ell[index]) && ell[index] > 0.0)) {
       log_fatal("physics_3pcf: angular power requires positive finite ell");
@@ -3755,6 +3968,7 @@ void physics_nla_power_batch_3pcf(
     }
     logell[index] = log(ell[index]);
   }
+
   const int capacity = nell < 256 ? nell : 256;
   const size_t cells = (size_t)capacity*count;
   if (!(cells <= INT_MAX)) {
@@ -3762,9 +3976,11 @@ void physics_nla_power_batch_3pcf(
       "allocator count");
     exit(1);
   }
+
   int* indices = malloc1d_int((int)cells);
   memset(indices, 0, sizeof(int)*cells);
   double* fractions = calloc1d((int)cells);
+
   for (size_t start=0; start<(size_t)nell; start += (size_t)capacity) {
     const size_t remaining = (size_t)nell - start;
     const int length = (int)(remaining < (size_t)capacity
@@ -3793,6 +4009,7 @@ void physics_nla_power_batch_3pcf(
         }
       }
     }
+
     const int pairs = length/2;
     // scalar: for one multipole the radial sum is
     //   C(ell) = sum_node radial_weight[node]*P(ell/chi_node; z_node).
@@ -3839,6 +4056,7 @@ void physics_nla_power_batch_3pcf(
       // cells exclusively.
       simde_mm_storeu_pd(out + start + index, sum);
     }
+
     if (length%2 != 0) {
       const int index = length - 1;
       // Duplicate the final coordinate into both lanes. Reusing the
@@ -3873,6 +4091,7 @@ void physics_nla_power_batch_3pcf(
       out[start + index] = result[0];
     }
   }
+
   free(indices);
   free(fractions);
   free(logell);
@@ -3898,6 +4117,7 @@ double physics_nla_power_3pcf(
   physics_nla_power_batch_3pcf(model, parameters, bin1, bin2, 1, &ell, &result);
   return result;
 }
+
 
 
 // ===========================================================================
@@ -3970,7 +4190,9 @@ void physics_aperture_integrate_3pcf(
     log_fatal("physics_3pcf: aperture triangle count overflows");
     exit(1);
   }
+
   const size_t ntriangle = (size_t)nell*nell*nphi;
+
   for (int node=0; node<nell; node++) {
     if (!(isfinite(ell[node]) && ell[node] > 0.0
           && isfinite(dell[node]) && dell[node] > 0.0
@@ -3979,6 +4201,7 @@ void physics_aperture_integrate_3pcf(
       exit(1);
     }
   }
+
   double angle_norm = 0.0;
   for (int node=0; node<nphi; node++) {
     if (!(isfinite(phi[node]) && phi[node] >= 0.0
@@ -3990,25 +4213,30 @@ void physics_aperture_integrate_3pcf(
     }
     angle_norm += dphi[node];
   }
+
   if (!(fabs(angle_norm - 6.28318530717958647693) < 1.0e-10)) {
     log_fatal("physics_3pcf: full-aperture angular weights must sum to 2pi");
     exit(1);
   }
+
   for (size_t index=0; index<(size_t)nfilter*3; index++) {
     if (!(isfinite(filters[index]) && filters[index] > 0.0)) {
       log_fatal("physics_3pcf: full-aperture radii must be positive");
       exit(1);
     }
   }
+
   const size_t capacity = 4096;
   if (!((size_t)nfilter*nell*2 <= INT_MAX)) {
     log_fatal("physics_3pcf: full-aperture filter table exceeds the core "
       "allocator count");
     exit(1);
   }
+
   double* values = calloc1d((int)capacity);
   double* closure = calloc1d((int)capacity);
   double* filter_table = calloc1d((int)((size_t)nfilter*nell*2));
+
   for (int filter=0; filter<nfilter; filter++) {
     out[filter] = 0.0;
     for (int leg=0; leg<2; leg++) {
@@ -4018,6 +4246,7 @@ void physics_aperture_integrate_3pcf(
       }
     }
   }
+
   // 1/(2 pi)^3 of the quadrature measure derived in the header.
   const double measure_constant = 0.00403144180414993615;
   for (size_t start=0; start<ntriangle; start += capacity) {
@@ -4053,6 +4282,7 @@ void physics_aperture_integrate_3pcf(
         *ell[first]*dell[first]*ell[second]*dell[second]*dphi[angle]
         *measure_constant;
     }
+
     const int npair = nfilter/2 + nfilter%2;
     // Contract the tile with every filter triplet: each worker owns
     // two adjacent outputs, reuses the per-leg filter tables and
@@ -4114,6 +4344,7 @@ void physics_aperture_integrate_3pcf(
       }
     }
   }
+
   free(values);
   free(closure);
   free(filter_table);
@@ -4134,11 +4365,13 @@ static double direct_aperture_reader(
   const physics_projection_3pcf* projection = context;
   const physics_model_3pcf* model = projection->model;
   double value = physics_projected_3pcf(context, ell1, ell2, ell3, 0);
+
   if (model->nwindow > 0) {
     value *= physics_window_value_3pcf(model->nwindow, model->window, ell1)
       *physics_window_value_3pcf(model->nwindow, model->window, ell2)
       *physics_window_value_3pcf(model->nwindow, model->window, ell3);
   }
+
   return value;
 }
 
@@ -4164,7 +4397,9 @@ void physics_aperture_full_3pcf(
 {
   physics_projection_3pcf* projection = physics_projector_create_3pcf(
     model, parameters, bins);
+
   physics_aperture_integrate_3pcf(projection, direct_aperture_reader,
     nell, ell, dell, nphi, phi, dphi, nfilter, filters, out);
+
   physics_projector_destroy_3pcf(projection);
 }

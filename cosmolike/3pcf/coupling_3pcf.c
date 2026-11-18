@@ -71,6 +71,8 @@
 // None here. The transform plan stores the resulting geometry table,
 // and this file releases every temporary allocation before returning.
 
+
+
 // ---------------------------------------------------------------------------
 // Read one Fourier coefficient c_Ln of the Legendre polynomial
 // P_L(cos delta) = sum_n c_Ln exp(i n delta). The coefficients are real
@@ -148,6 +150,7 @@ static double coupling_value_3pcf(
         *coefficient_3pcf(coefficients, degree, selected);
     power *= -ratio;
   }
+
   return 4.0*pi*pi*sum;
 }
 
@@ -187,6 +190,7 @@ void legendre_coupling_3pcf(
     log_fatal("legendre_coupling_3pcf: invalid input");
     exit(1);
   }
+
   const double pi = acos(-1.0);
   for (int query=0; query<nquery; query++) {
     if (!isfinite(psi[query]) || psi[query] < 0.0 || psi[query] > pi/2.0) {
@@ -194,16 +198,19 @@ void legendre_coupling_3pcf(
       exit(1);
     }
   }
+
   const size_t stride = (size_t)lmax+1;
   if (stride > SIZE_MAX/stride/sizeof(double)) {
     log_fatal("legendre_coupling_3pcf: size overflow");
     exit(1);
   }
+
   double* coefficients = calloc(stride*stride, sizeof(double));
   if (coefficients == NULL) {
     log_fatal("legendre_coupling_3pcf: allocation failed");
     exit(1);
   }
+
   coefficients[0] = 1.0;
 
   // Build the Fourier rows of every Legendre polynomial from the
@@ -255,6 +262,7 @@ void legendre_coupling_3pcf(
           const double step = pi/(2.0*(npsi-1));
           const double coordinate = psi[query]/step;
           int lower = (int)floor(coordinate);
+
           // A query at the upper endpoint psi = pi/2 lands on the last
           // node, where the right neighbor would read past the table;
           // clamping the left node to npsi-2 turns that endpoint into
@@ -263,6 +271,7 @@ void legendre_coupling_3pcf(
             lower = npsi-2;
           }
           const double fraction = coordinate-lower;
+
           // Linear interpolation between the two bracketing nodes, each
           // evaluated by the same finite sum as the exact branch.
           const double left = coupling_value_3pcf(
@@ -274,5 +283,6 @@ void legendre_coupling_3pcf(
       }
     }
   }
+
   free(coefficients);
 }

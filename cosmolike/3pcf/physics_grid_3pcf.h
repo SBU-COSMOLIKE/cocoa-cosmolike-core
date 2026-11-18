@@ -60,6 +60,7 @@ typedef struct physics_grid_query_3pcf physics_grid_query_3pcf;
 // Fill the settings with the fastnc reference resolution, so a default
 // grid reproduces the pinned source's sampling.
 void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings);
+
 // Create one prepared grid for a single ordered source triplet.
 physics_grid_3pcf* physics_grid_create_3pcf(
   const physics_model_3pcf* model,
@@ -67,6 +68,7 @@ physics_grid_3pcf* physics_grid_create_3pcf(
   const int* bins, // [3], ordered source legs
   const physics_grid_settings_3pcf* settings
 );
+
 // Create one grid per ordered source triplet, sharing every expensive
 // line-of-sight evaluation across the batch.
 void physics_grid_create_many_3pcf(
@@ -77,8 +79,10 @@ void physics_grid_create_many_3pcf(
   const physics_grid_settings_3pcf* settings,
   physics_grid_3pcf** out // caller owns ntriplet returned objects
 );
+
 // Release a grid and every array it owns; NULL is allowed.
 void physics_grid_destroy_3pcf(physics_grid_3pcf* grid);
+
 // Interpolate the projected E-mode bispectrum at one triangle of
 // Fourier multipoles; callers multiply any pixel window afterwards.
 double physics_grid_projected_3pcf(
@@ -88,6 +92,7 @@ double physics_grid_projected_3pcf(
   double ell3, // closing third side; the three must form a triangle
   int component // total=0, NLA baseline=1, residual IA=2
 );
+
 // Full compensated-filter aperture statistic with this grid standing in
 // for the direct bispectrum provider; physics_3pcf.h declares the
 // quadrature measure and the filter convention.
@@ -103,6 +108,7 @@ void physics_grid_aperture_full_3pcf(
   const double* filters, // [nfilter,3], radii for the ordered legs
   double* out // [nfilter], one aperture value per filter triple
 );
+
 // b_L at every ordered (ell1,ell2) pair, read from the prepared table;
 // physics_multipoles_3pcf in physics_3pcf.h declares the convention.
 void physics_grid_multipoles_3pcf(
@@ -126,22 +132,27 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
   int nell, // number of requested Fourier values on each ordered leg
   const double* ell // [nell], positive multipoles; the query copies them
 );
+
 int physics_grid_query_matches_3pcf(
   const physics_grid_query_3pcf* query, // immutable owned geometry
   const physics_grid_3pcf* grid // returns zero for NULL or incompatible input
 );
+
 int physics_grid_query_nell_3pcf(
   const physics_grid_query_3pcf* query // requested output Fourier size
 );
+
 int physics_grid_query_lmax_3pcf(
   const physics_grid_query_3pcf* query // largest Legendre degree it keeps
 );
+
 void physics_grid_query_evaluate_3pcf(
   const physics_grid_query_3pcf* query, // immutable charts, cells and weights
   const physics_grid_3pcf* grid, // matching geometry, current physical values
   int component, // total=0, NLA baseline=1, residual IA=2
   double* out // [lmax+1,nell,nell], must not alias grid or query storage
 );
+
 void physics_grid_query_destroy_3pcf(
   physics_grid_query_3pcf* query // release owned arrays; NULL is allowed
 );

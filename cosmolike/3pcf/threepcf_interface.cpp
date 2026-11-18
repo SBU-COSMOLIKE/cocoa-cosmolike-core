@@ -51,6 +51,7 @@ using array_3pcf = py::array_t<double, py::array::c_style>;
 using int_array_3pcf = py::array_t<int, py::array::c_style>;
 
 
+
 // ============================================================================
 // [SECTION] VALIDATION HELPERS
 // ============================================================================
@@ -69,6 +70,7 @@ static void rank_3pcf(
     spdlog::critical("3pcf interface: {} has the wrong rank", name);
     std::exit(1);
   }
+
   for (int axis=0; axis<rank; axis++) {
     if (values.shape(axis) < 1
         || values.shape(axis) > INT_MAX) {
@@ -105,6 +107,7 @@ static void finite_3pcf(
   )
 {
   aligned_3pcf(values, alignof(double), name);
+
   for (py::ssize_t index=0; index<values.size(); index++) {
     if (!std::isfinite(values.data()[index])) {
       spdlog::critical("3pcf interface: {} must be finite", name);
@@ -125,11 +128,13 @@ static bool same_shape_3pcf(
   if (first.ndim() != second.ndim()) {
     return false;
   }
+
   for (py::ssize_t axis=0; axis<first.ndim(); axis++) {
     if (first.shape(axis) != second.shape(axis)) {
       return false;
     }
   }
+
   return true;
 }
 
@@ -175,6 +180,7 @@ static bool symmetric_values_3pcf(
 }
 
 
+
 // ============================================================================
 // [SECTION] PRODUCTION ENTRY POINTS
 // ============================================================================
@@ -201,17 +207,21 @@ static py::tuple aperture_weights_production_3pcf(
   rank_3pcf(d3, 1, "d3");
   rank_3pcf(phi, 1, "phi");
   rank_3pcf(filters, 2, "filters");
+
   if (!(filters.shape(1) == 3)) {
     spdlog::critical("3pcf interface: filters need three columns");
     std::exit(1);
   }
+
   finite_3pcf(d2, "d2");
   finite_3pcf(d3, "d3");
   finite_3pcf(phi, "phi");
   finite_3pcf(filters, "filters");
+
   lower_bound_3pcf(d2, true, "d2");
   lower_bound_3pcf(d3, true, "d3");
   lower_bound_3pcf(filters, true, "filters");
+
   if (!(std::isfinite(dlnd)
         && dlnd > 0.0
         && std::isfinite(dphi)
@@ -219,6 +229,7 @@ static py::tuple aperture_weights_production_3pcf(
     spdlog::critical("3pcf interface: bin widths must be finite and positive");
     std::exit(1);
   }
+
   for (py::ssize_t index=0; index<phi.size(); index++) {
     if (!(phi.data()[index] > 0.0
           && phi.data()[index] < std::acos(-1.0))) {
@@ -234,6 +245,7 @@ static py::tuple aperture_weights_production_3pcf(
   const int nd3 = static_cast<int>(d3.size());
   const int nphi = static_cast<int>(phi.size());
   const int nfilter = static_cast<int>(filters.shape(0));
+
   if (!(nd2 <= INT_MAX/nd3)) {
     spdlog::critical("3pcf interface: triangle count exceeds C int range");
     std::exit(1);
@@ -242,14 +254,18 @@ static py::tuple aperture_weights_production_3pcf(
     spdlog::critical("3pcf interface: triangle count exceeds C int range");
     std::exit(1);
   }
+
   const int ntriangle = nd2*nd3*nphi;
   array_3pcf weights_real({nfilter, 4, ntriangle});
   array_3pcf weights_imag({nfilter, 4, ntriangle});
+
   aperture_weights_3pcf(nd2, nd3, nphi, nfilter, d2.data(), d3.data(),
       phi.data(), dlnd, dphi, filters.data(), weights_real.mutable_data(),
       weights_imag.mutable_data());
+
   finite_3pcf(weights_real, "result wr");
   finite_3pcf(weights_imag, "result wi");
+
   return py::make_tuple(weights_real, weights_imag);
 }
 
@@ -274,6 +290,7 @@ static array_3pcf aperture_apply_production_3pcf(
   rank_3pcf(weights_imag, 3, "wi");
   rank_3pcf(gamma_real, 3, "gr");
   rank_3pcf(gamma_imag, 3, "gi");
+
   if (!(same_shape_3pcf(weights_real, weights_imag)
         && same_shape_3pcf(gamma_real, gamma_imag)
         && weights_real.shape(1) == 4
@@ -283,6 +300,7 @@ static array_3pcf aperture_apply_production_3pcf(
       "disagree");
     std::exit(1);
   }
+
   finite_3pcf(weights_real, "wr");
   finite_3pcf(weights_imag, "wi");
   finite_3pcf(gamma_real, "gr");
@@ -291,11 +309,14 @@ static array_3pcf aperture_apply_production_3pcf(
   const int nfilter = static_cast<int>(weights_real.shape(0));
   const int ntriangle = static_cast<int>(weights_real.shape(2));
   const int nsample = static_cast<int>(gamma_real.shape(0));
+
   array_3pcf output({nsample, nfilter});
   aperture_apply_3pcf(nfilter, ntriangle, nsample, weights_real.data(),
       weights_imag.data(), gamma_real.data(), gamma_imag.data(),
       output.mutable_data());
+
   finite_3pcf(output, "aperture result");
+
   return output;
 }
 
@@ -326,6 +347,7 @@ static array_3pcf filtered_pair_production_3pcf(
   rank_3pcf(radius, 1, "r");
   rank_3pcf(filters, 2, "filters");
   rank_3pcf(power, 3, "power");
+
   if (!(ell_weights.size() == ell.size()
         && filters.shape(1) == ell.size()
         && power.shape(0) == filters.shape(0)
@@ -334,21 +356,26 @@ static array_3pcf filtered_pair_production_3pcf(
     spdlog::critical("3pcf interface: filtered-pair axes disagree");
     std::exit(1);
   }
+
   finite_3pcf(ell, "ell");
   finite_3pcf(ell_weights, "ell_weights");
   finite_3pcf(radius, "r");
   finite_3pcf(filters, "filters");
   finite_3pcf(power, "power");
+
   lower_bound_3pcf(ell, false, "ell");
   lower_bound_3pcf(radius, false, "r");
 
   const int nfield = static_cast<int>(filters.shape(0));
   const int nell = static_cast<int>(ell.size());
   const int nr = static_cast<int>(radius.size());
+
   array_3pcf output({nfield, nfield, nr});
   filtered_pair_3pcf(nfield, nell, nr, ell.data(), ell_weights.data(),
       radius.data(), filters.data(), power.data(), output.mutable_data());
+
   finite_3pcf(output, "filtered-pair result");
+
   return output;
 }
 
@@ -370,21 +397,27 @@ static array_3pcf connected_gram_production_3pcf(
 {
   rank_3pcf(responses, 2, "responses");
   rank_3pcf(weights, 1, "weights");
+
   if (!(responses.shape(1) == weights.size())) {
     spdlog::critical("3pcf interface: response-node and weight counts must "
       "agree");
     std::exit(1);
   }
+
   finite_3pcf(responses, "responses");
   finite_3pcf(weights, "weights");
+
   lower_bound_3pcf(weights, false, "weights");
 
   const int nrow = static_cast<int>(responses.shape(0));
   const int nnode = static_cast<int>(weights.size());
+
   array_3pcf output({nrow, nrow});
   connected_gram_3pcf(nrow, nnode, responses.data(), weights.data(),
       output.mutable_data());
+
   finite_3pcf(output, "Gram result");
+
   return output;
 }
 
@@ -410,6 +443,7 @@ static array_3pcf gaussian_covariance_production_3pcf(
   rank_3pcf(pair_zero, 2, "pair_zero");
   rank_3pcf(radial_weights, 1, "radial_weights");
   aligned_3pcf(triplets, alignof(int), "triplets");
+
   if (!(triplets.shape(1) == 3
         && pair.shape(0) == pair.shape(1)
         && pair_zero.shape(0) == pair.shape(0)
@@ -418,9 +452,11 @@ static array_3pcf gaussian_covariance_production_3pcf(
     spdlog::critical("3pcf interface: Gaussian covariance axes disagree");
     std::exit(1);
   }
+
   finite_3pcf(pair, "pair");
   finite_3pcf(pair_zero, "pair_zero");
   finite_3pcf(radial_weights, "radial_weights");
+
   lower_bound_3pcf(radial_weights, false, "radial_weights");
 
   const int nfield = static_cast<int>(pair.shape(0));
@@ -445,13 +481,17 @@ static array_3pcf gaussian_covariance_production_3pcf(
       }
     }
   }
+
   array_3pcf output({nrow, nrow});
   gaussian_aperture_covariance_3pcf(nfield, nr, nrow, triplets.data(),
       pair.data(), pair_zero.data(), radial_weights.data(),
       output.mutable_data());
+
   finite_3pcf(output, "Gaussian result");
+
   return output;
 }
+
 
 
 // ============================================================================
@@ -477,8 +517,10 @@ static Array notebook_input_3pcf(
     spdlog::critical("3pcf interface: notebook inputs must be NumPy arrays");
     std::exit(1);
   }
+
   const py::array values = py::reinterpret_borrow<py::array>(input);
   rank_3pcf(values, rank, "notebook input");
+
   using Element = typename Array::elem_type;
   if constexpr (std::is_integral<Element>::value) {
     if (!(values.dtype().kind() == 'i'
@@ -502,11 +544,13 @@ static Array notebook_input_3pcf(
       std::exit(1);
     }
   }
+
   const py::object owned = input.attr("astype")(
       py::dtype::of<Element>(), py::arg("order") = "F",
       py::arg("copy") = true);
   const py::buffer_info buffer =
       py::reinterpret_borrow<py::buffer>(owned).request();
+
   Array output;
   if constexpr (arma::is_Cube<Array>::value) {
     output.set_size(buffer.shape[0], buffer.shape[1], buffer.shape[2]);
@@ -515,10 +559,13 @@ static Array notebook_input_3pcf(
   } else {
     output.set_size(buffer.shape[0], buffer.shape[1]);
   }
+
   std::copy_n(static_cast<const Element*>(buffer.ptr), buffer.size,
       output.memptr());
+
   return output;
 }
+
 
 
 // ============================================================================
@@ -538,7 +585,9 @@ static void set_threads_3pcf(
     spdlog::critical("3pcf interface: nthreads must be positive");
     std::exit(1);
   }
+
   openblas_set_num_threads(1);
+
 #ifdef _OPENMP
   omp_set_dynamic(0);
   omp_set_num_threads(nthreads);
@@ -549,6 +598,7 @@ static void set_threads_3pcf(
   }
 #endif
 }
+
 
 
 // ============================================================================
@@ -565,12 +615,15 @@ void bind_threepcf(
 {
   // Triplet labels cross the Python/C boundary as 32-bit C int.
   static_assert(sizeof(int) == 4, "triplets require 32-bit C int");
+
   // Pin BLAS to one thread at import, before any OpenMP region runs
   // (set_threads_3pcf explains why).
   openblas_set_num_threads(1);
+
   module.def("set_omp_threads", &set_threads_3pcf,
       "Set the positive OpenMP worker count; BLAS remains serial.",
       py::arg("nthreads"));
+
   module.def("get_omp_threads", []() {
 #ifdef _OPENMP
     return omp_get_max_threads();
@@ -582,6 +635,7 @@ void bind_threepcf(
   py::module_ production = module.def_submodule("production",
       "C-contiguous float64/int32 NumPy interface; the bindings borrow "
       "the caller's arrays without copying them.");
+
   production.def("aperture_weights", &aperture_weights_production_3pcf,
       "Finite triangle-bin aperture weights. The pair (wr, wi) holds "
       "the real and imaginary parts of the integration weights "
@@ -591,6 +645,7 @@ void bind_threepcf(
       py::arg("d2").noconvert(), py::arg("d3").noconvert(),
       py::arg("phi").noconvert(), py::arg("dlnd"), py::arg("dphi"),
       py::arg("filters").noconvert());
+
   production.def("aperture_apply", &aperture_apply_production_3pcf,
       "Contract prepared aperture weights with natural components. wr "
       "and wi hold the real and imaginary parts of the integration "
@@ -600,6 +655,7 @@ void bind_threepcf(
       "part of the product, with neither factor conjugated.",
       py::arg("wr").noconvert(), py::arg("wi").noconvert(),
       py::arg("gr").noconvert(), py::arg("gi").noconvert());
+
   production.def("filtered_pair", &filtered_pair_production_3pcf,
       "Filtered pair correlations K[field, field, r] from the "
       "caller's angular spectra: K_ij(r) = integral dell ell/(2 pi) "
@@ -609,12 +665,14 @@ void bind_threepcf(
       py::arg("ell").noconvert(), py::arg("ell_weights").noconvert(),
       py::arg("r").noconvert(), py::arg("filters").noconvert(),
       py::arg("power").noconvert());
+
   production.def("connected_gram", &connected_gram_production_3pcf,
       "Connected covariance from responses on common nodes: "
       "out[row, column] = sum_node weights * responses[row] * "
       "responses[column]. The nonnegative weights carry the entire "
       "physical measure; the kernel adds no factor of its own.",
       py::arg("responses").noconvert(), py::arg("weights").noconvert());
+
   production.def("gaussian_aperture_covariance",
       &gaussian_covariance_production_3pcf,
       "Gaussian covariance of raw cubic aperture fields, keeping all "
@@ -629,6 +687,7 @@ void bind_threepcf(
 
   py::module_ notebook = module.def_submodule("notebook",
       "Armadillo-owned copies of every input, over the same C kernels.");
+
   notebook.def("aperture_weights", [](
       const py::object& d2, // [nd2], radians
       const py::object& d3, // [nd3], radians
@@ -642,6 +701,7 @@ void bind_threepcf(
     const auto phi_input = notebook_input_3pcf<arma::Col<double>>(phi, 1);
     const auto filters_input =
         notebook_input_3pcf<arma::Mat<double>>(filters, 2);
+
     auto result = aperture_weights_cpp_3pcf(d2_input, d3_input, phi_input,
         dlnd, dphi, filters_input);
     return py::make_tuple(carma::cube_to_arr(std::move(result.real)),
@@ -662,6 +722,7 @@ void bind_threepcf(
     const auto weights_imag = notebook_input_3pcf<arma::Cube<double>>(wi, 3);
     const auto gamma_real = notebook_input_3pcf<arma::Cube<double>>(gr, 3);
     const auto gamma_imag = notebook_input_3pcf<arma::Cube<double>>(gi, 3);
+
     return carma::mat_to_arr(aperture_apply_cpp_3pcf(weights_real,
         weights_imag, gamma_real, gamma_imag));
   }, "Notebook twin of production.aperture_apply: copy the "
@@ -687,6 +748,7 @@ void bind_threepcf(
         notebook_input_3pcf<arma::Mat<double>>(filters, 2);
     const auto power_input =
         notebook_input_3pcf<arma::Cube<double>>(power, 3);
+
     return carma::cube_to_arr(filtered_pair_cpp_3pcf(ell_input,
         weight_input, radius_input, filters_input, power_input));
   }, "Notebook twin of production.filtered_pair: copy the inputs "
@@ -703,6 +765,7 @@ void bind_threepcf(
         notebook_input_3pcf<arma::Mat<double>>(responses, 2);
     const auto weight_input =
         notebook_input_3pcf<arma::Col<double>>(weights, 1);
+
     return carma::mat_to_arr(
         connected_gram_cpp_3pcf(response_input, weight_input));
   }, "Notebook twin of production.connected_gram: copy the responses "
@@ -724,6 +787,7 @@ void bind_threepcf(
         notebook_input_3pcf<arma::Mat<double>>(pair_zero, 2);
     const auto weight_input =
         notebook_input_3pcf<arma::Col<double>>(radial_weights, 1);
+
     return carma::mat_to_arr(gaussian_aperture_covariance_cpp_3pcf(
         triplet_input, pair_input, zero_input, weight_input));
   }, "Notebook twin of production.gaussian_aperture_covariance: copy "

@@ -46,6 +46,7 @@ class physics_grid_owner_3pcf {
     const int* bins,
     const physics_grid_settings_3pcf& settings
   );
+
   // This constructor adopts ownership of a C table that the batch
   // factory physics_grid_create_many_3pcf already built, and the owner
   // will destroy it. The public C interface exposes no reader for the
@@ -97,6 +98,7 @@ arma::Mat<double> physics_points_cpp_3pcf(
   int component,
   bool remove_alignment
 );
+
 arma::Col<double> physics_feedback_power_cpp_3pcf(
   const physics_owner_3pcf& owner,
   const arma::Col<double>& k, // wavenumbers, h/Mpc
@@ -130,6 +132,7 @@ arma::Col<double> physics_grid_projected_cpp_3pcf(
   const arma::Mat<double>& sides, // [point,3] multipole triangles
   int component // total=0, NLA baseline=1, residual IA=2
 );
+
 std::vector<std::shared_ptr<physics_grid_owner_3pcf>>
 physics_grids_cpp_3pcf(
   const physics_owner_3pcf& owner,
@@ -137,6 +140,7 @@ physics_grids_cpp_3pcf(
   const physics_ia_3pcf& parameters,
   const physics_grid_settings_3pcf& settings
 );
+
 arma::Col<double> physics_grid_aperture_cpp_3pcf(
   const physics_grid_owner_3pcf& owner,
   const arma::Col<double>& ell, // Fourier quadrature nodes
@@ -145,12 +149,14 @@ arma::Col<double> physics_grid_aperture_cpp_3pcf(
   const arma::Col<double>& dphi, // their quadrature weights, radians
   const arma::Mat<double>& filters // [nfilter,3] aperture radii, radians
 );
+
 arma::Col<double> physics_nla_power_cpp_3pcf(
   const physics_owner_3pcf& owner,
   const arma::Col<double>& ell, // output multipoles of the shear C_ell
   const arma::Col<int>& bins, // [2] source bins of the power spectrum
   const physics_ia_3pcf& parameters
 );
+
 arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
   const physics_grid_owner_3pcf& owner,
   const arma::Col<double>& ell, // Fourier sides of the b_L output grid

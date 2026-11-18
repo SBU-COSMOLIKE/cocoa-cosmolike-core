@@ -44,6 +44,8 @@ namespace cosmolike_interface {
 // matrix for a covariance matrix between measurement rows.
 // ---------------------------------------------------------------------------
 
+
+
 // ============================================================================
 // [SECTION] VALIDATION HELPERS
 // ============================================================================
@@ -68,6 +70,7 @@ namespace cosmolike_interface {
 static size_t covariance_count(const std::vector<py::ssize_t>& shape)
 {
   size_t product = 1;
+
   for (const auto length : shape) {
     if (!(length > 0 && length <= INT_MAX)) {
       spdlog::critical("3pcf covariance interface: invalid array dimension");
@@ -80,11 +83,13 @@ static size_t covariance_count(const std::vector<py::ssize_t>& shape)
     }
     product *= static_cast<size_t>(length);
   }
+
   if (!(product <= static_cast<size_t>(PY_SSIZE_T_MAX)
         /sizeof(double))) {
     spdlog::critical("3pcf covariance interface: array byte count overflows");
     std::exit(1);
   }
+
   return product;
 }
 
@@ -141,11 +146,13 @@ static py::array_t<Number, py::array::c_style> covariance_array(
     spdlog::critical("3pcf covariance interface: array has the wrong rank");
     std::exit(1);
   }
+
   std::vector<py::ssize_t> shape;
   for (int axis=0; axis<rank; axis++) {
     shape.push_back(input.shape(axis));
   }
   const size_t count = covariance_count(shape);
+
   if (!notebook) {
     if (!((input.flags() & py::array::c_style) != 0)) {
       spdlog::critical("3pcf covariance interface: production requires "
@@ -161,9 +168,11 @@ static py::array_t<Number, py::array::c_style> covariance_array(
     return py::reinterpret_borrow<py::array_t<Number, py::array::c_style>>(
       input);
   }
+
   py::array_t<Number, py::array::c_style> result(shape);
   const char* source = static_cast<const char*>(input.data());
   Number* destination = result.mutable_data();
+
   for (size_t index=0; index<count; index++) {
     size_t remainder = index;
     py::ssize_t offset = 0;
@@ -176,6 +185,7 @@ static py::array_t<Number, py::array::c_style> covariance_array(
     // view: no typed dereference happens until the owned buffer exists.
     std::memcpy(destination + index, source + offset, sizeof(Number));
   }
+
   return result;
 }
 
@@ -192,6 +202,7 @@ static void covariance_finite(const py::array_t<double>& array)
     }
   }
 }
+
 
 
 // ============================================================================
@@ -250,6 +261,7 @@ class covariance_arguments {
       "concentration_b", "concentration_c", "concentration_pivot",
       "baryon_strength"
     };
+
     // --- 2. PARSING LOOP ---
     // Walk the dictionary once. Every key must belong to one of the
     // sets above; an unknown key stops the run, so a typo cannot
@@ -280,6 +292,7 @@ class covariance_arguments {
         }
       }
     }
+
     // --- 3. REQUIRED KEYS ---
     // Every array key is required (only theta_edges is optional), and
     // the survey area has no sensible default.
@@ -339,12 +352,14 @@ class covariance_arguments {
     input.nfield = vector_length("field_radius");
     input.nrow = static_cast<int>(integer.at("row_kind").size());
     input.ntheta = static_cast<int>(real.at("theta").shape(1));
+
     equal_length("dell", input.nell);
     equal_length("window_dell", input.nwindow);
     equal_length("dphi", input.nphi);
     equal_length("dr", input.nr);
     equal_length("dk", input.nk);
     equal_length("dmass", input.nmass);
+
     if (!(integer.at("field_source").size() == input.nfield)) {
       spdlog::critical("3pcf covariance interface: field_source and "
         "field_radius lengths disagree");
@@ -356,9 +371,11 @@ class covariance_arguments {
         "shape [nrow,3]");
       std::exit(1);
     }
+
     matrix_shape("theta", input.nrow, input.ntheta);
     matrix_shape("theta_weight", input.nrow, input.ntheta);
     matrix_shape("noise", nsource, nsource);
+
     if (real.count("theta_edges")) {
       matrix_shape("theta_edges", input.nrow, 2);
       input.theta_edges = real.at("theta_edges").data();
@@ -399,6 +416,7 @@ class covariance_arguments {
     input.estimator = integer_scalar(values, "estimator", 0);
     input.ia_model = integer_scalar(values, "ia_model", 0);
     input.noise_mode = integer_scalar(values, "noise_mode", 0);
+
     // Sheth-Tormen halo mass function parameters (ellipsoidal collapse,
     // arXiv astro-ph/9901122): a = 0.707 rescales the peak height,
     // p = 0.3 shapes the low-mass tail, and the normalization 0.3222
@@ -411,6 +429,7 @@ class covariance_arguments {
     input.delta_c = scalar(values, "delta_c", 1.686);
     input.collapse_model = integer_scalar(values, "collapse_model", 0);
     input.profile_upsample = integer_scalar(values, "profile_upsample", 8);
+
     // Duffy et al. concentration-mass relation for M200m halos
     // (arXiv 0804.2486, full-sample fit):
     // c = 10.14 (M/M_pivot)^-0.081 (1+z)^-1.01, pivot 2.0e12 Msun/h.
@@ -419,6 +438,7 @@ class covariance_arguments {
     input.concentration_c = scalar(values, "concentration_c", -1.01);
     input.concentration_pivot = scalar(values, "concentration_pivot", 2.0e12);
     input.baryon_strength = scalar(values, "baryon_strength", 0.0);
+
     validate();
   }
 
@@ -536,12 +556,14 @@ class covariance_arguments {
     increasing(input.profile_radius, input.nprofile, false);
     increasing(input.k, input.nk, true);
     increasing(input.mass, input.nmass, true);
+
     positive(input.dell, input.nell);
     positive(input.window_dell, input.nwindow);
     positive(input.dphi, input.nphi);
     positive(input.dr, input.nr);
     positive(input.dk, input.nk);
     positive(input.dmass, input.nmass);
+
     if (!(input.nprofile >= 3 && input.profile_radius[0] == 0.0)) {
       spdlog::critical("3pcf covariance interface: profile_radius needs at "
         "least three nodes and must start at zero");
@@ -558,6 +580,7 @@ class covariance_arguments {
         "outside [0,2pi]");
       std::exit(1);
     }
+
     // The relative-angle weights must close the full circle: their sum
     // is the measure of [0,2pi]. The 1.0e-10 tolerance absorbs the
     // roundoff of summing many weights while rejecting a genuinely
@@ -571,6 +594,7 @@ class covariance_arguments {
         "quadrature weights must sum to 2pi");
       std::exit(1);
     }
+
     if (!(input.area > 0.0 && input.area <= 4.0*arma::datum::pi)) {
       spdlog::critical("3pcf covariance interface: survey solid angle must "
         "lie in (0,4pi]");
@@ -613,6 +637,7 @@ class covariance_arguments {
         "select constant (0) or evolving (1) threshold");
       std::exit(1);
     }
+
     for (int field=0; field<input.nfield; field++) {
       if (!(input.field_source[field] >= 0
             && input.field_source[field] < nsource)) {
@@ -626,6 +651,7 @@ class covariance_arguments {
         std::exit(1);
       }
     }
+
     double largest_theta = 0.0;
     for (int row=0; row<input.nrow; row++) {
       const int kind = input.row_kind[row];
@@ -634,6 +660,7 @@ class covariance_arguments {
           "kind");
         std::exit(1);
       }
+
       const int legs = kind == 1 ? 3 : 2;
       for (int leg=0; leg<legs; leg++) {
         const int field = input.row_fields[static_cast<size_t>(row)*3 + leg];
@@ -650,6 +677,7 @@ class covariance_arguments {
           std::exit(1);
         }
       }
+
       if (kind >= 2) {
         if (input.noise_mode == 1) {
           const double lower = input.theta_edges[static_cast<size_t>(row)*2];
@@ -670,6 +698,7 @@ class covariance_arguments {
             }
           }
         }
+
         double normalization = 0.0;
         for (int node=0; node<input.ntheta; node++) {
           const size_t index = static_cast<size_t>(row)*input.ntheta + node;
@@ -692,6 +721,7 @@ class covariance_arguments {
         }
       }
     }
+
     if (!(input.profile_radius[input.nprofile - 1]
           >= input.radius[input.nr - 1] + 0.5*largest_theta)) {
       spdlog::critical("3pcf covariance interface: profile grid does not "
@@ -705,6 +735,7 @@ class covariance_arguments {
     // a negative physical variance merely because its units are small.
     arma::Mat<double> noise(nsource, nsource);
     double magnitude = 0.0;
+
     for (int row=0; row<nsource; row++) {
       for (int column=0; column<nsource; column++) {
         const double value = input.noise[static_cast<size_t>(row)*nsource
@@ -727,6 +758,7 @@ class covariance_arguments {
         magnitude = std::max(magnitude, std::abs(value));
       }
     }
+
     arma::Col<double> eigenvalues;
     if (!(arma::eig_sym(eigenvalues, noise))) {
       spdlog::critical("3pcf covariance interface: noise eigenvalue check "
@@ -741,6 +773,7 @@ class covariance_arguments {
     }
   }
 };
+
 
 
 // ============================================================================
@@ -773,19 +806,23 @@ static py::tuple physical_covariance_binding(
 {
   const physics_model_3pcf* model = borrow_physics_model_3pcf(owner);
   covariance_arguments arguments(model, values, notebook);
+
   const int count = arguments.input.nrow;
   // The 6 counts the covariance families listed above. The call's
   // return value is discarded: it runs only to prove, before any
   // allocation, that the [6,nrow,nrow] element and byte counts fit
   // their integer types.
   covariance_count({6, count, count});
+
   py::array_t<double> mean(count);
   py::array_t<double> terms({static_cast<py::ssize_t>(6),
     static_cast<py::ssize_t>(count), static_cast<py::ssize_t>(count)});
+
   if (notebook) {
     const covariance_request_cpp_3pcf request(arguments.input,
       arguments.nsource);
     std::pair<arma::Col<double>, arma::Cube<double>> result;
+
     // Python's global interpreter lock (the GIL) lets only one thread
     // run Python code at a time. Releasing it here lets other Python
     // threads run during the long C calculation. The price is a hard
@@ -796,6 +833,7 @@ static py::tuple physical_covariance_binding(
       py::gil_scoped_release release;
       result = covariance_physical_cpp_3pcf(model, request);
     }
+
     // Repack the Armadillo cube, indexed (row, column, term), into the
     // C layout [term,row,column] of the NumPy output, mirroring the
     // layout note in covariance_wrapper.cpp. Naming all three indices
@@ -816,8 +854,10 @@ static py::tuple physical_covariance_binding(
     covariance_physical_3pcf(model, &arguments.input, mean.mutable_data(),
       terms.mutable_data());
   }
+
   covariance_finite(mean);
   covariance_finite(terms);
+
   return py::make_tuple(mean, terms);
 }
 
@@ -853,10 +893,12 @@ static py::tuple halos_binding(
 {
   const physics_model_3pcf* model = borrow_physics_model_3pcf(owner);
   covariance_arguments arguments(model, values, notebook);
+
   const auto z = covariance_array<double>(redshifts, 1, notebook);
   const auto k = covariance_array<double>(wavenumbers, 1, notebook);
   covariance_finite(z);
   covariance_finite(k);
+
   for (py::ssize_t index=0; index<z.size(); index++) {
     if (!(z.data()[index] >= 0.0
           && (index == 0 || z.data()[index] > z.data()[index - 1]))) {
@@ -873,11 +915,14 @@ static py::tuple halos_binding(
       std::exit(1);
     }
   }
+
   const int mass_count = arguments.input.nmass;
+
   // Discard the returned count: the call runs only to prove the
   // largest output, [z,M,k], fits its integer types before any
   // allocation.
   covariance_count({z.size(), mass_count, k.size()});
+
   // The first four outputs share the [z,M] grid: sigma2 (the mass
   // variance), dndm (the halo abundance), bias and concentration.
   // The fifth is the NFW Fourier profile u on [z,M,k].
@@ -886,18 +931,21 @@ static py::tuple halos_binding(
     result.emplace_back(std::vector<py::ssize_t>{z.size(), mass_count});
   }
   result.emplace_back(std::vector<py::ssize_t>{z.size(), mass_count, k.size()});
+
   if (notebook) {
     const covariance_request_cpp_3pcf request(arguments.input,
       arguments.nsource);
     const arma::Col<double> redshift(z.data(), z.size());
     const arma::Col<double> wave(k.data(), k.size());
     std::vector<arma::Col<double>> computed;
+
     // Release the GIL while the C engine runs; the paragraph in
     // physical_covariance_binding states the rule this scope obeys.
     {
       py::gil_scoped_release release;
       computed = covariance_halos_cpp_3pcf(model, request, redshift, wave);
     }
+
     // The wrapper returns each table as one flat Armadillo column
     // already in C row-major order (covariance_wrapper.hpp), so a
     // plain byte copy lands every element in its [z,M] or [z,M,k]
@@ -917,9 +965,11 @@ static py::tuple halos_binding(
       result[3].mutable_data(),
       result[4].mutable_data());
   }
+
   for (const auto& array : result) {
     covariance_finite(array);
   }
+
   return py::make_tuple(result[0], result[1], result[2], result[3], result[4]);
 }
 
@@ -966,15 +1016,18 @@ static py::array_t<double> xi_binding(
   const auto spectra_e = covariance_array<double>(e_object, 2, notebook);
   const auto spectra_b = covariance_array<double>(b_object, 2, notebook);
   const auto sign = covariance_array<int>(sign_object, 1, notebook);
+
   covariance_finite(ell);
   covariance_finite(dell);
   covariance_finite(theta);
   covariance_finite(weight);
   covariance_finite(spectra_e);
   covariance_finite(spectra_b);
+
   const int nrow = static_cast<int>(theta.shape(0));
   const int ntheta = static_cast<int>(theta.shape(1));
   const int nell = static_cast<int>(ell.size());
+
   // One chained check compares five arrays against the reference
   // shapes of ell and theta. When it fails, compare in this order:
   // dell length vs nell; theta_weight shape vs [nrow,ntheta];
@@ -995,11 +1048,13 @@ static py::array_t<double> xi_binding(
       std::exit(1);
     }
   }
+
   for (int row=0; row<nrow; row++) {
     if (!(sign.data()[row] == 1 || sign.data()[row] == -1)) {
       spdlog::critical("3pcf covariance interface: xi sign must be +1 or -1");
       std::exit(1);
     }
+
     double normalization = 0.0;
     for (int node=0; node<ntheta; node++) {
       const size_t index = static_cast<size_t>(row)*ntheta + node;
@@ -1018,6 +1073,7 @@ static py::array_t<double> xi_binding(
       std::exit(1);
     }
   }
+
   py::array_t<double> result(nrow);
   if (notebook) {
     // Armadillo keeps the physical [row,node] axes here. The notebook
@@ -1028,6 +1084,7 @@ static py::array_t<double> xi_binding(
     arma::Mat<double> weight_copy(nrow, ntheta);
     arma::Mat<double> e_copy(nrow, nell);
     arma::Mat<double> b_copy(nrow, nell);
+
     for (int row=0; row<nrow; row++) {
       for (int node=0; node<ntheta; node++) {
         const size_t index = static_cast<size_t>(row)*ntheta + node;
@@ -1040,9 +1097,11 @@ static py::array_t<double> xi_binding(
         b_copy(row, node) = spectra_b.data()[index];
       }
     }
+
     const arma::Col<int> sign_copy(sign.data(), sign.size());
     const arma::Col<double> output = covariance_xi_cpp_3pcf(ell_copy,
       dell_copy, theta_copy, weight_copy, e_copy, b_copy, sign_copy);
+
     std::memcpy(result.mutable_data(), output.memptr(),
       static_cast<size_t>(nrow)*sizeof(double));
   } else {
@@ -1053,9 +1112,12 @@ static py::array_t<double> xi_binding(
       theta.data(), weight.data(), spectra_e.data(), spectra_b.data(),
       sign.data(), result.mutable_data());
   }
+
   covariance_finite(result);
+
   return result;
 }
+
 
 
 // ============================================================================
@@ -1084,6 +1146,7 @@ void bind_threepcf_covariance(py::module_& module)
 {
   py::module_ production = module.attr("production").cast<py::module_>();
   py::module_ notebook = module.attr("notebook").cast<py::module_>();
+
   // One pass per input convention: false registers into production
   // (borrowing), true into notebook (copying).
   for (const bool copying : {false, true}) {
@@ -1097,6 +1160,7 @@ void bind_threepcf_covariance(py::module_& module)
       "Gaussian, bispectrum-squared (BB), power times one-halo "
       "trispectrum, power times bispectrum, connected one-halo, and the "
       "selected halo-abundance response.");
+
     target.def("halo_tables",
       [copying](py::handle model, const py::dict& inputs, py::handle z,
           py::handle k_profile) {
@@ -1108,6 +1172,7 @@ void bind_threepcf_covariance(py::module_& module)
       "halo bias, and concentration the Duffy et al. c(M,z), each with "
       "shape [z,M]; the fifth output is the normalized NFW Fourier "
       "profile u(k|M,z) with shape [z,M,k].");
+
     target.def("xi_from_power",
       [copying](py::handle ell, py::handle dell, py::handle theta,
           py::handle theta_weight, py::handle spectra_e,

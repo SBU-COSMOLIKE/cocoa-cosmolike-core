@@ -70,6 +70,7 @@ arma::Cube<double> coupling_cpp_3pcf(
     spdlog::critical("3pcf transform wrapper: invalid coupling input");
     std::exit(1);
   }
+
   const arma::uword count = (arma::uword)(mmax+1)*(lmax+1)*psi.n_elem;
   arma::Col<double> packed(count);
   legendre_coupling_3pcf(lmax, mmax, static_cast<int>(psi.n_elem),
@@ -89,10 +90,12 @@ arma::Cube<double> coupling_cpp_3pcf(
       }
     }
   }
+
   if (!(result.is_finite())) {
     spdlog::critical("3pcf transform wrapper: nonfinite coupling");
     std::exit(1);
   }
+
   return result;
 }
 
@@ -145,6 +148,7 @@ arma::Mat<double> bessel_cpp_3pcf(
     spdlog::critical("3pcf transform wrapper: invalid two-Bessel input");
     std::exit(1);
   }
+
   const int nell = static_cast<int>(ell.n_elem);
 
   // Create a one-shot workspace. The literal 1 is the worker count: one
@@ -182,10 +186,12 @@ arma::Mat<double> bessel_cpp_3pcf(
 
   // Release the workspace before validating, so an abort cannot leak it.
   fftlog_destroy_3pcf(work);
+
   if (!(result.is_finite())) {
     spdlog::critical("3pcf transform wrapper: nonfinite transform");
     std::exit(1);
   }
+
   return result;
 }
 
@@ -230,12 +236,15 @@ natural_result_cpp_3pcf natural_cpp_3pcf(
       }
     }
   }
+
   const arma::uword pairs = (arma::uword)ntheta*ntheta;
   const arma::uword triangles = pairs*nphi;
   arma::Col<double> real(4*triangles);
   arma::Col<double> imag(4*triangles);
+
   transform_natural_3pcf(plan, packed.memptr(), real.memptr(),
       imag.memptr());
+
   natural_result_cpp_3pcf result = {
     arma::Cube<double>(4, pairs, nphi),
     arma::Cube<double>(4, pairs, nphi)
@@ -253,11 +262,13 @@ natural_result_cpp_3pcf natural_cpp_3pcf(
       }
     }
   }
+
   if (!(result.real.is_finite()
         && result.imag.is_finite())) {
     spdlog::critical("3pcf transform wrapper: nonfinite natural components");
     std::exit(1);
   }
+
   return result;
 }
 
@@ -310,13 +321,17 @@ arma::Col<double> aperture_grid_cpp_3pcf(
       }
     }
   }
+
   arma::Col<double> result(real.n_rows);
   transform_aperture_grid_3pcf(plan, grid, static_cast<int>(real.n_rows),
       packed_real.memptr(), packed_imag.memptr(), result.memptr());
+
   if (!(result.is_finite())) {
     spdlog::critical("3pcf transform wrapper: nonfinite aperture moment");
     std::exit(1);
   }
+
   return result;
 }
+
 }

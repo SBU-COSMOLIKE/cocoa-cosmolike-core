@@ -42,12 +42,14 @@ covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
         (size_t)input.nrow*input.ntheta}},
     {"noise", {input.noise, (size_t)nsource*nsource}}
   };
+
   for (const auto& item : arrays) {
     const auto count = item.second.second;
     arma::Col<double> values(count);
     std::copy_n(item.second.first, count, values.memptr());
     real.emplace(item.first, std::move(values));
   }
+
   // Exact bin edges are optional in finite-band mode. Preserve absence as
   // a null pointer; do not manufacture an annulus from quadrature nodes.
   if (input.theta_edges != nullptr) {
@@ -56,6 +58,7 @@ covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
     real.emplace("theta_edges", std::move(edges));
     request.theta_edges = real.at("theta_edges").memptr();
   }
+
   // The source count comes from the model, not from the field subset
   // the request selects, so the noise copy keeps every off-diagonal
   // source pair.
@@ -64,11 +67,13 @@ covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
     {"row_kind", {input.row_kind, (size_t)input.nrow}},
     {"row_fields", {input.row_fields, (size_t)input.nrow*3}}
   };
+
   for (const auto& item : indices) {
     arma::Col<int> values(item.second.second);
     std::copy_n(item.second.first, item.second.second, values.memptr());
     integer.emplace(item.first, std::move(values));
   }
+
   request.ell = real.at("ell").memptr();
   request.dell = real.at("dell").memptr();
   request.window_ell = real.at("window_ell").memptr();
@@ -124,7 +129,9 @@ std::pair<arma::Col<double>, arma::Cube<double>> covariance_physical_cpp_3pcf(
   const size_t n = request.nrow;
   arma::Col<double> mean(n);
   arma::Col<double> packed(6*n*n);
+
   covariance_physical_3pcf(model, &request, mean.memptr(), packed.memptr());
+
   arma::Cube<double> terms(n, n, 6);
   // The C output is [term,row,column], with columns contiguous. An
   // Armadillo matrix instead stores rows contiguously within a column.
@@ -136,6 +143,7 @@ std::pair<arma::Col<double>, arma::Cube<double>> covariance_physical_cpp_3pcf(
       }
     }
   }
+
   return {std::move(mean), std::move(terms)};
 }
 
@@ -163,15 +171,18 @@ std::vector<arma::Col<double>> covariance_halos_cpp_3pcf(
 {
   const auto& request = input.get();
   const size_t count = z.n_elem*request.nmass;
+
   std::vector<arma::Col<double>> result;
   for (int index=0; index<4; index++) {
     result.emplace_back(count);
   }
   result.emplace_back(count*k_profile.n_elem);
+
   covariance_halos_3pcf(model, &request, (int)z.n_elem, z.memptr(),
       (int)k_profile.n_elem, k_profile.memptr(), result[0].memptr(),
       result[1].memptr(), result[2].memptr(), result[3].memptr(),
       result[4].memptr());
+
   return result;
 }
 
@@ -202,10 +213,12 @@ arma::Col<double> covariance_xi_cpp_3pcf(
   const size_t nrow = theta.n_rows;
   const size_t ntheta = theta.n_cols;
   const size_t nell = ell.n_elem;
+
   arma::Col<double> angles(nrow*ntheta);
   arma::Col<double> weights(nrow*ntheta);
   arma::Col<double> even(nrow*nell);
   arma::Col<double> odd(nrow*nell);
+
   // Packing changes memory order only. Each physical row keeps its
   // separation weights and E/B spectra together before entering C.
   for (size_t row=0; row<nrow; row++) {
@@ -218,10 +231,12 @@ arma::Col<double> covariance_xi_cpp_3pcf(
       odd[row*nell+point] = spectra_b(row, point);
     }
   }
+
   arma::Col<double> result(nrow);
   covariance_xi_from_power_3pcf((int)nrow, (int)nell, (int)ntheta,
       ell.memptr(), dell.memptr(), angles.memptr(), weights.memptr(),
       even.memptr(), odd.memptr(), sign.memptr(), result.memptr());
+
   return result;
 }
 

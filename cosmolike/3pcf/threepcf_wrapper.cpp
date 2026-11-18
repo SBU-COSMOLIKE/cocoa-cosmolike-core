@@ -38,6 +38,7 @@ static int count_3pcf(
     spdlog::critical("3pcf notebook: invalid {} count", name);
     std::exit(1);
   }
+
   return static_cast<int>(count);
 }
 
@@ -75,11 +76,13 @@ static arma::Col<Element> pack_matrix_3pcf(
   )
 {
   arma::Col<Element> packed(input.n_elem);
+
   for (arma::uword row=0; row<input.n_rows; row++) {
     for (arma::uword column=0; column<input.n_cols; column++) {
       packed[row*input.n_cols+column] = input(row, column);
     }
   }
+
   return packed;
 }
 
@@ -91,6 +94,7 @@ static arma::Col<double> pack_cube_3pcf(
   )
 {
   arma::Col<double> packed(input.n_elem);
+
   for (arma::uword first=0; first<input.n_rows; first++) {
     for (arma::uword second=0; second<input.n_cols; second++) {
       for (arma::uword third=0; third<input.n_slices; third++) {
@@ -100,6 +104,7 @@ static arma::Col<double> pack_cube_3pcf(
       }
     }
   }
+
   return packed;
 }
 
@@ -114,12 +119,14 @@ static arma::Mat<double> unpack_matrix_3pcf(
   )
 {
   arma::Mat<double> output(nrow, ncolumn);
+
   for (int row=0; row<nrow; row++) {
     for (int column=0; column<ncolumn; column++) {
       const arma::uword offset = arma::uword(row)*ncolumn+column;
       output(row, column) = packed[offset];
     }
   }
+
   return output;
 }
 
@@ -133,6 +140,7 @@ static arma::Cube<double> unpack_cube_3pcf(
   )
 {
   arma::Cube<double> output(nfirst, nsecond, nthird);
+
   for (int first=0; first<nfirst; first++) {
     for (int second=0; second<nsecond; second++) {
       for (int third=0; third<nthird; third++) {
@@ -142,6 +150,7 @@ static arma::Cube<double> unpack_cube_3pcf(
       }
     }
   }
+
   return output;
 }
 
@@ -163,6 +172,7 @@ aperture_weights_result_3pcf aperture_weights_cpp_3pcf(
   const int nd3 = count_3pcf(d3.n_elem, "d3");
   const int nphi = count_3pcf(phi.n_elem, "phi");
   const int nfilter = count_3pcf(filters.n_rows, "filter");
+
   if (!(filters.n_cols == 3)) {
     spdlog::critical("3pcf notebook: filters must have three columns");
     std::exit(1);
@@ -201,15 +211,18 @@ aperture_weights_result_3pcf aperture_weights_cpp_3pcf(
     spdlog::critical("3pcf notebook: triangle count exceeds C int range");
     std::exit(1);
   }
+
   const int ntriangle = nd2*nd3*nphi;
 
   const arma::Col<double> packed_filters = pack_matrix_3pcf(filters);
   const arma::uword nweight = arma::uword(nfilter)*4*ntriangle;
   arma::Col<double> weights_real(nweight);
   arma::Col<double> weights_imag(nweight);
+
   aperture_weights_3pcf(nd2, nd3, nphi, nfilter, d2.memptr(), d3.memptr(),
       phi.memptr(), dlnd, dphi, packed_filters.memptr(),
       weights_real.memptr(), weights_imag.memptr());
+
   if (!(weights_real.is_finite()
         && weights_imag.is_finite())) {
     spdlog::critical("3pcf notebook: aperture weights are not finite");
@@ -239,6 +252,7 @@ arma::Mat<double> aperture_apply_cpp_3pcf(
   const int nfilter = count_3pcf(weights_real.n_rows, "filter");
   const int ntriangle = count_3pcf(weights_real.n_slices, "triangle");
   const int nsample = count_3pcf(gamma_real.n_rows, "sample");
+
   if (!(weights_real.n_cols == 4
         && gamma_real.n_cols == 4)) {
     spdlog::critical("3pcf notebook: aperture cubes must have four natural "
@@ -265,13 +279,16 @@ arma::Mat<double> aperture_apply_cpp_3pcf(
   const arma::Col<double> packed_gr = pack_cube_3pcf(gamma_real);
   const arma::Col<double> packed_gi = pack_cube_3pcf(gamma_imag);
   arma::Col<double> output(arma::uword(nsample)*nfilter);
+
   aperture_apply_3pcf(nfilter, ntriangle, nsample, packed_wr.memptr(),
       packed_wi.memptr(), packed_gr.memptr(), packed_gi.memptr(),
       output.memptr());
+
   if (!(output.is_finite())) {
     spdlog::critical("3pcf notebook: aperture result is not finite");
     std::exit(1);
   }
+
   return unpack_matrix_3pcf(output, nsample, nfilter);
 }
 
@@ -291,6 +308,7 @@ arma::Cube<double> filtered_pair_cpp_3pcf(
   const int nell = count_3pcf(ell.n_elem, "multipole");
   const int nr = count_3pcf(radius.n_elem, "separation");
   const int nfield = count_3pcf(filters.n_rows, "field");
+
   if (!(ell_weights.n_elem == ell.n_elem
         && filters.n_cols == ell.n_elem
         && power.n_rows == filters.n_rows
@@ -316,13 +334,16 @@ arma::Cube<double> filtered_pair_cpp_3pcf(
   const arma::Col<double> packed_filters = pack_matrix_3pcf(filters);
   const arma::Col<double> packed_power = pack_cube_3pcf(power);
   arma::Col<double> output(arma::uword(nfield)*nfield*nr);
+
   filtered_pair_3pcf(nfield, nell, nr, ell.memptr(), ell_weights.memptr(),
       radius.memptr(), packed_filters.memptr(), packed_power.memptr(),
       output.memptr());
+
   if (!(output.is_finite())) {
     spdlog::critical("3pcf notebook: filtered-pair result is not finite");
     std::exit(1);
   }
+
   return unpack_cube_3pcf(output, nfield, nfield, nr);
 }
 
@@ -338,6 +359,7 @@ arma::Mat<double> connected_gram_cpp_3pcf(
 {
   const int nrow = count_3pcf(responses.n_rows, "response row");
   const int nnode = count_3pcf(responses.n_cols, "response node");
+
   if (!(weights.n_elem == responses.n_cols)) {
     spdlog::critical("3pcf notebook: response-node and weight counts must "
       "agree");
@@ -355,12 +377,15 @@ arma::Mat<double> connected_gram_cpp_3pcf(
 
   const arma::Col<double> packed_responses = pack_matrix_3pcf(responses);
   arma::Col<double> output(arma::uword(nrow)*nrow);
+
   connected_gram_3pcf(nrow, nnode, packed_responses.memptr(),
       weights.memptr(), output.memptr());
+
   if (!(output.is_finite())) {
     spdlog::critical("3pcf notebook: Gram result is not finite");
     std::exit(1);
   }
+
   return unpack_matrix_3pcf(output, nrow, nrow);
 }
 
@@ -382,6 +407,7 @@ arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
   const int nrow = count_3pcf(triplets.n_rows, "triplet");
   const int nfield = count_3pcf(pair.n_rows, "field");
   const int nr = count_3pcf(pair.n_slices, "separation");
+
   if (!(triplets.n_cols == 3
         && pair.n_cols == pair.n_rows
         && pair_zero.n_rows == pair.n_rows
@@ -425,13 +451,16 @@ arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
   const arma::Col<double> packed_pair = pack_cube_3pcf(pair);
   const arma::Col<double> packed_zero = pack_matrix_3pcf(pair_zero);
   arma::Col<double> output(arma::uword(nrow)*nrow);
+
   gaussian_aperture_covariance_3pcf(nfield, nr, nrow,
       packed_triplets.memptr(), packed_pair.memptr(), packed_zero.memptr(),
       radial_weights.memptr(), output.memptr());
+
   if (!(output.is_finite())) {
     spdlog::critical("3pcf notebook: Gaussian result is not finite");
     std::exit(1);
   }
+
   return unpack_matrix_3pcf(output, nrow, nrow);
 }
 
