@@ -2086,3 +2086,32 @@ double sigma2(
 {
   return sigma2_field(M, a, HALO_FIELD_CB);
 }
+
+
+// ---------------------------------------------------------------------------
+// Variance of the smoothed linear TOTAL-MATTER density at (M,a), from
+// the saved top-hat table of sigma2_fields_build (its field 0 slice,
+// built from cosmology.lnPL).
+//
+// Why a dedicated total-matter reader: the BiHalofit bispectrum fit
+// (Takahashi et al., arXiv:1911.07886) and the halofit convention it
+// inherits (Smith et al., astro-ph/0207664) calibrate their background
+// quantities - sigma8(z), the nonlinear radius and the effective
+// spectral slope - on the variance of the TOTAL matter field, the
+// field whose spectra the simulations measured. Production halo
+// statistics instead use the cold dark matter + baryon variance
+// (sigma2 above selects HALO_FIELD_CB): halos form from the clustering
+// cold matter while massive neutrinos free-stream. A consumer of the
+// BiHalofit convention reads this function; a halo-model consumer
+// keeps sigma2.
+//
+// Parameters: M in M_sun/h, a the scale factor.
+// Returns: sigma_m^2(M,a), dimensionless.
+// ---------------------------------------------------------------------------
+double sigma2_matter(
+    const double M, // halo mass in M_sun/h
+    const double a  // scale factor
+  )
+{
+  return sigma2_field(M, a, HALO_FIELD_MATTER);
+}

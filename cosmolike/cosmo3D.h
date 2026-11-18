@@ -95,6 +95,10 @@ double sigma2(const double M, const double a);
 double sigma2_field(const double M, const double a, const int field);
 double dlnsigma_dlnm_field(const double M, const double a, const int field);
 
+// Dedicated total-matter top-hat variance (the BiHalofit convention;
+// sigma2 above is the cb variance halo statistics use). M in M_sun/h.
+double sigma2_matter(const double M, const double a);
+
 #ifdef __cplusplus
 }
 #endif
