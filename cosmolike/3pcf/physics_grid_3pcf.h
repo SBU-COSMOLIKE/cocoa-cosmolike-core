@@ -33,6 +33,7 @@ typedef struct {
   int npsi; // production coarse uniform log-small-PSI node count
   int prepare_multipoles; // zero omits b_L when only full filters are needed
   int nshape; // production uniform bounded-tanh shape-coordinate count
+  int signed_baseline; // 1 stores log GGG and the signed ratio NLA/GGG
 } physics_grid_settings_3pcf;
 
 typedef struct physics_grid_3pcf physics_grid_3pcf;

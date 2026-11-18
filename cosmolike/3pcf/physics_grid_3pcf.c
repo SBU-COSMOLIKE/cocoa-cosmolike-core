@@ -28,7 +28,11 @@ static int omp_get_thread_num(void) { return 0; }
 // The baseline uses log B on sorted RUV triangles: r=middle side,
 // u=smallest/middle and v=(largest-middle)/smallest. Its radial weight is
 // a product of three NLA kernels, so this *baseline* is invariant under
-// side exchange. The signed TATT residual uses PUV without side sorting:
+// side exchange. In signed_baseline=1, a positive gravity-only GGG table
+// supplies the logarithmic dynamic range, while a separate NLA/GGG ratio
+// carries negative values and zero crossings. This changes the numerical
+// representation, not the product of physical NLA source kernels.
+// The signed TATT residual uses PUV without side sorting:
 // p=sum sides, u=ell1/p, v=ell2/p. Its source-bin association is retained.
 // The rectangular PUV fill uses the explicitly named source extension
 // outside the physical triangle domain; physical queries stay inside it.
@@ -70,7 +74,8 @@ struct physics_grid_3pcf {
   double* log_ell;
   double* log_psi;
   double* mu;
-  double* log_baseline; // [nr,nu,nv]
+  double* log_baseline; // [nr,nu,nv], log NLA or log GGG by named mode
+  double* baseline_ratio; // optional [nr,nu,nv], signed NLA/GGG
   double* residual; // [np,npu,npu]
   double* multipoles; // [baseline/residual,chart,L,nell,npsi]
 };
@@ -161,6 +166,7 @@ void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings)
   settings->npsi = 80;
   settings->prepare_multipoles = 1;
   settings->nshape = 80;
+  settings->signed_baseline = 0;
 }
 
 
@@ -444,6 +450,14 @@ double physics_grid_projected_3pcf(const physics_grid_3pcf* grid,
       grid->log_r, grid->nr, grid->log_u, grid->nu,
       grid->v, grid->nv, log(middle), log(ratio), difference,
       settings->reference_mode));
+    if (settings->signed_baseline) {
+      // GGG remains positive; only this dimensionless ratio determines
+      // the sign. Never take log(abs(NLA)) or replace a negative value.
+      baseline *= trilinear_grid(grid->baseline_ratio,
+        grid->log_r, grid->nr, grid->log_u, grid->nu,
+        grid->v, grid->nv, log(middle), log(ratio), difference,
+        settings->reference_mode);
+    }
   }
   if (component != 1 && grid->has_residual) {
     const double ratio1 = corrected_coordinate(ell1/perimeter,
@@ -675,7 +689,8 @@ static physics_grid_3pcf* allocate_grid(
     && settings->table_boost >= 1 && settings->multipole_boost >= 1
     && settings->npsi >= 2 && settings->nshape >= 2
     && settings->prepare_multipoles >= 0
-    && settings->prepare_multipoles <= 1,
+    && settings->prepare_multipoles <= 1
+    && settings->signed_baseline >= 0 && settings->signed_baseline <= 1,
     "invalid interpolation settings");
   grid_require(settings->npu_log <= (INT_MAX - settings->npu_linear - 2)/2,
     "PUV axis is too large");
@@ -754,6 +769,9 @@ static physics_grid_3pcf* allocate_grid(
     settings->nv);
   const size_t nresidual = grid_product(settings->np, grid->npu, grid->npu);
   grid->log_baseline = grid_allocate(nbaseline, sizeof(double));
+  if (settings->signed_baseline) {
+    grid->baseline_ratio = grid_allocate(nbaseline, sizeof(double));
+  }
   if (has_residual) {
     grid->residual = grid_allocate(nresidual, sizeof(double));
   }
@@ -771,9 +789,16 @@ static void finish_grid(physics_grid_3pcf* grid)
     const int boost = settings->table_boost;
     const int boosts[3] = {boost, boost, boost};
     int baseline_shape[3] = {grid->nr, grid->nu, grid->nv};
+    int ratio_shape[3] = {grid->nr, grid->nu, grid->nv};
     int residual_shape[3] = {grid->np, grid->npu, grid->npu};
     grid->log_baseline = upsample_uniform_grid(grid->log_baseline,
       baseline_shape, boosts);
+    if (settings->signed_baseline) {
+      // The upsampler modifies its shape argument. Give the ratio its
+      // original coarse dimensions, not the already enlarged log shape.
+      grid->baseline_ratio = upsample_uniform_grid(grid->baseline_ratio,
+        ratio_shape, boosts);
+    }
     if (grid->has_residual) {
       grid->residual = upsample_uniform_grid(grid->residual,
         residual_shape, boosts);
@@ -840,8 +865,22 @@ void physics_grid_create_many_3pcf(
 {
   grid_require(model && parameters && bins && out && ntriplet > 0,
     "missing batch grid inputs");
+  grid_require(settings != NULL, "missing batch grid settings");
   physics_projection_3pcf** projections = grid_allocate((size_t)ntriplet,
     sizeof(*projections));
+  physics_projection_3pcf** gravity_projections = NULL;
+  if (settings->signed_baseline) {
+    gravity_projections = grid_allocate((size_t)ntriplet,
+      sizeof(*gravity_projections));
+  }
+  // Only the intrinsic-shape coefficients change for the denominator.
+  // Cosmology, source distributions and the matter/baryon prescription
+  // remain identical, so the ratio compares two projected observables.
+  physics_ia_3pcf gravity_parameters = *parameters;
+  gravity_parameters.a1 = 0.0;
+  gravity_parameters.a2 = 0.0;
+  gravity_parameters.bta = 0.0;
+  gravity_parameters.ct = 0.0;
   // Pure NLA has no residual after its linear-alignment subtraction.
   // Keep no PUV values and perform no residual physics in that case.
   const int has_residual = parameters->a2 != 0.0
@@ -850,12 +889,21 @@ void physics_grid_create_many_3pcf(
     out[triplet] = allocate_grid(settings, has_residual);
     projections[triplet] = physics_projector_create_3pcf(model, parameters,
       bins + (size_t)triplet*3);
+    if (settings->signed_baseline) {
+      gravity_projections[triplet] = physics_projector_create_3pcf(model,
+        &gravity_parameters, bins + (size_t)triplet*3);
+    }
   }
   // Validate common model/IA once and copy radial weights into contiguous
   // triplet lanes. The batch borrows the first projector until destruction
   // below; workers neither allocate nor modify any shared preparation.
   physics_projection_batch_3pcf* batch = physics_projection_batch_create_3pcf(
     ntriplet, projections);
+  physics_projection_batch_3pcf* gravity_batch = NULL;
+  if (settings->signed_baseline) {
+    gravity_batch = physics_projection_batch_create_3pcf(ntriplet,
+      gravity_projections);
+  }
   const physics_grid_3pcf* first = out[0];
   // Every cell on one axis uses the same exponential. Prepare those
   // exact values once; retain all subsequent triangle-side operations.
@@ -883,10 +931,14 @@ void physics_grid_create_many_3pcf(
   // Memory grows with the number of output tables, not ntriplet*nlos
   // times all sampled triangle geometries.
   size_t worker_stride;
-  double* scratch = worker_storage((size_t)ntriplet, &worker_stride);
+  const size_t scratch_count = settings->signed_baseline
+    ? 2*(size_t)ntriplet : (size_t)ntriplet;
+  double* scratch = worker_storage(scratch_count, &worker_stride);
   #pragma omp parallel if(!omp_in_parallel())
   {
     double* values = scratch + (size_t)omp_get_thread_num()*worker_stride;
+    double* gravity = settings->signed_baseline
+      ? values + (size_t)ntriplet : NULL;
     #pragma omp for schedule(static)
     for (size_t index=0; index<nbaseline; index++) {
       const int iv = index%(size_t)first->nv;
@@ -897,10 +949,29 @@ void physics_grid_create_many_3pcf(
       physics_projection_batch_evaluate_3pcf(batch,
         radius*(1.0 + ratio*first->v[iv]), radius, radius*ratio, 1, 0,
         values);
-      for (int triplet=0; triplet<ntriplet; triplet++) {
-        grid_require(values[triplet] > 0.0 && isfinite(values[triplet]),
-          "RUV log-baseline requires positive B; use direct signed values");
-        out[triplet]->log_baseline[index] = log(values[triplet]);
+      if (settings->signed_baseline) {
+        // The optional denominator batch shares its own LOS physics
+        // across all source triplets. Both batches were prepared before
+        // workers began and write only their separate private outputs.
+        physics_projection_batch_evaluate_3pcf(gravity_batch,
+          radius*(1.0 + ratio*first->v[iv]), radius, radius*ratio, 1, 0,
+          gravity);
+        for (int triplet=0; triplet<ntriplet; triplet++) {
+          grid_require(gravity[triplet] > 0.0 && isfinite(gravity[triplet])
+            && isfinite(values[triplet]),
+            "signed RUV baseline requires finite NLA and positive GGG");
+          const double signed_ratio = values[triplet]/gravity[triplet];
+          grid_require(isfinite(signed_ratio),
+            "signed RUV baseline ratio is not representable");
+          out[triplet]->log_baseline[index] = log(gravity[triplet]);
+          out[triplet]->baseline_ratio[index] = signed_ratio;
+        }
+      } else {
+        for (int triplet=0; triplet<ntriplet; triplet++) {
+          grid_require(values[triplet] > 0.0 && isfinite(values[triplet]),
+            "RUV log-baseline requires positive B; use signed_baseline=1");
+          out[triplet]->log_baseline[index] = log(values[triplet]);
+        }
       }
     }
     #pragma omp for schedule(static)
@@ -925,11 +996,16 @@ void physics_grid_create_many_3pcf(
   free(ratios);
   free(perimeters);
   physics_projection_batch_destroy_3pcf(batch);
+  physics_projection_batch_destroy_3pcf(gravity_batch);
   for (int triplet=0; triplet<ntriplet; triplet++) {
     physics_projector_destroy_3pcf(projections[triplet]);
+    if (settings->signed_baseline) {
+      physics_projector_destroy_3pcf(gravity_projections[triplet]);
+    }
     finish_grid(out[triplet]);
   }
   free(projections);
+  free(gravity_projections);
 }
 
 
@@ -992,6 +1068,7 @@ void physics_grid_destroy_3pcf(physics_grid_3pcf* grid)
   free(grid->log_psi);
   free(grid->mu);
   free(grid->log_baseline);
+  free(grid->baseline_ratio);
   free(grid->residual);
   free(grid->multipoles);
   free(grid);

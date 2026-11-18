@@ -227,7 +227,8 @@ static physics_grid_settings_3pcf settings_physics_grid(const py::dict& values)
     {"multipole_boost", &settings.multipole_boost},
     {"npsi", &settings.npsi},
     {"prepare_multipoles", &settings.prepare_multipoles},
-    {"nshape", &settings.nshape}
+    {"nshape", &settings.nshape},
+    {"signed_baseline", &settings.signed_baseline}
   };
   for (const auto& item : values) {
     const std::string name = py::cast<std::string>(item.first);

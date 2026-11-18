@@ -78,6 +78,22 @@ must retain their signed values. Source labels remain attached to their
 Fourier sides when a triangle is sorted or mapped to another shape chart.
 Equal array dimensions do not make those permutations interchangeable.
 
+The prepared grid's `signed_baseline: 1` setting uses two RUV tables:
+the logarithm of the positive gravity-only projection $`B_{GGG}`$, and
+the signed ratio $`B_{\rm NLA}/B_{GGG}`$. Cubic preparation and dense
+linear reads apply to each table. Their reconstructed product can be
+negative or zero without taking the logarithm of an intrinsic-alignment
+signal. The default `signed_baseline: 0` retains the positive-logarithm
+representation and rejects nonpositive samples.
+
+Broad alignment priors can cross that sign boundary. Choose the signed
+representation explicitly for those calculations; a numerical domain
+restriction must not become an undeclared prior. Both representations
+still need grid refinement, especially near cancellations. At a zero,
+scale an absolute interpolation error by $`B_{GGG}`$ rather than dividing
+by the vanishing baseline. This setting does not change the separately
+computed TATT residual or its accuracy requirements.
+
 ## Integration rules are a separate choice <a name="integration"></a>
 
 Fixed integration nodes are prepared before the physical calculation.
