@@ -207,7 +207,9 @@ static physics_grid_settings_3pcf settings_physics_grid(const py::dict& values)
   const std::map<std::string, double*> real = {
     {"ell_min", &settings.ell_min},
     {"ell_max", &settings.ell_max},
-    {"epmu", &settings.epmu}
+    {"epmu", &settings.epmu},
+    {"shape_stretch", &settings.shape_stretch},
+    {"psi_scale", &settings.psi_scale}
   };
   const std::map<std::string, int*> integer = {
     {"nr", &settings.nr},
@@ -228,7 +230,8 @@ static physics_grid_settings_3pcf settings_physics_grid(const py::dict& values)
     {"npsi", &settings.npsi},
     {"prepare_multipoles", &settings.prepare_multipoles},
     {"nshape", &settings.nshape},
-    {"signed_baseline", &settings.signed_baseline}
+    {"signed_baseline", &settings.signed_baseline},
+    {"residual_scaling", &settings.residual_scaling}
   };
   for (const auto& item : values) {
     const std::string name = py::cast<std::string>(item.first);
@@ -267,7 +270,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const int kernel_nz,
   const bool source_readers,
   const int table_boost,
-  const int fit_nz
+  const int fit_nz,
+  const py::object& source_z
 )
 {
   shape_physics(k, 1);
@@ -279,11 +283,23 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   shape_physics(growth, 1);
   shape_physics(sources, 2);
   shape_physics(los_z, 1);
+  // The optional axis is borrowed under the same float64/contiguous rule
+  // as other production arrays. The C constructor copies it before return.
+  physics_array source_axis;
+  py::ssize_t nsource = z.size();
+  if (!source_z.is_none()) {
+    require_physics_interface(physics_array::check_(source_z),
+      "source_z must be a contiguous float64 NumPy array");
+    source_axis = py::reinterpret_borrow<physics_array>(source_z);
+    shape_physics(source_axis, 1);
+    finite_physics(source_axis);
+    nsource = source_axis.size();
+  }
   require_physics_interface(p_linear0.size() == k.size()
     && p_nonlinear.shape(0) == z.size()
     && p_nonlinear.shape(1) == k.size()
     && chi.size() == z.size() && dz_dchi.size() == z.size()
-    && growth.size() == z.size() && sources.shape(1) == z.size(),
+    && growth.size() == z.size() && sources.shape(1) == nsource,
     "model table shapes disagree");
   finite_physics(k);
   finite_physics(p_linear0);
@@ -311,6 +327,10 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   input.dz_dchi = dz_dchi.data();
   input.growth = growth.data();
   input.sources = sources.data();
+  if (!source_z.is_none()) {
+    input.nsource = static_cast<int>(nsource);
+    input.source_z = source_axis.data();
+  }
   input.los_z = los_z.data();
   input.omega_m = omega_m;
   input.omega_de = omega_de;
@@ -341,7 +361,8 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const int kernel_nz,
   const bool source_readers,
   const int table_boost,
-  const int fit_nz
+  const int fit_nz,
+  const py::object& source_z
 )
 {
   const arma::Col<double> wave = copy_column_physics(k);
@@ -353,9 +374,14 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const arma::Col<double> normalized_growth = copy_column_physics(growth);
   const arma::Mat<double> density = copy_matrix_physics(sources);
   const arma::Col<double> los = copy_column_physics(los_z);
+  arma::Col<double> source_axis;
+  if (!source_z.is_none()) {
+    const auto supplied = py::cast<physics_notebook_array>(source_z);
+    source_axis = copy_column_physics(supplied);
+  }
   return physics_model_cpp_3pcf(wave, linear, redshift, nonlinear, distance,
     jacobian, normalized_growth, density, omega_m, omega_de, w0, wa, ns,
-    sigma8, los, kernel_nz, source_readers, table_boost, fit_nz);
+    sigma8, los, kernel_nz, source_readers, table_boost, fit_nz, source_axis);
 }
 
 
@@ -800,7 +826,8 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("kernel_nz") = 101,
     py::arg("source_readers") = false,
     py::arg("table_boost") = 8,
-    py::arg("fit_nz") = 33);
+    py::arg("fit_nz") = 33,
+    py::arg("source_z") = py::none());
   module.def("physics_model_notebook", &model_notebook_physics,
     py::arg("k"),
     py::arg("p_linear0"),
@@ -821,6 +848,7 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("source_readers") = false,
     py::arg("table_boost") = 8,
     py::arg("fit_nz") = 33,
+    py::arg("source_z") = py::none(),
     "Copy sliced or Fortran-order arrays through the Armadillo adapter.");
 
   model.def("matter", [](const physics_owner_3pcf& owner,

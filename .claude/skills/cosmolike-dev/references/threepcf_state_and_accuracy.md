@@ -19,7 +19,7 @@ Neither failure is tested by constructing every case in a fresh process.
 | Physical model | k/z/LOS/kernel counts, source count, coarse/dense fit counts | All physical axes and arrays, cosmology, source-reader convention | Constructor copies input; destructor releases owned arrays |
 | Projection grid | Triangle/multipole axes, L cap, chart choice and dense ratios | Model, ordered bins, every IA/baryon selector, bounds and coordinates | New owner for a changed definition; retained old grid stays valid |
 | Transform plan | FFT size/padding, selected cells, L/M caps, scratch capacity | ell/phi/selection values, biases, window, phase/projection convention | Constructor prepares serial FFTW plans; destructor releases plans/storage |
-| Multipole query map | Requested ell count, projected-grid axis counts and L cap | Exact copied log-ell/log-psi axes and reference-mode selector; requested ell fixed by plan | Plan owns the map; recreate when the complete axis key differs |
+| Multipole query map | Requested ell count, projected-grid axis counts and L cap | Exact copied log-ell, physical log-psi and internal PSI-coordinate axes; psi_scale and reference-mode selector; requested ell fixed by plan | Plan owns the map; recreate when the complete axis key differs |
 | Projection batch | LOS count, eight terms, number of triplets | Copied radial weights from projectors sharing one immutable model and exactly equal IA parameters | Call-local owner, destroyed before borrowed first projector/model |
 | Aperture weights | Side/opening-angle/filter counts | Bin widths, coordinates and ordered filter radii | Caller owns the returned numerical weights |
 | Physical covariance | Source/field/row and all quadrature dimensions | All supplied arrays, windows/noise, halo prescription and estimator choices | Call-local preparation, released on return |
@@ -41,6 +41,119 @@ copy; editing it cannot change the retained C table. In the Cocoa Python
 project, survey rows and prepared engine geometry are independent immutable
 copies. Construct a new engine in the same interpreter to change its geometry.
 Mutating one public array while retaining old weights is a named refusal.
+
+The physical model's optional `source_z[nsource]` is independent of its
+background `z[nz]` and power rows. C copies the source axis and densities,
+then prepares chi and dz/dchi on that axis before parallel readers run.
+Omission, or an explicit byte-identical background axis, retains the old
+radial preparation arithmetic. An independent axis must remain within
+background support. Keep tests of its analytic lensing measure, owned
+inputs/outputs, both adapters, and source-count A/B/A restoration.
+
+In the project, `source_nz` and `source_boost` refine an explicitly selected
+source sampling grid while retaining the provider's cosmology tables.
+Every photo-z shift is reconstructed from immutable native samples;
+successive notebook calls must never shift the previous shifted result.
+Reconstruction and endpoint policy are fixed physical-model choices for
+one provider. Native samples refer to the selected FITS, which may already
+be an explicitly processed demonstration file. Preserve its hash and
+processing record. A continuous interior cubic need not join a zero
+extension continuously in its derivative, so endpoint and derivative
+checks remain necessary even when every sampled density is nonnegative.
+
+
+## Signed amplitudes and angular chart controls
+
+The triangle and multipole arrays distinguish an interpolation's
+coordinate from the physical quantity stored at a node. The optional
+controls below are part of the immutable projection-grid definition.
+Their default values preserve the preceding numerical representation;
+choosing a new value needs a new grid. No new value is a claim of survey
+accuracy or a substitute for a resolution study.
+
+The explicit shape-endpoint branches can change last bits relative to an
+older executable's tanh/inverse-tanh round trip. Comparing an omitted
+`shape_stretch` with an explicit value of three in the current executable
+checks default selection, not historical binary identity.
+
+| Control | Default | What changes | What does not follow from it |
+|---|---:|---|---|
+| `signed_baseline` | 0 | With 1, interpolate log positive GGG and signed NLA/GGG separately | NLA remains the same physical effective-kernel projection |
+| `residual_scaling` | 0 | With 1, interpolate log GGG at equal sides of the same perimeter and signed residual/GGG separately | No absolute value, sign clipping or change of IA coefficients is allowed |
+| `shape_stretch` | 3 | Redistribute fixed PUV shape nodes toward their endpoints | Declared extreme support is not proof of resolved squeezed triangles |
+| `psi_scale` | 0 | With a positive value, use uniform log(psi)+psi/psi_scale for production b_L tables | The exported physical log_psi axis need not be uniform |
+
+The residual scale removes a broad radial amplitude before cubic
+preparation. It uses the same physical model, source triplet and matter
+prescription with zero IA amplitudes. Its logarithm and the signed ratio
+have independent owned arrays with a common perimeter axis. Coarse values
+are complete before their separate cubic preparations start. Pure NLA
+prepares neither array. The default source comparison keeps raw residuals;
+explicitly enabling scaling in reference mode is a different interpolation
+choice and must be named as such.
+
+For PUV shape, increasing `shape_stretch` resolves smaller edge fractions
+but coarsens the middle of the interval at fixed `nshape`. Refining the
+number of dense samples alone cannot supply the missing physical samples.
+At fractions close to machine precision, constructing a short closing side
+and then recovering a fraction can itself lose relative accuracy; the inverse
+shape mapping amplifies that loss. Keep interior knot checks distinct from
+extreme side-geometry tests and from near-boundary interpolation convergence.
+Do not turn a failed extreme test into a loose tolerance for ordinary shapes.
+
+For multipole angle, the mixed coordinate is monotone, so its inverse has a
+unique root within the declared physical endpoints. Root finding occurs only
+while preparing physical node arrays. Cubic upsampling uses the uniform
+internal coordinate; the repeated reader uses arithmetic indices and linear
+fractions in that same coordinate. A fixed iteration count during axis
+preparation is not adaptive physical integration. Reference mode preserves
+its original irregular log-PSI axis and reader. No extra integration Jacobian
+belongs in b_L merely because the interpolation coordinate changed.
+
+### The geometric query key must name the coordinate
+
+The retained map checks grid `nell`, `npsi`, `lmax`, `reference_mode`,
+`psi_scale`, and exact copied values of `log_ell`, physical `log_psi`, and
+internal `psi_coordinate`. Its requested Fourier array is owned and fixed
+for the map's lifetime. The two ordered source-leg charts remain distinct.
+With only two angular nodes and no dense upsampling, zero and positive
+`psi_scale` share the same physical endpoints and sampled table values,
+but their interior interpolation weights differ. This gives a direct test
+of a key that checks physical endpoints or dimensions without the chart.
+
+Changing cosmology, source curves, IA amplitudes, `signed_baseline`,
+`residual_scaling`, or `shape_stretch` can change b_L values while leaving
+the query axes unchanged. Those values must be read from the current grid;
+they are not stored in the geometric map. Reusing its cell indices is then
+correct. A blanket rule that all physics settings invalidate every geometry
+object would confuse its role with the projection table's owned values.
+
+### Separate the three numerical questions
+
+1. Compare projected B with direct physical line-of-sight values, first at
+   interior physical knots and then between them. Isolate radial range from
+   shape-edge resolution; an off-node perimeter at an original shape knot
+   provides a test of the radial interpolation alone. Retain both signs and
+   actual residual crossings. Use a declared positive error scale there.
+2. Hold projected B and its angular nodes fixed. Integrate each linear B(mu)
+   segment against P_L with an independent exact polynomial quadrature.
+   Compare b_L at off-node scale/angle pairs and both source-leg orders,
+   changing only its interpolation controls. Check the projected samples
+   remain bitwise identical. Scale small coefficients by an angular norm,
+   rather than divide by a coefficient close to zero.
+3. Refine the transform, aperture estimator and parameter derivatives on the
+   selected survey rows and covariance only after the earlier stages are
+   understood. Source reconstruction and photo-z shifts are another numerical
+   stage: changing angular nodes cannot remove a kink introduced while
+   shifting a piecewise-linear source curve at its own knots.
+
+For every control, combine the independent-value comparison with unchanged
+legacy/reference behavior and setting sequences through both adapters. Use
+retained and rebuilt grids, a retained transform plan, A/B/A restoration,
+and worker counts within the declared resource cap. A test of cold-state
+reconstruction alone does not exercise reuse of a geometric map. Record
+which checks actually ran in the project validation record; source review
+and these proposed comparisons are not execution evidence.
 
 ## Setting sequences, with independent references
 

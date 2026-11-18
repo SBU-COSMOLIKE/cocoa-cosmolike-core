@@ -15,6 +15,8 @@ typedef struct {
   double ell_min;
   double ell_max;
   double epmu;
+  double shape_stretch; // bounded-tanh concentration near squeezed edges
+  double psi_scale; // 0=log PSI; positive=log PSI+PSI/scale in production
   int nr;
   int nu;
   int nv;
@@ -29,11 +31,12 @@ typedef struct {
   int lmax;
   int reference_mode; // 1 preserves source irregular grids and linear reads
   int table_boost; // natural-cubic dense-grid factor for RUV/PUV tables
-  int multipole_boost; // dense-grid factor for b_L(log ELL,log small PSI)
-  int npsi; // production coarse uniform log-small-PSI node count
+  int multipole_boost; // dense-grid factor for b_L(log ELL,angular chart)
+  int npsi; // production node count uniform in the chosen angular chart
   int prepare_multipoles; // zero omits b_L when only full filters are needed
   int nshape; // production uniform bounded-tanh shape-coordinate count
   int signed_baseline; // 1 stores log GGG and the signed ratio NLA/GGG
+  int residual_scaling; // 1 scales PUV by positive GGG at equal p/3 sides
 } physics_grid_settings_3pcf;
 
 typedef struct physics_grid_3pcf physics_grid_3pcf;
@@ -85,7 +88,7 @@ void physics_grid_multipoles_3pcf(
 // A query owns interpolation geometry for one fixed caller ell array.
 // It borrows neither the source grid nor its physical multipoles, so the
 // source grid may be destroyed after construction. Matching compares the
-// complete interpolation axes, their sizes, L cutoff and reader convention.
+// complete physical and chart axes, their sizes, L cutoff and chart choice.
 // A changed cosmology or source triplet can reuse this geometry when those
 // keys agree exactly; evaluation always reads the supplied grid's fresh b_L.
 // Changing the caller's ell values requires a new query even at the same size.

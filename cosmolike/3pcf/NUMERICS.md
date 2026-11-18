@@ -36,7 +36,7 @@ need separate refinement checks.
 | Matter power and background | Supplied physical arrays, resampled during model construction | Uniform log-wave-number/redshift cells |
 | Matter-fit coefficients | Fixed uniform redshift anchors | Dense uniform redshift table |
 | Projected bispectrum | Fixed Fourier-triangle charts and radial nodes | Dense triangle-coordinate tables |
-| Angular Legendre coefficients | Fixed angular projection of the prepared bispectrum | Uniform logarithmic scale/shape cells |
+| Angular Legendre coefficients | Fixed angular projection of the prepared bispectrum | Uniform log-scale and selected angular-coordinate cells |
 | Halo shear profiles | Fixed Fourier quadrature at radial preparation nodes | Uniform transformed-radius cells |
 
 The external input tables need not already be uniform. Their conversion
@@ -93,6 +93,126 @@ still need grid refinement, especially near cancellations. At a zero,
 scale an absolute interpolation error by $`B_{GGG}`$ rather than dividing
 by the vanishing baseline. This setting does not change the separately
 computed TATT residual or its accuracy requirements.
+
+
+### Signed residuals across a large Fourier range
+
+The residual is the TATT or velocity-shear contribution left after removing
+the separately calculated NLA baseline. It is a signed function, so storing
+its logarithm would discard negative values and fail at a physical zero.
+Storing the raw value also has a numerical cost: a cubic fit along
+$`\ln p`$, with $`p=\ell_1+\ell_2+\ell_3`$, can carry an error from a large
+sample into a region where the true residual is many orders smaller.
+Densely reading that incorrect cubic does not remove the error.
+
+The explicit setting `residual_scaling: 1` prepares
+
+```math
+E(p)=B_{GGG}(p/3,p/3,p/3)>0,
+\qquad
+Q(p,u,v)=\frac{B_{\rm residual}(p,u,v)}{E(p)}.
+```
+
+Here $`u=\ell_1/p`$ and $`v=\ell_2/p`$. The denominator uses the same
+cosmology, ordered source triplet and matter/baryon prescription, with all
+intrinsic-shape amplitudes set to zero. The code stores $`\ln E`$ and
+signed $`Q`$, prepares their cubic curves separately, and reconstructs
+$`\exp(\operatorname{interp}\ln E)\operatorname{interp}Q`$. The ratio can
+pass through zero without any change of sign convention. At the original
+sample locations this is the same physical residual up to floating-point
+rounding. Between samples it is a different interpolation approximation,
+whose accuracy must be checked against direct projection.
+
+This setting removes a broad radial amplitude from the interpolation; it
+does not resolve an angular feature or modify the physical IA coefficients.
+The default `residual_scaling: 0` retains the raw residual. Pure NLA has
+exactly zero residual and prepares neither the scale nor the ratio. When
+`signed_baseline: 1` also needs a gravity-only projector, both preparations
+share that projector. The temporary positive scales and worker buffers
+are allocated before the worker loops and released after table preparation.
+A nonpositive denominator or an unrepresentable ratio produces a named
+refusal; no absolute value or positive floor replaces a physical result.
+
+### Resolving the physical triangle shape
+
+The rectangular PUV table samples $`u,v\in[m,1/2]`$, where production
+uses $`m=\min(10^{-6},\ell_{\min}/(4\ell_{\max}))`$. A physical triangle
+also requires $`u+v\geq1/2`$ and a positive closing side
+$`1-u-v>0`$. The remaining rectangular cells use the named upstream
+continuation outside the triangle domain. The zero-side corner at
+$`u=v=1/2`$ is assigned a continuation value; it is not a derivation of a
+physical squeezed limit. Keeping these cells is an interpolation convention.
+Source labels stay with their original sides throughout. Check boundary
+influence with direct physical triangles when changing the shape resolution
+or the angular endpoint cutoff.
+
+The `shape_stretch` setting chooses how uniformly spaced coordinates
+$`t\in[-1,1]`$ map into physical fractions:
+
+```math
+u(t)=m+\frac{1/2-m}{2}
+\left[1+\frac{\tanh(s t)}{\tanh s}\right],
+\qquad s=\mathtt{shape\_stretch}.
+```
+
+The default $`s=3`$ preserves the previous grid. Increasing $`s`$ puts more
+nodes near small fractions and near $`1/2`$, where squeezed triangles occur.
+It simultaneously spreads the central nodes farther apart. The support
+limit $`m`$ and the first interior node are different quantities: an axis
+can include $`m\ll10^{-6}`$ while its next node is near $`10^{-4}`$.
+Declaring that support alone does not resolve the intervening shapes.
+Changing `shape_stretch` therefore needs a separate `nshape` refinement,
+including ordinary, squeezed and nearly flattened physical triangles.
+The scale suggested by $`s\simeq\tfrac12\ln[(1/2)/m]`$ is a sampling
+choice to investigate, not an accuracy guarantee.
+
+Close to a machine-precision boundary, even recovering a stored knot can
+be ill-conditioned. The short side $`p(1-u-v)`$ subtracts order-one fractions,
+and converting rounded sides back into $`u,v`$ changes their final bits.
+The inverse hyperbolic tangent can amplify those small changes near its
+endpoints. Exact endpoint branches protect the declared endpoints, but
+they cannot restore information lost in a nonzero side ratio. Interior
+knot tests, high-precision side-geometry checks, and convergence on near-edge
+physical triangles answer different questions. A broad tolerance applied to
+all three would conceal which calculation is failing.
+
+### Physical angles and their interpolation coordinate
+
+The angular multipoles use
+$`\mathrm{ELL}=\sqrt{\ell_1^2+\ell_2^2}`$ and
+$`\mathrm{PSI}=\operatorname{atan2}(\ell_2,\ell_1)`$. Two ordered charts
+retain $`\psi=\min(\mathrm{PSI},\pi/2-\mathrm{PSI})`$ and remember which
+leg was larger. A very wide Fourier range makes $`\psi_{\min}`$ tiny.
+Uniform spacing in $`\ln\psi`$ then devotes many samples to small angles
+and can leave large gaps near $`\pi/4`$, where equal-side configurations
+can vary rapidly. Raising only the dense interpolation factor leaves those
+missing coarse samples unresolved.
+
+With `psi_scale: s_psi` positive, production instead samples uniformly in
+
+```math
+x(\psi)=\ln\psi+\frac{\psi}{s_\psi},
+\qquad
+\frac{d\psi}{dx}=\frac{\psi s_\psi}{\psi+s_\psi}.
+```
+
+For $`\psi\ll s_\psi`$ the spacing is approximately logarithmic; for
+$`\psi\gg s_\psi`$ it is approximately linear in the angle. The scale is
+in radians. The default `psi_scale: 0` retains the original logarithmic
+coordinate. A positive scale changes where a fixed number `npsi` of coarse
+samples is spent; it does not add samples or establish a target error.
+
+Only preparation inverts this relation. A fixed bracketed root calculation
+produces the physical log-angles at each coarse or dense coordinate, with
+exactly retained physical endpoints. The exported `log_psi` axis continues
+to contain $`\ln\psi`$, which is generally nonuniform in this mode. A separate
+internal `psi_coordinate` array is uniform and supplies arithmetic cell
+indices, interpolation fractions and cubic preparation. There is no new
+binary search or inverse root in the repeated production reader. There is
+also no new integration Jacobian: this is an interpolation coordinate,
+while the Legendre projection still integrates over its declared $`\mu`$
+nodes. The source `reference_mode: 1` keeps its original angular axis and
+reader regardless of `psi_scale`.
 
 ## Integration rules are a separate choice <a name="integration"></a>
 
@@ -155,6 +275,18 @@ the entire multipole buffer. The geometry alone can survive that change.
 Moving an interior interpolation node requires rebuilding the map even when
 the array dimensions and endpoints stay fixed. The key therefore compares
 every copied axis value, not just its size or address.
+
+Changing the angular coordinate can require new weights even when the
+physical nodes coincide. With two PSI nodes and no dense upsampling,
+`psi_scale: 0` and a positive scale expose the same physical endpoints,
+but give different interpolation fractions between them. The query key
+therefore includes `psi_scale`, the complete internal coordinate array,
+and the physical `log_psi` array, as well as the Fourier axis, dimensions,
+Legendre cutoff and reference-mode choice. By contrast, `residual_scaling`
+and `shape_stretch` change the current physical table values; if the b_L
+query geometry is unchanged, the map may still read those new values.
+Neither the normalized residual nor its positive scale is retained as a
+physical-value cache inside the geometric map.
 
 `TransformPlan.aperture_from_grid` performs this read and the aperture
 calculation in C. Its notebook counterpart copies the supplied weights
@@ -264,6 +396,32 @@ operator. A refinement test asks whether the chosen discretization has
 resolved the observable. Agreement with the first does not replace the
 other two, particularly when a source shortcut assumes exchange symmetry
 that an ordered tomographic TATT term does not have.
+
+Diagnose the stages separately. First compare projected-table values with
+the direct line-of-sight calculation at physical triangles. Use original
+interior knots to check storage and signs, then off-node ordinary and edge
+shapes to check interpolation. An error divided by a nearly vanishing signed
+residual is misleading; retain an absolute error with a stated nonzero
+physical scale, such as $`B_{GGG}`$.
+
+Next hold that projected table and its $`\mu`$ nodes fixed. Independently
+integrate each piecewise-linear angular segment against $`P_L(\mu)`$, and
+compare with `grid.multipoles` at off-node ELL/PSI pairs in both ordered
+charts. A Gauss rule of sufficient degree integrates this polynomial
+product exactly. Vary `nell`, `npsi`, `psi_scale` and `multipole_boost`
+separately, checking that the projected samples did not change. For a small
+or vanishing $`b_L`$, the scale
+$`\frac12\int|B_{\rm linear}(\mu)|\,d\mu`$ avoids a division by that
+coefficient. This comparison isolates multipole interpolation; it does not
+validate the physical projected table or the omitted angular endpoint cap.
+
+Only after those checks should transform, finite-aperture and derivative
+refinement be interpreted together. In particular, a plausible-looking
+aperture amplitude or a stable Fisher ratio cannot certify the earlier
+stages. The optional representations above have separate controls because
+radial amplitude, triangle shape and multipole angular sampling are separate
+sources of numerical error. Their presence does not establish convergence
+for a selected survey data vector.
 
 The [executed validation record](../../../../../projects/des_3pcf/tests/VALIDATION.md)
 identifies the checks and build modes actually run. Survey-size accuracy

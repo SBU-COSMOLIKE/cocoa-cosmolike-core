@@ -57,7 +57,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   int kernel_nz,
   bool source_readers,
   int table_boost,
-  int fit_nz
+  int fit_nz,
+  const arma::Col<double>& source_z = arma::Col<double>()
 );
 
 arma::Mat<double> physics_points_cpp_3pcf(

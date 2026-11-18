@@ -26,7 +26,7 @@ typedef struct {
   const double* chi;
   const double* dz_dchi;
   const double* growth;
-  const double* sources; // [nbin,nz], densities per unit redshift
+  const double* sources; // [nbin,nsource], densities per unit redshift
   const double* los_z;
   double omega_m;
   double omega_de;
@@ -37,6 +37,11 @@ typedef struct {
   int source_readers; // 1 retains source cubic reads for explicit comparisons
   int table_boost; // production dense-grid factor; zero selects eight
   int fit_nz; // production uniform coefficient anchors; zero selects 33
+  // Optional independent source coordinates. NULL with nsource=0 retains
+  // the original z grid and its exact preparation arithmetic. Source
+  // resolution never changes the number of supplied matter-power rows.
+  int nsource;
+  const double* source_z;
 } physics_input_3pcf;
 
 typedef struct {

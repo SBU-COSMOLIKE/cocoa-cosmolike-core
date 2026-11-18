@@ -34,15 +34,22 @@ static int omp_get_thread_num(void) { return 0; }
 // representation, not the product of physical NLA source kernels.
 // The signed TATT residual uses PUV without side sorting:
 // p=sum sides, u=ell1/p, v=ell2/p. Its source-bin association is retained.
+// With residual_scaling=1, its signed value is divided by a positive
+// gravity-only equilateral B at the same perimeter before interpolation.
+// Interpolating that ratio and log B separately limits radial amplitude
+// variation; it does not change the PUV shape grid or its continuation.
 // The rectangular PUV fill uses the explicitly named source extension
 // outside the physical triangle domain; physical queries stay inside it.
 //
 // ELL=sqrt(ell1^2+ell2^2), PSI=atan2(ell2,ell1). Source fastnc folds PSI
 // to <=pi/4. That is insufficient for unequal-bin TATT. We store two
 // independent charts: PSI=small_angle and PSI=pi/2-small_angle. Both use
-// log(small_angle) as interpolation coordinate and preserve ordered legs.
+// the same physical small-angle range and preserve ordered legs. Production
+// psi_scale>0 chooses x=log(PSI)+PSI/psi_scale, uniform in x. At small PSI,
+// x gives logarithmic resolution; at large PSI it gives nearly linear
+// angular resolution. psi_scale=0 retains the original uniform log-PSI.
 // Only reference_mode=1 retains the source's irregular sampling. Production
-// uses uniform log-small-PSI and a uniform bounded-tanh coordinate for PUV
+// uses that uniform PSI chart and a uniform bounded-tanh coordinate for PUV
 // shape, followed by natural-cubic upsampling and arithmetic-index linear
 // reads. No transpose or implicit bin swap creates the second residual chart.
 //
@@ -72,11 +79,13 @@ struct physics_grid_3pcf {
   double* pu;
   double* shape_coordinate;
   double* log_ell;
-  double* log_psi;
+  double* log_psi; // physical logarithmic angles, retained for diagnostics
+  double* psi_coordinate; // interpolation chart, uniform in production
   double* mu;
   double* log_baseline; // [nr,nu,nv], log NLA or log GGG by named mode
   double* baseline_ratio; // optional [nr,nu,nv], signed NLA/GGG
-  double* residual; // [np,npu,npu]
+  double* residual; // [np,npu,npu], signed value or scaled signed ratio
+  double* log_residual_scale; // optional [np], log GGG(p/3,p/3,p/3)
   double* multipoles; // [baseline/residual,chart,L,nell,npsi]
 };
 
@@ -88,11 +97,13 @@ struct physics_grid_3pcf {
 struct physics_grid_query_3pcf {
   int nell; // requested Fourier values per leg, fixed for this query
   int grid_nell; // interpolation log_ELL axis size
-  int grid_npsi; // interpolation log_small_PSI axis size
+  int grid_npsi; // angular interpolation axis size
   int lmax; // sets the physical table's L stride and output row count
   int reference_mode; // determines coordinate tolerance and cell reader
   double* log_ell; // owned complete interpolation-axis key
-  double* log_psi; // owned complete interpolation-axis key
+  double psi_scale; // selects the angular coordinate, even at equal counts
+  double* log_psi; // owned complete physical-axis key
+  double* psi_coordinate; // owned complete interpolation-axis key
   int* charts; // [nell,nell], which ordered-leg chart is read
   size_t* cells; // [nell,nell], lower-left interpolation offsets
   double* fractions; // [nell,nell,4], ordered bilinear corner weights
@@ -148,6 +159,8 @@ void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings)
   settings->ell_min = 0.1;
   settings->ell_max = 1.0e5;
   settings->epmu = 1.0e-7;
+  settings->shape_stretch = 3.0;
+  settings->psi_scale = 0.0;
   settings->nr = 35;
   settings->nu = 35;
   settings->nv = 25;
@@ -167,6 +180,7 @@ void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings)
   settings->prepare_multipoles = 1;
   settings->nshape = 80;
   settings->signed_baseline = 0;
+  settings->residual_scaling = 0;
 }
 
 
@@ -288,20 +302,28 @@ static double* upsample_uniform_grid(double* input, int* dimensions,
 }
 
 
-static double shape_to_coordinate(const double ratio, const double minimum)
+static double shape_to_coordinate(const double ratio, const double minimum,
+  const double stretch)
 {
   // A bounded tanh chart places uniform-coordinate samples near both
   // squeezed edges without binary searches on irregular physical ratios.
-  // Its inverse maps u in [1e-6,.5] to a uniform t in [-1,1].
+  // Its inverse maps u in [minimum,.5] to a uniform t in [-1,1]. Large
+  // stretches resolve smaller edge ratios but need more central nodes.
+  // Exact endpoints avoid amplifying tanh roundoff in its inverse.
+  if (ratio <= minimum) return -1.0;
+  if (ratio >= 0.5) return 1.0;
   const double normalized = 2.0*(ratio - minimum)/(0.5 - minimum) - 1.0;
-  return atanh(tanh(3.0)*normalized)/3.0;
+  return atanh(tanh(stretch)*normalized)/stretch;
 }
 
 
-static double coordinate_to_shape(const double coordinate, const double minimum)
+static double coordinate_to_shape(const double coordinate, const double minimum,
+  const double stretch)
 {
+  if (coordinate <= -1.0) return minimum;
+  if (coordinate >= 1.0) return 0.5;
   return minimum + 0.5*(0.5 - minimum)
-    *(1.0 + tanh(3.0*coordinate)/tanh(3.0));
+    *(1.0 + tanh(stretch*coordinate)/tanh(stretch));
 }
 
 
@@ -317,6 +339,53 @@ static double* linear_axis(const double lower, const double upper,
   result[0] = lower;
   result[count - 1] = upper;
   return result;
+}
+
+
+// A positive scale gives logarithmic spacing below that angle and nearly
+// constant angular spacing above it. This coordinate is monotone because
+// dx/dPSI=1/PSI+1/scale is positive. The zero setting keeps the original
+// expression, including its floating-point rounding and reference arrays.
+static double psi_grid_coordinate(const double psi, const double scale)
+{
+  const double logarithm = log(psi);
+  return scale > 0.0 ? logarithm + psi/scale : logarithm;
+}
+
+
+// Invert x=t+exp(t)/scale for t=log(PSI) only while preparing an axis.
+// The known physical endpoints bracket its unique root. A fixed bisection
+// count avoids convergence-dependent samples; no inverse root or search
+// remains in a production reader. Endpoints retain their supplied bits.
+static double* physical_psi_axis(const double* coordinates, const int count,
+  const double lower, const double upper, const double scale)
+{
+  double* logarithms = grid_allocate((size_t)count, sizeof(double));
+  if (scale == 0.0) {
+    memcpy(logarithms, coordinates, (size_t)count*sizeof(double));
+    return logarithms;
+  }
+  logarithms[0] = lower;
+  logarithms[count - 1] = upper;
+  for (int index=1; index<count - 1; index++) {
+    double left = lower;
+    double right = upper;
+    for (int step=0; step<64; step++) {
+      const double middle = left + 0.5*(right - left);
+      const double value = middle + exp(middle)/scale;
+      if (value < coordinates[index]) {
+        left = middle;
+      } else {
+        right = middle;
+      }
+    }
+    logarithms[index] = left + 0.5*(right - left);
+    grid_require(logarithms[index] > logarithms[index - 1],
+      "mixed PSI chart has indistinguishable physical nodes");
+  }
+  grid_require(logarithms[count - 1] > logarithms[count - 2],
+    "mixed PSI chart has indistinguishable physical endpoints");
+  return logarithms;
 }
 
 
@@ -465,13 +534,27 @@ double physics_grid_projected_3pcf(const physics_grid_3pcf* grid,
     const double ratio2 = corrected_coordinate(ell2/perimeter,
       grid->shape_min, 0.5, settings->reference_mode);
     const double shape1 = settings->reference_mode ? ratio1
-      : shape_to_coordinate(ratio1, grid->shape_min);
+      : shape_to_coordinate(ratio1, grid->shape_min, settings->shape_stretch);
     const double shape2 = settings->reference_mode ? ratio2
-      : shape_to_coordinate(ratio2, grid->shape_min);
+      : shape_to_coordinate(ratio2, grid->shape_min, settings->shape_stretch);
     residual = trilinear_grid(grid->residual,
       grid->log_p, grid->np, grid->shape_coordinate, grid->npu,
       grid->shape_coordinate, grid->npu, log(perimeter), shape1, shape2,
       settings->reference_mode);
+    if (settings->residual_scaling) {
+      // The positive scale has only a perimeter axis. Use its current
+      // dense nodes with the same linear reader convention as the ratio.
+      // Its sign is never used to replace the signed residual's sign.
+      const double coordinate = corrected_coordinate(log(perimeter),
+        grid->log_p[0], grid->log_p[grid->np - 1], settings->reference_mode);
+      const int cell = grid_interval(grid->log_p, grid->np, coordinate,
+        !settings->reference_mode);
+      const double fraction = (coordinate - grid->log_p[cell])
+        /(grid->log_p[cell + 1] - grid->log_p[cell]);
+      const double log_scale = (1.0 - fraction)*grid->log_residual_scale[cell]
+        + fraction*grid->log_residual_scale[cell + 1];
+      residual *= exp(log_scale);
+    }
   }
   return baseline + residual;
 }
@@ -679,6 +762,11 @@ static physics_grid_3pcf* allocate_grid(
   grid_require(settings->ell_min > 0.0
     && settings->ell_max > settings->ell_min && isfinite(settings->ell_max)
     && settings->epmu > 0.0 && settings->epmu < 0.05
+    && settings->psi_scale >= 0.0 && isfinite(settings->psi_scale)
+    && (settings->psi_scale == 0.0
+      || isfinite(0.78539816339744830962/settings->psi_scale))
+    && settings->shape_stretch > 0.0 && isfinite(settings->shape_stretch)
+    && tanh(settings->shape_stretch) < 1.0
     && settings->nr >= 2 && settings->nu >= 2 && settings->nv >= 2
     && settings->np >= 2 && settings->npu_log >= 2
     && settings->npu_linear >= 2 && settings->nell >= 2
@@ -690,7 +778,8 @@ static physics_grid_3pcf* allocate_grid(
     && settings->npsi >= 2 && settings->nshape >= 2
     && settings->prepare_multipoles >= 0
     && settings->prepare_multipoles <= 1
-    && settings->signed_baseline >= 0 && settings->signed_baseline <= 1,
+    && settings->signed_baseline >= 0 && settings->signed_baseline <= 1
+    && settings->residual_scaling >= 0 && settings->residual_scaling <= 1,
     "invalid interpolation settings");
   grid_require(settings->npu_log <= (INT_MAX - settings->npu_linear - 2)/2,
     "PUV axis is too large");
@@ -740,7 +829,7 @@ static physics_grid_3pcf* allocate_grid(
     grid->shape_coordinate = linear_axis(-1.0, 1.0, grid->npu);
     for (int index=0; index<grid->npu; index++) {
       grid->pu[index] = coordinate_to_shape(grid->shape_coordinate[index],
-        grid->shape_min);
+        grid->shape_min, settings->shape_stretch);
     }
   }
   grid->log_ell = linear_axis(log(magnitude_min), log(magnitude_max),
@@ -755,8 +844,19 @@ static physics_grid_3pcf* allocate_grid(
   if (!settings->reference_mode) {
     free(grid->log_psi);
     grid->npsi = settings->npsi;
-    grid->log_psi = linear_axis(log(psi_min),
-      log(0.78539816339744830962), grid->npsi);
+    const double scale = settings->psi_scale;
+    const double maximum = 0.78539816339744830962;
+    grid->psi_coordinate = linear_axis(
+      psi_grid_coordinate(psi_min, scale),
+      psi_grid_coordinate(maximum, scale), grid->npsi);
+    grid->log_psi = physical_psi_axis(grid->psi_coordinate, grid->npsi,
+      log(psi_min), log(maximum), scale);
+  } else {
+    // Reference sampling keeps its original irregular log-PSI intervals.
+    // Its coordinate definition does not change when psi_scale is set.
+    grid->psi_coordinate = grid_allocate((size_t)grid->npsi, sizeof(double));
+    memcpy(grid->psi_coordinate, grid->log_psi,
+      (size_t)grid->npsi*sizeof(double));
   }
   double* reversed = loglinear_axis(settings->epmu, 0.05, 2.0,
     settings->nmu_log, settings->nmu_linear, &grid->nmu);
@@ -774,6 +874,10 @@ static physics_grid_3pcf* allocate_grid(
   }
   if (has_residual) {
     grid->residual = grid_allocate(nresidual, sizeof(double));
+    if (settings->residual_scaling) {
+      grid->log_residual_scale = grid_allocate((size_t)grid->np,
+        sizeof(double));
+    }
   }
   return grid;
 }
@@ -791,6 +895,7 @@ static void finish_grid(physics_grid_3pcf* grid)
     int baseline_shape[3] = {grid->nr, grid->nu, grid->nv};
     int ratio_shape[3] = {grid->nr, grid->nu, grid->nv};
     int residual_shape[3] = {grid->np, grid->npu, grid->npu};
+    int scale_shape[3] = {grid->np, 1, 1};
     grid->log_baseline = upsample_uniform_grid(grid->log_baseline,
       baseline_shape, boosts);
     if (settings->signed_baseline) {
@@ -802,6 +907,15 @@ static void finish_grid(physics_grid_3pcf* grid)
     if (grid->has_residual) {
       grid->residual = upsample_uniform_grid(grid->residual,
         residual_shape, boosts);
+      if (settings->residual_scaling) {
+        // Both arrays start from their original coarse perimeter count.
+        // The singleton shape axes are labels, not interpolated axes.
+        const int scale_boosts[3] = {boost, 1, 1};
+        grid->log_residual_scale = upsample_uniform_grid(
+          grid->log_residual_scale, scale_shape, scale_boosts);
+        grid_require(scale_shape[0] == residual_shape[0],
+          "residual scale and ratio have different perimeter counts");
+      }
     }
     double* log_r = linear_axis(grid->log_r[0], grid->log_r[grid->nr - 1],
       baseline_shape[0]);
@@ -829,7 +943,7 @@ static void finish_grid(physics_grid_3pcf* grid)
     grid->pu = grid_allocate((size_t)grid->npu, sizeof(double));
     for (int index=0; index<grid->npu; index++) {
       grid->pu[index] = coordinate_to_shape(grid->shape_coordinate[index],
-        grid->shape_min);
+        grid->shape_min, settings->shape_stretch);
     }
   }
   if (settings->prepare_multipoles) {
@@ -842,12 +956,20 @@ static void finish_grid(physics_grid_3pcf* grid)
     grid->multipoles = upsample_uniform_grid(grid->multipoles, shape, boosts);
     double* log_ell = linear_axis(grid->log_ell[0],
       grid->log_ell[grid->nell - 1], shape[1]);
-    double* log_psi = linear_axis(grid->log_psi[0],
-      grid->log_psi[grid->npsi - 1], shape[2]);
+    // Cubic preparation is uniform in the selected angular coordinate.
+    // Restore physical log-angles for diagnostics only after creating the
+    // dense coordinate axis; interpolating in physical log-PSI would mix
+    // two different numerical definitions of the same table.
+    double* psi_coordinate = linear_axis(grid->psi_coordinate[0],
+      grid->psi_coordinate[grid->npsi - 1], shape[2]);
+    double* log_psi = physical_psi_axis(psi_coordinate, shape[2],
+      grid->log_psi[0], grid->log_psi[grid->npsi - 1], settings->psi_scale);
     free(grid->log_ell);
     free(grid->log_psi);
+    free(grid->psi_coordinate);
     grid->log_ell = log_ell;
     grid->log_psi = log_psi;
+    grid->psi_coordinate = psi_coordinate;
     grid->nell = shape[1];
     grid->npsi = shape[2];
   }
@@ -868,8 +990,13 @@ void physics_grid_create_many_3pcf(
   grid_require(settings != NULL, "missing batch grid settings");
   physics_projection_3pcf** projections = grid_allocate((size_t)ntriplet,
     sizeof(*projections));
+  // Pure NLA omits the residual entirely, including any scale table.
+  const int has_residual = parameters->a2 != 0.0
+    || parameters->bta != 0.0 || parameters->ct != 0.0;
+  const int scaled_residual = settings->residual_scaling && has_residual;
+  const int needs_gravity = settings->signed_baseline || scaled_residual;
   physics_projection_3pcf** gravity_projections = NULL;
-  if (settings->signed_baseline) {
+  if (needs_gravity) {
     gravity_projections = grid_allocate((size_t)ntriplet,
       sizeof(*gravity_projections));
   }
@@ -881,15 +1008,11 @@ void physics_grid_create_many_3pcf(
   gravity_parameters.a2 = 0.0;
   gravity_parameters.bta = 0.0;
   gravity_parameters.ct = 0.0;
-  // Pure NLA has no residual after its linear-alignment subtraction.
-  // Keep no PUV values and perform no residual physics in that case.
-  const int has_residual = parameters->a2 != 0.0
-    || parameters->bta != 0.0 || parameters->ct != 0.0;
   for (int triplet=0; triplet<ntriplet; triplet++) {
     out[triplet] = allocate_grid(settings, has_residual);
     projections[triplet] = physics_projector_create_3pcf(model, parameters,
       bins + (size_t)triplet*3);
-    if (settings->signed_baseline) {
+    if (needs_gravity) {
       gravity_projections[triplet] = physics_projector_create_3pcf(model,
         &gravity_parameters, bins + (size_t)triplet*3);
     }
@@ -900,7 +1023,7 @@ void physics_grid_create_many_3pcf(
   physics_projection_batch_3pcf* batch = physics_projection_batch_create_3pcf(
     ntriplet, projections);
   physics_projection_batch_3pcf* gravity_batch = NULL;
-  if (settings->signed_baseline) {
+  if (needs_gravity) {
     gravity_batch = physics_projection_batch_create_3pcf(ntriplet,
       gravity_projections);
   }
@@ -926,6 +1049,12 @@ void physics_grid_create_many_3pcf(
   const size_t nbaseline = grid_product(first->nr, first->nu, first->nv);
   const size_t nresidual = has_residual
     ? grid_product(first->np, first->npu, first->npu) : 0;
+  const int nscale = scaled_residual ? first->np : 0;
+  // Keep the original positive values only during coarse preparation.
+  // All shape nodes at one perimeter divide by the same value, without
+  // repeating an exponential or a line-of-sight integral for each shape.
+  double* scales = scaled_residual
+    ? grid_allocate(grid_product(nscale, ntriplet, 1), sizeof(double)) : NULL;
   // Every worker owns one geometry point and an ntriplet scratch vector.
   // Physical B/IA at each z is shared before the source-weight contraction.
   // Memory grows with the number of output tables, not ntriplet*nlos
@@ -975,6 +1104,20 @@ void physics_grid_create_many_3pcf(
       }
     }
     #pragma omp for schedule(static)
+    for (int ip=0; ip<nscale; ip++) {
+      const double side = perimeters[ip]/3.0;
+      physics_projection_batch_evaluate_3pcf(gravity_batch,
+        side, side, side, 1, 0, values);
+      for (int triplet=0; triplet<ntriplet; triplet++) {
+        grid_require(values[triplet] > 0.0 && isfinite(values[triplet]),
+          "residual scaling requires finite positive equilateral GGG");
+        scales[(size_t)ip*ntriplet + triplet] = values[triplet];
+        out[triplet]->log_residual_scale[ip] = log(values[triplet]);
+      }
+    }
+    // The preceding work-sharing barrier completes every scale before
+    // the shape loop reads it. Workers own distinct PUV cells throughout.
+    #pragma omp for schedule(static)
     for (size_t index=0; index<nresidual; index++) {
       const int iv = index%(size_t)first->npu;
       const int iu = (index/(size_t)first->npu)%(size_t)first->npu;
@@ -987,7 +1130,12 @@ void physics_grid_create_many_3pcf(
         side1, side2, side3, 2, 1, values);
       for (int triplet=0; triplet<ntriplet; triplet++) {
         grid_require(isfinite(values[triplet]), "nonfinite PUV residual");
-        out[triplet]->residual[index] = values[triplet];
+        const double residual = scaled_residual
+          ? values[triplet]/scales[(size_t)ip*ntriplet + triplet]
+          : values[triplet];
+        grid_require(isfinite(residual),
+          "scaled PUV residual is not representable");
+        out[triplet]->residual[index] = residual;
       }
     }
   }
@@ -995,11 +1143,12 @@ void physics_grid_create_many_3pcf(
   free(radii);
   free(ratios);
   free(perimeters);
+  free(scales);
   physics_projection_batch_destroy_3pcf(batch);
   physics_projection_batch_destroy_3pcf(gravity_batch);
   for (int triplet=0; triplet<ntriplet; triplet++) {
     physics_projector_destroy_3pcf(projections[triplet]);
-    if (settings->signed_baseline) {
+    if (needs_gravity) {
       physics_projector_destroy_3pcf(gravity_projections[triplet]);
     }
     finish_grid(out[triplet]);
@@ -1066,10 +1215,12 @@ void physics_grid_destroy_3pcf(physics_grid_3pcf* grid)
   free(grid->shape_coordinate);
   free(grid->log_ell);
   free(grid->log_psi);
+  free(grid->psi_coordinate);
   free(grid->mu);
   free(grid->log_baseline);
   free(grid->baseline_ratio);
   free(grid->residual);
+  free(grid->log_residual_scale);
   free(grid->multipoles);
   free(grid);
 }
@@ -1086,7 +1237,8 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
     "this grid omitted b_L; recreate with prepare_multipoles=1");
   const int lmax = grid->settings.lmax;
   grid_require(lmax >= 0 && lmax < INT_MAX && grid->nell >= 2
-    && grid->npsi >= 2 && grid->log_ell && grid->log_psi,
+    && grid->npsi >= 2 && grid->log_ell && grid->log_psi
+    && grid->psi_coordinate,
     "invalid prepared multipole axes");
   const size_t output_count = grid_product(lmax + 1, nell, nell);
   grid_require(output_count <= SIZE_MAX/sizeof(double),
@@ -1103,10 +1255,14 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
   query->grid_npsi = grid->npsi;
   query->lmax = lmax;
   query->reference_mode = grid->settings.reference_mode;
+  query->psi_scale = grid->settings.psi_scale;
   query->log_ell = grid_allocate((size_t)grid->nell, sizeof(double));
   query->log_psi = grid_allocate((size_t)grid->npsi, sizeof(double));
+  query->psi_coordinate = grid_allocate((size_t)grid->npsi, sizeof(double));
   memcpy(query->log_ell, grid->log_ell, (size_t)grid->nell*sizeof(double));
   memcpy(query->log_psi, grid->log_psi, (size_t)grid->npsi*sizeof(double));
+  memcpy(query->psi_coordinate, grid->psi_coordinate,
+    (size_t)grid->npsi*sizeof(double));
   query->charts = grid_allocate(npoint, sizeof(int));
   query->cells = grid_allocate(npoint, sizeof(size_t));
   query->fractions = grid_allocate(4*npoint, sizeof(double));
@@ -1128,16 +1284,19 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
       const double x = corrected_coordinate(log(hypot(ell[first], ell[second])),
         grid->log_ell[0], grid->log_ell[grid->nell - 1],
         grid->settings.reference_mode);
-      const double y = corrected_coordinate(log(small), grid->log_psi[0],
-        grid->log_psi[grid->npsi - 1], grid->settings.reference_mode);
+      const double psi_scale = grid->settings.reference_mode
+        ? 0.0 : grid->settings.psi_scale;
+      const double y = corrected_coordinate(
+        psi_grid_coordinate(small, psi_scale), grid->psi_coordinate[0],
+        grid->psi_coordinate[grid->npsi - 1], grid->settings.reference_mode);
       const int ix = grid_interval(grid->log_ell, grid->nell, x,
         !grid->settings.reference_mode);
-      const int iy = grid_interval(grid->log_psi, grid->npsi, y,
+      const int iy = grid_interval(grid->psi_coordinate, grid->npsi, y,
         !grid->settings.reference_mode);
       const double fraction_x = (x - grid->log_ell[ix])
         /(grid->log_ell[ix + 1] - grid->log_ell[ix]);
-      const double fraction_y = (y - grid->log_psi[iy])
-        /(grid->log_psi[iy + 1] - grid->log_psi[iy]);
+      const double fraction_y = (y - grid->psi_coordinate[iy])
+        /(grid->psi_coordinate[iy + 1] - grid->psi_coordinate[iy]);
       const size_t point = (size_t)first*nell + second;
       charts[point] = chart;
       cells[point] = (size_t)ix*grid->npsi + iy;
@@ -1158,9 +1317,11 @@ int physics_grid_query_matches_3pcf(
 {
   if (!query || !grid || !grid->settings.prepare_multipoles
       || !grid->multipoles || !grid->log_ell || !grid->log_psi
+      || !grid->psi_coordinate
       || query->grid_nell != grid->nell || query->grid_npsi != grid->npsi
       || query->lmax != grid->settings.lmax
-      || query->reference_mode != grid->settings.reference_mode) {
+      || query->reference_mode != grid->settings.reference_mode
+      || query->psi_scale != grid->settings.psi_scale) {
     return 0;
   }
   // Sizes were checked before copying these arrays. Exact byte comparison
@@ -1169,6 +1330,8 @@ int physics_grid_query_matches_3pcf(
   return memcmp(query->log_ell, grid->log_ell,
       (size_t)query->grid_nell*sizeof(double)) == 0
     && memcmp(query->log_psi, grid->log_psi,
+      (size_t)query->grid_npsi*sizeof(double)) == 0
+    && memcmp(query->psi_coordinate, grid->psi_coordinate,
       (size_t)query->grid_npsi*sizeof(double)) == 0;
 }
 
@@ -1278,6 +1441,7 @@ void physics_grid_query_destroy_3pcf(
   }
   free(query->log_ell);
   free(query->log_psi);
+  free(query->psi_coordinate);
   free(query->charts);
   free(query->cells);
   free(query->fractions);

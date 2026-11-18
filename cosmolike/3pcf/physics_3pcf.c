@@ -131,6 +131,7 @@ struct physics_model_3pcf {
   int table_boost;
   int fit_nz;
   int npower_z;
+  int nsource;
   double zmax;
   double* power_z;
   double omega_m;
@@ -149,6 +150,9 @@ struct physics_model_3pcf {
   physics_spline sigma8z;
   physics_spline omega_m_z;
   double* sources;
+  double* source_z;
+  double* source_chi;
+  double* source_jacobian;
   double* kernel_z;
   double* kernel_chi;
   double* kernel_growth;
@@ -790,13 +794,15 @@ static void prepare_bihalofit(physics_model_3pcf* model)
 
 static void prepare_radial(physics_model_3pcf* model)
 {
-  const int nz = model->nz;
+  const int nz = model->nsource;
   const int nlos = model->nlos;
   const int nkernel = model->kernel_nz;
-  const double* source_z = model->distance.x;
-  const double* source_chi = model->distance.y;
+  const double* source_z = model->source_z;
+  const double* source_chi = model->source_chi;
   const double zmin = model->los_z[0];
-  const double zmax = source_z[nz - 1];
+  // Kernel and LOS support belong to the background, independently of
+  // how many samples describe the source distribution within it.
+  const double zmax = model->zmax;
   model->kernel_z = allocate_physics((size_t)nkernel, sizeof(double));
   model->kernel_chi = allocate_physics((size_t)nkernel, sizeof(double));
   model->kernel_growth = allocate_physics((size_t)nkernel, sizeof(double));
@@ -860,15 +866,15 @@ static void prepare_radial(physics_model_3pcf* model)
         *(1.0 + model->kernel_z[node]);
     }
     for (int source=0; source<nz; source++) {
-      integrand[source] = density[source]*model->dz_dchi.y[source];
+      integrand[source] = density[source]*model->source_jacobian[source];
     }
     const double shape_norm = trapezoid(source_chi, integrand, nz);
     require_physics(shape_norm > 0.0, "empty shape source kernel");
     for (int source=0; source<nz; source++) {
-      // Sources are supplied on a background grid containing chi=0.
-      // Require n(0)=0 and use zero for that endpoint; LOS nodes are
-      // strictly positive. Refining this grid tests the endpoint limit.
-      source_shape[source] = source == 0 ? 0.0 : integrand[source]
+      // Only the actual observer has a zero-distance endpoint. A source
+      // grid may instead begin at a positive midpoint; its first density
+      // is then retained. LOS nodes themselves are strictly positive.
+      source_shape[source] = source_chi[source] == 0.0 ? 0.0 : integrand[source]
         /(shape_norm*source_chi[source]*(1.0 + source_z[source]));
     }
     physics_spline lens_spline = make_spline(model->kernel_chi,
@@ -916,6 +922,15 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     "flat geometry requires abs(omega_m + omega_de - 1) <= 1e-8");
   require_physics(input->source_readers == 0 || input->source_readers == 1,
     "source_readers must be zero or one");
+  require_physics(input->source_z != NULL || input->nsource == 0,
+    "nsource requires an independent source_z array");
+  const int nsource = input->source_z ? input->nsource : input->nz;
+  const double* source_z = input->source_z ? input->source_z : input->z;
+  require_physics(nsource >= 4, "source grid needs at least four nodes");
+  increasing_physics(source_z, nsource, 0);
+  require_physics(source_z[0] >= 0.0
+    && source_z[nsource - 1] <= input->z[input->nz - 1],
+    "source grid lies outside the background range");
   physics_model_3pcf* model = allocate_physics(1, sizeof(*model));
   model->nk = input->nk;
   model->nz = input->nz;
@@ -928,6 +943,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   require_physics(model->table_boost >= 1, "table_boost must be positive");
   require_physics(model->fit_nz >= 4, "fit_nz must be at least four");
   model->npower_z = input->nz;
+  model->nsource = nsource;
   model->zmax = input->z[input->nz - 1];
   model->power_z = allocate_physics((size_t)input->nz, sizeof(double));
   memcpy(model->power_z, input->z, (size_t)input->nz*sizeof(double));
@@ -969,14 +985,38 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->distance = make_spline(input->z, input->chi, nz);
   model->growth = make_spline(input->z, input->growth, nz);
   model->dz_dchi = make_spline(input->z, input->dz_dchi, nz);
-  model->sources = allocate_physics((size_t)input->nbin*nz, sizeof(double));
-  for (size_t index=0; index<(size_t)input->nbin*nz; index++) {
+  model->source_z = allocate_physics((size_t)nsource, sizeof(double));
+  model->source_chi = allocate_physics((size_t)nsource, sizeof(double));
+  model->source_jacobian = allocate_physics((size_t)nsource, sizeof(double));
+  memcpy(model->source_z, source_z, (size_t)nsource*sizeof(double));
+  // Preserve the old path exactly, including when its axis is supplied
+  // explicitly. Otherwise evaluate background quantities on source nodes
+  // once, before any triangle or covariance worker is entered.
+  const int same_source_grid = nsource == nz
+    && memcmp(source_z, input->z, (size_t)nz*sizeof(double)) == 0;
+  for (int index=0; index<nsource; index++) {
+    model->source_chi[index] = same_source_grid ? input->chi[index]
+      : read_spline(&model->distance, source_z[index], 0);
+    model->source_jacobian[index] = same_source_grid
+      ? input->dz_dchi[index]
+      : read_spline(&model->dz_dchi, source_z[index], 0);
+    require_physics(isfinite(model->source_jacobian[index])
+      && model->source_jacobian[index] > 0.0,
+      "source background Jacobian is not positive");
+  }
+  increasing_physics(model->source_chi, nsource, 0);
+  require_physics(model->source_chi[0] >= 0.0,
+    "source distance is negative");
+  model->sources = allocate_physics((size_t)input->nbin*nsource,
+    sizeof(double));
+  for (size_t index=0; index<(size_t)input->nbin*nsource; index++) {
     require_physics(isfinite(input->sources[index])
       && input->sources[index] >= 0.0, "source densities must be nonnegative");
     model->sources[index] = input->sources[index];
   }
   for (int bin=0; bin<input->nbin; bin++) {
-    require_physics(model->sources[(size_t)bin*nz] == 0.0,
+    require_physics(source_z[0] != 0.0
+      || model->sources[(size_t)bin*nsource] == 0.0,
       "source density must vanish at z=0");
   }
   model->los_z = allocate_physics((size_t)input->nlos, sizeof(double));
@@ -1025,6 +1065,9 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
   destroy_spline(&model->sigma8z);
   destroy_spline(&model->omega_m_z);
   free(model->sources);
+  free(model->source_z);
+  free(model->source_chi);
+  free(model->source_jacobian);
   free(model->kernel_z);
   free(model->kernel_chi);
   free(model->kernel_growth);

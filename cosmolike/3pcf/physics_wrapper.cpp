@@ -87,18 +87,21 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const int kernel_nz,
   const bool source_readers,
   const int table_boost,
-  const int fit_nz
+  const int fit_nz,
+  const arma::Col<double>& source_z
 )
 {
+  const arma::uword nsource = source_z.n_elem ? source_z.n_elem : z.n_elem;
   require_physics_cpp(k.n_elem >= 4 && k.n_elem <= INT_MAX
     && z.n_elem >= 4 && z.n_elem <= INT_MAX
     && sources.n_rows > 0 && sources.n_rows <= INT_MAX
-    && los_z.n_elem >= 2 && los_z.n_elem <= INT_MAX,
+    && los_z.n_elem >= 2 && los_z.n_elem <= INT_MAX
+    && nsource >= 4 && nsource <= INT_MAX,
     "invalid model dimensions");
   require_physics_cpp(p_linear0.n_elem == k.n_elem
     && p_nonlinear.n_rows == z.n_elem && p_nonlinear.n_cols == k.n_elem
     && chi.n_elem == z.n_elem && dz_dchi.n_elem == z.n_elem
-    && growth.n_elem == z.n_elem && sources.n_cols == z.n_elem,
+    && growth.n_elem == z.n_elem && sources.n_cols == nsource,
     "model table shapes disagree");
   std::vector<double> nonlinear(p_nonlinear.n_elem);
   std::vector<double> source(sources.n_elem);
@@ -129,6 +132,10 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   input.dz_dchi = dz_dchi.memptr();
   input.growth = growth.memptr();
   input.sources = source.data();
+  if (source_z.n_elem) {
+    input.nsource = static_cast<int>(source_z.n_elem);
+    input.source_z = source_z.memptr();
+  }
   input.los_z = los_z.memptr();
   input.omega_m = omega_m;
   input.omega_de = omega_de;

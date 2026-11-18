@@ -713,6 +713,9 @@ parts are separate arrays, each with the same dimensions.
 
 | Quantity | Shape | Meaning of indices |
 |---|---|---|
+| Matter power | `[nz, nk]` | Background redshift and wave number |
+| Source coordinates | `[nsource]` | Optional independent source redshift axis |
+| Source densities | `[nbin, nsource]` | Source sample and density per unit redshift |
 | Radius triplets | `[nfilter, 3]` | Aperture output, then ordered radius |
 | Aperture weights | `[nfilter, 4, ntriangle]` | Output, component, triangle |
 | Natural components | `[nsample, 4, ntriangle]` | Model/source-triplet sample, component, triangle |
@@ -722,6 +725,26 @@ parts are separate arrays, each with the same dimensions.
 | Pair correlation | `[nfield, nfield, nr]` | Ordered fields and centre separation |
 | Cubic field labels | `[nrow, 3]` | Observable row and its three field indices |
 | Responses | `[nrow, nnode]` | Observable row and shared integration node |
+
+The physical constructor accepts an optional `source_z` axis. If omitted,
+source densities use the supplied background `z` axis and `nsource=nz`.
+An explicit copy of that same axis preserves the legacy preparation
+arithmetic. A different axis allows a measured redshift distribution to
+be resolved without asking CAMB for thousands of transfer-redshift rows.
+The model copies the axis and densities, evaluates distances and the
+redshift-to-distance Jacobian at those nodes during construction, and owns
+all of these arrays. Source nodes must lie inside the background range.
+Only a source node at the actual observer requires a zero density there.
+
+Source sampling, prepared-window sampling (`kernel_nz`) and line-of-sight
+integration sampling are separate approximations. A dense source curve
+does not by itself resolve its projected kernel or its radial integral.
+The companion project's `source_boost`, `kernel_boost` and `chi_boost`
+controls test those stages separately. Reconstructing a curve between
+measured midpoint samples is a declared input-model choice; increasing
+the number of samples of a fixed curve is a numerical refinement. Keep
+measured source support distinct from the background integration limit,
+particularly when a final histogram bin has a nonzero value.
 
 The triangle count is `len(d2)*len(d3)*len(phi)`. Its flat index visits
 `phi` first, then `d3`, then `d2`. Reshaping an array with another triangle

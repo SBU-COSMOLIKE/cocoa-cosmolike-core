@@ -12,6 +12,14 @@ For cache changes, accuracy controls or notebook reuse, read
 [state and resolution](threepcf_state_and_accuracy.md). It maps the ordinary
 core's allocation/refill/reset rules onto the isolated owners and identifies
 the fresh-process setting-sequence tests, including the outer Fisher cache.
+The state reference also defines `residual_scaling`, `shape_stretch`, and
+`psi_scale`: separate controls for signed radial amplitudes, physical triangle
+fractions, and multipole angular sampling. Read their diagnostic separation
+before changing table bounds or interpreting an aperture/Fisher result. The
+[core numerical guide](../../../../cosmolike/3pcf/NUMERICS.md) explains why the
+physical angle exported to users differs from its uniform interpolation
+coordinate and which coordinate belongs in the retained-query key.
+
 For plotting, original-code comparisons and YAML-driven forecasts, read
 [notebook workflows](threepcf_notebooks.md). Shared plotters belong in
 `cosmolike_notebook_utils/3pcf/`; physical and survey choices stay with the
