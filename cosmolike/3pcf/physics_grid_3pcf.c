@@ -7,6 +7,7 @@
 #include <string.h>
 #include "simde/x86/sse2.h"
 #include "physics_grid_3pcf.h"
+#include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 #ifdef _OPENMP
 #include <omp.h>
@@ -150,24 +151,6 @@ struct physics_grid_query_3pcf {
 // [SECTION] AXIS AND ALLOCATION HELPERS
 // ============================================================================
 
-// Allocate zero-initialized storage after checking that the byte count
-// cannot overflow. The zero fill matters physically: it is what lets a
-// pure-NLA grid keep untouched residual planes at exactly zero.
-static void* grid_allocate(const size_t count, const size_t bytes)
-{
-  if (!(count > 0 && count <= SIZE_MAX/bytes)) {
-    log_fatal("physics_grid_3pcf: grid allocation overflows");
-    exit(1);
-  }
-  void* result = calloc(count, bytes);
-  if (!(result != NULL)) {
-    log_fatal("physics_grid_3pcf: grid allocation failed");
-    exit(1);
-  }
-  return result;
-}
-
-
 // Allocate all worker storage before entering a parallel region. Each
 // slice includes one cache-line gap, so adjacent workers cannot write
 // the same line even when calloc's starting address is not 64-byte aligned.
@@ -179,11 +162,11 @@ static double* worker_storage(const size_t count, size_t* stride)
   }
   *stride = ((count + 7)/8 + 1)*8;
   const size_t workers = (size_t)omp_get_max_threads();
-  if (!(workers > 0 && *stride <= SIZE_MAX/workers)) {
+  if (!(workers > 0 && *stride <= (size_t)INT_MAX/workers)) {
     log_fatal("physics_grid_3pcf: worker storage size overflows");
     exit(1);
   }
-  return grid_allocate(workers*(*stride), sizeof(double));
+  return calloc1d((int)(workers*(*stride)));
 }
 
 
@@ -391,23 +374,23 @@ static double* upsample_uniform_grid(double* input, int* dimensions,
       after *= (size_t)dimensions[index];
     }
     if (!(before <= SIZE_MAX/after
-          && (size_t)new_count <= SIZE_MAX/(before*after))) {
+          && (size_t)new_count <= (size_t)INT_MAX/(before*after))) {
       log_fatal("physics_grid_3pcf: upsampled tensor size overflows");
       exit(1);
     }
-    double* output = grid_allocate(before*after*new_count, sizeof(double));
+    double* output = calloc1d((int)(before*after*new_count));
     // The natural-cubic matrix and subcell coordinates depend only on
     // this axis's count and boost. Share their exact original values
     // across all lines, before launching workers; no physical data
     // enter. diagonal[0] = 1.0 is a placeholder that keeps the array
     // fully initialized and is never read: the solve starts at the
     // first interior node, whose pivot is the constant 4.
-    double* diagonal = grid_allocate((size_t)old_count, sizeof(double));
+    double* diagonal = calloc1d(old_count);
     diagonal[0] = 1.0;
     for (int index=1; index<old_count - 1; index++) {
       diagonal[index] = 4.0 - (index == 1 ? 0.0 : 1.0/diagonal[index - 1]);
     }
-    double* offsets = grid_allocate((size_t)boost + 1, sizeof(double));
+    double* offsets = calloc1d(boost + 1);
     for (int step=0; step<=boost; step++) {
       offsets[step] = (double)step/boost;
     }
@@ -496,7 +479,7 @@ static double* linear_axis(const double lower, const double upper,
     log_fatal("physics_grid_3pcf: invalid interpolation axis");
     exit(1);
   }
-  double* result = grid_allocate((size_t)count, sizeof(double));
+  double* result = calloc1d(count);
   for (int index=0; index<count; index++) {
     result[index] = lower + (upper - lower)*index/(count - 1);
   }
@@ -532,7 +515,7 @@ static double psi_grid_coordinate(const double psi, const double scale)
 static double* physical_psi_axis(const double* coordinates, const int count,
   const double lower, const double upper, const double scale)
 {
-  double* logarithms = grid_allocate((size_t)count, sizeof(double));
+  double* logarithms = calloc1d(count);
   if (scale == 0.0) {
     memcpy(logarithms, coordinates, (size_t)count*sizeof(double));
     return logarithms;
@@ -587,7 +570,7 @@ static double* loglinear_axis(const double lower, const double join,
     exit(1);
   }
   *count = logarithmic + nlinear;
-  double* result = grid_allocate((size_t)*count, sizeof(double));
+  double* result = calloc1d(*count);
   for (int index=0; index<logarithmic; index++) {
     result[index] = exp(log(lower) + log(join/lower)*index/logarithmic);
   }
@@ -904,8 +887,13 @@ static double* source_legendre_weights(const physics_grid_3pcf* grid)
 {
   const int lmax = grid->settings.lmax;
   const int count = grid->nmu;
-  double* weights = grid_allocate((size_t)(lmax + 1)*count, sizeof(double));
-  double* polynomial = grid_allocate((size_t)(lmax + 3)*count, sizeof(double));
+  if (!((size_t)(lmax + 3)*count <= INT_MAX)) {
+    log_fatal("physics_grid_3pcf: Legendre weight table exceeds the core "
+      "allocator count");
+    exit(1);
+  }
+  double* weights = calloc1d((int)((size_t)(lmax + 1)*count));
+  double* polynomial = calloc1d((int)((size_t)(lmax + 3)*count));
   // Tabulate P_0..P_{lmax+2} at every mu node with the three-term
   // recurrence L P_L = (2L-1) mu P_{L-1} - (L-1) P_{L-2}; the two
   // extra degrees serve the J1 identity in the header.
@@ -1012,11 +1000,11 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
   const int nell = grid->nell;
   const int npsi = grid->npsi;
   const size_t per_chart = grid_product(lmax + 1, nell, npsi);
-  if (!(per_chart <= SIZE_MAX/4)) {
+  if (!(per_chart <= (size_t)INT_MAX/4)) {
     log_fatal("physics_grid_3pcf: multipole charts are too large");
     exit(1);
   }
-  grid->multipoles = grid_allocate(4*per_chart, sizeof(double));
+  grid->multipoles = calloc1d((int)(4*per_chart));
   double* weights = source_legendre_weights(grid);
   // Interleave the weights of adjacent Legendre degrees so one vector
   // load below fills both lanes: entry [pair,node,0] holds degree
@@ -1027,8 +1015,12 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
   const int npair = (lmax + 1)/2;
   double* paired_weights = NULL;
   if (npair > 0) {
-    paired_weights = grid_allocate(grid_product(npair, count, 2),
-      sizeof(double));
+    if (!(grid_product(npair, count, 2) <= INT_MAX)) {
+      log_fatal("physics_grid_3pcf: paired Legendre weights exceed the "
+        "core allocator count");
+      exit(1);
+    }
+    paired_weights = calloc1d((int)grid_product(npair, count, 2));
     for (int pair=0; pair<npair; pair++) {
       for (int node=0; node<count; node++) {
         const size_t target = ((size_t)pair*count + node)*2;
@@ -1305,7 +1297,11 @@ static physics_grid_3pcf* allocate_grid(
     log_fatal("physics_grid_3pcf: PUV axis is too large");
     exit(1);
   }
-  physics_grid_3pcf* grid = grid_allocate(1, sizeof(*grid));
+  physics_grid_3pcf* grid = calloc(1, sizeof(*grid));
+  if (grid == NULL) {
+    log_fatal("physics_grid_3pcf: grid allocation failed");
+    exit(1);
+  }
   grid->settings = *settings;
   grid->has_residual = has_residual;
   grid->nr = settings->nr;
@@ -1329,7 +1325,7 @@ static physics_grid_3pcf* allocate_grid(
   grid->v = linear_axis(0.0, 1.0, settings->nv);
   grid->log_p = linear_axis(log(rmin), log(3.0*rmax), settings->np);
   grid->npu = 2*settings->npu_log + settings->npu_linear + 2;
-  grid->pu = grid_allocate((size_t)grid->npu, sizeof(double));
+  grid->pu = calloc1d(grid->npu);
   // The fastnc floor node of the shape fraction.
   grid->pu[0] = 1.0e-6;
   // The log block of the fastnc layout, from 1e-4 to 1e-4*300 = 3e-2,
@@ -1348,12 +1344,12 @@ static physics_grid_3pcf* allocate_grid(
   // The equal-split endpoint.
   grid->pu[grid->npu - 1] = 0.5;
   if (settings->reference_mode) {
-    grid->shape_coordinate = grid_allocate((size_t)grid->npu, sizeof(double));
+    grid->shape_coordinate = calloc1d(grid->npu);
     memcpy(grid->shape_coordinate, grid->pu, (size_t)grid->npu*sizeof(double));
   } else {
     free(grid->pu);
     grid->npu = settings->nshape;
-    grid->pu = grid_allocate((size_t)grid->npu, sizeof(double));
+    grid->pu = calloc1d(grid->npu);
     grid->shape_coordinate = linear_axis(-1.0, 1.0, grid->npu);
     for (int index=0; index<grid->npu; index++) {
       grid->pu[index] = coordinate_to_shape(grid->shape_coordinate[index],
@@ -1367,7 +1363,7 @@ static physics_grid_3pcf* allocate_grid(
   // the logarithmic and linear blocks.
   double* psi = loglinear_axis(psi_min, 1.0e-3, 0.78539816339744830962,
     settings->npsi_log, settings->npsi_linear, &grid->npsi);
-  grid->log_psi = grid_allocate((size_t)grid->npsi, sizeof(double));
+  grid->log_psi = calloc1d(grid->npsi);
   for (int index=0; index<grid->npsi; index++) {
     grid->log_psi[index] = log(psi[index]);
   }
@@ -1388,7 +1384,7 @@ static physics_grid_3pcf* allocate_grid(
     // Reference sampling keeps its original irregular log-PSI
     // intervals, and setting psi_scale does not change its coordinate
     // definition.
-    grid->psi_coordinate = grid_allocate((size_t)grid->npsi, sizeof(double));
+    grid->psi_coordinate = calloc1d(grid->npsi);
     memcpy(grid->psi_coordinate, grid->log_psi,
       (size_t)grid->npsi*sizeof(double));
   }
@@ -1397,7 +1393,7 @@ static physics_grid_3pcf* allocate_grid(
   // reverse into ascending mu; the header derives this layout.
   double* reversed = loglinear_axis(settings->epmu, 0.05, 2.0,
     settings->nmu_log, settings->nmu_linear, &grid->nmu);
-  grid->mu = grid_allocate((size_t)grid->nmu, sizeof(double));
+  grid->mu = calloc1d(grid->nmu);
   for (int index=0; index<grid->nmu; index++) {
     grid->mu[index] = 1.0 - reversed[grid->nmu - 1 - index];
   }
@@ -1405,15 +1401,22 @@ static physics_grid_3pcf* allocate_grid(
   const size_t nbaseline = grid_product(settings->nr, settings->nu,
     settings->nv);
   const size_t nresidual = grid_product(settings->np, grid->npu, grid->npu);
-  grid->log_baseline = grid_allocate(nbaseline, sizeof(double));
+  if (!(nbaseline <= INT_MAX && nresidual <= INT_MAX)) {
+    log_fatal("physics_grid_3pcf: baseline or residual table exceeds the "
+      "core allocator count");
+    exit(1);
+  }
+  grid->log_baseline = calloc1d((int)nbaseline);
   if (settings->signed_baseline) {
-    grid->baseline_ratio = grid_allocate(nbaseline, sizeof(double));
+    grid->baseline_ratio = calloc1d((int)nbaseline);
   }
   if (has_residual) {
-    grid->residual = grid_allocate(nresidual, sizeof(double));
+    // calloc1d zero-fills, and that zero fill matters physically: it
+    // is what lets a pure-NLA grid keep untouched residual planes at
+    // exactly zero.
+    grid->residual = calloc1d((int)nresidual);
     if (settings->residual_scaling) {
-      grid->log_residual_scale = grid_allocate((size_t)grid->np,
-        sizeof(double));
+      grid->log_residual_scale = calloc1d(grid->np);
     }
   }
   return grid;
@@ -1482,7 +1485,7 @@ static void finish_grid(physics_grid_3pcf* grid)
     grid->np = residual_shape[0];
     grid->npu = residual_shape[1];
     grid->shape_coordinate = linear_axis(-1.0, 1.0, grid->npu);
-    grid->pu = grid_allocate((size_t)grid->npu, sizeof(double));
+    grid->pu = calloc1d(grid->npu);
     for (int index=0; index<grid->npu; index++) {
       grid->pu[index] = coordinate_to_shape(grid->shape_coordinate[index],
         grid->shape_min, settings->shape_stretch);
@@ -1578,8 +1581,12 @@ void physics_grid_create_many_3pcf(
       "for common GGG scaling");
     exit(1);
   }
-  physics_projection_3pcf** projections = grid_allocate((size_t)ntriplet,
+  physics_projection_3pcf** projections = calloc((size_t)ntriplet,
     sizeof(*projections));
+  if (projections == NULL) {
+    log_fatal("physics_grid_3pcf: grid allocation failed");
+    exit(1);
+  }
   // Pure NLA omits the residual entirely, including any scale table.
   const int has_residual = parameters->a2 != 0.0
     || parameters->bta != 0.0 || parameters->ct != 0.0;
@@ -1587,8 +1594,12 @@ void physics_grid_create_many_3pcf(
   const int needs_gravity = settings->signed_baseline || scaled_residual;
   physics_projection_3pcf** gravity_projections = NULL;
   if (needs_gravity) {
-    gravity_projections = grid_allocate((size_t)ntriplet,
+    gravity_projections = calloc((size_t)ntriplet,
       sizeof(*gravity_projections));
+    if (gravity_projections == NULL) {
+      log_fatal("physics_grid_3pcf: grid allocation failed");
+      exit(1);
+    }
   }
   // Only the intrinsic-shape coefficients change for the denominator;
   // the header explains why this gravity-only companion stays at DMO.
@@ -1605,7 +1616,7 @@ void physics_grid_create_many_3pcf(
     physics_grid_3pcf* grid = out[triplet];
     const double* window = physics_window_samples_3pcf(model, &grid->nwindow);
     if (grid->nwindow > 0) {
-      grid->window = grid_allocate((size_t)grid->nwindow, sizeof(double));
+      grid->window = calloc1d(grid->nwindow);
       memcpy(grid->window, window, (size_t)grid->nwindow*sizeof(double));
     }
     projections[triplet] = physics_projector_create_3pcf(model, parameters,
@@ -1629,8 +1640,8 @@ void physics_grid_create_many_3pcf(
   // Every cell on one axis uses the same exponential. Prepare those
   // exact values once; retain all subsequent triangle-side operations.
   // These arrays belong to this call and remain read-only for workers.
-  double* radii = grid_allocate((size_t)first->nr, sizeof(double));
-  double* ratios = grid_allocate((size_t)first->nu, sizeof(double));
+  double* radii = calloc1d(first->nr);
+  double* ratios = calloc1d(first->nu);
   for (int index=0; index<first->nr; index++) {
     radii[index] = exp(first->log_r[index]);
   }
@@ -1639,7 +1650,7 @@ void physics_grid_create_many_3pcf(
   }
   double* perimeters = NULL;
   if (has_residual) {
-    perimeters = grid_allocate((size_t)first->np, sizeof(double));
+    perimeters = calloc1d(first->np);
     for (int index=0; index<first->np; index++) {
       perimeters[index] = exp(first->log_p[index]);
     }
@@ -1651,8 +1662,13 @@ void physics_grid_create_many_3pcf(
   // Keep the original positive values only during coarse preparation.
   // All shape nodes at one perimeter divide by the same value, without
   // repeating an exponential or a line-of-sight integral for each shape.
+  if (!(!scaled_residual || grid_product(nscale, ntriplet, 1) <= INT_MAX)) {
+    log_fatal("physics_grid_3pcf: residual scale table exceeds the core "
+      "allocator count");
+    exit(1);
+  }
   double* scales = scaled_residual
-    ? grid_allocate(grid_product(nscale, ntriplet, 1), sizeof(double)) : NULL;
+    ? calloc1d((int)grid_product(nscale, ntriplet, 1)) : NULL;
   // Every worker owns one geometry point and an ntriplet scratch
   // vector. The batch shares the physical bispectrum and IA vertices at
   // each redshift before the source-weight contraction, so memory grows
@@ -1935,7 +1951,7 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
     exit(1);
   }
   const size_t npoint = grid_product(1, nell, nell);
-  if (!(npoint <= SIZE_MAX/4)) {
+  if (!(npoint <= (size_t)INT_MAX/4)) {
     log_fatal("physics_grid_3pcf: multipole query weight count overflows");
     exit(1);
   }
@@ -1945,25 +1961,34 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
       exit(1);
     }
   }
-  physics_grid_query_3pcf* query = grid_allocate(1, sizeof(*query));
+  physics_grid_query_3pcf* query = calloc(1, sizeof(*query));
+  if (query == NULL) {
+    log_fatal("physics_grid_3pcf: grid allocation failed");
+    exit(1);
+  }
   query->nell = nell;
-  query->ell = grid_allocate((size_t)nell, sizeof(double));
+  query->ell = calloc1d(nell);
   memcpy(query->ell, ell, (size_t)nell*sizeof(double));
   query->grid_nell = grid->nell;
   query->grid_npsi = grid->npsi;
   query->lmax = lmax;
   query->reference_mode = grid->settings.reference_mode;
   query->psi_scale = grid->settings.psi_scale;
-  query->log_ell = grid_allocate((size_t)grid->nell, sizeof(double));
-  query->log_psi = grid_allocate((size_t)grid->npsi, sizeof(double));
-  query->psi_coordinate = grid_allocate((size_t)grid->npsi, sizeof(double));
+  query->log_ell = calloc1d(grid->nell);
+  query->log_psi = calloc1d(grid->npsi);
+  query->psi_coordinate = calloc1d(grid->npsi);
   memcpy(query->log_ell, grid->log_ell, (size_t)grid->nell*sizeof(double));
   memcpy(query->log_psi, grid->log_psi, (size_t)grid->npsi*sizeof(double));
   memcpy(query->psi_coordinate, grid->psi_coordinate,
     (size_t)grid->npsi*sizeof(double));
-  query->charts = grid_allocate(npoint, sizeof(int));
-  query->cells = grid_allocate(npoint, sizeof(size_t));
-  query->fractions = grid_allocate(4*npoint, sizeof(double));
+  query->charts = malloc1d_int((int)npoint);
+  memset(query->charts, 0, sizeof(int)*npoint);
+  query->cells = calloc(npoint, sizeof(size_t));
+  if (query->cells == NULL) {
+    log_fatal("physics_grid_3pcf: grid allocation failed");
+    exit(1);
+  }
+  query->fractions = calloc1d((int)(4*npoint));
   int* charts = query->charts;
   size_t* cells = query->cells;
   double* fractions = query->fractions;

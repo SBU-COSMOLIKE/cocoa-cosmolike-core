@@ -110,27 +110,6 @@ struct fftlog_workspace_3pcf {
 };
 
 
-// FFTW's allocator returns memory aligned for its vector code. All
-// numeric blocks are flat, with an explicitly rounded worker stride,
-// so no hidden row-pointer padding exists anywhere in the workspace.
-static void* allocate_fftlog_3pcf(
-  const size_t count, // number of scalar or complex elements
-  const size_t size // bytes per element
-)
-{
-  if (!(count <= SIZE_MAX/size)) {
-    log_fatal("fftlog_3pcf: allocation size overflow");
-    exit(1);
-  }
-  void* result = fftw_malloc(count*size);
-  if (!(result != NULL)) {
-    log_fatal("fftlog_3pcf: allocation failed");
-    exit(1);
-  }
-  return result;
-}
-
-
 // ---------------------------------------------------------------------------
 // Return the smallest even length at or above the request whose only
 // prime factors are 2, 3 and 5.
@@ -462,28 +441,36 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   work->input_stride = (((size_t)n*n+7)/8)*8;
   work->real_stride = ((nfft*nfft+7)/8)*8;
   work->complex_stride = ((nfft*nfrequency+3)/4)*4;
-  if (!((size_t)workers <= SIZE_MAX/work->real_stride
-        && (size_t)workers <= SIZE_MAX/work->complex_stride
-        && (size_t)(max_order+1) <= SIZE_MAX/nfft)) {
+  if (!((size_t)workers <= SIZE_MAX/sizeof(double)/work->real_stride
+        && (size_t)workers <= SIZE_MAX/sizeof(fftw_complex)
+            /work->complex_stride
+        && (size_t)(max_order+1) <= SIZE_MAX/sizeof(fftw_complex)/nfft)) {
     log_fatal("fftlog_3pcf: worker or Mellin table size overflow");
     exit(1);
   }
-  work->input = allocate_fftlog_3pcf(
-      work->input_stride*workers, sizeof(double));
-  work->real = allocate_fftlog_3pcf(
-      work->real_stride*workers, sizeof(double));
-  work->forward = allocate_fftlog_3pcf(
-      work->complex_stride*workers, sizeof(fftw_complex));
-  work->scratch = allocate_fftlog_3pcf(
-      work->complex_stride*workers, sizeof(fftw_complex));
-  work->bias1 = allocate_fftlog_3pcf(n, sizeof(double));
-  work->bias2 = allocate_fftlog_3pcf(n, sizeof(double));
-  work->output1 = allocate_fftlog_3pcf(n, sizeof(double));
-  work->output2 = allocate_fftlog_3pcf(n, sizeof(double));
-  work->kernel1 = allocate_fftlog_3pcf(
-      (size_t)(max_order+1)*nfft, sizeof(fftw_complex));
-  work->kernel2 = allocate_fftlog_3pcf(
-      (size_t)(max_order+1)*nfrequency, sizeof(fftw_complex));
+  // FFTW's allocator returns memory aligned for its vector code. All
+  // numeric blocks are flat, with an explicitly rounded worker stride,
+  // so no hidden row-pointer padding exists anywhere in the workspace.
+  work->input = fftw_malloc(sizeof(double)*work->input_stride*workers);
+  work->real = fftw_malloc(sizeof(double)*work->real_stride*workers);
+  work->forward = fftw_malloc(
+      sizeof(fftw_complex)*work->complex_stride*workers);
+  work->scratch = fftw_malloc(
+      sizeof(fftw_complex)*work->complex_stride*workers);
+  work->bias1 = fftw_malloc(sizeof(double)*n);
+  work->bias2 = fftw_malloc(sizeof(double)*n);
+  work->output1 = fftw_malloc(sizeof(double)*n);
+  work->output2 = fftw_malloc(sizeof(double)*n);
+  work->kernel1 = fftw_malloc(
+      sizeof(fftw_complex)*((size_t)(max_order+1)*nfft));
+  work->kernel2 = fftw_malloc(
+      sizeof(fftw_complex)*((size_t)(max_order+1)*nfrequency));
+  if (!(work->input && work->real && work->forward && work->scratch
+        && work->bias1 && work->bias2 && work->output1 && work->output2
+        && work->kernel1 && work->kernel2)) {
+    log_fatal("fftlog_3pcf: allocation failed");
+    exit(1);
+  }
 
   // --- 3. BIAS TABLES ---
   // bias1 and bias2 divide the power-law tilt out of the input (file
@@ -639,12 +626,19 @@ void fftlog_select_3pcf(
     }
   }
   work->selected_count = (size_t)ntheta*ntheta;
-  work->selected_offsets = allocate_fftlog_3pcf(
-      work->selected_count, sizeof(size_t));
-  work->selected_first = allocate_fftlog_3pcf(
-      work->selected_count, sizeof(double));
-  work->selected_second = allocate_fftlog_3pcf(
-      work->selected_count, sizeof(double));
+  if (!(work->selected_count <= SIZE_MAX/sizeof(double))) {
+    log_fatal("fftlog_3pcf: allocation size overflow");
+    exit(1);
+  }
+  work->selected_offsets =
+      fftw_malloc(sizeof(size_t)*work->selected_count);
+  work->selected_first = fftw_malloc(sizeof(double)*work->selected_count);
+  work->selected_second = fftw_malloc(sizeof(double)*work->selected_count);
+  if (!(work->selected_offsets && work->selected_first
+        && work->selected_second)) {
+    log_fatal("fftlog_3pcf: allocation failed");
+    exit(1);
+  }
   for (int first=0; first<ntheta; first++) {
     for (int second=0; second<ntheta; second++) {
       const size_t cell = (size_t)first*ntheta+second;

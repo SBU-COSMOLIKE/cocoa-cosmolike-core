@@ -11,6 +11,7 @@
 #include <gsl/gsl_sf_expint.h>
 #include "simde/x86/sse2.h"
 #include "covariance_physics_3pcf.h"
+#include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 
 // ---------------------------------------------------------------------------
@@ -88,34 +89,26 @@ typedef simde__m128d v2d;
 // ============================================================================
 
 // Multiply two array extents only after checking that their product
-// fits in a size_t. Checking count*sizeof(element) alone would come too
-// late, because the element count itself can already have wrapped.
-// Every multidimensional extent below passes through this helper first,
-// so the flattened offsets inside the worker loops stay inside their
+// fits the int element count the core allocators calloc1d and
+// malloc1d_int take. Every multidimensional extent below passes through
+// this helper first, so no allocation can silently truncate its count,
+// and the flattened offsets inside the worker loops stay inside their
 // allocations.
 static size_t covariance_product_3pcf(size_t first, size_t second)
 {
-  if (!(second > 0 && first <= (size_t)-1/second)) {
+  if (!(second > 0 && first <= (size_t)INT_MAX/second)) {
     log_fatal("physical 3pcf covariance: workspace dimensions overflow the "
-      "address range");
+      "core allocator count");
     exit(1);
   }
   return first*second;
 }
 
 
-// Checked allocation. calloc zero-fills, so every table starts at zero
-// and the += accumulations below need no separate clearing pass.
-static void* covariance_allocate_3pcf(size_t count, size_t size)
-{
-  covariance_product_3pcf(count, size);
-  void* memory = calloc(count, size);
-  if (!(memory != NULL)) {
-    log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
-    exit(1);
-  }
-  return memory;
-}
+// Allocation convention of this file: every table allocates zero
+// filled, through calloc1d, through malloc1d_int with an explicit
+// memset, or through calloc, so the += accumulations below need no
+// separate clearing pass.
 
 
 // Weighted dot product sum_i w_i*(a_i*b_i), evaluated with SIMD on two
@@ -354,14 +347,11 @@ void covariance_halos_3pcf(
     exit(1);
   }
   const size_t halo_count = covariance_product_3pcf(nz, nm);
-  covariance_product_3pcf(halo_count, sizeof(double));
   if (nk_profile > 0) {
-    covariance_product_3pcf(covariance_product_3pcf(halo_count, nk_profile),
-      sizeof(double));
+    covariance_product_3pcf(halo_count, nk_profile);
   }
   const size_t power_count = covariance_product_3pcf(nz, input->nk);
-  double* power = covariance_allocate_3pcf(power_count,
-    sizeof(double));
+  double* power = calloc1d((int)power_count);
 
   // Tabulate the linear power once per (redshift, wavenumber) node. The
   // variance integral reads the same power row for every mass at one
@@ -789,54 +779,43 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   for (int row=0; row<in->nrow; row++) {
     work->has_cubic = work->has_cubic || in->row_kind[row] == 1;
   }
-  work->lens = covariance_allocate_3pcf(covariance_product_3pcf(ns, nz),
-    sizeof(double));
-  work->triples = covariance_allocate_3pcf(
-    covariance_product_3pcf(work->nt, 3), sizeof(int));
-  work->triple_index = covariance_allocate_3pcf(
-    covariance_product_3pcf(source_pairs, ns),
-    sizeof(int));
-  work->filters = covariance_allocate_3pcf(covariance_product_3pcf(nf, nl),
-    sizeof(double));
-  work->power = covariance_allocate_3pcf(
-    covariance_product_3pcf(source_pairs, nl), sizeof(double));
+  work->lens = calloc1d((int)covariance_product_3pcf(ns, nz));
+  work->triples = malloc1d_int((int)covariance_product_3pcf(work->nt, 3));
+  memset(work->triples, 0, sizeof(int)*(size_t)work->nt*3);
+  work->triple_index = malloc1d_int(
+    (int)covariance_product_3pcf(source_pairs, ns));
+  memset(work->triple_index, 0, sizeof(int)*source_pairs*ns);
+  work->filters = calloc1d((int)covariance_product_3pcf(nf, nl));
+  work->power = calloc1d((int)covariance_product_3pcf(source_pairs, nl));
   // A purely quadratic request involves no bispectrum, no S table and
   // no three-field correlation. Such a request keeps its Gaussian and
   // connected halo terms but skips every matter-triangle and
   // aperture-partition table, which would otherwise dominate memory.
   if (work->has_cubic) {
-    work->closure_filters = covariance_allocate_3pcf(
-      covariance_product_3pcf(nf, ng),
-      sizeof(double));
-    work->bispectrum = covariance_allocate_3pcf(
-      covariance_product_3pcf(work->nt, ng),
-      sizeof(double));
-    work->bspec = covariance_allocate_3pcf(covariance_product_3pcf(
-      field_pairs, covariance_product_3pcf(ns, nl)),
-      sizeof(double));
+    work->closure_filters = calloc1d((int)covariance_product_3pcf(nf, ng));
+    work->bispectrum = calloc1d((int)covariance_product_3pcf(work->nt, ng));
+    work->bspec = calloc1d((int)covariance_product_3pcf(field_pairs,
+      covariance_product_3pcf(ns, nl)));
     if (!in->large_area) {
-      work->breal = covariance_allocate_3pcf(covariance_product_3pcf(
-        field_pairs, covariance_product_3pcf(nf, nr)), sizeof(double));
+      work->breal = calloc1d((int)covariance_product_3pcf(field_pairs,
+        covariance_product_3pcf(nf, nr)));
     }
-    work->pair = covariance_allocate_3pcf(
-      covariance_product_3pcf(field_pairs, nr), sizeof(double));
-    work->pair_zero = covariance_allocate_3pcf(field_pairs, sizeof(double));
-    work->pair_window = covariance_allocate_3pcf(
-      covariance_product_3pcf(field_pairs, nl),
-      sizeof(double));
+    work->pair = calloc1d((int)covariance_product_3pcf(field_pairs, nr));
+    work->pair_zero = calloc1d((int)field_pairs);
+    work->pair_window = calloc1d((int)covariance_product_3pcf(field_pairs, nl));
   }
-  work->radial_measure = covariance_allocate_3pcf(nr, sizeof(double));
-  work->fourier_measure = covariance_allocate_3pcf(nl, sizeof(double));
-  work->window_fourier = covariance_allocate_3pcf(in->nwindow,
-    sizeof(double));
+  work->radial_measure = calloc1d(nr);
+  work->fourier_measure = calloc1d(nl);
+  work->window_fourier = calloc1d(in->nwindow);
   // The large-area limit needs the quadratic kernel only at opposite
   // equal Fourier vectors, so the small [nrow, nl] quadratic_zero table
   // below suffices for it. The full [shape, ng] kernel tables here are
   // built only for a finite window, where every triangle contributes.
   if (!in->large_area) {
-    work->quadratic_index = covariance_allocate_3pcf(in->nrow, sizeof(int));
-    work->quadratic_representative = covariance_allocate_3pcf(in->nrow,
-      sizeof(int));
+    work->quadratic_index = malloc1d_int(in->nrow);
+    memset(work->quadratic_index, 0, sizeof(int)*(size_t)in->nrow);
+    work->quadratic_representative = malloc1d_int(in->nrow);
+    memset(work->quadratic_representative, 0, sizeof(int)*(size_t)in->nrow);
     for (int row=0; row<in->nrow; row++) {
       work->quadratic_index[row] = -1;
       if (in->row_kind[row] == 1) {
@@ -853,33 +832,25 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
       }
       work->quadratic_index[row] = shape;
     }
-    work->geometry_window = covariance_allocate_3pcf(ng, sizeof(double));
+    work->geometry_window = calloc1d((int)ng);
     if (work->nquadratic > 0) {
       const size_t quadratic_count = covariance_product_3pcf(
         work->nquadratic, ng);
-      work->quadratic = covariance_allocate_3pcf(quadratic_count,
-        sizeof(double));
-      work->quadratic_mixed = covariance_allocate_3pcf(quadratic_count,
-        sizeof(double));
+      work->quadratic = calloc1d((int)quadratic_count);
+      work->quadratic_mixed = calloc1d((int)quadratic_count);
     }
   }
   const size_t radial_fourier = covariance_product_3pcf(nr, nl);
   if (work->has_cubic || !in->large_area) {
-    work->j0_radial = covariance_allocate_3pcf(radial_fourier,
-      sizeof(double));
-    work->j0_fourier = covariance_allocate_3pcf(radial_fourier,
-      sizeof(double));
+    work->j0_radial = calloc1d((int)radial_fourier);
+    work->j0_fourier = calloc1d((int)radial_fourier);
   }
   if (!in->large_area) {
-    work->j0_window = covariance_allocate_3pcf(
-      covariance_product_3pcf(in->nwindow, nr), sizeof(double));
-    work->j2_profile = covariance_allocate_3pcf(
-      covariance_product_3pcf(in->nprofile, nl), sizeof(double));
+    work->j0_window = calloc1d((int)covariance_product_3pcf(in->nwindow, nr));
+    work->j2_profile = calloc1d((int)covariance_product_3pcf(in->nprofile, nl));
   }
-  work->quadratic_zero = covariance_allocate_3pcf(
-    covariance_product_3pcf(in->nrow, nl),
-    sizeof(double));
-  work->radial_volume = covariance_allocate_3pcf(nr, sizeof(double));
+  work->quadratic_zero = calloc1d((int)covariance_product_3pcf(in->nrow, nl));
+  work->radial_volume = calloc1d(nr);
 
   // The Bessel factors depend on geometry alone, not on halo mass or
   // cosmology, so one pass tabulates them for the whole call. J0 is
@@ -1019,8 +990,7 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   // loop tabulates it once per (z, ell) node; mode 2 asks the provider
   // for the nonlinear matter power at redshift z, the spectrum the
   // lensing two-point signal physically measures.
-  double* power_z = covariance_allocate_3pcf(
-    covariance_product_3pcf(nz, nl), sizeof(double));
+  double* power_z = calloc1d((int)covariance_product_3pcf(nz, nl));
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int iz=0; iz<nz; iz++) {
     for (int l=0; l<nl; l++) {
@@ -1062,7 +1032,8 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   // exact ordered form. The separated source c still spans every source
   // bin, because the quadratic rows of a joint covariance can bring in
   // bins that no cubic row carries.
-  int* bspec_pair_needed = covariance_allocate_3pcf(field_pairs, sizeof(int));
+  int* bspec_pair_needed = malloc1d_int((int)field_pairs);
+  memset(bspec_pair_needed, 0, sizeof(int)*field_pairs);
   for (int row=0; row<in->nrow; row++) {
     if (in->row_kind[row] != 1) {
       continue;
@@ -1084,9 +1055,7 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   // the same cache line, even when calloc's base address is not
   // cache-line aligned. Workers never allocate scratch of their own.
   const size_t bstride = ((size_t)nz + 7)/8*8 + 8;
-  double* local_b = covariance_allocate_3pcf(
-    covariance_product_3pcf(nworker, bstride),
-    sizeof(double));
+  double* local_b = calloc1d((int)covariance_product_3pcf(nworker, bstride));
   // Project the matter bispectrum to the convergence bispectrum
   //   B^abc(q,p,phi) = int dchi W_a W_b W_c B_m(q/chi, p/chi, |q+p|/chi)
   //                    / chi^4
@@ -1277,8 +1246,10 @@ void covariance_xi_from_power_3pcf(
   // bins. Find one representative row for each distinct (bins, sign)
   // combination, so the Bessel average is prepared only once and every
   // spectrum then reads its kernel at contiguous ell nodes.
-  int* representative = covariance_allocate_3pcf(nrow, sizeof(int));
-  int* row_kernel = covariance_allocate_3pcf(nrow, sizeof(int));
+  int* representative = malloc1d_int(nrow);
+  memset(representative, 0, sizeof(int)*(size_t)nrow);
+  int* row_kernel = malloc1d_int(nrow);
+  memset(row_kernel, 0, sizeof(int)*(size_t)nrow);
   int nkernel = 0;
   for (int row=0; row<nrow; row++) {
     if (!(sign[row] == 1 || sign[row] == -1)) {
@@ -1303,9 +1274,7 @@ void covariance_xi_from_power_3pcf(
     }
     row_kernel[row] = k;
   }
-  double* kernels = covariance_allocate_3pcf(
-    covariance_product_3pcf(nkernel, nell),
-    sizeof(double));
+  double* kernels = calloc1d((int)covariance_product_3pcf(nkernel, nell));
   // Build each distinct kernel once: the Bessel function averaged over
   // the separation bin, times the integration measure ell*dell/(2*pi).
   // One worker owns one kernel, so no two workers share a write.
@@ -1460,19 +1429,22 @@ static void covariance_profile_plan_3pcf_prepare(
   const int nfine = plan->fine;
   const size_t endpoints = covariance_product_3pcf(
     covariance_product_3pcf(nxi, in->nr), plan->per_radius);
-  plan->x = covariance_allocate_3pcf(nc, sizeof(double));
-  plan->inverse = covariance_allocate_3pcf(nc, sizeof(double));
-  plan->upper = covariance_allocate_3pcf(nc, sizeof(double));
-  plan->coefficient = covariance_allocate_3pcf(nc, sizeof(double));
-  plan->forward = covariance_allocate_3pcf(nc, sizeof(double));
-  plan->values = covariance_allocate_3pcf(nfine, sizeof(double));
-  plan->cell = covariance_allocate_3pcf(nfine, sizeof(int));
-  plan->delta = covariance_allocate_3pcf(nfine, sizeof(double));
-  plan->minus_cell = covariance_allocate_3pcf(endpoints, sizeof(int));
-  plan->plus_cell = covariance_allocate_3pcf(endpoints, sizeof(int));
-  plan->minus_fraction = covariance_allocate_3pcf(endpoints, sizeof(double));
-  plan->plus_fraction = covariance_allocate_3pcf(endpoints, sizeof(double));
-  plan->endpoint_weight = covariance_allocate_3pcf(endpoints, sizeof(double));
+  plan->x = calloc1d(nc);
+  plan->inverse = calloc1d(nc);
+  plan->upper = calloc1d(nc);
+  plan->coefficient = calloc1d(nc);
+  plan->forward = calloc1d(nc);
+  plan->values = calloc1d(nfine);
+  plan->cell = malloc1d_int(nfine);
+  memset(plan->cell, 0, sizeof(int)*(size_t)nfine);
+  plan->delta = calloc1d(nfine);
+  plan->minus_cell = malloc1d_int((int)endpoints);
+  memset(plan->minus_cell, 0, sizeof(int)*endpoints);
+  plan->plus_cell = malloc1d_int((int)endpoints);
+  memset(plan->plus_cell, 0, sizeof(int)*endpoints);
+  plan->minus_fraction = calloc1d((int)endpoints);
+  plan->plus_fraction = calloc1d((int)endpoints);
+  plan->endpoint_weight = calloc1d((int)endpoints);
   const double scale = in->profile_radius[1];
   if (!(in->profile_radius[0] == 0.0 && scale > 0.0)) {
     log_fatal("physical 3pcf covariance: profile preparation nodes must "
@@ -1791,13 +1763,11 @@ static void covariance_halo_terms_3pcf(
   // 2.77536627e11 is rho_crit/h^2 in (Msun/h)/(Mpc/h)^3; times Omega_m
   // it is today's comoving mean matter density, as in the halo tables.
   const double rho = 2.77536627e11*physics_omega_m_3pcf(work->model);
-  work->sigma2 = covariance_allocate_3pcf(nodes, sizeof(double));
-  work->abundance = covariance_allocate_3pcf(nodes, sizeof(double));
-  work->bias = covariance_allocate_3pcf(nodes, sizeof(double));
-  work->concentration = covariance_allocate_3pcf(nodes, sizeof(double));
-  work->response_bias = covariance_allocate_3pcf(
-    covariance_product_3pcf(work->nz, no),
-    sizeof(double));
+  work->sigma2 = calloc1d((int)nodes);
+  work->abundance = calloc1d((int)nodes);
+  work->bias = calloc1d((int)nodes);
+  work->concentration = calloc1d((int)nodes);
+  work->response_bias = calloc1d((int)covariance_product_3pcf(work->nz, no));
   covariance_halos_3pcf(work->model, in, work->nz, work->z, 0, NULL,
     work->sigma2, work->abundance, work->bias, work->concentration, NULL);
 
@@ -1805,8 +1775,9 @@ static void covariance_halo_terms_3pcf(
   // numerical radii the input carries; no tolerance ever merges two
   // different observables. The source labels stay outside every halo transform,
   // carried by field_lens and row_lens below.
-  int* radius_index = covariance_allocate_3pcf(nf, sizeof(int));
-  double* unique_radius = covariance_allocate_3pcf(nf, sizeof(double));
+  int* radius_index = malloc1d_int(nf);
+  memset(radius_index, 0, sizeof(int)*(size_t)nf);
+  double* unique_radius = calloc1d(nf);
   int nrad = 0;
   for (int a=0; a<nf; a++) {
     int index = 0;
@@ -1819,13 +1790,18 @@ static void covariance_halo_terms_3pcf(
     radius_index[a] = index;
   }
   const size_t npair = covariance_product_3pcf(nrad, (size_t)nrad + 1)/2;
-  int* pair_needed = covariance_allocate_3pcf(npair, sizeof(int));
-  int* radius_needed = covariance_allocate_3pcf(nrad, sizeof(int));
-  int* representative = covariance_allocate_3pcf(no, sizeof(int));
-  int* shape_radius = covariance_allocate_3pcf(
-    covariance_product_3pcf(no, 3), sizeof(int));
-  int* row_shape = covariance_allocate_3pcf(no, sizeof(int));
-  int* xi_shape = covariance_allocate_3pcf(no, sizeof(int));
+  int* pair_needed = malloc1d_int((int)npair);
+  memset(pair_needed, 0, sizeof(int)*npair);
+  int* radius_needed = malloc1d_int(nrad);
+  memset(radius_needed, 0, sizeof(int)*(size_t)nrad);
+  int* representative = malloc1d_int(no);
+  memset(representative, 0, sizeof(int)*(size_t)no);
+  int* shape_radius = malloc1d_int((int)covariance_product_3pcf(no, 3));
+  memset(shape_radius, 0, sizeof(int)*(size_t)no*3);
+  int* row_shape = malloc1d_int(no);
+  memset(row_shape, 0, sizeof(int)*(size_t)no);
+  int* xi_shape = malloc1d_int(no);
+  memset(xi_shape, 0, sizeof(int)*(size_t)no);
   int nshape = 0;
   int nxi = 0;
   // Group the rows into shapes. A shape is exactly the geometry a halo
@@ -1924,10 +1900,19 @@ static void covariance_halo_terms_3pcf(
       ncubic += in->row_kind[row] == 1;
     }
     const size_t capacity = covariance_product_3pcf(ncubic, 3);
-    row_entity = covariance_allocate_3pcf(
+    row_entity = calloc(
       covariance_product_3pcf(no, 3), sizeof(size_t));
-    entity_field = covariance_allocate_3pcf(capacity, sizeof(int));
-    entity_radius_pair = covariance_allocate_3pcf(capacity, sizeof(size_t));
+    if (row_entity == NULL) {
+      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
+      exit(1);
+    }
+    entity_field = malloc1d_int((int)capacity);
+    memset(entity_field, 0, sizeof(int)*capacity);
+    entity_radius_pair = calloc(capacity, sizeof(size_t));
+    if (entity_radius_pair == NULL) {
+      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
+      exit(1);
+    }
     for (int row=0; row<no; row++) {
       if (in->row_kind[row] != 1) {
         continue;
@@ -1950,8 +1935,12 @@ static void covariance_halo_terms_3pcf(
         row_entity[(size_t)row*3 + p] = e;
       }
     }
-    contraction_index = covariance_allocate_3pcf(
+    contraction_index = calloc(
       covariance_product_3pcf(nentity, nentity), sizeof(size_t));
+    if (contraction_index == NULL) {
+      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
+      exit(1);
+    }
     // Keep entity pairs ordered: the finite-window P table multiplies
     // its fields in a fixed order, and exchanging them could round
     // differently. In contraction_index a zero marks an unused pair,
@@ -1977,9 +1966,17 @@ static void covariance_halo_terms_3pcf(
         }
       }
     }
-    contraction_left = covariance_allocate_3pcf(ncontraction, sizeof(size_t));
-    contraction_right = covariance_allocate_3pcf(ncontraction, sizeof(size_t));
-    pt_contraction = covariance_allocate_3pcf(ncontraction, sizeof(double));
+    contraction_left = calloc(ncontraction, sizeof(size_t));
+    if (contraction_left == NULL) {
+      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
+      exit(1);
+    }
+    contraction_right = calloc(ncontraction, sizeof(size_t));
+    if (contraction_right == NULL) {
+      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
+      exit(1);
+    }
+    pt_contraction = calloc1d((int)ncontraction);
     size_t next = 0;
     for (size_t left=0; left<nentity; left++) {
       for (size_t right=0; right<nentity; right++) {
@@ -2007,9 +2004,9 @@ static void covariance_halo_terms_3pcf(
   // survey multipoles q.
   const size_t radius_fourier = covariance_product_3pcf(nrad, nl);
   double* unique_filter = need_profiles
-    ? covariance_allocate_3pcf(radius_fourier, sizeof(double)) : NULL;
-  double* window_filter = !in->large_area ? covariance_allocate_3pcf(
-    covariance_product_3pcf(nrad, nw), sizeof(double)) : NULL;
+    ? calloc1d((int)radius_fourier) : NULL;
+  double* window_filter = !in->large_area
+    ? calloc1d((int)covariance_product_3pcf(nrad, nw)) : NULL;
   for (int a=0; a<nrad; a++) {
     if (need_profiles) {
       for (int l=0; l<nl; l++) {
@@ -2026,30 +2023,30 @@ static void covariance_halo_terms_3pcf(
   }
 
   double* profile_fourier = need_profiles
-    ? covariance_allocate_3pcf(radius_fourier, sizeof(double)) : NULL;
-  double* profile_real = need_profiles ? covariance_allocate_3pcf(
-    covariance_product_3pcf(nrad, nr), sizeof(double)) : NULL;
-  double* profile_window = !in->large_area ? covariance_allocate_3pcf(
-    covariance_product_3pcf(nf, nw), sizeof(double)) : NULL;
+    ? calloc1d((int)radius_fourier) : NULL;
+  double* profile_real = need_profiles
+    ? calloc1d((int)covariance_product_3pcf(nrad, nr)) : NULL;
+  double* profile_window = !in->large_area
+    ? calloc1d((int)covariance_product_3pcf(nf, nw)) : NULL;
   double* shear = !in->large_area && nxi > 0
-    ? covariance_allocate_3pcf(in->nprofile, sizeof(double)) : NULL;
-  double* nfw = covariance_allocate_3pcf(nl, sizeof(double));
-  double* nfw_square = covariance_allocate_3pcf(nl, sizeof(double));
+    ? calloc1d(in->nprofile) : NULL;
+  double* nfw = calloc1d(nl);
+  double* nfw_square = calloc1d(nl);
   double* nfw_window = !in->large_area
-    ? covariance_allocate_3pcf(nw, sizeof(double)) : NULL;
-  double* field_lens = covariance_allocate_3pcf(nf, sizeof(double));
-  double* row_lens = covariance_allocate_3pcf(no, sizeof(double));
-  double* product_pair = work->has_cubic ? covariance_allocate_3pcf(
-    covariance_product_3pcf(npair, nl), sizeof(double)) : NULL;
-  double* product_real = work->has_cubic ? covariance_allocate_3pcf(
-    covariance_product_3pcf(npair, nr), sizeof(double)) : NULL;
-  double* response_real = need_profiles ? covariance_allocate_3pcf(
-    covariance_product_3pcf(nshape, nr), sizeof(double)) : NULL;
-  double* response_fourier = !in->large_area ? covariance_allocate_3pcf(
-    covariance_product_3pcf(nshape, nw), sizeof(double)) : NULL;
-  double* shape_zero = covariance_allocate_3pcf(nshape, sizeof(double));
-  double* response_zero = covariance_allocate_3pcf(no, sizeof(double));
-  double* window_measure = covariance_allocate_3pcf(nw, sizeof(double));
+    ? calloc1d(nw) : NULL;
+  double* field_lens = calloc1d(nf);
+  double* row_lens = calloc1d(no);
+  double* product_pair = work->has_cubic
+    ? calloc1d((int)covariance_product_3pcf(npair, nl)) : NULL;
+  double* product_real = work->has_cubic
+    ? calloc1d((int)covariance_product_3pcf(npair, nr)) : NULL;
+  double* response_real = need_profiles
+    ? calloc1d((int)covariance_product_3pcf(nshape, nr)) : NULL;
+  double* response_fourier = !in->large_area
+    ? calloc1d((int)covariance_product_3pcf(nshape, nw)) : NULL;
+  double* shape_zero = calloc1d(nshape);
+  double* response_zero = calloc1d(no);
+  double* window_measure = calloc1d(nw);
   for (int q=0; q<nw; q++) {
     window_measure[q] = in->window_ell[q]*in->window_dell[q]*COV_I2PI
       *work->window_fourier[q];
@@ -2884,7 +2881,7 @@ void covariance_physical_3pcf(
   const int nl = input->nell; // Fourier nodes
   const size_t matrix = covariance_product_3pcf(no, no);
   const size_t term_count = covariance_product_3pcf(6, matrix);
-  memset(terms, 0, covariance_product_3pcf(term_count, sizeof(double)));
+  memset(terms, 0, sizeof(double)*term_count);
 
   // Check every row's field roles before any field offset is built: an
   // xi leg must be unfiltered (R = 0), and an aperture leg needs a

@@ -12,6 +12,7 @@
 #include "coupling_3pcf.h"
 #include "fftlog_3pcf.h"
 #include "transform_3pcf.h"
+#include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 
 // Natural components of the shear three-point correlation function.
@@ -105,26 +106,6 @@ struct transform_plan_3pcf {
   physics_grid_query_3pcf* query; // owned axis-keyed geometry, allocated on use
   double* grid_multipoles; // [L,nell,nell], refilled for every physical grid
 };
-
-
-// Zero-initialized allocation with an explicit overflow check before
-// the multiplication that could wrap.
-static void* allocate_transform_3pcf(
-  const size_t count, // number of elements
-  const size_t size // element size
-)
-{
-  if (!(count <= SIZE_MAX/size)) {
-    log_fatal("transform_3pcf: allocation size overflow");
-    exit(1);
-  }
-  void* result = calloc(count, size);
-  if (!(result != NULL)) {
-    log_fatal("transform_3pcf: allocation failed");
-    exit(1);
-  }
-  return result;
-}
 
 
 // ---------------------------------------------------------------------------
@@ -242,7 +223,11 @@ transform_plan_3pcf* transform_create_3pcf(
   // triangle stage never needs more workers than triangles. The
   // coupling table spans the 2*nell-1 leg-index differences explained
   // at stage 4. Every product is overflow-checked before use.
-  transform_plan_3pcf* plan = allocate_transform_3pcf(1, sizeof(*plan));
+  transform_plan_3pcf* plan = calloc(1, sizeof(*plan));
+  if (plan == NULL) {
+    log_fatal("transform_3pcf: allocation failed");
+    exit(1);
+  }
   plan->nell = nell;
   plan->ntheta = ntheta;
   plan->nphi = nphi;
@@ -258,25 +243,30 @@ transform_plan_3pcf* transform_create_3pcf(
   const size_t radial_pairs = (size_t)ntheta*ntheta;
   const size_t triangles = radial_pairs*nphi;
   plan->workers = workers < (int)triangles ? workers : (int)triangles;
-  if (!((size_t)(mmax+1) <= SIZE_MAX/(lmax+1)/nratio)) {
+  if (!(triangles <= INT_MAX/8)) {
+    log_fatal("transform_3pcf: too many triangles");
+    exit(1);
+  }
+  if (!((size_t)(mmax+1) <= (size_t)INT_MAX/(lmax+1)/nratio)) {
     log_fatal("transform_3pcf: coupling size overflow");
     exit(1);
   }
-  if (!((size_t)nmodes <= SIZE_MAX/4/radial_pairs)) {
+  if (!((size_t)nmodes <= (size_t)INT_MAX/4/radial_pairs)) {
     log_fatal("transform_3pcf: mode size overflow");
     exit(1);
   }
-  plan->indices = allocate_transform_3pcf(ntheta, sizeof(int));
-  plan->ell = allocate_transform_3pcf(nell, sizeof(double));
-  plan->ell2 = allocate_transform_3pcf(nell, sizeof(double));
-  plan->coupling = allocate_transform_3pcf(
-      (size_t)(mmax+1)*(lmax+1)*nratio, sizeof(double));
-  plan->modes = allocate_transform_3pcf(
-      (size_t)nmodes*4*radial_pairs, sizeof(double));
-  plan->phases = allocate_transform_3pcf(8*triangles, sizeof(double));
-  plan->angles = allocate_transform_3pcf(
-      (size_t)(mmax+1)*nphi*2, sizeof(double));
-  plan->gamma = allocate_transform_3pcf(8*triangles, sizeof(double));
+  if (!((size_t)(mmax+1)*nphi <= (size_t)INT_MAX/2)) {
+    log_fatal("transform_3pcf: angular phase table is too large");
+    exit(1);
+  }
+  plan->indices = malloc1d_int(ntheta);
+  plan->ell = calloc1d(nell);
+  plan->ell2 = calloc1d(nell);
+  plan->coupling = calloc1d((int)((size_t)(mmax+1)*(lmax+1)*nratio));
+  plan->modes = calloc1d((int)((size_t)nmodes*4*radial_pairs));
+  plan->phases = calloc1d((int)(8*triangles));
+  plan->angles = calloc1d((int)((size_t)(mmax+1)*nphi*2));
+  plan->gamma = calloc1d((int)(8*triangles));
 
   // --- 3. RADIAL SELECTION AND FFT WORKSPACE ---
   // Copy the caller's radial selection, then build the double-Bessel
@@ -322,7 +312,7 @@ transform_plan_3pcf* transform_create_3pcf(
   // per difference from 1-nell to nell-1 - instead of nell*nell. The
   // table stores them at index (j-i)+nell-1, and the transform reads
   // the coupling with that same offset.
-  double* psi = allocate_transform_3pcf(nratio, sizeof(double));
+  double* psi = calloc1d((int)nratio);
   for (int difference=1-nell; difference<nell; difference++) {
     // atan2(ell2, ell1) equals arctan(ell2/ell1) for positive legs,
     // without an explicit ratio that could overflow. first and second
@@ -981,18 +971,18 @@ void transform_aperture_grid_3pcf(
       "transform plan");
     exit(1);
   }
-  if (!((size_t)plan->nell <= SIZE_MAX/(size_t)plan->nell)) {
+  if (!((size_t)plan->nell <= (size_t)INT_MAX/(size_t)plan->nell)) {
     log_fatal("transform_3pcf: prepared-grid Fourier size overflow");
     exit(1);
   }
   const size_t pairs = (size_t)plan->nell*plan->nell;
-  if (!((size_t)(plan->lmax + 1) <= SIZE_MAX/pairs)) {
+  if (!((size_t)(plan->lmax + 1) <= (size_t)INT_MAX/pairs)) {
     log_fatal("transform_3pcf: prepared-grid multipole size overflow");
     exit(1);
   }
   const size_t count = (size_t)(plan->lmax + 1)*pairs;
   if (plan->grid_multipoles == NULL) {
-    plan->grid_multipoles = allocate_transform_3pcf(count, sizeof(double));
+    plan->grid_multipoles = calloc1d((int)count);
   }
   // Keeping this buffer between calls reuses the allocation only: the
   // query overwrites the entire prediction even when geometry, IA

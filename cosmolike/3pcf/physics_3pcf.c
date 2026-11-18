@@ -9,6 +9,7 @@
 #include <gsl/gsl_sf_gamma.h>
 #include "simde/x86/sse2.h"
 #include "physics_3pcf.h"
+#include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 #ifdef _OPENMP
 #include <omp.h>
@@ -267,30 +268,6 @@ static void triangle_physics(double first, double second, double third);
 
 
 // ---------------------------------------------------------------------------
-// allocate_physics: zero-initialized allocation with overflow and
-// failure checks. Models are independent owned objects, rather than
-// CosmoLike global state. Each allocation is a single flat array, so
-// ordinary calloc/free supplies the needed alignment and makes
-// partial construction explicit.
-static void* allocate_physics(
-  const size_t count,
-  const size_t element_size
-)
-{
-  if (!(count > 0 && count <= SIZE_MAX/element_size)) {
-    log_fatal("physics_3pcf: allocation size overflow");
-    exit(1);
-  }
-  void* result = calloc(count, element_size);
-  if (!(result != NULL)) {
-    log_fatal("physics_3pcf: allocation failed");
-    exit(1);
-  }
-  return result;
-}
-
-
-// ---------------------------------------------------------------------------
 // increasing_physics: require a finite, strictly increasing grid of
 // at least two nodes; positive = 1 also requires every value to be
 // positive.
@@ -351,9 +328,9 @@ static physics_spline make_spline(
   physics_spline result = {0};
   increasing_physics(x, count, 0);
   result.n = count;
-  result.x = allocate_physics((size_t)count, sizeof(double));
-  result.y = allocate_physics((size_t)count, sizeof(double));
-  result.second = allocate_physics((size_t)count, sizeof(double));
+  result.x = calloc1d(count);
+  result.y = calloc1d(count);
+  result.second = calloc1d(count);
   memcpy(result.x, x, (size_t)count*sizeof(double));
   memcpy(result.y, y, (size_t)count*sizeof(double));
   result.slope_low = (y[1] - y[0])/(x[1] - x[0]);
@@ -378,9 +355,9 @@ static physics_spline make_spline(
     return result;
   }
   const int interior = count - 2;
-  double* diagonal = allocate_physics((size_t)interior, sizeof(double));
-  double* upper = allocate_physics((size_t)interior, sizeof(double));
-  double* rhs = allocate_physics((size_t)interior, sizeof(double));
+  double* diagonal = calloc1d(interior);
+  double* upper = calloc1d(interior);
+  double* rhs = calloc1d(interior);
   // Assemble the interior rows and eliminate on the fly: each row
   // folds its subdiagonal entry into the previous pivot, so one pass
   // both builds and forward-eliminates the tridiagonal system.
@@ -478,7 +455,7 @@ static physics_spline make_natural_uniform_spline(
 )
 {
   physics_spline result = make_spline(x, y, count);
-  double* diagonal = allocate_physics((size_t)count, sizeof(double));
+  double* diagonal = calloc1d(count);
   const double inverse_square = pow((count - 1)/(x[count - 1] - x[0]), 2);
   result.second[0] = 0.0;
   result.second[count - 1] = 0.0;
@@ -601,8 +578,8 @@ static physics_spline uniform_storage(
     exit(1);
   }
   result.n = count;
-  result.x = allocate_physics((size_t)count, sizeof(double));
-  result.y = allocate_physics((size_t)count, sizeof(double));
+  result.x = calloc1d(count);
+  result.y = calloc1d(count);
   result.inverse_spacing = (count - 1)/(upper - lower);
   for (int index=0; index<count; index++) {
     result.x[index] = lower + (upper - lower)*index/(count - 1);
@@ -674,15 +651,19 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
   const int old_count = model->npower_z;
   const int new_count = boosted_count(old_count, boost);
   const int nk = model->nonlinear[0].n;
-  physics_spline* dense = allocate_physics((size_t)new_count,
+  physics_spline* dense = calloc((size_t)new_count,
     sizeof(physics_spline));
-  double* new_z = allocate_physics((size_t)new_count, sizeof(double));
+  if (dense == NULL) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
+  double* new_z = calloc1d(new_count);
   for (int redshift=0; redshift<new_count; redshift++) {
     new_z[redshift] = model->zmax*redshift/(new_count - 1);
     dense[redshift] = uniform_storage(nk, model->nonlinear[0].x[0],
       model->nonlinear[0].x[nk - 1]);
   }
-  double* column = allocate_physics((size_t)old_count, sizeof(double));
+  double* column = calloc1d(old_count);
   // Two extra columns carry the endpoint power-law slopes. Extrapolation
   // therefore does not change when the interior log-k grid is refined.
   for (int wave=0; wave<nk + 2; wave++) {
@@ -992,7 +973,7 @@ static void prepare_bihalofit(physics_model_3pcf* model)
   }
   const int capacity = model->source_readers
     ? (int)ceil(zmax/0.15) + 8 : model->fit_nz;
-  double* redshift = allocate_physics((size_t)capacity, sizeof(double));
+  double* redshift = calloc1d(capacity);
   int count = 0;
   if (model->source_readers) {
     for (int index=0; 0.15*index < fmin(0.5, zmax); index++) {
@@ -1016,10 +997,10 @@ static void prepare_bihalofit(physics_model_3pcf* model)
       redshift[index] = zmax*index/(count - 1);
     }
   }
-  double* radius = allocate_physics((size_t)count, sizeof(double));
-  double* spectral = allocate_physics((size_t)count, sizeof(double));
-  double* sigma8z = allocate_physics((size_t)count, sizeof(double));
-  double* matter = allocate_physics((size_t)count, sizeof(double));
+  double* radius = calloc1d(count);
+  double* spectral = calloc1d(count);
+  double* sigma8z = calloc1d(count);
+  double* matter = calloc1d(count);
   for (int index=0; index<count; index++) {
     const double growth = read_spline(&model->growth, redshift[index], 0);
     const double growth_squared = growth*growth;
@@ -1118,21 +1099,27 @@ static void prepare_radial(physics_model_3pcf* model)
   // Kernel and LOS support belong to the background, independently of
   // how many samples describe the source distribution within it.
   const double zmax = model->zmax;
-  model->kernel_z = allocate_physics((size_t)nkernel, sizeof(double));
-  model->kernel_chi = allocate_physics((size_t)nkernel, sizeof(double));
-  model->kernel_growth = allocate_physics((size_t)nkernel, sizeof(double));
-  model->kernel_lens = allocate_physics((size_t)model->nbin*nkernel,
-    sizeof(double));
-  model->kernel_shape = allocate_physics((size_t)model->nbin*nkernel,
-    sizeof(double));
-  model->los_lens = allocate_physics((size_t)model->nbin*nlos,
-    sizeof(double));
-  model->los_shape = allocate_physics((size_t)model->nbin*nlos,
-    sizeof(double));
-  model->los_chi = allocate_physics((size_t)nlos, sizeof(double));
-  model->los_dchi = allocate_physics((size_t)nlos, sizeof(double));
-  model->los_bh = allocate_physics((size_t)nlos,
+  if (!((size_t)model->nbin*nkernel <= INT_MAX
+        && (size_t)model->nbin*nlos <= INT_MAX)) {
+    log_fatal("physics_3pcf: lensing kernel tables exceed the core "
+      "allocator count");
+    exit(1);
+  }
+  model->kernel_z = calloc1d(nkernel);
+  model->kernel_chi = calloc1d(nkernel);
+  model->kernel_growth = calloc1d(nkernel);
+  model->kernel_lens = calloc1d((int)((size_t)model->nbin*nkernel));
+  model->kernel_shape = calloc1d((int)((size_t)model->nbin*nkernel));
+  model->los_lens = calloc1d((int)((size_t)model->nbin*nlos));
+  model->los_shape = calloc1d((int)((size_t)model->nbin*nlos));
+  model->los_chi = calloc1d(nlos);
+  model->los_dchi = calloc1d(nlos);
+  model->los_bh = calloc((size_t)nlos,
     sizeof(physics_bh_coefficients));
+  if (model->los_bh == NULL) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
   // Sample the background once on the uniform kernel grid: redshift,
   // comoving distance and growth at every node.
   for (int node=0; node<nkernel; node++) {
@@ -1163,8 +1150,8 @@ static void prepare_radial(physics_model_3pcf* model)
     model->los_dchi[node] = 0.5*(model->los_chi[upper]
       - model->los_chi[lower]);
   }
-  double* integrand = allocate_physics((size_t)nz, sizeof(double));
-  double* source_shape = allocate_physics((size_t)nz, sizeof(double));
+  double* integrand = calloc1d(nz);
+  double* source_shape = calloc1d(nz);
   // Lensing prefactor (3/2) Omega_m (H0/c)^2 of the Poisson equation.
   // With H0 = 100 h km/s/Mpc and c = 299792 km/s, the ratio
   // 100/299792 is H0/c in h/Mpc, matching the Mpc/h distances, so the
@@ -1338,7 +1325,11 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: source grid lies outside the background range");
     exit(1);
   }
-  physics_model_3pcf* model = allocate_physics(1, sizeof(*model));
+  physics_model_3pcf* model = calloc(1, sizeof(*model));
+  if (model == NULL) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
   if (!(input->nwindow == 0
         || (input->nwindow >= 2 && input->window != NULL))) {
     log_fatal("physics_3pcf: pixel window needs at least two integer-ell "
@@ -1347,7 +1338,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   }
   model->nwindow = input->nwindow;
   if (model->nwindow > 0) {
-    model->window = allocate_physics((size_t)model->nwindow, sizeof(double));
+    model->window = calloc1d(model->nwindow);
     for (int index=0; index<model->nwindow; index++) {
       if (!(isfinite(input->window[index])
             && input->window[index] >= 0.0)) {
@@ -1378,7 +1369,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->npower_z = input->nz;
   model->nsource = nsource;
   model->zmax = input->z[input->nz - 1];
-  model->power_z = allocate_physics((size_t)input->nz, sizeof(double));
+  model->power_z = calloc1d(input->nz);
   memcpy(model->power_z, input->z, (size_t)input->nz*sizeof(double));
   model->omega_m = input->omega_m;
   model->omega_de = input->omega_de;
@@ -1388,8 +1379,8 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->sigma8 = input->sigma8;
   const int nk = model->nk;
   const int nz = model->nz;
-  double* logk = allocate_physics((size_t)nk, sizeof(double));
-  double* logpower = allocate_physics((size_t)nk, sizeof(double));
+  double* logk = calloc1d(nk);
+  double* logpower = calloc1d(nk);
   for (int index=0; index<nk; index++) {
     if (!(isfinite(input->p_linear0[index])
           && input->p_linear0[index] > 0.0)) {
@@ -1406,7 +1397,11 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   for (int index=0; index<nk; index++) {
     model->linear.y[index] += log_normalization;
   }
-  model->nonlinear = allocate_physics((size_t)nz, sizeof(physics_spline));
+  model->nonlinear = calloc((size_t)nz, sizeof(physics_spline));
+  if (model->nonlinear == NULL) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
   for (int redshift=0; redshift<nz; redshift++) {
     if (!(input->growth[redshift] > 0.0
           && input->dz_dchi[redshift] > 0.0)) {
@@ -1426,9 +1421,9 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->distance = make_spline(input->z, input->chi, nz);
   model->growth = make_spline(input->z, input->growth, nz);
   model->dz_dchi = make_spline(input->z, input->dz_dchi, nz);
-  model->source_z = allocate_physics((size_t)nsource, sizeof(double));
-  model->source_chi = allocate_physics((size_t)nsource, sizeof(double));
-  model->source_jacobian = allocate_physics((size_t)nsource, sizeof(double));
+  model->source_z = calloc1d(nsource);
+  model->source_chi = calloc1d(nsource);
+  model->source_jacobian = calloc1d(nsource);
   memcpy(model->source_z, source_z, (size_t)nsource*sizeof(double));
   // When the source grid is the background redshift grid itself, copy
   // chi and dz/dchi directly, so this shared source/background grid
@@ -1455,8 +1450,12 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: source distance is negative");
     exit(1);
   }
-  model->sources = allocate_physics((size_t)input->nbin*nsource,
-    sizeof(double));
+  if (!((size_t)input->nbin*nsource <= INT_MAX)) {
+    log_fatal("physics_3pcf: source density table exceeds the core "
+      "allocator count");
+    exit(1);
+  }
+  model->sources = calloc1d((int)((size_t)input->nbin*nsource));
   for (size_t index=0; index<(size_t)input->nbin*nsource; index++) {
     if (!(isfinite(input->sources[index])
           && input->sources[index] >= 0.0)) {
@@ -1472,7 +1471,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       exit(1);
     }
   }
-  model->los_z = allocate_physics((size_t)input->nlos, sizeof(double));
+  model->los_z = calloc1d(input->nlos);
   memcpy(model->los_z, input->los_z, (size_t)input->nlos*sizeof(double));
   prepare_bihalofit(model);
   prepare_radial(model);
@@ -1481,8 +1480,12 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   // come from the reader that production will use, so projected means
   // and covariance B queries read identical model values at an
   // identical redshift.
-  model->los_power = allocate_physics((size_t)3*model->nlos,
+  model->los_power = calloc((size_t)3*model->nlos,
     sizeof(physics_power_row));
+  if (model->los_power == NULL) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
   for (int node=0; node<model->nlos; node++) {
     model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
     for (int mode=0; mode<3; mode++) {
@@ -2660,7 +2663,7 @@ static void field_kernel_physics(
   }
   check_ia(parameters);
   const int count = model->kernel_nz;
-  double* kernel = allocate_physics((size_t)count, sizeof(double));
+  double* kernel = calloc1d(count);
   for (int node=0; node<count; node++) {
     const physics_ia_coefficients coefficients = ia_coefficients(model,
       parameters, model->kernel_z[node], model->kernel_growth[node]);
@@ -2754,14 +2757,27 @@ physics_projection_3pcf* physics_projector_create_3pcf(
     }
   }
   const int count = model->nlos;
-  physics_projection_3pcf* projection = allocate_physics(1,
+  if (!((size_t)8*count <= INT_MAX)) {
+    log_fatal("physics_3pcf: projector weight tables exceed the core "
+      "allocator count");
+    exit(1);
+  }
+  physics_projection_3pcf* projection = calloc(1,
     sizeof(*projection));
+  if (projection == NULL) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
   projection->model = model;
   projection->ia = *parameters;
-  projection->weights = allocate_physics((size_t)8*count, sizeof(double));
-  projection->coefficients = allocate_physics((size_t)count,
+  projection->weights = calloc1d((int)((size_t)8*count));
+  projection->coefficients = calloc((size_t)count,
     sizeof(physics_ia_coefficients));
-  double* kernels = allocate_physics((size_t)3*count, sizeof(double));
+  if (projection->coefficients == NULL) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
+  double* kernels = calloc1d((int)((size_t)3*count));
   for (int leg=0; leg<3; leg++) {
     const int field = parameters->intrinsic_legs < 0 ? -1
       : (parameters->intrinsic_legs >> leg)&1;
@@ -2997,8 +3013,9 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
     exit(1);
   }
   const size_t nweight = rows*(size_t)nprojection;
-  if (!(nweight <= SIZE_MAX/sizeof(double))) {
-    log_fatal("physics_3pcf: prepared projection weight bytes overflow");
+  if (!(nweight <= INT_MAX)) {
+    log_fatal("physics_3pcf: prepared projection weights exceed the core "
+      "allocator count");
     exit(1);
   }
   for (int triplet=0; triplet<nprojection; triplet++) {
@@ -3010,10 +3027,14 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
       exit(1);
     }
   }
-  physics_projection_batch_3pcf* batch = allocate_physics(1, sizeof(*batch));
+  physics_projection_batch_3pcf* batch = calloc(1, sizeof(*batch));
+  if (batch == NULL) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
   batch->first = first;
   batch->nprojection = nprojection;
-  batch->weights = allocate_physics(nweight, sizeof(double));
+  batch->weights = calloc1d((int)nweight);
   // Transpose the per-projector [term,node] storage into the packed
   // [node][term][triplet] order, copying every weight exactly once
   // during this serial construction.
@@ -3430,10 +3451,14 @@ void physics_multipoles_3pcf(
   }
   physics_projection_3pcf* projection = physics_projector_create_3pcf(
     model, parameters, bins);
-  double* nodes = allocate_physics((size_t)nmu, sizeof(double));
-  double* weights = allocate_physics((size_t)nmu, sizeof(double));
-  double* legendre = allocate_physics((size_t)(lmax + 1)*nmu,
-    sizeof(double));
+  if (!((size_t)(lmax + 1)*nmu <= INT_MAX)) {
+    log_fatal("physics_3pcf: Legendre table exceeds the core allocator "
+      "count");
+    exit(1);
+  }
+  double* nodes = calloc1d(nmu);
+  double* weights = calloc1d(nmu);
+  double* legendre = calloc1d((int)((size_t)(lmax + 1)*nmu));
   gauss_legendre_physics(nmu, nodes, weights);
   // Tabulate the quadrature-ready Legendre factors: entry [L][node]
   // holds (L + 1/2) w_node P_L(mu_node), so each b_L below is a plain
@@ -3468,11 +3493,11 @@ void physics_multipoles_3pcf(
   // direct scientific reference path.
   const size_t worker_stride = (((size_t)nmu + 7)/8 + 1)*8;
   const size_t workers = (size_t)omp_get_max_threads();
-  if (!(workers > 0 && worker_stride <= SIZE_MAX/workers)) {
+  if (!(workers > 0 && worker_stride <= (size_t)INT_MAX/workers)) {
     log_fatal("physics_3pcf: multipole worker storage overflows");
     exit(1);
   }
-  double* scratch = allocate_physics(worker_stride*workers, sizeof(double));
+  double* scratch = calloc1d((int)(worker_stride*workers));
   #pragma omp parallel if(!omp_in_parallel())
   {
     double* values = scratch + (size_t)omp_get_thread_num()*worker_stride;
@@ -3710,11 +3735,11 @@ void physics_nla_power_batch_3pcf(
     exit(1);
   }
   const int count = model->nlos;
-  double* first = allocate_physics((size_t)count, sizeof(double));
-  double* second = allocate_physics((size_t)count, sizeof(double));
-  double* radial_weight = allocate_physics((size_t)count, sizeof(double));
-  double* logchi = allocate_physics((size_t)count, sizeof(double));
-  double* logell = allocate_physics((size_t)nell, sizeof(double));
+  double* first = calloc1d(count);
+  double* second = calloc1d(count);
+  double* radial_weight = calloc1d(count);
+  double* logchi = calloc1d(count);
+  double* logell = calloc1d(nell);
   physics_nla_kernel_3pcf(model, parameters, bin1, first);
   physics_nla_kernel_3pcf(model, parameters, bin2, second);
   for (int node=0; node<count; node++) {
@@ -3732,8 +3757,14 @@ void physics_nla_power_batch_3pcf(
   }
   const int capacity = nell < 256 ? nell : 256;
   const size_t cells = (size_t)capacity*count;
-  int* indices = allocate_physics(cells, sizeof(int));
-  double* fractions = allocate_physics(cells, sizeof(double));
+  if (!(cells <= INT_MAX)) {
+    log_fatal("physics_3pcf: angular power scratch exceeds the core "
+      "allocator count");
+    exit(1);
+  }
+  int* indices = malloc1d_int((int)cells);
+  memset(indices, 0, sizeof(int)*cells);
+  double* fractions = calloc1d((int)cells);
   for (size_t start=0; start<(size_t)nell; start += (size_t)capacity) {
     const size_t remaining = (size_t)nell - start;
     const int length = (int)(remaining < (size_t)capacity
@@ -3970,10 +4001,14 @@ void physics_aperture_integrate_3pcf(
     }
   }
   const size_t capacity = 4096;
-  double* values = allocate_physics(capacity, sizeof(double));
-  double* closure = allocate_physics(capacity, sizeof(double));
-  double* filter_table = allocate_physics((size_t)nfilter*nell*2,
-    sizeof(double));
+  if (!((size_t)nfilter*nell*2 <= INT_MAX)) {
+    log_fatal("physics_3pcf: full-aperture filter table exceeds the core "
+      "allocator count");
+    exit(1);
+  }
+  double* values = calloc1d((int)capacity);
+  double* closure = calloc1d((int)capacity);
+  double* filter_table = calloc1d((int)((size_t)nfilter*nell*2));
   for (int filter=0; filter<nfilter; filter++) {
     out[filter] = 0.0;
     for (int leg=0; leg<2; leg++) {

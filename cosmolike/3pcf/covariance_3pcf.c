@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -9,6 +10,7 @@
 #include <gsl/gsl_sf_bessel.h>
 #include "simde/x86/sse2.h"
 #include "covariance_3pcf.h"
+#include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 
 // ===========================================================================
@@ -34,9 +36,9 @@
 // bispectrum-squared or power-times-trispectrum covariance
 // contributions.
 //
-// This file deliberately stands alone: it calls plain malloc/free and
-// reports errors with fprintf plus exit instead of using the core's
-// allocators and loggers, so the module compiles without basics.h.
+// This file is integrated with the core utilities: it reports errors
+// through log_fatal and allocates its one temporary Bessel table
+// through the core allocator malloc1d, like the rest of the module.
 //
 // All arrays use contiguous C order, with the last index changing
 // fastest. size_t is an unsigned type large enough for an array
@@ -119,15 +121,11 @@ void filtered_pair_3pcf(
   // so the compiler stores the nearest double to the exact flat-sky
   // measure factor in dell*ell/(2*pi).
   const double inverse_two_pi = 0.15915494309189533577;
-  if ((size_t)nell > SIZE_MAX/sizeof(double)/(size_t)nr) {
+  if ((size_t)nell > (size_t)INT_MAX/(size_t)nr) {
     log_fatal("filtered_pair_3pcf: Bessel table size overflow");
     exit(1);
   }
-  double* bessel_table = malloc((size_t)nell*nr*sizeof(double));
-  if (bessel_table == NULL) {
-    log_fatal("filtered_pair_3pcf: Bessel table allocation failed");
-    exit(1);
-  }
+  double* bessel_table = malloc1d((int)((size_t)nell*nr));
 
   // J0 depends only on the two geometric coordinates. Calculate it once
   // per (ell,r), before any field-pair contraction. A row stores adjacent

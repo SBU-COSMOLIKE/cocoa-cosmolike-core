@@ -7,6 +7,7 @@
 #include <string.h>
 #include <gsl/gsl_spline.h>
 #include "feedback_3pcf.h"
+#include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 
 // Baryonic feedback - gas cooling and the energetic outflows from
@@ -45,8 +46,9 @@ struct feedback_3pcf {
 
 // Multiply the node counts of the leading axes into one flat element
 // count. The check inside the loop proves, one factor at a time, that
-// the running product times sizeof(double) still fits in size_t, so a
-// later allocation cannot silently wrap around.
+// the running product still fits the int element count the core
+// allocator malloc1d takes, so no later allocation can silently
+// truncate or wrap around.
 //
 // Parameters:
 //   counts     - node count per axis [dimensions], each positive
@@ -57,32 +59,14 @@ static size_t table_size(const int* counts, const int dimensions)
   size_t size = 1;
   for (int axis=0; axis<dimensions; axis++) {
     if (!(counts[axis] > 0
-          && size <= SIZE_MAX/sizeof(double)/(size_t)counts[axis])) {
-      log_fatal("feedback_3pcf: response dimensions overflow addressable "
-        "storage");
+          && size <= (size_t)INT_MAX/(size_t)counts[axis])) {
+      log_fatal("feedback_3pcf: response dimensions overflow the core "
+        "allocator count");
       exit(1);
     }
     size *= (size_t)counts[axis];
   }
   return size;
-}
-
-
-// Allocate one flat block of size doubles, or stop with a clear
-// message. The separate overflow check keeps the multiplication by
-// sizeof(double) representable before malloc sees it.
-static double* allocate_feedback(const size_t size)
-{
-  if (!(size <= SIZE_MAX/sizeof(double))) {
-    log_fatal("feedback_3pcf: allocation overflows");
-    exit(1);
-  }
-  double* values = malloc(size*sizeof(double));
-  if (!(values != NULL)) {
-    log_fatal("feedback_3pcf: response allocation failed");
-    exit(1);
-  }
-  return values;
 }
 
 
@@ -123,7 +107,7 @@ static double* dense_table(
   int current[4];
   memcpy(current, counts, sizeof(current));
   const size_t size = table_size(current, dimensions);
-  double* table = allocate_feedback(size);
+  double* table = malloc1d((int)size);
   for (size_t index=0; index<size; index++) {
     if (!(isfinite(source[index]))) {
       log_fatal("feedback_3pcf: nonfinite log response");
@@ -155,8 +139,8 @@ static double* dense_table(
     const size_t old_size = table_size(current, dimensions);
     const size_t blocks = old_size/((size_t)old_count*stride);
     current[axis] = new_count;
-    double* dense = allocate_feedback(table_size(current, dimensions));
-    double* line = allocate_feedback((size_t)old_count);
+    double* dense = malloc1d((int)table_size(current, dimensions));
+    double* line = malloc1d(old_count);
     gsl_spline* spline = gsl_spline_alloc(gsl_interp_cspline, old_count);
     gsl_interp_accel* search = gsl_interp_accel_alloc();
     if (!(spline && search)) {
