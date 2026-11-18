@@ -139,6 +139,9 @@ For shared plots, original-source comparisons or DES Fisher notebooks, read
 `references/threepcf_notebooks.md`: it separates array presentation from
 physical calculations, specifies BLAS/OpenMP ownership, and identifies the
 survey and estimator assumptions a comparison must retain.
+For CLI timing against LSST Y1, read `references/threepcf_timing.md`:
+it defines changed physical points, excluded CAMB preparation, thread
+ownership and the timing-only source policy.
 Preserve the distinction between upstream finite-operator comparisons,
 independent physical references and survey-level reproduction claims.
 
