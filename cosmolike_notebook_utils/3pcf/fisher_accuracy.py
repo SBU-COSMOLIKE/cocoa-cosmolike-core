@@ -144,7 +144,7 @@ def _ratio_panel(ratios, labels, legend, figsize, show, legendfontsize):
         handles.append(line)
     axis.axhline(y=0.0, color="0.45", linewidth=0.8, zorder=0)
     axis.set_xticks(ticks=positions, labels=labels, rotation=40, ha="right")
-    axis.set_ylabel("FoM difference from the fixed baseline [%]", fontsize=13)
+    axis.set_ylabel("FoM change from baseline [%]", fontsize=13)
     axis.tick_params(axis="both", labelsize=11)
     limits = _range(values=differences)
     if limits is not None:

@@ -265,6 +265,11 @@ numerical grids and can miss compensating changes in nuisance directions;
 its FoM shift is not a prediction of the all-column shift. Establish the
 shared-stencil agreement before assigning that difference to omitted
 columns rather than model state or evaluation order.
+The completed NLA and TATT triangle comparisons demonstrate this effect:
+full h/2 FoM changes are +0.170% and -0.055%, whereas the four-column
+substitutions give -6.72% and -5.30%. The original step disagreements
+remain. These values belong to the project's stated demonstration and
+must not be turned into general accuracy tolerances.
 
 The estimate assumes approximately independent evaluation jitter. Smooth
 fourth derivatives can contaminate it; odd coherent errors and correlated
@@ -295,6 +300,13 @@ by 126, so an M100 comparison on those points is not a resolved continuous
 angular integral. A successful fiducial comparison is not derivative
 convergence. Recalculate allocation estimates before raising several
 three-dimensional interpolation counts together.
+The completed ten fiducial comparisons are recorded separately in
+`tests/studies/angular_order_results.md`. Angular-sampling and coupling
+changes partly cancel in the covariance metric. Compare each with their
+common L50/M50 reference; do not add squared distances as independent
+error variances or infer derivative accuracy from the small combined
+mean distance. The protocol remains unchanged because its bytes are
+part of the saved execution identity.
 
 Compare each derivative column in the full covariance metric. A maximum
 raw-component difference can hide aperture errors because xi and Map3
