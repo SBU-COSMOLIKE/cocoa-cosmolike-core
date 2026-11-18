@@ -2031,10 +2031,16 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
 # absolute one for a parameter whose fiducial is 0, such as wa = 0).
 NONLIMBER_TOL_STEP = 0.025
 # The FKEM caps (limits.LMAX_NOLIMBER) of the hand-off check: the default
-# 150 and two higher caps. The low-rank (SVD) engine runs at the lowest
-# and the highest of them, with its own cap.
-NONLIMBER_TOL_FKEM_LMAX = (150, 200, 300)
-NONLIMBER_TOL_SVD_LMAX = (150, 300)
+# 150 and the higher cap the comparison is judged against, 200. The
+# low-rank (SVD) engine runs at the same two caps, with its own cap.
+NONLIMBER_TOL_FKEM_LMAX = (150, 200)
+NONLIMBER_TOL_SVD_LMAX = (150, 200)
+# The core defaults of the two tolerances, (gg, gs): the values
+# reset_Ntable_struct stores and the default arguments of
+# init_nonlimber_tolerance. Tests 2-4 and 8 switch the early exit on
+# with them, so they keep testing the setting in a project whose
+# production tolerances are 0 (no early exit).
+NONLIMBER_TOL_CORE_DEFAULTS = (0.002, 0.01)
 # SVD ranks kept per lens bin in the low-rank runs: the likelihoods'
 # default (nonlimber_lowrank_rank: 5)
 NONLIMBER_TOL_SVD_RANK = 5
@@ -2045,9 +2051,9 @@ NONLIMBER_TOL_SVD_RANK = 5
 # whose fourth difference vanishes.
 NONLIMBER_TOL_NOISE_FLOOR = 1.0e-6
 # Dead-setter floor of the real-space change delta^T C^-1 delta between
-# tolerance 0 and the default: the measured changes are 1e-3 to 1e-2, so
-# a value below this floor means the setter never reached the C code or
-# the real-space cache did not rebuild.
+# tolerance 0 and the core defaults: the measured changes are 1.4e-4 to
+# 4.1e-2, so a value below this floor means the setter never reached the
+# C code or the real-space cache did not rebuild.
 NONLIMBER_TOL_CHANGE_FLOOR = 1.0e-8
 
 
@@ -2087,9 +2093,9 @@ def _cube_diagonal_at_one_ell(cube):
 
 
 def nonlimber_tolerance_suite(u, name, example, bias_parameter,
-                              change_bound=None, noise_bound=None,
-                              handoff_margin=None, svd_rule=None,
-                              svd_margin=None):
+                              expected_defaults, change_bound=None,
+                              noise_bound=None, handoff_margin=None,
+                              svd_rule=None, svd_margin=None):
     """Build the class of the non-Limber early-exit and hand-off checks.
 
     The non-Limber real-space C_l (w_gg_tomo for w(theta), w_gammat_tomo
@@ -2100,9 +2106,13 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
     moves with the parameters, so a finite-difference derivative whose
     stencil straddles a switch sees a step in the model, which a Fisher
     matrix reads as information. init_nonlimber_tolerance sets the two
-    tolerances (Ntable.NL_tol_gg = 0.002, Ntable.NL_tol_gs = 0.01 by
-    default; 0 = no early exit). The Fourier entries C_gg_tomo_ells and
-    C_gs_tomo_ells never take the exit.
+    tolerances (core defaults Ntable.NL_tol_gg = 0.002 and
+    Ntable.NL_tol_gs = 0.01, NONLIMBER_TOL_CORE_DEFAULTS; 0 = no early
+    exit). A project's likelihood yamls set its production tolerances
+    (keys nonlimber_tolerance_gg/gs), which may differ from the core
+    defaults: 0 in a project where the exit's error across the prior is
+    too large. The Fourier entries C_gg_tomo_ells and C_gs_tomo_ells
+    never take the exit.
 
     The noise of one evaluation along a parameter is measured with
     cosmolike_notebook_utils.fisher.get_stencil_noise: the fourth
@@ -2122,29 +2132,33 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
     settings (the tolerances, the FKEM cap and the gg engine the
     likelihood set) in a finally block, and the last test checks that
     the fiducial vector after the suite equals the one before it bit for
-    bit. The tests:
+    bit. The early exit of tests 2-4 and 8 is the one of the core
+    defaults, whatever the production tolerances. The tests:
 
-      1. the default reproduces the frozen reference chi2, the
-         likelihood applied the documented defaults, and the binding's
-         default arguments give the production vector back bit for bit;
-      2. tolerance 0 and back gives the original vector bit for bit (the
+      1. the production settings reproduce the frozen reference chi2,
+         the likelihood applied this project's production tolerances
+         (expected_defaults), and the binding's default arguments give
+         the vector of the core defaults bit for bit;
+      2. the core defaults, then tolerance 0, then the production
+         tolerances give the production vector back bit for bit (the
          real-space caches key on the tolerance values);
-      3. real space: tolerance 0 changes only the non-Limber blocks, by
-         a whitened delta^T C^-1 delta above a dead-setter floor and
-         below change_bound; Fourier space: nothing changes;
-      4. real space: the stencil noise of the three columns at the
-         production tolerance and at 0, at the production FKEM cap; at
-         0 every column stays below noise_bound;
+      3. real space: tolerance 0 against the core defaults changes only
+         the non-Limber blocks, by a whitened delta^T C^-1 delta above
+         a dead-setter floor and below change_bound; Fourier space:
+         nothing changes;
+      4. real space: the stencil noise of the three columns at the core
+         defaults and at 0, at the production FKEM cap; at 0 every
+         column stays below noise_bound;
       5. the FKEM hand-off at the fixed cap, tolerance 0: the noise at
-         lmax_nonlimber = 150, 200 and 300; at 150 it is at most
-         (1 + handoff_margin) times the 300 value (a step at the
+         lmax_nonlimber = 150 and 200; at 150 it is at most
+         (1 + handoff_margin) times the 200 value (a step at the
          hand-off would raise the noise at the lower cap, where the
          FKEM-Limber difference is largest) and below noise_bound. It
          also prints |C_l^FKEM/C_l^Limber - 1| at l = lmax - 1 per lens
          bin and the whitened change of the fiducial vector between the
-         caps 150 and 300;
+         caps 150 and 200;
       6. the low-rank (SVD) engine, tolerance 0, at its caps 150 and
-         300, next to FKEM: svd_rule "not_larger" asserts
+         200, next to FKEM: svd_rule "not_larger" asserts
          sigma_SVD <= (1 + svd_margin) sigma_FKEM at each cap, "bound"
          asserts sigma_SVD < noise_bound;
       7. a negative or nonfinite tolerance stops the process with a
@@ -2152,11 +2166,11 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
          exits);
       8. the global accuracy boost AB divides the tolerances in use by
          1 + 2 (AB - 1) above AB = 1 (get_nonlimber_tolerance at AB = 1,
-         2, 3; a setting of 0 stays 0), and at AB = 2 the vector at the
-         scaled tolerance lies at least as close to the tolerance-0
-         vector of the same boost as the vector at the unscaled one (the
-         AB = 1 distance is printed next to them; Fourier space: no
-         change at either boost);
+         2, 3 for the core defaults; a setting of 0 stays 0), and at
+         AB = 2 the vector at the scaled core defaults lies at least as
+         close to the tolerance-0 vector of the same boost as the vector
+         at the unscaled ones (the AB = 1 distance is printed next to
+         them; Fourier space: no change at either boost);
       9. the production state is back: the fiducial vector equals the
          first one bit for bit.
 
@@ -2175,13 +2189,17 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                        configuration with galaxy clustering).
       bias_parameter = the sampled linear-bias parameter of the highest
                        lens bin, e.g. "LSST_B1_5".
+      expected_defaults = (gg, gs): the production tolerances this
+                       project's likelihood yamls set, which test 1
+                       asserts, e.g. (0.002, 0.01) (the core defaults)
+                       or (0.0, 0.0) (no early exit).
       change_bound   = upper bound of the real-space delta^T C^-1 delta
                        of test 3, or None.
       noise_bound    = upper bound of sigma at tolerance 0 and the
                        production cap (tests 4, 5 and the "bound" rule
                        of 6), or None.
       handoff_margin = relative margin of test 5 (sigma at cap 150 over
-                       sigma at cap 300), or None.
+                       sigma at cap 200), or None.
       svd_rule       = "not_larger", "bound" or None (record only).
       svd_margin     = relative margin of the "not_larger" rule.
 
@@ -2189,9 +2207,25 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
       a unittest.TestCase subclass named `name`.
 
     Raises:
-      ValueError for an unknown svd_rule, or "not_larger" without a
-      margin.
+      ValueError for an unknown svd_rule, "not_larger" without a
+      margin, or expected_defaults that are not two finite values
+      >= 0.
     """
+    import math
+
+    if len(expected_defaults) != 2:
+        raise ValueError(
+            f"nonlimber_tolerance_suite: expected_defaults = "
+            f"{expected_defaults!r}; give the pair (gg, gs) of the "
+            "production tolerances")
+    expected_defaults = (float(expected_defaults[0]),
+                         float(expected_defaults[1]))
+    for value in expected_defaults:
+        if not (math.isfinite(value) and value >= 0.0):
+            raise ValueError(
+                f"nonlimber_tolerance_suite: expected_defaults = "
+                f"{expected_defaults!r}; each tolerance is finite and "
+                ">= 0")
     if svd_rule not in (None, "not_larger", "bound"):
         raise ValueError(
             f"nonlimber_tolerance_suite: svd_rule = {svd_rule!r}; use "
@@ -2326,7 +2360,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
               engine    = "FKEM" (cap = lmax) or "SVD" (the low-rank
                           engine with its own cap = lmax).
               lmax      = the engine's non-Limber cap.
-              tolerance = "production" or 0.0, applied to gg and gs.
+              tolerance = the pair (gg_tol, gs_tol), e.g.
+                          NONLIMBER_TOL_CORE_DEFAULTS or (0.0, 0.0).
 
             Returns:
               dict: "sigma" {column: sigma}, "center" (the fiducial
@@ -2350,13 +2385,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             ], dtype=np.float64)
             start = time.perf_counter()
             try:
-                if tolerance == "production":
-                    cls.ci.init_nonlimber_tolerance(
-                        gg_tol=production["gg_tol"],
-                        gs_tol=production["gs_tol"])
-                else:
-                    cls.ci.init_nonlimber_tolerance(gg_tol=tolerance,
-                                                    gs_tol=tolerance)
+                cls.ci.init_nonlimber_tolerance(gg_tol=tolerance[0],
+                                                gs_tol=tolerance[1])
                 if engine == "FKEM":
                     cls.ci.init_lowrank_nonlimber_gg(
                         flag=0, nrank=production["lowrank_rank"],
@@ -2397,7 +2427,9 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                 "seconds": time.perf_counter() - start,
             }
             cls.measurements[key] = record
-            label = "production" if tolerance == "production" else "0"
+            label = f"{tolerance[0]}/{tolerance[1]}"
+            if tolerance[0] == 0.0 and tolerance[1] == 0.0:
+                label = "0"
             print(f"  measured {engine} cap {lmax}, tolerance {label}: "
                   + ", ".join(f"{c} {sigma[c]:.3e}" for c in columns)
                   + f" ({record['seconds']:.0f} s)", flush=True)
@@ -2414,24 +2446,35 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                 print(f"    {label:34s}{values}")
 
         def test_1_default_reproduces_frozen_reference(self):
-            """The default settings: frozen chi2 and the binding defaults.
+            """The production settings: frozen chi2 and the binding defaults.
 
-            The likelihood applied the documented defaults (0.002 for gg,
-            0.01 for gs), the chi2 is within CHI2_TOLERANCE of the frozen
-            reference, and init_nonlimber_tolerance() with its default
-            arguments, after a detour through 0, gives the production
-            vector back bit for bit.
+            The likelihood applied this project's production tolerances
+            (expected_defaults), the chi2 is within CHI2_TOLERANCE of
+            the frozen reference, and init_nonlimber_tolerance() with
+            its default arguments, after a detour through 0, gives the
+            vector of the core defaults (NONLIMBER_TOL_CORE_DEFAULTS)
+            bit for bit.
             """
             import numpy as np
 
             reference = self.reference[reference_key]
             print(f"\n  chi2 = {self.chi2:.6f} (frozen reference "
                   f"{reference:.6f}, difference "
-                  f"{self.chi2 - reference:+.6f})")
-            self.assertEqual(self.production["gg_tol"], 0.002)
-            self.assertEqual(self.production["gs_tol"], 0.01)
+                  f"{self.chi2 - reference:+.6f}); production tolerances "
+                  f"(gg, gs) = ({self.production['gg_tol']}, "
+                  f"{self.production['gs_tol']}), expected "
+                  f"{expected_defaults}")
+            self.assertEqual(
+                (self.production["gg_tol"], self.production["gs_tol"]),
+                expected_defaults,
+                "the likelihood applied other production tolerances than "
+                "the ones this project's test file expects")
+            core = NONLIMBER_TOL_CORE_DEFAULTS
             try:
                 self._fiducial_vector()
+                self.ci.init_nonlimber_tolerance(gg_tol=core[0],
+                                                 gs_tol=core[1])
+                explicit = np.array(self.masked_vector())
                 self.ci.init_nonlimber_tolerance(gg_tol=0.0, gs_tol=0.0)
                 self.masked_vector()
                 self.ci.init_nonlimber_tolerance()
@@ -2439,10 +2482,10 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             finally:
                 self._restore_production()
             self.assertTrue(
-                np.array_equal(restored, self.vector),
+                np.array_equal(restored, explicit),
                 "init_nonlimber_tolerance() with its default arguments "
-                "did not give the production vector back: the binding "
-                "defaults differ from the likelihood's")
+                f"did not give the vector of the core defaults {core}: "
+                "the binding defaults differ from the core's")
             self.assertLess(
                 abs(self.chi2 - reference), u.CHI2_TOLERANCE,
                 f"chi2 = {self.chi2:.6f} vs frozen reference "
@@ -2450,24 +2493,29 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
 
         @classmethod
         def _tolerance_zero_vectors(cls):
-            """Evaluate the fiducial, then read it at tolerance 0 and back.
+            """Evaluate the fiducial, then read it with and without the exit.
 
             The cosmology stays at the fiducial: only the tolerance
-            changes between the reads, so the real-space caches must
-            rebuild on the tolerance key alone.
+            changes between the reads (core defaults, 0, production),
+            so the real-space caches must rebuild on the tolerance key
+            alone.
 
             Returns:
-              (fiducial, zero, back): the masked vectors at the
-              production tolerances, at 0, and at the production values
-              again; computed once per class.
+              (fiducial, early, zero, back): the masked vectors at the
+              production tolerances, at the core defaults, at 0, and at
+              the production values again; computed once per class.
             """
             import numpy as np
 
             if cls.zero_vector is not None:
                 return cls.zero_vector
             production = cls.production
+            core = NONLIMBER_TOL_CORE_DEFAULTS
             try:
                 fiducial = cls._fiducial_vector()
+                cls.ci.init_nonlimber_tolerance(gg_tol=core[0],
+                                                gs_tol=core[1])
+                early = np.array(cls.masked_vector())
                 cls.ci.init_nonlimber_tolerance(gg_tol=0.0, gs_tol=0.0)
                 zero = np.array(cls.masked_vector())
                 cls.ci.init_nonlimber_tolerance(
@@ -2476,14 +2524,14 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                 back = np.array(cls.masked_vector())
             finally:
                 cls._restore_production()
-            cls.zero_vector = (fiducial, zero, back)
+            cls.zero_vector = (fiducial, early, zero, back)
             return cls.zero_vector
 
         def test_2_tolerance_round_trip_is_bitwise(self):
-            """Tolerance 0 and back gives the production vector bit for bit."""
+            """A detour through other tolerances gives the vector back bitwise."""
             import numpy as np
 
-            (fiducial, zero, back) = self._tolerance_zero_vectors()
+            (fiducial, early, zero, back) = self._tolerance_zero_vectors()
             self.assertTrue(np.array_equal(fiducial, self.vector),
                             "re-evaluating the fiducial changed the vector")
             self.assertTrue(
@@ -2496,8 +2544,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             """Tolerance 0 changes only the non-Limber blocks, by little."""
             import numpy as np
 
-            (fiducial, zero, back) = self._tolerance_zero_vectors()
-            delta = zero - self.vector
+            (fiducial, early, zero, back) = self._tolerance_zero_vectors()
+            delta = zero - early
             dchi2 = float(delta @ self.icov @ delta)
             if self.space != "real":
                 print(f"\n  Fourier space: tolerance 0 changes "
@@ -2524,7 +2572,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                 block = np.zeros_like(delta)
                 block[begin:end] = delta[begin:end]
                 block_scores[label] = float(block @ self.icov @ block)
-            print(f"\n  tolerance 0 against the production tolerances: "
+            print(f"\n  tolerance 0 against the core defaults "
+                  f"{NONLIMBER_TOL_CORE_DEFAULTS} (gg, gs): "
                   f"delta^T C^-1 delta = {dchi2:.4e}, max |delta|/sigma "
                   f"= {worst:.4e}; blocks: gamma_t "
                   f"{block_scores['gamma_t']:.3e}, w(theta) "
@@ -2547,18 +2596,18 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                     f"delta^T C^-1 delta = {dchi2:.4e} >= {change_bound}")
 
         def test_4_stencil_noise_without_early_exit(self):
-            """Real space: the stencil noise at the default and at 0."""
+            """Real space: the stencil noise at the core defaults and at 0."""
             if self.space != "real":
                 self.skipTest("the Fourier data vectors never take the "
                               "early exit (test 3: identical vectors)")
             lmax = self.production["lmax_nonlimber"]
-            default = self._measure("FKEM", lmax, "production")
-            zero = self._measure("FKEM", lmax, 0.0)
+            core = NONLIMBER_TOL_CORE_DEFAULTS
+            default = self._measure("FKEM", lmax, core)
+            zero = self._measure("FKEM", lmax, (0.0, 0.0))
             print(f"\n  stencil noise sigma (h = {NONLIMBER_TOL_STEP}, FKEM "
                   f"cap {lmax}), bound at tolerance 0: {noise_bound}")
             self._noise_table([
-                (f"tolerance {self.production['gg_tol']}/"
-                 f"{self.production['gs_tol']} (gg/gs)", default),
+                (f"tolerance {core[0]}/{core[1]} (gg/gs)", default),
                 ("tolerance 0", zero),
             ])
             if noise_bound is not None:
@@ -2569,12 +2618,12 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                         f"at tolerance 0 is not below {noise_bound}")
 
         def test_5_fkem_handoff_adds_no_jump(self):
-            """FKEM at caps 150, 200, 300 with tolerance 0."""
+            """FKEM at caps 150 and 200 with tolerance 0."""
             import numpy as np
 
             records = {}
             for lmax in NONLIMBER_TOL_FKEM_LMAX:
-                records[lmax] = self._measure("FKEM", lmax, 0.0)
+                records[lmax] = self._measure("FKEM", lmax, (0.0, 0.0))
             low = NONLIMBER_TOL_FKEM_LMAX[0]
             high = NONLIMBER_TOL_FKEM_LMAX[-1]
             print(f"\n  FKEM hand-off, tolerance 0 (margin "
@@ -2614,12 +2663,12 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                         f"not below {noise_bound}")
 
         def test_6_svd_noise(self):
-            """The low-rank engine's noise at caps 150 and 300, next to FKEM."""
+            """The low-rank engine's noise at caps 150 and 200, next to FKEM."""
             fkem = {}
             svd = {}
             for lmax in NONLIMBER_TOL_SVD_LMAX:
-                fkem[lmax] = self._measure("FKEM", lmax, 0.0)
-                svd[lmax] = self._measure("SVD", lmax, 0.0)
+                fkem[lmax] = self._measure("FKEM", lmax, (0.0, 0.0))
+                svd[lmax] = self._measure("SVD", lmax, (0.0, 0.0))
             print(f"\n  SVD (rank {NONLIMBER_TOL_SVD_RANK}) against FKEM, "
                   f"tolerance 0 (rule {svd_rule}, margin {svd_margin}, "
                   f"bound {noise_bound}):")
@@ -2691,9 +2740,10 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             get_nonlimber_tolerance returns what w_gg_tomo and
             w_gammat_tomo use: the setting at AB = 1, a third at AB = 2, a
             fifth at AB = 3, and 0 at every boost when the setting is 0.
+            The nonzero setting is the core defaults.
             """
             production = self.production
-            settings = (production["gg_tol"], production["gs_tol"])
+            settings = NONLIMBER_TOL_CORE_DEFAULTS
             rows = []
             try:
                 for boost in (1.0, 2.0, 3.0):
@@ -2731,22 +2781,23 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
         def test_8_boosted_vector_moves_toward_tolerance_zero(self):
             """At AB = 2 the scaled tolerance brings the vector closer to 0's.
 
-            At each boost the fiducial vector at the default tolerances is
+            At each boost the fiducial vector at the core defaults is
             compared with the one at tolerance 0 at the same boost, so the
             other boosted tables cancel and only the switching step stays;
             its whitened size delta^T C^-1 delta is printed at AB = 1 and
             AB = 2. The assertion isolates the scaling at AB = 2: the
             vector at the scaled tolerance (a third) is at least as close
             to the tolerance-0 vector as the one at the unscaled tolerance
-            (settings times 3, so the tolerance in use is the default).
-            A smaller tolerance can only move a switch to a later block,
-            so fewer multipoles keep the Limber value; the distance stays
-            equal when no switch moves. Fourier space: every distance is 0
-            (no early exit).
+            (settings times 3, so the tolerance in use is the core
+            default). A smaller tolerance can only move a switch to a
+            later block, so fewer multipoles keep the Limber value; the
+            distance stays equal when no switch moves. Fourier space:
+            every distance is 0 (no early exit).
             """
             import numpy as np
 
             production = self.production
+            core = NONLIMBER_TOL_CORE_DEFAULTS
             distances = {}
             try:
                 self._fiducial_vector()
@@ -2764,8 +2815,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                         if boost == 1.0 and label == "unscaled":
                             continue
                         self.ci.init_nonlimber_tolerance(
-                            gg_tol=production["gg_tol"]*factor,
-                            gs_tol=production["gs_tol"]*factor)
+                            gg_tol=core[0]*factor,
+                            gs_tol=core[1]*factor)
                         vector = np.array(self.masked_vector())
                         delta = vector - zero
                         distances[(boost, label)] = float(
