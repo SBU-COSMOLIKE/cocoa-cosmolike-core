@@ -2431,8 +2431,11 @@ def w_gg_scale_cut_suite(u, name, example="example2"):
 # (first, last, count) of log-spaced values covering the range where the
 # notebooks' cuts bite, then one cut far above every scale the band
 # centers resolve, where the UV fraction must be small in every band.
+# 50 h/Mpc, not 20: the lensing kernel of the lowest source bin reaches
+# k > 20 h/Mpc at the highest band (roman_fourier, l = 3398: UV fraction
+# up to 7.5e-2 at 20, 5.1e-3 at 50).
 SS_GS_SCALE_CUT_KMAX_RANGE = (0.05, 1.0, 12)
-SS_GS_SCALE_CUT_KMAX_HIGH = 20.0
+SS_GS_SCALE_CUT_KMAX_HIGH = 50.0
 SS_GS_SCALE_CUT_ALPHA = 0.05
 
 # The two galaxy-galaxy lensing projections the cut runs on, as likelihood
@@ -2460,14 +2463,18 @@ SS_GS_SCALE_CUT_PARTITION_KMAX = (0.1, 0.3, 1.0)
 # integral: the lensing efficiency from the project's n(z) by cumulative
 # trapezoids, P_NL and the growth factor D from CAMB's interpolators, the
 # step at k_max/D(z), all on SS_GS_SCALE_CUT_REFERENCE_NZ redshift nodes.
-# The two differ by quadrature and interpolation, not physics: cosmolike
-# integrates on its Gauss-Legendre nodes and reads P from its own (k, z)
-# table. The tolerance is relative to |C_IR| on the kept bands.
-SS_GS_SCALE_CUT_LIMBER_RTOL = 2.0e-3
+# The two differ by quadrature and interpolation, not physics. The
+# difference is the driver's Gauss-Legendre quadrature of an integrand
+# the step makes discontinuous: at the frozen integration_accuracy it
+# reaches 4.8e-3 (roman_fourier, level 0) and 2.8e-3 (roman_kl, level 1)
+# of |C_IR| on a kept band, and it falls to 8e-4 at level 3 and 1.5e-4 at
+# level 6, while the reference moves by 2.6e-4 from 8000 to 16000 nodes.
+# The tolerance is relative to |C_IR| on the kept bands.
+SS_GS_SCALE_CUT_LIMBER_RTOL = 1.0e-2
 SS_GS_SCALE_CUT_LIMBER_KMAX = 0.3   # h/Mpc at z = 0, the notebooks' panel
 # redshift nodes of the reference integral, uniform from the n(z) table's
 # lower edge to its shifted upper edge
-SS_GS_SCALE_CUT_REFERENCE_NZ = 4000
+SS_GS_SCALE_CUT_REFERENCE_NZ = 8000
 
 
 def _ss_gs_scale_cut_kmax():
@@ -2583,7 +2590,11 @@ def _ss_limber_reference(ci, like, values, kmax, ells, pairs, nz_nodes):
     z_low = max(float(z_left[0]), 1.0e-6)
     z_high = float(z_left[-1]) + cell + max(0.0, float(np.max(shifts)))
     z = np.linspace(z_low, z_high, nz_nodes)
-    chi = provider.get_comoving_radial_distance(z)*h
+    # CAMB gives distances only at the redshifts the likelihood requested
+    # (its 1D grid z_interp_1D); a cubic spline through them gives chi on
+    # the reference nodes
+    chi_on_grid = provider.get_comoving_radial_distance(like.z_interp_1D)*h
+    chi = CubicSpline(like.z_interp_1D, chi_on_grid)(z)
 
     # n_i(z) on the nodes: zero outside the spline's support
     nz = np.zeros((nbin, nz_nodes))
@@ -2656,7 +2667,7 @@ def fourier_ss_gs_scale_cut_suite(u, name, example="example2"):
          shear calibration of the pair's source bin);
       2. C_IR (keep_ir = 1) plus an independently computed C_UV
          (keep_ir = 0) equals C to SS_GS_SCALE_CUT_PARTITION_RTOL;
-      4. at the largest cut, SS_GS_SCALE_CUT_KMAX_HIGH (20 h/Mpc), the UV
+      4. at the largest cut, SS_GS_SCALE_CUT_KMAX_HIGH (50 h/Mpc), the UV
          fraction is below alpha in every band;
       5. l_max does not decrease as k_max increases, per pair, and every
          row of the mask is the enforced prefix: the kept bands of one
