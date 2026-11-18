@@ -1,6 +1,8 @@
 #ifndef COSMOLIKE_PHYSICS_3PCF_H
 #define COSMOLIKE_PHYSICS_3PCF_H
 
+#include "feedback_3pcf.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,6 +44,7 @@ typedef struct {
   // resolution never changes the number of supplied matter-power rows.
   int nsource;
   const double* source_z;
+  const feedback_input_3pcf* feedback; // optional paired response; copied
 } physics_input_3pcf;
 
 typedef struct {
@@ -65,6 +68,7 @@ typedef struct {
   // ordered leg; unset bits select G. Thus 4=GGI and 3=IIG. This selector
   // affects projection only, not the nineteen unprojected IA entries.
   int intrinsic_legs;
+  double feedback_amplitude; // shared log-response amplitude; zero is DMO
 } physics_ia_3pcf;
 
 typedef struct physics_model_3pcf physics_model_3pcf;
@@ -82,6 +86,21 @@ double physics_power_3pcf(
   double k,
   double z,
   int mode
+);
+
+// Return the positive paired power response. The model's ordinary power
+// reader retains DMO spectra for perturbative IA and halo calculations.
+double physics_feedback_power_3pcf(
+  const physics_model_3pcf* model,
+  double k,
+  double z,
+  double amplitude
+);
+double physics_feedback_bispectrum_3pcf(
+  const physics_model_3pcf* model,
+  const double* sides,
+  double z,
+  double amplitude
 );
 
 // component: 0=BiHalofit, 1=tree, 2=one-halo fit, 3=three-halo fit.

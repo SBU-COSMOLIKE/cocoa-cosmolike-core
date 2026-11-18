@@ -88,7 +88,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const bool source_readers,
   const int table_boost,
   const int fit_nz,
-  const arma::Col<double>& source_z
+  const arma::Col<double>& source_z,
+  const physics_feedback_tables_cpp_3pcf* feedback
 )
 {
   const arma::uword nsource = source_z.n_elem ? source_z.n_elem : z.n_elem;
@@ -143,6 +144,36 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   input.wa = wa;
   input.ns = ns;
   input.sigma8 = sigma8;
+  feedback_input_3pcf response = {};
+  if (feedback != nullptr) {
+    require_physics_cpp(feedback->z.n_elem <= INT_MAX
+      && feedback->logk.n_elem <= INT_MAX
+      && feedback->logu.n_elem <= INT_MAX && feedback->v.n_elem <= INT_MAX,
+      "feedback axis sizes exceed C integer storage");
+    const size_t nz = feedback->z.n_elem;
+    const size_t nk = feedback->logk.n_elem;
+    const size_t nu = feedback->logu.n_elem;
+    const size_t nv = feedback->v.n_elem;
+    require_physics_cpp(nz >= 4 && nk >= 4 && nu >= 4 && nv >= 4
+      && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
+      && nz*nk*nu <= SIZE_MAX/nv
+      && feedback->log_power.n_elem == nz*nk
+      && feedback->log_bispectrum.n_elem == nz*nk*nu*nv,
+      "flattened paired feedback arrays disagree with their axes");
+    response.nz = static_cast<int>(nz);
+    response.nk = static_cast<int>(nk);
+    response.nu = static_cast<int>(nu);
+    response.nv = static_cast<int>(nv);
+    response.z = feedback->z.memptr();
+    response.logk = feedback->logk.memptr();
+    response.logu = feedback->logu.memptr();
+    response.v = feedback->v.memptr();
+    response.log_power = feedback->log_power.memptr();
+    response.log_bispectrum = feedback->log_bispectrum.memptr();
+    response.boost = feedback->boost;
+    response.clamp = feedback->clamp;
+    input.feedback = &response;
+  }
   return std::make_shared<physics_owner_3pcf>(input);
 }
 
@@ -160,7 +191,7 @@ arma::Mat<double> physics_points_cpp_3pcf(
 {
   require_physics_cpp(sides.n_rows > 0 && sides.n_rows <= INT_MAX
     && sides.n_cols == 3, "sides must have shape [point,3]");
-  require_physics_cpp(operation >= 0 && operation <= 3,
+  require_physics_cpp(operation >= 0 && operation <= 4,
     "unknown point operation");
   require_physics_cpp(operation == 2 ? bins.n_elem == 3
     : redshifts.n_elem == sides.n_rows, "point query shapes disagree");
@@ -198,6 +229,11 @@ arma::Mat<double> physics_points_cpp_3pcf(
       physics_ia_bispectra_3pcf(owner.get(), &parameters, sides(point, 0),
         sides(point, 1), sides(point, 2), redshifts(point),
         remove_alignment ? 1 : 0, values);
+    } else if (operation == 4) {
+      const double triangle[3] = {sides(point, 0), sides(point, 1),
+        sides(point, 2)};
+      values[0] = physics_feedback_bispectrum_3pcf(owner.get(), triangle,
+        redshifts(point), parameters.feedback_amplitude);
     } else {
       values[0] = physics_projected_3pcf(projection, sides(point, 0),
         sides(point, 1), sides(point, 2), component);
@@ -209,6 +245,24 @@ arma::Mat<double> physics_points_cpp_3pcf(
     }
   }
   physics_projector_destroy_3pcf(projection);
+  return result;
+}
+
+
+arma::Col<double> physics_feedback_power_cpp_3pcf(
+  const physics_owner_3pcf& owner,
+  const arma::Col<double>& k,
+  const arma::Col<double>& z,
+  const double amplitude
+)
+{
+  require_physics_cpp(k.n_elem == z.n_elem && k.n_elem > 0
+    && k.is_finite() && z.is_finite(), "power response axes disagree");
+  arma::Col<double> result(k.n_elem);
+  for (arma::uword index=0; index<k.n_elem; index++) {
+    result[index] = physics_feedback_power_3pcf(owner.get(), k[index],
+      z[index], amplitude);
+  }
   return result;
 }
 

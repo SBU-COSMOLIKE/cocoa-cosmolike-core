@@ -122,6 +122,7 @@ typedef struct {
 } physics_ia_coefficients;
 
 struct physics_model_3pcf {
+  feedback_3pcf* feedback; // immutable paired matter response, NULL for DMO
   int nk;
   int nz;
   int nbin;
@@ -189,6 +190,7 @@ static physics_power_row prepare_power_row(
   double z,
   int mode
 );
+static void triangle_physics(double first, double second, double third);
 
 
 static void require_physics(
@@ -932,6 +934,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     && source_z[nsource - 1] <= input->z[input->nz - 1],
     "source grid lies outside the background range");
   physics_model_3pcf* model = allocate_physics(1, sizeof(*model));
+  model->feedback = feedback_create_3pcf(input->feedback);
   model->nk = input->nk;
   model->nz = input->nz;
   model->nbin = input->nbin;
@@ -1080,6 +1083,7 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
   free(model->los_shape);
   free(model->los_bh);
   free(model->los_power);
+  feedback_destroy_3pcf(model->feedback);
   free(model);
 }
 
@@ -1173,6 +1177,33 @@ double physics_power_3pcf(
     && mode >= 0 && mode <= 2, "invalid power query");
   const physics_power_row row = prepare_power_row(model, z, mode);
   return read_power_row(&row, k);
+}
+
+
+double physics_feedback_power_3pcf(
+  const physics_model_3pcf* model,
+  const double k,
+  const double z,
+  const double amplitude
+)
+{
+  require_physics(model && isfinite(k) && k > 0.0
+    && isfinite(z) && z >= 0.0, "invalid power-response coordinates");
+  return feedback_power_3pcf(model->feedback, k, z, amplitude);
+}
+
+
+double physics_feedback_bispectrum_3pcf(
+  const physics_model_3pcf* model,
+  const double* sides,
+  const double z,
+  const double amplitude
+)
+{
+  require_physics(model && sides && isfinite(z) && z >= 0.0,
+    "invalid bispectrum-response coordinates");
+  triangle_physics(sides[0], sides[1], sides[2]);
+  return feedback_bispectrum_3pcf(model->feedback, sides, z, amplitude);
 }
 
 
@@ -1513,7 +1544,11 @@ static void check_ia(const physics_ia_3pcf* parameters)
     && isfinite(parameters->bta) && isfinite(parameters->ct)
     && isfinite(parameters->zpivot) && parameters->zpivot > -1.0
     && isfinite(parameters->c1rho) && parameters->c1rho > 0.0
-    && isfinite(parameters->fb), "nonfinite alignment or baryon parameter");
+    && isfinite(parameters->fb) && isfinite(parameters->feedback_amplitude),
+    "nonfinite alignment or baryon parameter");
+  require_physics(parameters->fb == 0.0
+    || parameters->feedback_amplitude == 0.0,
+    "paired feedback cannot be combined with legacy bispectrum-only fb");
   require_physics(parameters->power_mode >= 0 && parameters->power_mode <= 2
     && parameters->ct_mode >= 0 && parameters->ct_mode <= 1
     && parameters->suppress_only >= 0 && parameters->suppress_only <= 1,
@@ -1891,6 +1926,8 @@ physics_projection_3pcf* physics_projector_create_3pcf(
 {
   require_physics(model && bins, "missing projection model or bins");
   check_ia(parameters);
+  require_physics(model->feedback || parameters->feedback_amplitude == 0.0,
+    "nonzero paired feedback needs response tables in the physical model");
   for (int leg=0; leg<3; leg++) {
     require_physics(bins[leg] >= 0 && bins[leg] < model->nbin,
       "projection source bin is out of range");
@@ -1993,7 +2030,9 @@ double physics_projected_3pcf(
         model->los_bh + node, sides, redshift, 0, model->los_power + node,
         &geometry)
         *baryon_physics(sides, redshift, projection->ia.fb,
-        projection->ia.suppress_only);
+        projection->ia.suppress_only)
+        *feedback_bispectrum_3pcf(model->feedback, sides, redshift,
+        projection->ia.feedback_amplitude);
     }
     if (component != 1) {
       double intrinsic[19];
@@ -2063,7 +2102,8 @@ static int same_ia_parameters(
     && first->ct_mode == second->ct_mode
     && first->suppress_only == second->suppress_only
     && first->operator_component == second->operator_component
-    && first->intrinsic_legs == second->intrinsic_legs;
+    && first->intrinsic_legs == second->intrinsic_legs
+    && first->feedback_amplitude == second->feedback_amplitude;
 }
 
 
@@ -2143,7 +2183,9 @@ static double projected_node_physics(
     baseline = matter_prepared(model, model->los_bh + node,
       sides, redshift, 0, model->los_power + node, geometry)
       *baryon_physics(sides, redshift,
-      first->ia.fb, first->ia.suppress_only);
+      first->ia.fb, first->ia.suppress_only)
+      *feedback_bispectrum_3pcf(model->feedback, sides, redshift,
+      first->ia.feedback_amplitude);
   }
   if (component != 1) {
     ia_prepared(model, &first->ia, first->coefficients + node,
@@ -2611,9 +2653,11 @@ void physics_nla_power_batch_3pcf(
   check_ia(parameters);
   require_physics(model && ell && out && nell > 0,
     "invalid angular power buffers");
+  require_physics(model->feedback || parameters->feedback_amplitude == 0.0,
+    "nonzero paired feedback needs response tables in the physical model");
   require_physics(parameters->a2 == 0.0 && parameters->bta == 0.0
     && parameters->ct == 0.0 && parameters->fb == 0.0,
-    "NLA power does not implement TATT loops or a power baryon transfer");
+    "NLA power rejects TATT loops and legacy bispectrum-only fb");
   const int count = model->nlos;
   double* first = allocate_physics((size_t)count, sizeof(double));
   double* second = allocate_physics((size_t)count, sizeof(double));
@@ -2675,8 +2719,20 @@ void physics_nla_power_batch_3pcf(
         const size_t cell = (size_t)node*capacity + index;
         const physics_power_row* row = model->los_power + (size_t)2*count
           + node;
-        const physics_v2d power = nla_power_pair(row, indices + cell,
+        physics_v2d power = nla_power_pair(row, indices + cell,
           fractions + cell);
+        if (parameters->feedback_amplitude != 0.0) {
+          const double first_ratio = feedback_power_3pcf(model->feedback,
+            ell[start + index]/model->los_chi[node], model->los_z[node],
+            parameters->feedback_amplitude);
+          const double second_ratio = feedback_power_3pcf(model->feedback,
+            ell[start + index + 1]/model->los_chi[node], model->los_z[node],
+            parameters->feedback_amplitude);
+          // Each lane is one ell. Its own ratio modifies only the NLA
+          // power; the immutable DMO rows also serve unmodified IA loops.
+          power = simde_mm_mul_pd(power,
+            simde_mm_set_pd(second_ratio, first_ratio));
+        }
         // The same radial weight multiplies both ell values.
         const physics_v2d weight = simde_mm_set1_pd(radial_weight[node]);
         sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, power));
@@ -2696,8 +2752,15 @@ void physics_nla_power_batch_3pcf(
         const double pair_fractions[2] = {fractions[cell], fractions[cell]};
         const physics_power_row* row = model->los_power + (size_t)2*count
           + node;
-        const physics_v2d power = nla_power_pair(row, pair_indices,
+        physics_v2d power = nla_power_pair(row, pair_indices,
           pair_fractions);
+        if (parameters->feedback_amplitude != 0.0) {
+          const double ratio = feedback_power_3pcf(model->feedback,
+            ell[start + index]/model->los_chi[node], model->los_z[node],
+            parameters->feedback_amplitude);
+          // Both lanes duplicate the same final ell coordinate.
+          power = simde_mm_mul_pd(power, simde_mm_set1_pd(ratio));
+        }
         const physics_v2d weight = simde_mm_set1_pd(radial_weight[node]);
         sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, power));
       }

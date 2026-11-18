@@ -9,6 +9,17 @@
 
 namespace cosmolike_interface {
 
+struct physics_feedback_tables_cpp_3pcf {
+  arma::Col<double> z;
+  arma::Col<double> logk;
+  arma::Col<double> logu;
+  arma::Col<double> v;
+  arma::Col<double> log_power; // flattened [nz,nk], k varies fastest
+  arma::Col<double> log_bispectrum; // flattened [nz,nk,nu,nv]
+  int boost = 1;
+  int clamp = 0;
+};
+
 // Python retains this owner, whose deleter releases every immutable C
 // table. A projection or covariance may borrow get() only while its owner
 // is alive. No global cosmology is changed by constructing a second model.
@@ -58,7 +69,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   bool source_readers,
   int table_boost,
   int fit_nz,
-  const arma::Col<double>& source_z = arma::Col<double>()
+  const arma::Col<double>& source_z = arma::Col<double>(),
+  const physics_feedback_tables_cpp_3pcf* feedback = nullptr
 );
 
 arma::Mat<double> physics_points_cpp_3pcf(
@@ -67,9 +79,15 @@ arma::Mat<double> physics_points_cpp_3pcf(
   const arma::Col<double>& redshifts, // empty for projected queries
   const arma::Col<int>& bins, // [3] only for projected queries
   const physics_ia_3pcf& parameters,
-  int operation, // 0=matter, 1=19 IA, 2=projected, 3=19 IA with shared shape
+  int operation, // 0=matter, 1=IA, 2=projected, 3=shared-shape IA, 4=B response
   int component,
   bool remove_alignment
+);
+arma::Col<double> physics_feedback_power_cpp_3pcf(
+  const physics_owner_3pcf& owner,
+  const arma::Col<double>& k,
+  const arma::Col<double>& z,
+  double amplitude
 );
 
 arma::Cube<double> physics_multipoles_cpp_3pcf(

@@ -371,3 +371,22 @@ notebook is EXAMPLE_IA_COMPONENTS. The new shared array-only plotter is
 unchanged. Read the core README's operator section before interpreting
 Figures 5–6. The active VS vertex differs from literal manuscript Eqs.62/67;
 retain this qualification until the equations and source convention agree.
+
+## Paired feedback response ownership
+
+`feedback_3pcf.c/.h` owns uniform log R_P and log R_B tables. Both are
+required and independently supplied for total matter. The shared
+`feedback_amplitude` uses exp(A log R), with fixed ratios across cosmology.
+`physics_3pcf` applies it only to the nonlinear-alignment baseline; raw
+building blocks and quadratic IA residuals remain DMO. Projection-grid
+normalization also remains DMO so a changed amplitude cannot alter the
+interpolated residual. Batch keys include the amplitude. Both C++ adapters
+copy borrowed constructor arrays into the native owner.
+
+Project `FeedbackPair` is immutable; `feedback_power_tables` changes only
+nonlinear P for the ordinary two-point adapter. Linear P and CFASTPT loops
+stay DMO. Response-file hashes enter saved-result identities. The controls
+`feedback.boost` and `feedback_table_boost` refine cubic preparation followed
+by linear hot reads. Explicit clamp/error domains describe extrapolation.
+The project FEEDBACK.md and EXAMPLE_JOINT_FEEDBACK.ipynb teach the file
+format and the absence of a hydro calibration in the example.

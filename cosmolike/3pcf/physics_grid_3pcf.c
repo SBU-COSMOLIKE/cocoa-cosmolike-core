@@ -1013,6 +1013,10 @@ void physics_grid_create_many_3pcf(
   gravity_parameters.ct = 0.0;
   gravity_parameters.operator_component = 0;
   gravity_parameters.intrinsic_legs = -1;
+  // Hold the interpolation denominator at DMO for paired feedback.
+  // Otherwise a changed baryon amplitude would change the interpolation
+  // error of the deliberately unchanged quadratic IA residual.
+  gravity_parameters.feedback_amplitude = 0.0;
   for (int triplet=0; triplet<ntriplet; triplet++) {
     out[triplet] = allocate_grid(settings, has_residual);
     projections[triplet] = physics_projector_create_3pcf(model, parameters,

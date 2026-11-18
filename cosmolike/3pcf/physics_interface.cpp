@@ -196,6 +196,8 @@ static physics_ia_3pcf parameters_physics(const py::dict& values)
       parameters.operator_component = py::cast<int>(item.second);
     } else if (key == "intrinsic_legs") {
       parameters.intrinsic_legs = py::cast<int>(item.second);
+    } else if (key == "feedback_amplitude") {
+      parameters.feedback_amplitude = py::cast<double>(item.second);
     } else {
       require_physics_interface(false, "unknown IA dictionary key");
     }
@@ -275,7 +277,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const bool source_readers,
   const int table_boost,
   const int fit_nz,
-  const py::object& source_z
+  const py::object& source_z,
+  const py::dict& feedback
 )
 {
   shape_physics(k, 1);
@@ -342,6 +345,48 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   input.wa = wa;
   input.ns = ns;
   input.sigma8 = sigma8;
+  feedback_input_3pcf response = {};
+  std::vector<physics_array> response_arrays;
+  if (!feedback.empty()) {
+    const char* names[6] = {"z", "logk", "logu", "v",
+      "log_power", "log_bispectrum"};
+    require_physics_interface(feedback.size() == 8
+      && feedback.contains("boost") && feedback.contains("clamp"),
+      "feedback requires six arrays plus boost and clamp");
+    for (int index=0; index<6; index++) {
+      require_physics_interface(feedback.contains(names[index])
+        && physics_array::check_(feedback[names[index]]),
+        "production feedback arrays must be contiguous float64 vectors");
+      response_arrays.push_back(py::reinterpret_borrow<physics_array>(
+        feedback[names[index]]));
+      shape_physics(response_arrays.back(), 1);
+      finite_physics(response_arrays.back());
+    }
+    const size_t nz = response_arrays[0].size();
+    const size_t nk = response_arrays[1].size();
+    const size_t nu = response_arrays[2].size();
+    const size_t nv = response_arrays[3].size();
+    require_physics_interface(nz >= 4 && nk >= 4 && nu >= 4 && nv >= 4
+      && nz <= INT_MAX && nk <= INT_MAX && nu <= INT_MAX && nv <= INT_MAX
+      && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
+      && nz*nk*nu <= SIZE_MAX/nv
+      && static_cast<size_t>(response_arrays[4].size()) == nz*nk
+      && static_cast<size_t>(response_arrays[5].size()) == nz*nk*nu*nv,
+      "flattened paired feedback arrays disagree with their axes");
+    response.nz = static_cast<int>(nz);
+    response.nk = static_cast<int>(nk);
+    response.nu = static_cast<int>(nu);
+    response.nv = static_cast<int>(nv);
+    response.z = response_arrays[0].data();
+    response.logk = response_arrays[1].data();
+    response.logu = response_arrays[2].data();
+    response.v = response_arrays[3].data();
+    response.log_power = response_arrays[4].data();
+    response.log_bispectrum = response_arrays[5].data();
+    response.boost = py::cast<int>(feedback["boost"]);
+    response.clamp = py::cast<int>(feedback["clamp"]);
+    input.feedback = &response;
+  }
   return std::make_shared<physics_owner_3pcf>(input);
 }
 
@@ -366,7 +411,8 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const bool source_readers,
   const int table_boost,
   const int fit_nz,
-  const py::object& source_z
+  const py::object& source_z,
+  const py::dict& feedback
 )
 {
   const arma::Col<double> wave = copy_column_physics(k);
@@ -383,9 +429,35 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
     const auto supplied = py::cast<physics_notebook_array>(source_z);
     source_axis = copy_column_physics(supplied);
   }
+  physics_feedback_tables_cpp_3pcf response;
+  if (!feedback.empty()) {
+    const char* names[8] = {"z", "logk", "logu", "v", "log_power",
+      "log_bispectrum", "boost", "clamp"};
+    require_physics_interface(feedback.size() == 8,
+      "feedback requires six arrays plus boost and clamp");
+    for (const char* name : names) {
+      require_physics_interface(feedback.contains(name),
+        "missing notebook feedback field");
+    }
+    response.z = copy_column_physics(py::cast<physics_notebook_array>(
+      feedback["z"]));
+    response.logk = copy_column_physics(py::cast<physics_notebook_array>(
+      feedback["logk"]));
+    response.logu = copy_column_physics(py::cast<physics_notebook_array>(
+      feedback["logu"]));
+    response.v = copy_column_physics(py::cast<physics_notebook_array>(
+      feedback["v"]));
+    response.log_power = copy_column_physics(py::cast<physics_notebook_array>(
+      feedback["log_power"]));
+    response.log_bispectrum = copy_column_physics(
+      py::cast<physics_notebook_array>(feedback["log_bispectrum"]));
+    response.boost = py::cast<int>(feedback["boost"]);
+    response.clamp = py::cast<int>(feedback["clamp"]);
+  }
   return physics_model_cpp_3pcf(wave, linear, redshift, nonlinear, distance,
     jacobian, normalized_growth, density, omega_m, omega_de, w0, wa, ns,
-    sigma8, los, kernel_nz, source_readers, table_boost, fit_nz, source_axis);
+    sigma8, los, kernel_nz, source_readers, table_boost, fit_nz, source_axis,
+    feedback.empty() ? nullptr : &response);
 }
 
 
@@ -448,6 +520,9 @@ static physics_array points_physics(
           triangle[1], triangle[2], redshifts.data()[point],
           remove_alignment ? 1 : 0,
           result + static_cast<size_t>(point)*ncomponent);
+      } else if (operation == 4) {
+        result[point] = physics_feedback_bispectrum_3pcf(owner.get(),
+          triangle, redshifts.data()[point], parameters.feedback_amplitude);
       } else {
         result[point] = physics_projected_3pcf(projection, triangle[0],
           triangle[1], triangle[2], component);
@@ -831,7 +906,7 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("source_readers") = false,
     py::arg("table_boost") = 8,
     py::arg("fit_nz") = 33,
-    py::arg("source_z") = py::none());
+    py::arg("source_z") = py::none(), py::arg("feedback") = py::dict());
   module.def("physics_model_notebook", &model_notebook_physics,
     py::arg("k"),
     py::arg("p_linear0"),
@@ -852,7 +927,7 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("source_readers") = false,
     py::arg("table_boost") = 8,
     py::arg("fit_nz") = 33,
-    py::arg("source_z") = py::none(),
+    py::arg("source_z") = py::none(), py::arg("feedback") = py::dict(),
     "Copy sliced or Fortran-order arrays through the Armadillo adapter.");
 
   model.def("matter", [](const physics_owner_3pcf& owner,
@@ -1030,6 +1105,51 @@ void bind_threepcf_physics(py::module_& module)
   }, py::arg("k").noconvert(), py::arg("z").noconvert(),
     py::arg("mode") = 2,
     "P modes: 0=linear D^2,1=Pnl(k,0)D^2,2=supplied nonlinear evolution.");
+  model.def("power_response", [](const physics_owner_3pcf& owner,
+      const physics_array& k, const physics_array& z, double amplitude) {
+    shape_physics(k, 1);
+    shape_physics(z, 1);
+    finite_physics(k);
+    finite_physics(z);
+    require_physics_interface(k.size() == z.size(),
+      "power-response k and z arrays must have equal length");
+    physics_array result(k.size());
+    for (py::ssize_t index=0; index<k.size(); index++) {
+      result.mutable_data()[index] = physics_feedback_power_3pcf(owner.get(),
+        k.data()[index], z.data()[index], amplitude);
+    }
+    return result;
+  }, py::arg("k").noconvert(), py::arg("z").noconvert(),
+    py::arg("amplitude"));
+  model.def("power_response_notebook", [](const physics_owner_3pcf& owner,
+      const physics_notebook_array& k, const physics_notebook_array& z,
+      double amplitude) {
+    const arma::Col<double> values = physics_feedback_power_cpp_3pcf(owner,
+      copy_column_physics(k), copy_column_physics(z), amplitude);
+    physics_array result(values.n_elem);
+    std::memcpy(result.mutable_data(), values.memptr(),
+      static_cast<size_t>(values.n_elem)*sizeof(double));
+    return result;
+  }, py::arg("k"), py::arg("z"), py::arg("amplitude"));
+  model.def("bispectrum_response", [](const physics_owner_3pcf& owner,
+      const physics_array& sides, const physics_array& redshifts,
+      double amplitude) {
+    physics_ia_3pcf parameters;
+    physics_default_ia_3pcf(&parameters);
+    parameters.feedback_amplitude = amplitude;
+    return points_physics(owner, sides, redshifts, physics_int_array(),
+      parameters, 4, 0, false);
+  }, py::arg("sides").noconvert(), py::arg("redshifts").noconvert(),
+    py::arg("amplitude"));
+  model.def("bispectrum_response_notebook", [](
+      const physics_owner_3pcf& owner, const physics_notebook_array& sides,
+      const physics_notebook_array& redshifts, double amplitude) {
+    physics_ia_3pcf parameters;
+    physics_default_ia_3pcf(&parameters);
+    parameters.feedback_amplitude = amplitude;
+    return points_notebook_physics(owner, sides, redshifts,
+      physics_notebook_int(), parameters, 4, 0, false);
+  }, py::arg("sides"), py::arg("redshifts"), py::arg("amplitude"));
   model.def("nla_power", [](const physics_owner_3pcf& owner,
       const physics_array& ell, const physics_int_array& bins,
       const py::dict& parameters) {
@@ -1050,7 +1170,7 @@ void bind_threepcf_physics(py::module_& module)
     return result;
   }, py::arg("ell").noconvert(), py::arg("bins").noconvert(),
     py::arg("parameters") = py::dict(),
-    "Shear C_ell with deterministic NLA; rejects TATT loops and baryons.");
+    "Shear C_ell with NLA and optional paired feedback; no TATT loops.");
   model.def("nla_power_notebook", [](const physics_owner_3pcf& owner,
       const physics_notebook_array& ell, const physics_notebook_int& bins,
       const py::dict& parameters) {

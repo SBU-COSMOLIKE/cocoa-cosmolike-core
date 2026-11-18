@@ -11,7 +11,8 @@
 9. [Preparation, interpolation and parallel work](#preparation)
 10. [Changing a calculation without restarting Python](#state)
 11. [Accuracy and independent checks](#checks)
-12. [Acknowledgements](#credits)
+12. [Paired baryonic responses](#paired-feedback)
+13. [Acknowledgements](#credits)
 
 ## What can be calculated? <a name="scope"></a>
 
@@ -1026,6 +1027,27 @@ mapping are separate checks. A comparison of a shared kernel is not an
 execution of the complete original survey pipeline. The project validation
 record states what was actually run; planned notebooks or unpublished
 survey inputs must not be counted as completed evidence.
+
+## Paired baryonic responses <a name="paired-feedback"></a>
+
+An optional immutable input supplies positive hydro/DMO ratios for total
+matter power and bispectrum separately. The common amplitude applies
+R(A)=exp(A ln R), with zero returning DMO and one selecting the supplied
+pair. This interpolating family keeps ratios fixed when cosmology changes.
+It does not infer a bispectrum response from a power response.
+
+The nonlinear-alignment baseline receives these ratios; quadratic IA
+terms retain DMO inputs. Raw building-block queries remain DMO. Native
+preparation copies uniform axes, upsamples log ratios with cubic splines,
+and leaves only arithmetic-index linear reads inside projection loops.
+The amplitude participates in mean and batch identities. The response
+owner cannot be edited after construction. Boundary extension is explicit:
+refuse out-of-range queries or hold boundary values.
+
+The project [response guide](../../../../../projects/des_3pcf/FEEDBACK.md)
+defines units, array order, metadata, the executed teaching notebook and
+calibration limits. The covariance does not acquire a feedback response
+from this mean calculation.
 
 ## Acknowledgements <a name="credits"></a>
 
