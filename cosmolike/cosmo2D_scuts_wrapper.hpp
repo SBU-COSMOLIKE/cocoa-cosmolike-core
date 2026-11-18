@@ -155,6 +155,65 @@ py::dict gg_scale_cuts_tomo_cpp(
     const double alpha
   );
 
+// the Fourier gg spectra (autos, pairs) with the k window, as
+// C_gg_kwindow_tomo_cpp, at caller-given multipoles instead of the
+// data-vector band centers (the real-space projects have none)
+py::tuple C_gg_kwindow_tomo_ells_cpp(
+    const double kmax,
+    const int keep_ir,
+    const arma::Col<double> ells
+  );
+
+// the Fourier cosmic-shear EE spectra at the data-vector band centers
+// with the k window of the UV-fraction scale cuts: IR (keep_ir = 1) or
+// UV part at kmax (h/Mpc at z = 0), the full spectra for kmax <= 0;
+// (shear_Npowerspectra, nell)
+arma::Mat<double> C_ss_kwindow_tomo_cpp(
+    const double kmax,
+    const int keep_ir
+  );
+
+// the Fourier galaxy-galaxy lensing spectra at the data-vector band
+// centers with the k window (Limber or FKEM, as adopt_limber_gs
+// selects); (ggl_Npowerspectra, nell)
+arma::Mat<double> C_gs_kwindow_tomo_cpp(
+    const double kmax,
+    const int keep_ir
+  );
+
+// UV-fraction scale cuts (arXiv:2603.13031) of the Fourier cosmic-shear
+// spectra at the data-vector band centers, on an ascending kmax grid
+// (h/Mpc at z = 0): dict of pairs, lmax, mask, UV fractions and spectra
+py::dict ss_scale_cuts_tomo_cpp(
+    const arma::Col<double> kmax,
+    const double alpha
+  );
+
+// UV-fraction scale cuts (arXiv:2603.13031) of the Fourier
+// galaxy-galaxy lensing spectra at the data-vector band centers, on an
+// ascending kmax grid (h/Mpc at z = 0): dict of pairs, lmax, mask, UV
+// fractions and spectra
+py::dict gs_scale_cuts_tomo_cpp(
+    const arma::Col<double> kmax,
+    const double alpha
+  );
+
+// w(theta) of every lens bin with the k window of the UV-fraction scale
+// cuts: IR (keep_ir = 1) or UV part at kmax (h/Mpc at z = 0), the full
+// w(theta) for kmax <= 0; (clustering_nbin, Ntheta)
+arma::Mat<double> w_gg_kwindow_tomo_cpp(
+    const double kmax,
+    const int keep_ir
+  );
+
+// UV-fraction scale cuts (arXiv:2603.13031) of w(theta) per lens bin on
+// an ascending kmax grid (h/Mpc at z = 0): dict of theta_min, mask, UV
+// fractions and correlation functions
+py::dict w_gg_scale_cuts_tomo_cpp(
+    const arma::Col<double> kmax,
+    const double alpha
+  );
+
 // -----------------------------------------------------------------------------
 
 }  // namespace cosmolike_interface

@@ -2025,6 +2025,1007 @@ def lowrank_gg_suite(u, name, measured, rtol=0.10, floor=1.0e-8,
     return TestLowrank
 
 
+# ---- the UV-fraction scale cut of w(theta) ----------------------------------
+
+# The cut grid of the w(theta) scale-cut checks, in h/Mpc at z = 0: the
+# grid of the example notebooks, (first, last, count) of log-spaced
+# values, then one cut far above every scale the angular bins resolve,
+# where the UV fraction must be small in every bin.
+W_GG_SCALE_CUT_KMAX_RANGE = (0.05, 1.0, 12)
+W_GG_SCALE_CUT_KMAX_HIGH = 20.0
+W_GG_SCALE_CUT_ALPHA = 0.05
+
+# The three clustering projections the cut runs on, as likelihood
+# overrides: Limber at every multipole, the FKEM non-Limber split and the
+# low-rank (SVD) non-Limber engine. The cut follows whichever the
+# likelihood selected.
+W_GG_SCALE_CUT_ENGINES = {
+    "Limber": {"adopt_limber_gg": 1, "nonlimber_lowrank_gg": 0},
+    "FKEM": {"adopt_limber_gg": 0, "nonlimber_lowrank_gg": 0},
+    "SVD": {"adopt_limber_gg": 0, "nonlimber_lowrank_gg": 1},
+}
+
+# Window off, the non-Limber driver differs from w_gg_tomo: the Fourier
+# entry it uses below the cap has no early exit, while w_gg_tomo switches
+# each bin to Limber once |C_l/C_l^limber - 1| < 0.002. The difference
+# is relative to the largest |w| of the lens bin, the scale that stays
+# finite where w crosses zero at large angles; it stays below 4e-5 on
+# FKEM and SVD in the four real-space projects.
+W_GG_SCALE_CUT_NONLIMBER_RTOL = 1.0e-4
+
+# The step splits every mode into an IR or a UV mode, and the projection
+# is linear, so w_IR + w_UV = w up to rounding on every engine (the
+# low-rank engine forms its UV part as full - IR). The tolerance is
+# relative to |w_IR| + |w_UV|, the scale of the two summands (w itself
+# can cross zero at large angles).
+W_GG_SCALE_CUT_PARTITION_RTOL = 1.0e-12
+# the cuts of the partition check: below, inside and above the range
+# where the notebooks' cuts bite
+W_GG_SCALE_CUT_PARTITION_KMAX = (0.1, 0.3, 1.0)
+
+# The Limber cross-check compares the driver's w_IR with a reference
+# built from the exact windowed Limber C_l at every integer multipole.
+# The driver interpolates its C_l table linearly in ln l above l = 20,
+# so their difference is the table's interpolation error. That error
+# enters the Legendre sum at the size of its terms, so it is bounded
+# relative to S_i = sum_l |Pl[i, l] C_l|, the sum of the absolute
+# terms of angular bin i. w itself is no usable scale: at large angles
+# it cancels down to ~2e-3 of S_i near its zero crossing, and a bound
+# relative to |w| must be loosened everywhere to cover that one place.
+# Measured: at most 1.9e-3 of S_i in the four real-space projects;
+# doubling the table nodes (accuracyboost 2) shrinks the window-off
+# error fourfold, the signature of linear interpolation.
+W_GG_SCALE_CUT_LIMBER_RTOL = 1.0e-2
+W_GG_SCALE_CUT_LIMBER_KMAX = 0.3   # h/Mpc at z = 0, the notebooks' panel
+# multipoles per call of the reference spectra: the Limber batch holds
+# per-node work arrays of size (lens bins) x (multipoles) x (nodes), so
+# the integers up to lmax ~ 1e5 go through it in chunks
+W_GG_SCALE_CUT_ELL_CHUNK = 2048
+
+
+def _w_gg_scale_cut_kmax():
+    """The cut grid of the w(theta) checks, ascending, in h/Mpc at z = 0.
+
+    Returns:
+      numpy array: the log-spaced W_GG_SCALE_CUT_KMAX_RANGE grid
+      followed by W_GG_SCALE_CUT_KMAX_HIGH.
+    """
+    import numpy as np
+    (first, last, count) = W_GG_SCALE_CUT_KMAX_RANGE
+    grid = np.geomspace(first, last, count)
+    return np.append(grid, W_GG_SCALE_CUT_KMAX_HIGH)
+
+
+def _w_gg_legendre_kernel(theta_min_arcmin, theta_max_arcmin, ntheta,
+                          lmax):
+    """The bin-averaged Legendre kernel of w(theta), coded independently.
+
+    w(theta_i) = sum_l Pl[i, l] C_l, with Pl[i, l] the average of
+    (2l + 1)/(4 pi) P_l(cos theta) over angular bin i. With x = cos theta
+    the antiderivative of P_l is (P_{l+1} - P_{l-1})/(2l + 1), so
+
+        Pl[i, l] = [P_{l+1}(x_lo) - P_{l+1}(x_hi)
+                    - P_{l-1}(x_lo) + P_{l-1}(x_hi)]
+                   / (4 pi (x_lo - x_hi)),
+
+    where x_lo and x_hi are the cosines of the bin's smaller and larger
+    angle (x_lo > x_hi). The Legendre polynomials come from the upward
+    recurrence (l + 1) P_{l+1} = (2l + 1) x P_l - l P_{l-1}, which is
+    stable for |x| <= 1; the C code uses GSL instead, so the two kernels
+    are independent implementations of the same formula.
+
+    The bin edges are log-spaced between theta_min and theta_max, the
+    binning of init_binning.
+
+    Arguments:
+      theta_min_arcmin = lower edge of the angular range, arcmin.
+      theta_max_arcmin = upper edge of the angular range, arcmin.
+      ntheta           = number of angular bins.
+      lmax             = one past the last multipole of the sum
+                         (Ntable.LMAX, the likelihood key lmax).
+
+    Returns:
+      numpy array (ntheta, lmax): Pl[i, l], with Pl[:, 0] = 0 (the sum
+      starts at l = 1, as in w_gg_tomo).
+    """
+    import numpy as np
+    arcmin = np.pi/10800.0   # one arcmin in radians
+    ln_edges = np.linspace(np.log(theta_min_arcmin*arcmin),
+                           np.log(theta_max_arcmin*arcmin), ntheta + 1)
+    edges = np.exp(ln_edges)
+    x_lo = np.cos(edges[:-1])   # cosine of each bin's smaller angle
+    x_hi = np.cos(edges[1:])    # cosine of each bin's larger angle
+
+    # P[l] = P_l at the 2*ntheta edge cosines: columns 0 .. ntheta-1 are
+    # x_lo, columns ntheta .. 2*ntheta-1 are x_hi
+    x = np.concatenate((x_lo, x_hi))
+    P = np.empty((lmax + 1, 2*ntheta))
+    P[0] = 1.0
+    P[1] = x
+    for l in range(1, lmax):
+        P[l + 1] = ((2*l + 1)*x*P[l] - l*P[l - 1])/(l + 1)
+
+    # dP[l, i] = P_l(x_lo[i]) - P_l(x_hi[i])
+    dP = P[:, :ntheta] - P[:, ntheta:]
+    kernel = np.zeros((ntheta, lmax))
+    width = 4.0*np.pi*(x_lo - x_hi)
+    # rows 2 .. lmax of dP are l + 1 for l = 1 .. lmax - 1, rows
+    # 0 .. lmax - 2 are l - 1; .T turns (l, bin) into (bin, l)
+    kernel[:, 1:lmax] = (dP[2:lmax + 1] - dP[0:lmax - 1]).T/width[:, None]
+    return kernel
+
+
+def w_gg_scale_cut_suite(u, name, example="example2"):
+    """Build the class that checks the UV-fraction scale cut of w(theta).
+
+    The cut (arXiv:2603.13031) splits each clustering spectrum as
+    C_l = C_l^IR + C_l^UV with a step on the 3D power spectrum at
+    k_max/D(z), projects both parts with the Legendre kernel of
+    w(theta), and keeps an angular bin while
+    |w_UV|/(|w_UV| + |w_IR|) < alpha. The bindings under test:
+    w_gg_kwindow_tomo (the driver: w, w_IR or w_UV), w_gg_scale_cuts_tomo
+    (the cut on a k_max grid) and C_gg_kwindow_tomo_ells (the windowed
+    spectra at given multipoles, used as a reference).
+
+    The cut runs the projection the likelihood selected. One test method
+    per engine of W_GG_SCALE_CUT_ENGINES (Limber, FKEM, SVD) builds the
+    frozen fiducial of `example` with that engine and checks:
+      1. window off, the driver against the data vector's w_gg_tomo:
+         bit for bit on the Limber path, within
+         W_GG_SCALE_CUT_NONLIMBER_RTOL on the non-Limber engines;
+      2. w_IR (keep_ir = 1) plus an independently computed w_UV
+         (keep_ir = 0) equals w to W_GG_SCALE_CUT_PARTITION_RTOL;
+      4. at the largest cut, W_GG_SCALE_CUT_KMAX_HIGH (20 h/Mpc), the
+         UV fraction is below alpha in every bin;
+      5. theta_min does not increase as k_max increases, per lens bin,
+         and every row of the mask is the enforced suffix: the kept
+         bins of one cut are the largest angles, and each cut keeps
+         every bin a smaller cut keeps;
+      and that running the cut leaves the model as it was: the next
+      ordinary evaluation gives the same data vector bit for bit.
+    test_engine_limber_reference adds, on the Limber path:
+      3. the driver's w_IR agrees with a reference summed from the
+         exact windowed Limber C_l at every integer l and an
+         independently coded Legendre kernel, on every angular bin,
+         within W_GG_SCALE_CUT_LIMBER_RTOL of sum_l |Pl C_l|, the
+         cancellation-free scale of the Legendre sum.
+    Runtimes of the driver, the cut and the reference are printed
+    (informational, never asserted).
+
+    Arguments:
+      u       = the project's cocoa_test_utils module.
+      name    = the class name to build (the caller assigns the class
+                to this same module-level name).
+      example = the key of u.EXAMPLES the checks evaluate; its
+                likelihood must compute galaxy clustering in real space.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestWggScaleCut(unittest.TestCase):
+        """The UV-fraction scale cut of w(theta) on the frozen fiducial."""
+
+        # the engine of the last build with its model, point, likelihood
+        # and masked data vector: an engine lives in the compiled
+        # interface's global state, so switching it means a new model
+        _engine = None
+        _model = None
+        _point = None
+        _like = None
+        _dv = None
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR and verify the frozen state."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+
+        @classmethod
+        def _ensure(cls, engine):
+            """Leave the interface at the frozen fiducial with this engine.
+
+            Builds and evaluates a new model when the last one used
+            another engine; otherwise the interface already holds the
+            state.
+
+            Arguments:
+              engine = a key of W_GG_SCALE_CUT_ENGINES.
+
+            Returns:
+              the likelihood object of the model (its lmax and angular
+              binning are the interface's).
+            """
+            import numpy as np
+            if cls._engine == engine:
+                return cls._like
+            lk_name = u.EXAMPLES[example]["likelihood"]
+            print(f"  building model ({example}, NLA, {engine}) ...",
+                  flush=True)
+            info = u.load_frozen_info(example, tatt=False)
+            for key, value in W_GG_SCALE_CUT_ENGINES[engine].items():
+                info["likelihood"][lk_name][key] = value
+            model = u.make_model(info)
+            point = u.build_point(model, example, tatt=False)
+            u.evaluate_chi2(model, point)
+            ci = _interface(u)
+            cls._engine = engine
+            cls._model = model
+            cls._point = point
+            cls._like = model.likelihood[lk_name]
+            cls._dv = np.array(_masked_vector_fn(u, ci)())
+            return cls._like
+
+        def _engine_checks(self, engine):
+            """Checks 1, 2, 4 and 5 and the untouched model, one engine."""
+            import time
+
+            import numpy as np
+            ci = _interface(u)
+            self._ensure(engine)
+
+            # 1. window off against the data vector's w_gg_tomo, read
+            # before any cut runs: (ntheta, nbin, nbin), autos on the
+            # diagonal
+            wgg = np.array(ci.w_gg_tomo())
+            start = time.perf_counter()
+            full = np.array(ci.w_gg_kwindow_tomo(kmax=-1.0, keep_ir=1))
+            elapsed = time.perf_counter() - start
+            nbin = full.shape[0]
+            print(f"    {engine}: driver {elapsed:.3f} s, {nbin} lens "
+                  f"bins x {full.shape[1]} angular bins", flush=True)
+            for s in range(nbin):
+                reference = wgg[:, s, s]
+                if engine == "Limber":
+                    self.assertTrue(
+                        np.array_equal(full[s], reference),
+                        f"{engine}, lens bin {s}: the window-off driver "
+                        "differs from w_gg_tomo (max |difference| = "
+                        f"{np.max(np.abs(full[s] - reference)):.3e}); "
+                        "its fill no longer repeats w_gg_tomo's")
+                else:
+                    scale = np.max(np.abs(reference))
+                    worst = float(np.max(np.abs(full[s] - reference))/scale)
+                    print(f"    {engine}, lens bin {s}: max |w - w_gg_tomo|"
+                          f"/max|w_gg_tomo| = {worst:.2e}", flush=True)
+                    self.assertLess(
+                        worst, W_GG_SCALE_CUT_NONLIMBER_RTOL,
+                        f"{engine}, lens bin {s}: the window-off driver "
+                        f"differs from w_gg_tomo by {worst:.3e} of the "
+                        f"bin's largest |w| (limit "
+                        f"{W_GG_SCALE_CUT_NONLIMBER_RTOL:.0e})")
+
+            # 2. the partition
+            for kmax in W_GG_SCALE_CUT_PARTITION_KMAX:
+                w_ir = np.array(ci.w_gg_kwindow_tomo(kmax=kmax, keep_ir=1))
+                w_uv = np.array(ci.w_gg_kwindow_tomo(kmax=kmax, keep_ir=0))
+                scale = np.abs(w_ir) + np.abs(w_uv)
+                residual = np.abs(w_ir + w_uv - full)
+                worst = float(np.max(residual/scale))
+                print(f"    {engine}, k_max = {kmax}: max |w_IR + w_UV - w|"
+                      f"/(|w_IR| + |w_UV|) = {worst:.3e}", flush=True)
+                self.assertTrue(
+                    np.all(residual <= W_GG_SCALE_CUT_PARTITION_RTOL*scale),
+                    f"{engine}, k_max = {kmax}: w_IR + w_UV misses w by "
+                    f"{worst:.3e} of |w_IR| + |w_UV| (limit "
+                    f"{W_GG_SCALE_CUT_PARTITION_RTOL:.0e})")
+
+            # 4. and 5., on the cut grid
+            kmax = _w_gg_scale_cut_kmax()
+            start = time.perf_counter()
+            cuts = ci.w_gg_scale_cuts_tomo(kmax=kmax,
+                                           alpha=W_GG_SCALE_CUT_ALPHA)
+            elapsed = time.perf_counter() - start
+            print(f"    {engine}: w_gg_scale_cuts_tomo, {len(kmax)} cuts in "
+                  f"{elapsed:.2f} s", flush=True)
+            uv = np.array(cuts["uv_fraction"])[:, :, -1]
+            print(f"    {engine}, k_max = {W_GG_SCALE_CUT_KMAX_HIGH}: max UV "
+                  f"fraction = {float(np.max(uv)):.3e}", flush=True)
+            self.assertTrue(
+                np.all(uv < W_GG_SCALE_CUT_ALPHA),
+                f"{engine}, k_max = {W_GG_SCALE_CUT_KMAX_HIGH} h/Mpc: UV "
+                f"fraction up to {float(np.max(uv)):.3e}, not below "
+                f"alpha = {W_GG_SCALE_CUT_ALPHA}")
+
+            theta_min = np.array(cuts["theta_min"])   # (nbin, nk)
+            mask = np.array(cuts["mask"])             # (nbin, ntheta, nk)
+            for s in range(theta_min.shape[0]):
+                print(f"    {engine}, lens bin {s}: theta_min [arcmin] = "
+                      + " ".join(f"{t:.3g}" for t in theta_min[s]),
+                      flush=True)
+            self.assertTrue(
+                np.all(np.diff(theta_min, axis=1) <= 0.0),
+                f"{engine}: theta_min grows with k_max in some lens bin: "
+                f"{theta_min}")
+            # a suffix in theta: along the theta axis a mask row only
+            # steps from 0 to 1; nested in k_max: a larger cut keeps at
+            # least the bins of a smaller one
+            self.assertTrue(
+                np.all(np.diff(mask, axis=1) >= 0.0),
+                f"{engine}: a mask row is not a suffix in theta")
+            self.assertTrue(
+                np.all(np.diff(mask, axis=2) >= 0.0),
+                f"{engine}: a smaller k_max keeps a bin a larger k_max cuts")
+
+            # the cut leaves the model as it was: the next ordinary
+            # evaluation gives the data vector of the build bit for bit
+            u.evaluate_chi2(self._model, self._point)
+            after = np.array(_masked_vector_fn(u, ci)())
+            self.assertTrue(
+                np.array_equal(after, self._dv),
+                f"{engine}: the data vector after the cut differs from "
+                "the one before (max |difference| = "
+                f"{np.max(np.abs(after - self._dv)):.3e}); the cut left "
+                "state behind")
+
+        def test_engine_fkem(self):
+            """FKEM: checks 1, 2, 4 and 5, and the untouched model."""
+            self._engine_checks("FKEM")
+
+        def test_engine_limber(self):
+            """Limber at every l: checks 1, 2, 4 and 5, and the model."""
+            self._engine_checks("Limber")
+
+        def test_engine_limber_reference(self):
+            """Check 3: the Limber w_IR against the exact-C_l reference."""
+            import time
+
+            import numpy as np
+            ci = _interface(u)
+            like = self._ensure("Limber")
+            kmax = W_GG_SCALE_CUT_LIMBER_KMAX
+            lmax = int(like.lmax)
+
+            kernel = _w_gg_legendre_kernel(
+                theta_min_arcmin=float(like.theta_min_arcmin),
+                theta_max_arcmin=float(like.theta_max_arcmin),
+                ntheta=int(like.ntheta), lmax=lmax)
+
+            # the exact windowed Limber C_l at l = 1 .. lmax - 1; column
+            # 0 (l = 0) stays zero, as in the driver
+            start = time.perf_counter()
+            cl = None
+            for first in range(1, lmax, W_GG_SCALE_CUT_ELL_CHUNK):
+                last = min(first + W_GG_SCALE_CUT_ELL_CHUNK, lmax)
+                ells = np.arange(first, last, dtype=float)
+                (autos, pairs) = ci.C_gg_kwindow_tomo_ells(
+                    kmax=kmax, keep_ir=1, ells=ells)
+                autos = np.array(autos)
+                if cl is None:
+                    cl = np.zeros((autos.shape[0], lmax))
+                cl[:, first:last] = autos
+            reference = cl @ kernel.T   # (nbin, ntheta)
+            elapsed = time.perf_counter() - start
+            print(f"    reference: exact C_l at {lmax - 1} multipoles, "
+                  f"{elapsed:.1f} s", flush=True)
+
+            w_ir = np.array(ci.w_gg_kwindow_tomo(kmax=kmax, keep_ir=1))
+            # the cancellation-free scale of the Legendre sum: the
+            # interpolation error of the driver's C_l table enters
+            # w_IR at the size of the sum's terms, while w_IR itself
+            # cancels toward zero at large angles
+            scale = np.abs(cl) @ np.abs(kernel).T
+            relative = np.abs(w_ir - reference)/scale
+            worst = float(np.max(relative))
+            print(f"    k_max = {kmax}: max |w_IR - reference|"
+                  f"/sum_l |Pl C_l| = {worst:.3e}", flush=True)
+            self.assertLess(
+                worst, W_GG_SCALE_CUT_LIMBER_RTOL,
+                f"k_max = {kmax}: the driver's w_IR differs from the "
+                f"exact-C_l reference by {worst:.3e} of the sum of "
+                f"absolute Legendre terms (limit "
+                f"{W_GG_SCALE_CUT_LIMBER_RTOL:.0e})")
+
+        def test_engine_svd(self):
+            """Low-rank SVD: checks 1, 2, 4 and 5, and the untouched model."""
+            self._engine_checks("SVD")
+
+    TestWggScaleCut.__name__ = name
+    TestWggScaleCut.__qualname__ = name
+    return TestWggScaleCut
+
+
+# ---- the UV-fraction scale cut of the Fourier C_ss and C_gs -----------------
+
+# The cut grid of the C_ss and C_gs scale-cut checks, in h/Mpc at z = 0:
+# (first, last, count) of log-spaced values covering the range where the
+# notebooks' cuts bite, then one cut far above every scale the band
+# centers resolve, where the UV fraction must be small in every band.
+SS_GS_SCALE_CUT_KMAX_RANGE = (0.05, 1.0, 12)
+SS_GS_SCALE_CUT_KMAX_HIGH = 20.0
+SS_GS_SCALE_CUT_ALPHA = 0.05
+
+# The two galaxy-galaxy lensing projections the cut runs on, as likelihood
+# overrides: Limber at every band center and the FKEM non-Limber split.
+# The cut follows whichever the likelihood selected. Cosmic shear is
+# Limber in every configuration (the core has no non-Limber shear
+# engine), so its checks run on whichever model is loaded.
+SS_GS_SCALE_CUT_GS_ENGINES = {
+    "Limber": {"adopt_limber_gs": 1},
+    "FKEM": {"adopt_limber_gs": 0},
+}
+
+# The step splits every quadrature node (and every FFTLog summand of the
+# FKEM sum) into an IR or a UV contribution, and each spectrum is a
+# linear sum of them, so C_IR + C_UV = C up to the rounding of the two
+# sums. The tolerance is relative to |C_IR| + |C_UV|, the scale of the
+# summands (C_gs can pass through zero).
+SS_GS_SCALE_CUT_PARTITION_RTOL = 1.0e-12
+# the cuts of the partition check: below, inside and above the range
+# where the notebooks' cuts bite
+SS_GS_SCALE_CUT_PARTITION_KMAX = (0.1, 0.3, 1.0)
+
+# The Limber cross-check of C_ss compares the driver's IR part, with the
+# intrinsic alignment switched off, against an independent numpy Limber
+# integral: the lensing efficiency from the project's n(z) by cumulative
+# trapezoids, P_NL and the growth factor D from CAMB's interpolators, the
+# step at k_max/D(z), all on SS_GS_SCALE_CUT_REFERENCE_NZ redshift nodes.
+# The two differ by quadrature and interpolation, not physics: cosmolike
+# integrates on its Gauss-Legendre nodes and reads P from its own (k, z)
+# table. The tolerance is relative to |C_IR| on the kept bands.
+SS_GS_SCALE_CUT_LIMBER_RTOL = 2.0e-3
+SS_GS_SCALE_CUT_LIMBER_KMAX = 0.3   # h/Mpc at z = 0, the notebooks' panel
+# redshift nodes of the reference integral, uniform from the n(z) table's
+# lower edge to its shifted upper edge
+SS_GS_SCALE_CUT_REFERENCE_NZ = 4000
+
+
+def _ss_gs_scale_cut_kmax():
+    """The cut grid of the C_ss and C_gs checks, ascending, h/Mpc at z = 0.
+
+    Returns:
+      numpy array: the log-spaced SS_GS_SCALE_CUT_KMAX_RANGE grid
+      followed by SS_GS_SCALE_CUT_KMAX_HIGH.
+    """
+    import numpy as np
+    (first, last, count) = SS_GS_SCALE_CUT_KMAX_RANGE
+    grid = np.geomspace(first, last, count)
+    return np.append(grid, SS_GS_SCALE_CUT_KMAX_HIGH)
+
+
+def _source_bin_values(values, suffix, nbin):
+    """One nuisance value per source bin, read from a parameter table.
+
+    The likelihoods name a per-source-bin nuisance <survey><suffix><i>,
+    with i counting from 1 (roman_M1, ROMAN_KL_DZ_S3); a bin without its
+    parameter takes 0, as the likelihood does (params.get(p, 0)).
+
+    Arguments:
+      values = {parameter name: value}, the sampled point merged with
+               the model's fixed parameters.
+      suffix = the name part before the bin number, e.g. "_M" (shear
+               calibration) or "_DZ_S" (source photo-z shift).
+      nbin   = the number of source bins.
+
+    Returns:
+      numpy array (nbin,) of the values, bin 0 first.
+    """
+    import numpy as np
+    pattern = re.compile(re.escape(suffix) + r"([0-9]+)$")
+    out = np.zeros(nbin)
+    for key, value in values.items():
+        found = pattern.search(key)
+        if found is None:
+            continue
+        b = int(found.group(1)) - 1
+        if 0 <= b < nbin:
+            out[b] = float(value)
+    return out
+
+
+def _ss_limber_reference(ci, like, values, kmax, ells, pairs, nz_nodes):
+    """The Limber C_ss^IR of pure lensing, coded independently in numpy.
+
+    With the intrinsic alignment off, the shear spectrum of source bins
+    i and j is the Limber integral
+
+        C_l^ij = F_l int dchi W_i(chi) W_j(chi)/chi^2
+                 P_NL((l + 1/2)/chi, z(chi)) Theta(k <= k_max/D(z)),
+
+    with the curved-sky prefactor F_l = l (l - 1)(l + 1)(l + 2)/(l + 1/2)^4
+    of cosmolike's shear spectra, the lensing kernel
+
+        W_i(chi) = (3/2) Omega_m (H0/c)^2 chi (1 + z) g_i(chi),
+        g_i(chi) = int_z^zmax dz' n_i(z') (1 - chi/chi(z')),
+
+    and Theta the IR step at the redshift's own threshold. g_i is the
+    difference A - chi B of two tail integrals of n_i and n_i/chi, each
+    a cumulative trapezoid. n_i(z) is the model's curve: the histogram
+    heights placed at the cell centers (the file's z column holds the
+    left edges), divided by the histogram area, joined by a natural cubic
+    spline (scipy here, GSL in cosmolike), zero outside the first and
+    last centers, and evaluated at z - Delta z_i (the photo-z shift).
+    P_NL and the growth factor D(z) = sqrt(P_lin(z, k_g)/P_lin(0, k_g))
+    at the likelihood's growth_k come from CAMB's interpolators, as the
+    likelihood reads them. Units: chi in Mpc/h, k in h/Mpc, P in
+    (Mpc/h)^3.
+
+    Arguments:
+      ci       = the compiled interface (reads the n(z) file).
+      like     = the likelihood object (its provider holds CAMB's
+                 results at the evaluated point).
+      values   = {parameter name: value} of the evaluated point.
+      kmax     = the cut at z = 0 in h/Mpc.
+      ells     = numpy array (nell,), the band centers.
+      pairs    = numpy array (nspec, 2) of source bins (i, j) per row.
+      nz_nodes = number of uniform redshift nodes of the integral.
+
+    Returns:
+      numpy array (nspec, nell), C_l^IR of every pair.
+    """
+    import numpy as np
+    from scipy.integrate import cumulative_trapezoid
+    from scipy.integrate import trapezoid
+    from scipy.interpolate import CubicSpline
+
+    c_over_H0 = 2997.92458   # c/H0 in Mpc/h
+    provider = like.provider
+    h = provider.get_param("H0")/100.0
+    omegam = provider.get_param("omegam")
+
+    # the source n(z) table as cosmolike reads it: column 0 = the left
+    # edges of uniform cells, one column per source bin after it
+    tables = ci.read_redshift_distributions(
+        lens_multihisto_file=like.lens_file,
+        lens_ntomo=int(like.lens_ntomo),
+        source_multihisto_file=like.source_file,
+        source_ntomo=int(like.source_ntomo))
+    table = np.array(tables[1], dtype=float)
+    nbin = table.shape[1] - 1
+    z_left = table[:, 0]
+    cell = (z_left[-1] - z_left[0])/(len(z_left) - 1)
+    centers = z_left + 0.5*cell
+    shifts = _source_bin_values(values, "_DZ_S", nbin)
+
+    # the line-of-sight nodes, from the table's lower edge (cosmolike's
+    # Limber range starts there) to its upper edge plus the largest
+    # positive shift
+    z_low = max(float(z_left[0]), 1.0e-6)
+    z_high = float(z_left[-1]) + cell + max(0.0, float(np.max(shifts)))
+    z = np.linspace(z_low, z_high, nz_nodes)
+    chi = provider.get_comoving_radial_distance(z)*h
+
+    # n_i(z) on the nodes: zero outside the spline's support
+    nz = np.zeros((nbin, nz_nodes))
+    for b in range(nbin):
+        heights = table[:, b + 1]
+        density = heights/(np.sum(heights)*cell)
+        spline = CubicSpline(centers, density, bc_type="natural")
+        z_true = z - shifts[b]
+        inside = (z_true > centers[0]) & (z_true < centers[-1])
+        nz[b, inside] = spline(z_true[inside])
+
+    # tail integrals int_z^z_high: the full integral minus the running
+    # one from z_low (cumulative_trapezoid with initial=0 starts at 0)
+    total_n = trapezoid(nz, x=z, axis=1)
+    total_q = trapezoid(nz/chi, x=z, axis=1)
+    tail_n = total_n[:, None] - cumulative_trapezoid(nz, x=z, axis=1,
+                                                     initial=0.0)
+    tail_q = total_q[:, None] - cumulative_trapezoid(nz/chi, x=z, axis=1,
+                                                     initial=0.0)
+    efficiency = tail_n - chi*tail_q
+    kernel = 1.5*omegam/c_over_H0**2*chi*(1.0 + z)*efficiency
+
+    extrap_kmax = 2.5e2*float(like.accuracyboost)
+    p_nonlinear = provider.get_Pk_interpolator(
+        ("delta_tot", "delta_tot"), nonlinear=True,
+        extrap_kmin=1e-6, extrap_kmax=extrap_kmax)
+    p_linear = provider.get_Pk_interpolator(
+        ("delta_tot", "delta_tot"), nonlinear=False,
+        extrap_kmin=1e-6, extrap_kmax=extrap_kmax)
+    growth_k = float(getattr(like, "growth_k", 0.05))   # 1/Mpc
+    growth = np.sqrt(p_linear.P(z, growth_k)/p_linear.P(0.0, growth_k))
+    threshold = kmax/growth   # h/Mpc, per node
+
+    out = np.zeros((len(pairs), len(ells)))
+    for n, ell in enumerate(ells):
+        prefactor = ell*(ell - 1.0)*(ell + 1.0)*(ell + 2.0)/(ell + 0.5)**4
+        k = (ell + 0.5)/chi   # h/Mpc
+        keep = k <= threshold
+        # P is read only on the kept nodes (k <= k_max/D, well inside
+        # CAMB's range); the others contribute zero to the IR part
+        power = np.zeros(nz_nodes)
+        power[keep] = (p_nonlinear.P(z[keep], k[keep]*h, grid=False)
+                       *h**3)
+        for s in range(len(pairs)):
+            (i, j) = (int(pairs[s][0]), int(pairs[s][1]))
+            integrand = kernel[i]*kernel[j]/chi**2*power
+            out[s, n] = prefactor*trapezoid(integrand, x=chi)
+    return out
+
+
+def fourier_ss_gs_scale_cut_suite(u, name, example="example2"):
+    """Build the class that checks the UV-fraction cut of C_ss and C_gs.
+
+    The cut (arXiv:2603.13031) splits each Fourier spectrum as
+    C_l = C_l^IR + C_l^UV with a step on the 3D power spectrum at
+    k_max/D(z), and keeps a band while |C_l^UV|/(|C_l^UV| + |C_l^IR|) <
+    alpha. The bindings under test: C_ss_kwindow_tomo and
+    C_gs_kwindow_tomo (the drivers: C, C_IR or C_UV at the data-vector
+    band centers) and ss_scale_cuts_tomo and gs_scale_cuts_tomo (the cut
+    on a k_max grid).
+
+    Cosmic shear is Limber. Galaxy-galaxy lensing runs the projection the
+    likelihood selected; one test method per engine of
+    SS_GS_SCALE_CUT_GS_ENGINES (Limber, FKEM) builds the frozen fiducial
+    of `example` with that engine. The checks, per probe and gs engine:
+      1. window off, the driver against the data-vector path, bit for
+         bit: C_ss against the EE spectra of C_ss_tomo_limber at the band
+         centers, C_gs against the gs block of the masked data vector
+         (each kept entry there is the driver's value times 1 + m, m the
+         shear calibration of the pair's source bin);
+      2. C_IR (keep_ir = 1) plus an independently computed C_UV
+         (keep_ir = 0) equals C to SS_GS_SCALE_CUT_PARTITION_RTOL;
+      4. at the largest cut, SS_GS_SCALE_CUT_KMAX_HIGH (20 h/Mpc), the UV
+         fraction is below alpha in every band;
+      5. l_max does not decrease as k_max increases, per pair, and every
+         row of the mask is the enforced prefix: the kept bands of one
+         cut are the lowest multipoles, and each cut keeps every band a
+         smaller cut keeps;
+      and that running the cut leaves the model as it was: the next
+      ordinary evaluation gives the same data vector bit for bit.
+    test_shear_limber_reference adds:
+      3. with the intrinsic alignment off, the driver's C_ss^IR agrees on
+         the kept bands with the independent numpy Limber integral of
+         _ss_limber_reference, to SS_GS_SCALE_CUT_LIMBER_RTOL.
+    Runtimes of the drivers and the cuts are printed (informational,
+    never asserted).
+
+    Arguments:
+      u       = the project's cocoa_test_utils module.
+      name    = the class name to build (the caller assigns the class
+                to this same module-level name).
+      example = the key of u.EXAMPLES the checks evaluate; its
+                likelihood must compute cosmic shear and galaxy-galaxy
+                lensing in Fourier space.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestSsGsScaleCut(unittest.TestCase):
+        """The UV-fraction scale cut of C_ss and C_gs on the frozen fiducial."""
+
+        # the gs engine of the last build with its model, point,
+        # likelihood and masked data vector: the engine lives in the
+        # compiled interface's global state, so switching it means a new
+        # model
+        _engine = None
+        _model = None
+        _point = None
+        _like = None
+        _dv = None
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR and verify the frozen state."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+
+        @classmethod
+        def _ensure(cls, engine):
+            """Leave the interface at the frozen fiducial with this engine.
+
+            Builds and evaluates a new model when the last one used
+            another gs engine; otherwise the interface already holds the
+            state. engine = None accepts whichever model is loaded (the
+            shear checks do not depend on the gs engine) and builds the
+            example's own configuration when none is.
+
+            Arguments:
+              engine = a key of SS_GS_SCALE_CUT_GS_ENGINES, or None.
+
+            Returns:
+              the likelihood object of the model.
+            """
+            import numpy as np
+            if engine is None and cls._model is not None:
+                return cls._like
+            if engine is not None and cls._engine == engine:
+                return cls._like
+            lk_name = u.EXAMPLES[example]["likelihood"]
+            label = "default gs engine" if engine is None else engine
+            print(f"  building model ({example}, NLA, {label}) ...",
+                  flush=True)
+            info = u.load_frozen_info(example, tatt=False)
+            if engine is not None:
+                overrides = SS_GS_SCALE_CUT_GS_ENGINES[engine]
+                for key, value in overrides.items():
+                    info["likelihood"][lk_name][key] = value
+            model = u.make_model(info)
+            point = u.build_point(model, example, tatt=False)
+            u.evaluate_chi2(model, point)
+            ci = _interface(u)
+            cls._engine = engine
+            cls._model = model
+            cls._point = point
+            cls._like = model.likelihood[lk_name]
+            cls._dv = np.array(_masked_vector_fn(u, ci)())
+            return cls._like
+
+        def _point_values(self):
+            """The evaluated point merged with the model's fixed parameters.
+
+            Returns:
+              {parameter name: value} of every sampled and fixed input
+              parameter.
+            """
+            values = dict(self._model.parameterization.constant_params())
+            values.update(self._point)
+            return values
+
+        def _partition(self, probe, driver, full):
+            """Check 2 for one probe: C_IR + C_UV = C at three cuts.
+
+            Arguments:
+              probe  = "ss" or "gs" plus the engine, for the messages.
+              driver = the binding (C_ss_kwindow_tomo or
+                       C_gs_kwindow_tomo).
+              full   = numpy array (nspec, nell), the window-off spectra.
+            """
+            import numpy as np
+            for kmax in SS_GS_SCALE_CUT_PARTITION_KMAX:
+                c_ir = np.array(driver(kmax=kmax, keep_ir=1))
+                c_uv = np.array(driver(kmax=kmax, keep_ir=0))
+                scale = np.abs(c_ir) + np.abs(c_uv)
+                residual = np.abs(c_ir + c_uv - full)
+                # entries with scale = 0 have residual 0 too; the maximum
+                # below skips them
+                ratio = np.zeros_like(residual)
+                nonzero = scale > 0.0
+                ratio[nonzero] = residual[nonzero]/scale[nonzero]
+                worst = float(np.max(ratio))
+                print(f"    {probe}, k_max = {kmax}: max |C_IR + C_UV - C|"
+                      f"/(|C_IR| + |C_UV|) = {worst:.3e}", flush=True)
+                self.assertTrue(
+                    np.all(residual <= SS_GS_SCALE_CUT_PARTITION_RTOL*scale),
+                    f"{probe}, k_max = {kmax}: C_IR + C_UV misses C by "
+                    f"{worst:.3e} of |C_IR| + |C_UV| (limit "
+                    f"{SS_GS_SCALE_CUT_PARTITION_RTOL:.0e})")
+
+        def _cut_grid(self, probe, cutter):
+            """Checks 4 and 5 for one probe on the cut grid.
+
+            Arguments:
+              probe  = "ss" or "gs" plus the engine, for the messages.
+              cutter = the binding (ss_scale_cuts_tomo or
+                       gs_scale_cuts_tomo).
+
+            Returns:
+              the dict the binding returned.
+            """
+            import time
+
+            import numpy as np
+            kmax = _ss_gs_scale_cut_kmax()
+            start = time.perf_counter()
+            cuts = cutter(kmax=kmax, alpha=SS_GS_SCALE_CUT_ALPHA)
+            elapsed = time.perf_counter() - start
+            print(f"    {probe}: {len(kmax)} cuts in {elapsed:.2f} s",
+                  flush=True)
+
+            uv = np.array(cuts["uv_fraction"])[:, :, -1]
+            print(f"    {probe}, k_max = {SS_GS_SCALE_CUT_KMAX_HIGH}: max "
+                  f"UV fraction = {float(np.max(uv)):.3e}", flush=True)
+            self.assertTrue(
+                np.all(uv < SS_GS_SCALE_CUT_ALPHA),
+                f"{probe}, k_max = {SS_GS_SCALE_CUT_KMAX_HIGH} h/Mpc: UV "
+                f"fraction up to {float(np.max(uv)):.3e}, not below "
+                f"alpha = {SS_GS_SCALE_CUT_ALPHA}")
+
+            lmax = np.array(cuts["lmax"])     # (nspec, nk)
+            mask = np.array(cuts["mask"])     # (nspec, nell, nk)
+            pairs = np.array(cuts["pairs"])   # (nspec, 2)
+            for s in range(lmax.shape[0]):
+                print(f"    {probe}, pair ({pairs[s][0]}, {pairs[s][1]}): "
+                      "l_max = " + " ".join(f"{v:.0f}" for v in lmax[s]),
+                      flush=True)
+            self.assertTrue(
+                np.all(np.diff(lmax, axis=1) >= 0.0),
+                f"{probe}: l_max decreases with k_max in some pair: {lmax}")
+            # a prefix in l: along the l axis a mask row only steps from
+            # 1 to 0; nested in k_max: a larger cut keeps at least the
+            # bands of a smaller one
+            self.assertTrue(
+                np.all(np.diff(mask, axis=1) <= 0.0),
+                f"{probe}: a mask row is not a prefix in l")
+            self.assertTrue(
+                np.all(np.diff(mask, axis=2) >= 0.0),
+                f"{probe}: a smaller k_max keeps a band a larger k_max cuts")
+            return cuts
+
+        def _model_untouched(self, probe):
+            """The next ordinary evaluation gives the build's data vector.
+
+            Arguments:
+              probe = the label of the messages.
+            """
+            import numpy as np
+            ci = _interface(u)
+            u.evaluate_chi2(self._model, self._point)
+            after = np.array(_masked_vector_fn(u, ci)())
+            self.assertTrue(
+                np.array_equal(after, self._dv),
+                f"{probe}: the data vector after the cut differs from "
+                "the one before (max |difference| = "
+                f"{np.max(np.abs(after - self._dv)):.3e}); the cut left "
+                "state behind")
+
+        def _ggl_checks(self, engine):
+            """Checks 1, 2, 4 and 5 of C_gs and the untouched model."""
+            import time
+
+            import numpy as np
+            ci = _interface(u)
+            like = self._ensure(engine)
+            probe = f"gs {engine}"
+
+            start = time.perf_counter()
+            full = np.array(ci.C_gs_kwindow_tomo(kmax=-1.0, keep_ir=1))
+            elapsed = time.perf_counter() - start
+            print(f"    {probe}: driver {elapsed:.3f} s, {full.shape[0]} "
+                  f"pairs x {full.shape[1]} band centers", flush=True)
+
+            cuts = self._cut_grid(probe, ci.gs_scale_cuts_tomo)
+            pairs = np.array(cuts["pairs"])
+            self.assertTrue(
+                np.array_equal(np.array(cuts["full"]), full),
+                f"{probe}: the cut's full spectra differ from the "
+                "window-off driver")
+
+            # 1. window off against the gs block of the masked data
+            # vector: the block follows cosmic shear, one row of nell
+            # entries per ggl pair; a kept entry is C_gs times
+            # (1 + m) of its source bin, a masked one is zero
+            sizes = ci.compute_data_vector_3x2pt_fourier_sizes()
+            start_gs = int(sizes[0])
+            nell = full.shape[1]
+            nspec = full.shape[0]
+            self.assertEqual(
+                int(sizes[1]), nspec*nell,
+                f"{probe}: the gs block has {int(sizes[1])} entries, the "
+                f"driver {nspec} x {nell}")
+            calibration = _source_bin_values(self._point_values(), "_M",
+                                             int(like.source_ntomo))
+            block = self._dv[start_gs:start_gs + nspec*nell]
+            block = block.reshape((nspec, nell))
+            expected = np.zeros_like(full)
+            for s in range(nspec):
+                zs = int(pairs[s][1])
+                expected[s] = full[s]*(1.0 + calibration[zs])
+            kept = block != 0.0
+            print(f"    {probe}: window off vs the gs block, "
+                  f"{int(kept.sum())} kept entries", flush=True)
+            self.assertGreater(
+                int(kept.sum()), 0,
+                f"{probe}: the gs block is masked entirely, so the "
+                "window-off check compares nothing")
+            self.assertTrue(
+                np.array_equal(block[kept], expected[kept]),
+                f"{probe}: the window-off driver differs from the gs "
+                "block of the data vector (max |difference| = "
+                f"{np.max(np.abs(block[kept] - expected[kept])):.3e}); "
+                "its calls no longer repeat the data vector's")
+
+            self._partition(probe, ci.C_gs_kwindow_tomo, full)
+            self._model_untouched(probe)
+
+        def test_ggl_fkem(self):
+            """C_gs, FKEM: checks 1, 2, 4 and 5, and the untouched model."""
+            self._ggl_checks("FKEM")
+
+        def test_ggl_limber(self):
+            """C_gs, Limber: checks 1, 2, 4 and 5, and the untouched model."""
+            self._ggl_checks("Limber")
+
+        def test_shear(self):
+            """C_ss: checks 1, 2, 4 and 5, and the untouched model."""
+            import time
+
+            import numpy as np
+            ci = _interface(u)
+            self._ensure(None)
+            probe = "ss"
+
+            start = time.perf_counter()
+            full = np.array(ci.C_ss_kwindow_tomo(kmax=-1.0, keep_ir=1))
+            elapsed = time.perf_counter() - start
+            print(f"    {probe}: driver {elapsed:.3f} s, {full.shape[0]} "
+                  f"pairs x {full.shape[1]} band centers", flush=True)
+
+            cuts = self._cut_grid(probe, ci.ss_scale_cuts_tomo)
+            pairs = np.array(cuts["pairs"])
+            self.assertTrue(
+                np.array_equal(np.array(cuts["full"]), full),
+                f"{probe}: the cut's full spectra differ from the "
+                "window-off driver")
+
+            # 1. window off against C_ss_tomo_limber at the band centers:
+            # (EE, BB) cubes (nell, nbin, nbin), the pair (i, j) with
+            # i <= j at [:, i, j]; the dict's ell holds the band centers
+            # as one column
+            ells = np.ascontiguousarray(np.ravel(cuts["ell"]))
+            (ee, bb) = ci.C_ss_tomo_limber(l=ells)
+            ee = np.array(ee)
+            for s in range(full.shape[0]):
+                (i, j) = (int(pairs[s][0]), int(pairs[s][1]))
+                self.assertTrue(
+                    np.array_equal(full[s], ee[:, i, j]),
+                    f"{probe}, pair ({i}, {j}): the window-off driver "
+                    "differs from C_ss_tomo_limber (max |difference| = "
+                    f"{np.max(np.abs(full[s] - ee[:, i, j])):.3e})")
+
+            self._partition(probe, ci.C_ss_kwindow_tomo, full)
+            self._model_untouched(probe)
+
+        def test_shear_limber_reference(self):
+            """Check 3: the C_ss IR part against the numpy Limber integral."""
+            import time
+
+            import numpy as np
+            ci = _interface(u)
+            like = self._ensure(None)
+            # the reference models CAMB's halofit P_NL without baryons,
+            # what the likelihood hands cosmolike in these settings
+            self.assertEqual(
+                int(like.use_emulator), 0,
+                "the Limber reference needs the CAMB path (use_emulator "
+                "= 0)")
+            self.assertEqual(
+                int(like.non_linear_emul), 2,
+                "the Limber reference needs CAMB's halofit "
+                "(non_linear_emul = 2)")
+            self.assertFalse(
+                bool(getattr(like, "external_baryon_suppression", False)),
+                "the Limber reference has no baryon suppression")
+
+            # the intrinsic alignment off: pure lensing (the next
+            # evaluation of the model restores it)
+            nbin = int(like.source_ntomo)
+            zeros = np.zeros(nbin)
+            ci.set_nuisance_ia(A1=zeros, A2=zeros, B_TA=zeros)
+
+            kmax = SS_GS_SCALE_CUT_LIMBER_KMAX
+            c_ir = np.array(ci.C_ss_kwindow_tomo(kmax=kmax, keep_ir=1))
+            cuts = ci.ss_scale_cuts_tomo(kmax=np.array([kmax]),
+                                         alpha=SS_GS_SCALE_CUT_ALPHA)
+            kept = np.array(cuts["mask"])[:, :, 0] > 0.5
+            pairs = np.array(cuts["pairs"])
+            ells = np.ravel(cuts["ell"])
+
+            start = time.perf_counter()
+            reference = _ss_limber_reference(
+                ci=ci, like=like, values=self._point_values(), kmax=kmax,
+                ells=ells, pairs=pairs,
+                nz_nodes=SS_GS_SCALE_CUT_REFERENCE_NZ)
+            elapsed = time.perf_counter() - start
+            print(f"    reference: numpy Limber integral on "
+                  f"{SS_GS_SCALE_CUT_REFERENCE_NZ} nodes, {elapsed:.1f} s",
+                  flush=True)
+
+            relative = np.abs(c_ir - reference)/np.abs(reference)
+            worst_kept = float(np.max(relative[kept]))
+            worst_all = float(np.max(relative))
+            print(f"    k_max = {kmax}: max |C_IR - reference|/|reference| "
+                  f"= {worst_kept:.3e} on the {int(kept.sum())} kept bands "
+                  f"({worst_all:.3e} on all bands)", flush=True)
+            self.assertGreater(
+                int(kept.sum()), 0,
+                f"k_max = {kmax}: the cut keeps no band, so the "
+                "cross-check compares nothing")
+            self.assertLess(
+                worst_kept, SS_GS_SCALE_CUT_LIMBER_RTOL,
+                f"k_max = {kmax}: the driver's C_IR differs from the "
+                f"numpy Limber integral by {worst_kept:.3e} on a kept "
+                f"band (limit {SS_GS_SCALE_CUT_LIMBER_RTOL:.0e})")
+
+            self._model_untouched("ss reference")
+
+    TestSsGsScaleCut.__name__ = name
+    TestSsGsScaleCut.__qualname__ = name
+    return TestSsGsScaleCut
+
+
 # ---- the pair-quadrature accuracy checks ------------------------------------
 
 # The cross-pair Gauss-Legendre rule (gg_pair_glrule in cosmo2D.c) has

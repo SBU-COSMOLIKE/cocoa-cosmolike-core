@@ -1530,6 +1530,586 @@ py::dict gg_scale_cuts_tomo_cpp(
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The Fourier gg spectra with the k window at multipoles the caller
+// chooses: C_gg_kwindow_tomo_cpp with ells in place of the data-vector
+// band centers like.ell, which a real-space project never sets. Same
+// engine (C_gg_kwindow_tomo_ells, cosmo2D_scuts.c), same outputs. The
+// scale-cut tests of w(theta) use it at every integer l as an
+// independent reference for the real-space driver.
+//
+// Parameters:
+//   kmax    - cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = IR part, 0 = UV part; anything else aborts
+//   ells    - the multipoles (length nell >= 1; need not be integers)
+//
+// Returns:
+//   (autos, pairs) tuple of numpy arrays, shapes
+//   (clustering_Npowerspectra, nell) and (gg_cross_npairs, nell)
+// ---------------------------------------------------------------------------
+py::tuple C_gg_kwindow_tomo_ells_cpp(
+    const double kmax,             // cut at z = 0 in h/Mpc (<= 0: no window)
+    const int keep_ir,             // 1 = IR part, 0 = UV part
+    const arma::Col<double> ells   // multipoles
+  )
+{
+  if (keep_ir != 0 && keep_ir != 1) {
+    spdlog::critical("{}: keep_ir = {} (0 or 1)",
+                     "C_gg_kwindow_tomo_ells_cpp", keep_ir);
+    exit(1);
+  }
+  const int nell = static_cast<int>(ells.n_elem);
+  if (nell < 1) {
+    spdlog::critical("{}: empty ells array", "C_gg_kwindow_tomo_ells_cpp");
+    exit(1);
+  }
+  double* lv = (double*) malloc1d(nell);
+  for (int i=0; i<nell; i++) {
+    lv[i] = ells(i);
+  }
+  const int nautos = tomo.clustering_Npowerspectra;
+  const int npairs = get_gg_cross_npairs();
+  double** ca = (double**) malloc2d(nautos, nell);
+  double** cx = (npairs > 0) ? (double**) malloc2d(npairs, nell) : NULL;
+  C_gg_kwindow_tomo_ells(kmax, keep_ir, lv, nell, ca, cx);
+  matrix A(nautos, nell);
+  matrix X(npairs, nell);
+  for (int i=0; i<nell; i++) {
+    for (int s=0; s<nautos; s++) {
+      A(s, i) = ca[s][i];
+    }
+    for (int n=0; n<npairs; n++) {
+      X(n, i) = cx[n][i];
+    }
+  }
+  free(lv);
+  free(ca);
+  if (cx != NULL) {
+    free(cx);
+  }
+  return py::make_tuple(carma::mat_to_arr(A), carma::mat_to_arr(X));
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: FOURIER C_ss AND C_gs (arXiv:2603.13031)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The Fourier cosmic-shear EE spectra at the data-vector band centers
+// (like.ell) with the k window of the UV-fraction scale cuts
+// (arXiv:2603.13031): the IR part (keep_ir = 1, modes k <= kmax/D(z))
+// or the UV part (keep_ir = 0), or the full spectra for kmax <= 0.
+// Engine: C_ss_kwindow_tomo_ells (cosmo2D_scuts.c), the Limber engine of
+// the data vector. The values are the spectra before the shear
+// calibration and the mask of the data vector.
+//
+// Parameters:
+//   kmax    - cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = IR part, 0 = UV part; anything else aborts
+//
+// Returns:
+//   arma::Mat (shear_Npowerspectra, nell): row s = the source pair
+//   (Z1(s), Z2(s)), the order of the ss block of the data vector
+// ---------------------------------------------------------------------------
+arma::Mat<double> C_ss_kwindow_tomo_cpp(
+    const double kmax,   // cut at z = 0 in h/Mpc (<= 0: no window)
+    const int keep_ir    // 1 = IR part, 0 = UV part
+  )
+{
+  if (keep_ir != 0 && keep_ir != 1) {
+    spdlog::critical("{}: keep_ir = {} (0 or 1)",
+                     "C_ss_kwindow_tomo_cpp", keep_ir);
+    exit(1);
+  }
+  const int nell = like.Ncl;
+  if (nell < 1 || NULL == like.ell) {
+    spdlog::critical("{}: no Fourier band centers (init_binning_fourier"
+                     "_ells)", "C_ss_kwindow_tomo_cpp");
+    exit(1);
+  }
+  const int nspec = tomo.shear_Npowerspectra;
+  double** cs = (double**) malloc2d(nspec, nell);
+  C_ss_kwindow_tomo_ells(kmax, keep_ir, like.ell, nell, cs);
+  matrix C(nspec, nell);
+  for (int s=0; s<nspec; s++) {
+    for (int i=0; i<nell; i++) {
+      C(s, i) = cs[s][i];
+    }
+  }
+  free(cs);
+  return C;
+}
+
+// ---------------------------------------------------------------------------
+// The Fourier galaxy-galaxy lensing spectra at the data-vector band
+// centers (like.ell) with the k window of the UV-fraction scale cuts:
+// the IR part (keep_ir = 1) or the UV part (keep_ir = 0), or the full
+// spectra for kmax <= 0. Engine: C_gs_kwindow_tomo_ells
+// (cosmo2D_scuts.c), with the projection the likelihood selected
+// (adopt_limber_gs: Limber, or FKEM below LMAX_NOLIMBER). The values are
+// the spectra before the shear calibration and the mask of the data
+// vector.
+//
+// Parameters:
+//   kmax    - cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = IR part, 0 = UV part; anything else aborts
+//
+// Returns:
+//   arma::Mat (ggl_Npowerspectra, nell): row s = the ggl pair
+//   (ZL(s), ZS(s)) kept after init_ggl_exclude, the order of the gs
+//   block of the data vector
+// ---------------------------------------------------------------------------
+arma::Mat<double> C_gs_kwindow_tomo_cpp(
+    const double kmax,   // cut at z = 0 in h/Mpc (<= 0: no window)
+    const int keep_ir    // 1 = IR part, 0 = UV part
+  )
+{
+  if (keep_ir != 0 && keep_ir != 1) {
+    spdlog::critical("{}: keep_ir = {} (0 or 1)",
+                     "C_gs_kwindow_tomo_cpp", keep_ir);
+    exit(1);
+  }
+  const int nell = like.Ncl;
+  if (nell < 1 || NULL == like.ell) {
+    spdlog::critical("{}: no Fourier band centers (init_binning_fourier"
+                     "_ells)", "C_gs_kwindow_tomo_cpp");
+    exit(1);
+  }
+  const int nspec = tomo.ggl_Npowerspectra;
+  double** cs = (double**) malloc2d(nspec, nell);
+  C_gs_kwindow_tomo_ells(kmax, keep_ir, like.ell, nell, cs);
+  matrix C(nspec, nell);
+  for (int s=0; s<nspec; s++) {
+    for (int i=0; i<nell; i++) {
+      C(s, i) = cs[s][i];
+    }
+  }
+  free(cs);
+  return C;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cuts (arXiv:2603.13031) of the Fourier
+// cosmic-shear EE spectra at the data-vector band centers (like.ell):
+// per band power the fraction |C_l^UV|/(|C_l^UV| + |C_l^IR|) of signal
+// above the cut kmax/D(z), and the bands kept below alpha, for the
+// cosmology and nuisances (intrinsic alignment included) of the model's
+// last evaluation. The engine is ss_scale_cuts_tomo_ells_work
+// (cosmo2D_scuts.c); this wrapper validates, allocates and converts, as
+// gg_scale_cuts_tomo_cpp does.
+//
+// The cuts are a diagnostic of that evaluated model: downstream
+// analysis fixes the selected data and covariance rows and evaluates
+// the full theory on them. The k window is never applied to measured
+// spectra, and ordinary data-vector evaluations run without it.
+//
+// Spectrum rows s are the source pairs of the ss block of the data
+// vector; row s, column i is entry nell*s + i counted from the first
+// entry of that block. pairs names the two source bins of each row.
+//
+// Parameters:
+//   kmax  - cuts at z = 0 in h/Mpc, strictly ascending; an empty array
+//           aborts (spdlog::critical + exit), the engine checks the rest
+//   alpha - allowed UV fraction, in (0, 1)
+//
+// Returns:
+//   dict of numpy arrays (nspec = shear_Npowerspectra, nell = band
+//   centers, nk = number of cuts); kmax and ell come out of CARMA as
+//   one-column arrays (np.ravel gives the 1d arrays):
+//     kmax        (nk, 1)              the cuts, as passed
+//     alpha       float
+//     ell         (nell, 1)            the band centers
+//     pairs       (nspec, 2) int       (z_i, z_j), z_i <= z_j, per row
+//     lmax        (nspec, nk)          center of the last band kept
+//                                      (0 when no band survives)
+//     mask        (nspec, nell, nk)    1 = band kept, 0 = cut
+//     uv_fraction (nspec, nell, nk)    |C^UV|/(|C^UV| + |C^IR|)
+//     full        (nspec, nell)        the full spectra
+//     ir          (nspec, nell, nk)    the IR parts
+// ---------------------------------------------------------------------------
+py::dict ss_scale_cuts_tomo_cpp(
+    const arma::Col<double> kmax,   // cuts at z = 0 in h/Mpc
+    const double alpha              // allowed UV fraction
+  )
+{
+  const int nk = static_cast<int>(kmax.n_elem);
+  if (nk < 1) {
+    spdlog::critical("{}: empty kmax array", "ss_scale_cuts_tomo_cpp");
+    exit(1);
+  }
+  const int nell = like.Ncl;
+  if (nell < 1 || NULL == like.ell) {
+    spdlog::critical("{}: no Fourier band centers (init_binning_fourier"
+                     "_ells)", "ss_scale_cuts_tomo_cpp");
+    exit(1);
+  }
+  const int nspec = tomo.shear_Npowerspectra;
+
+  double* kv = (double*) malloc1d(nk);
+  for (int m=0; m<nk; m++) {
+    kv[m] = kmax(m);
+  }
+  double** full    = (double**) malloc2d(nspec, nell);
+  double*** ir     = (double***) malloc3d(nk, nspec, nell);
+  double*** uvfrac = (double***) malloc3d(nk, nspec, nell);
+  int** nkeep      = (int**) malloc2d_int(nk, nspec);
+
+  ss_scale_cuts_tomo_ells_work(kv, nk, alpha, like.ell, nell,
+                               full, ir, uvfrac, nkeep);
+
+  vector ell(nell);
+  for (int i=0; i<nell; i++) {
+    ell(i) = like.ell[i];
+  }
+  arma::Mat<int> P(nspec, 2);
+  matrix F(nspec, nell);
+  matrix L(nspec, nk);
+  cube IR(nspec, nell, nk);
+  cube UV(nspec, nell, nk);
+  cube M(nspec, nell, nk);
+  for (int s=0; s<nspec; s++) {
+    P(s, 0) = Z1(s);
+    P(s, 1) = Z2(s);
+    for (int i=0; i<nell; i++) {
+      F(s, i) = full[s][i];
+    }
+  }
+  for (int m=0; m<nk; m++) {
+    for (int s=0; s<nspec; s++) {
+      L(s, m) = (nkeep[m][s] > 0) ? like.ell[nkeep[m][s] - 1] : 0.0;
+      for (int i=0; i<nell; i++) {
+        IR(s, i, m) = ir[m][s][i];
+        UV(s, i, m) = uvfrac[m][s][i];
+        M(s, i, m)  = (i < nkeep[m][s]) ? 1.0 : 0.0;
+      }
+    }
+  }
+  free(kv);
+  free(full);
+  free(ir);
+  free(uvfrac);
+  free(nkeep);
+
+  vector K = kmax;
+  py::dict out;
+  out["kmax"]        = carma::col_to_arr(K);
+  out["alpha"]       = alpha;
+  out["ell"]         = carma::col_to_arr(ell);
+  out["pairs"]       = carma::mat_to_arr(P);
+  out["lmax"]        = carma::mat_to_arr(L);
+  out["mask"]        = carma::cube_to_arr(M);
+  out["uv_fraction"] = carma::cube_to_arr(UV);
+  out["full"]        = carma::mat_to_arr(F);
+  out["ir"]          = carma::cube_to_arr(IR);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cuts (arXiv:2603.13031) of the Fourier
+// galaxy-galaxy lensing spectra at the data-vector band centers
+// (like.ell), with the projection the likelihood selected
+// (adopt_limber_gs): ss_scale_cuts_tomo_cpp above, key for key, with
+// the ggl pairs as rows. The engine is gs_scale_cuts_tomo_ells_work
+// (cosmo2D_scuts.c).
+//
+// Spectrum rows s are the ggl pairs of the gs block of the data vector,
+// the ones the project keeps after init_ggl_exclude; row s, column i is
+// entry nell*s + i counted from the first entry of that block. That
+// pair list cannot be rebuilt in a notebook without the exclusion rule,
+// so pairs names the lens and source bin of each row.
+//
+// Parameters:
+//   kmax  - cuts at z = 0 in h/Mpc, strictly ascending; an empty array
+//           aborts (spdlog::critical + exit), the engine checks the rest
+//   alpha - allowed UV fraction, in (0, 1)
+//
+// Returns:
+//   dict of numpy arrays (nspec = ggl_Npowerspectra, nell = band
+//   centers, nk = number of cuts); kmax and ell come out of CARMA as
+//   one-column arrays (np.ravel gives the 1d arrays):
+//     kmax        (nk, 1)              the cuts, as passed
+//     alpha       float
+//     ell         (nell, 1)            the band centers
+//     pairs       (nspec, 2) int       (lens bin, source bin) per row
+//     lmax        (nspec, nk)          center of the last band kept
+//                                      (0 when no band survives)
+//     mask        (nspec, nell, nk)    1 = band kept, 0 = cut
+//     uv_fraction (nspec, nell, nk)    |C^UV|/(|C^UV| + |C^IR|)
+//     full        (nspec, nell)        the full spectra
+//     ir          (nspec, nell, nk)    the IR parts
+// ---------------------------------------------------------------------------
+py::dict gs_scale_cuts_tomo_cpp(
+    const arma::Col<double> kmax,   // cuts at z = 0 in h/Mpc
+    const double alpha              // allowed UV fraction
+  )
+{
+  const int nk = static_cast<int>(kmax.n_elem);
+  if (nk < 1) {
+    spdlog::critical("{}: empty kmax array", "gs_scale_cuts_tomo_cpp");
+    exit(1);
+  }
+  const int nell = like.Ncl;
+  if (nell < 1 || NULL == like.ell) {
+    spdlog::critical("{}: no Fourier band centers (init_binning_fourier"
+                     "_ells)", "gs_scale_cuts_tomo_cpp");
+    exit(1);
+  }
+  const int nspec = tomo.ggl_Npowerspectra;
+
+  double* kv = (double*) malloc1d(nk);
+  for (int m=0; m<nk; m++) {
+    kv[m] = kmax(m);
+  }
+  double** full    = (double**) malloc2d(nspec, nell);
+  double*** ir     = (double***) malloc3d(nk, nspec, nell);
+  double*** uvfrac = (double***) malloc3d(nk, nspec, nell);
+  int** nkeep      = (int**) malloc2d_int(nk, nspec);
+
+  gs_scale_cuts_tomo_ells_work(kv, nk, alpha, like.ell, nell,
+                               full, ir, uvfrac, nkeep);
+
+  vector ell(nell);
+  for (int i=0; i<nell; i++) {
+    ell(i) = like.ell[i];
+  }
+  arma::Mat<int> P(nspec, 2);
+  matrix F(nspec, nell);
+  matrix L(nspec, nk);
+  cube IR(nspec, nell, nk);
+  cube UV(nspec, nell, nk);
+  cube M(nspec, nell, nk);
+  for (int s=0; s<nspec; s++) {
+    P(s, 0) = ZL(s);
+    P(s, 1) = ZS(s);
+    for (int i=0; i<nell; i++) {
+      F(s, i) = full[s][i];
+    }
+  }
+  for (int m=0; m<nk; m++) {
+    for (int s=0; s<nspec; s++) {
+      L(s, m) = (nkeep[m][s] > 0) ? like.ell[nkeep[m][s] - 1] : 0.0;
+      for (int i=0; i<nell; i++) {
+        IR(s, i, m) = ir[m][s][i];
+        UV(s, i, m) = uvfrac[m][s][i];
+        M(s, i, m)  = (i < nkeep[m][s]) ? 1.0 : 0.0;
+      }
+    }
+  }
+  free(kv);
+  free(full);
+  free(ir);
+  free(uvfrac);
+  free(nkeep);
+
+  vector K = kmax;
+  py::dict out;
+  out["kmax"]        = carma::col_to_arr(K);
+  out["alpha"]       = alpha;
+  out["ell"]         = carma::col_to_arr(ell);
+  out["pairs"]       = carma::mat_to_arr(P);
+  out["lmax"]        = carma::mat_to_arr(L);
+  out["mask"]        = carma::cube_to_arr(M);
+  out["uv_fraction"] = carma::cube_to_arr(UV);
+  out["full"]        = carma::mat_to_arr(F);
+  out["ir"]          = carma::cube_to_arr(IR);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: REAL-SPACE w_gg (arXiv:2603.13031)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// w(theta) of every lens bin with the k window of the UV-fraction scale
+// cuts (arXiv:2603.13031): the IR part (keep_ir = 1, modes
+// k <= kmax/D(z)) or the UV part (keep_ir = 0), or the full w(theta)
+// for kmax <= 0. Engine: w_gg_kwindow_tomo (cosmo2D_scuts.c), with the
+// projection the likelihood selected; with adopt_limber_gg = 1 the
+// full w(theta) equals the data vector's w_gg_tomo bit for bit, on the
+// non-Limber engines it differs by the early-exit step of w_gg_tomo
+// (see the engine's header). The IR and UV parts add up to the full
+// w(theta); the scale-cut tests verify that partition through this
+// function.
+//
+// Parameters:
+//   kmax    - cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = IR part, 0 = UV part; anything else aborts
+//
+// Returns:
+//   arma::Mat (clustering_Npowerspectra, Ntheta): row = lens bin,
+//   column = angular bin (ascending theta)
+// ---------------------------------------------------------------------------
+arma::Mat<double> w_gg_kwindow_tomo_cpp(
+    const double kmax,   // cut at z = 0 in h/Mpc (<= 0: no window)
+    const int keep_ir    // 1 = IR part, 0 = UV part
+  )
+{
+  if (keep_ir != 0 && keep_ir != 1) {
+    spdlog::critical("{}: keep_ir = {} (0 or 1)",
+                     "w_gg_kwindow_tomo_cpp", keep_ir);
+    exit(1);
+  }
+  if (Ntable.Ntheta < 1) {
+    spdlog::critical("{}: no real-space binning (init_binning)",
+                     "w_gg_kwindow_tomo_cpp");
+    exit(1);
+  }
+  const int nbins  = tomo.clustering_Npowerspectra;
+  const int ntheta = Ntable.Ntheta;
+  double* wv = (double*) malloc1d(nbins*ntheta);
+  w_gg_kwindow_tomo(kmax, keep_ir, wv);
+  matrix W(nbins, ntheta);
+  for (int s=0; s<nbins; s++) {
+    for (int i=0; i<ntheta; i++) {
+      W(s, i) = wv[s*ntheta + i];
+    }
+  }
+  free(wv);
+  return W;
+}
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cuts (arXiv:2603.13031) of w(theta), per lens
+// bin, at the real-space angular bins: per bin the fraction
+// |w_UV|/(|w_UV| + |w_IR|) of the correlation from modes above the cut
+// kmax/D(z), the bins kept below alpha, and the smallest kept angle
+// theta_min, for the cosmology and nuisances of the model's last
+// evaluation. The engine is w_gg_scale_cuts_tomo_work (cosmo2D_scuts.c,
+// where the criterion and the suffix rule are explained); this wrapper
+// validates, allocates and converts.
+//
+// The cuts are a diagnostic of that evaluated model: downstream
+// analysis fixes the selected data and covariance rows and evaluates
+// the full theory on them. The k window is never applied to measured
+// correlation functions, and ordinary data-vector evaluations run
+// without it. Only the clustering autos are cut.
+//
+// theta_min is the center of the smallest kept bin, in the convention
+// of get_binning_real_space (cosmo2D_wrapper.cpp): the area-weighted
+// mean angle of the bin, in arcmin. When no bin survives, theta_min is
+// the upper edge of the angular range (a value no measured bin
+// reaches), and the all-zero row of mask is the authoritative
+// statement.
+//
+// Parameters:
+//   kmax  - cuts at z = 0 in h/Mpc, strictly ascending; an empty array
+//           aborts (spdlog::critical + exit), the engine checks the rest
+//   alpha - allowed UV fraction, in (0, 1)
+//
+// Returns:
+//   dict of numpy arrays (nbin = clustering_nbin, nt = Ntheta,
+//   nk = number of cuts); kmax and theta come out of CARMA as
+//   one-column arrays, as the Fourier dict's kmax and ell:
+//     kmax        (nk, 1)            the cuts, as passed
+//     alpha       float
+//     theta       (nt, 1)            angular bin centers in arcmin
+//     nbins       int                lens bins (autos only)
+//     theta_min   (nbin, nk)         smallest kept bin center, arcmin
+//                                    (the range's upper edge when no
+//                                    bin survives)
+//     mask        (nbin, nt, nk)     1 = bin kept, 0 = cut
+//     uv_fraction (nbin, nt, nk)     |w_UV|/(|w_UV| + |w_IR|)
+//     full        (nbin, nt)         the full w(theta)
+//     ir          (nbin, nt, nk)     the IR parts
+// ---------------------------------------------------------------------------
+py::dict w_gg_scale_cuts_tomo_cpp(
+    const arma::Col<double> kmax,   // cuts at z = 0 in h/Mpc
+    const double alpha              // allowed UV fraction
+  )
+{
+  const int nk = static_cast<int>(kmax.n_elem);
+  if (nk < 1) {
+    spdlog::critical("{}: empty kmax array", "w_gg_scale_cuts_tomo_cpp");
+    exit(1);
+  }
+  if (Ntable.Ntheta < 1) {
+    spdlog::critical("{}: no real-space binning (init_binning)",
+                     "w_gg_scale_cuts_tomo_cpp");
+    exit(1);
+  }
+  const int nbins  = tomo.clustering_Npowerspectra;
+  const int ntheta = Ntable.Ntheta;
+
+  double* kv = (double*) malloc1d(nk);
+  for (int m=0; m<nk; m++) {
+    kv[m] = kmax(m);
+  }
+  double** full    = (double**) malloc2d(nbins, ntheta);
+  double*** ir     = (double***) malloc3d(nk, nbins, ntheta);
+  double*** uvfrac = (double***) malloc3d(nk, nbins, ntheta);
+  int** nkeep      = (int**) malloc2d_int(nk, nbins);
+
+  w_gg_scale_cuts_tomo_work(kv, nk, alpha, full, ir, uvfrac, nkeep);
+
+  // the bin centers and the upper edge of the angular range, in arcmin;
+  // Ntable.vt holds the range in radians
+  const double arcmin = 2.90888208665721580e-4;  // pi/10800, radians
+  const double theta_edge = Ntable.vt[RANGE_MAX]/arcmin;
+  vector theta = get_binning_real_space();
+
+  matrix F(nbins, ntheta);
+  matrix T(nbins, nk);
+  cube IR(nbins, ntheta, nk);
+  cube UV(nbins, ntheta, nk);
+  cube M(nbins, ntheta, nk);
+  for (int s=0; s<nbins; s++) {
+    for (int i=0; i<ntheta; i++) {
+      F(s, i) = full[s][i];
+    }
+  }
+  for (int m=0; m<nk; m++) {
+    for (int s=0; s<nbins; s++) {
+      // the kept bins are ntheta - nkeep .. ntheta - 1
+      const int first_kept = ntheta - nkeep[m][s];
+      T(s, m) = (nkeep[m][s] > 0) ? theta(first_kept) : theta_edge;
+      for (int i=0; i<ntheta; i++) {
+        IR(s, i, m) = ir[m][s][i];
+        UV(s, i, m) = uvfrac[m][s][i];
+        M(s, i, m)  = (i >= first_kept) ? 1.0 : 0.0;
+      }
+    }
+  }
+  free(kv);
+  free(full);
+  free(ir);
+  free(uvfrac);
+  free(nkeep);
+
+  vector K = kmax;
+  py::dict out;
+  out["kmax"]        = carma::col_to_arr(K);
+  out["alpha"]       = alpha;
+  out["theta"]       = carma::col_to_arr(theta);
+  out["nbins"]       = nbins;
+  out["theta_min"]   = carma::mat_to_arr(T);
+  out["mask"]        = carma::cube_to_arr(M);
+  out["uv_fraction"] = carma::cube_to_arr(UV);
+  out["full"]        = carma::mat_to_arr(F);
+  out["ir"]          = carma::cube_to_arr(IR);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 

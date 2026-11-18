@@ -186,6 +186,16 @@ static int use_nonlinear_kaiser_GG = 0; // 0 or 1
 // computed outside the cores, keeps the per-node threshold (per_bin =
 // 0).
 //
+// The same window serves the cosmic-shear and galaxy-galaxy lensing
+// engines (the gg_ prefix of its names is historical): the Limber works
+// C_ss_tomo_limber_work and C_gs_tomo_limber_work step every 3D spectrum
+// of their integrands per node, and the FKEM core C_gs_tomo_core steps
+// its final FFTLog sum at the lens bin's threshold Kbin, bracketing its
+// own Limber terms with per_bin = 1. Shear has no non-Limber engine, so
+// its threshold is always the node's own. The step acts at the evaluated
+// wavenumber; the internal loop momenta of a one-loop kernel (bias or
+// TATT) are not re-cut.
+//
 // Fields:
 //   active  - 0 = no window, 1 = window on
 //   keep_ir - 1 = keep k <= K (the IR part), 0 = keep k > K (UV)
@@ -3098,6 +3108,13 @@ static void C_ss_tomo_limber_work(
     log_fatal("include_halo_IA supports the NLA model only");
     exit(1);
   }
+  // the 1-halo IA spectra (KHI) do not pass through the window's step
+  if (1 == gg_kwin.active) {
+    if (1 == halo_ia) {
+      log_fatal("the k window of the scale cuts needs include_halo_IA = 0");
+      exit(1);
+    }
+  }
   {
     const double a    = cn->data[CN_A][0];
     const double fK   = cn->data[CN_FK][0];
@@ -3197,6 +3214,29 @@ static void C_ss_tomo_limber_work(
           for (int m = 0; m < 10; m++) {
             KIA[m][i][p] = g4*LERP(FPTIA.tab[SS_IA_SRC[m]], idx, dr);
           }
+        }
+      }
+    }
+  }
+  // -----------------------------------------------------------------------
+  // The k window of the scale cuts (see gg_kwin): one step per (ell,
+  // node) on every 3D spectrum of the integrand - P_delta (KIA[10]) and,
+  // under TATT, the one-loop IA kernels (KIA[0..9]; zero under NLA). The
+  // GG, GI and II terms all multiply these slots, so one step splits them
+  // coherently. The threshold is always the node's own k_max/D(a): shear
+  // has no non-Limber engine, so no core ever asks for the per-bin
+  // threshold (gg_kwin.per_bin) here. In its own loop, so the precompute
+  // above stays as it is without a window.
+  // -----------------------------------------------------------------------
+  if (1 == gg_kwin.active) {
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int i = 0; i < nell; i++) {
+      for (int p = 0; p < cn->npts; p++) {
+        const double k = (lx[i] + 0.5) / cn->data[CN_FK][p];
+        const double K = gg_kwin.kmax/cn->data[CN_GROWFAC][p];
+        const double pass = gg_kwin_pass(k, K);
+        for (int m = 0; m < 11; m++) {
+          KIA[m][i][p] *= pass;
         }
       }
     }
@@ -3945,6 +3985,12 @@ double C_ss_tomo_limber(
   static double* qdel = NULL;   //   grids: precomputed, no search)
   static double*** tabc = NULL; // coarse C_ell values
   static double*** cspl = NULL; // natural-cubic-spline c coefficients
+  // the k window serves the Fourier scale cuts only; this cached table
+  // feeds every real-space xi_pm and must never store windowed spectra
+  if (1 == gg_kwin.active) {
+    log_fatal("%s: the k window is on (Fourier scale cuts only)", __func__);
+    exit(1);
+  }
 
   // one row per shear pair: cache[7] holds the pair count of the tables
   if (NULL == table ||
@@ -4549,6 +4595,18 @@ static void C_gs_tomo_limber_work(
     log_fatal("HOD C_l^gs is Limber-only: set adopt_limber_gs = 1");
     exit(1);
   }
+  // the HOD sums (p_gm) and the 1-halo IA spectra (KHI) do not pass
+  // through the window's step
+  if (1 == gg_kwin.active) {
+    if (1 == hod) {
+      log_fatal("the k window of the scale cuts needs include_HOD_GX = 0");
+      exit(1);
+    }
+    if (1 == halo_ia) {
+      log_fatal("the k window of the scale cuts needs include_halo_IA = 0");
+      exit(1);
+    }
+  }
 
   int nonlinear_bias = 0;
   if (NULL != table && 0 == hod) {
@@ -4822,6 +4880,42 @@ static void C_gs_tomo_limber_work(
                 KIA[6+m][zl][i][p] = LERP(FPTbias.tab[GS_BIAS_SRC[m]], idx, dr);
               }
             }
+          }
+        }
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // The k window of the scale cuts (see gg_kwin): one step per (lens bin,
+  // ell, node) on every 3D spectrum of the integrand - P_delta (KIA[0]),
+  // the TATT kernels (KIA[2..5]), the one-loop bias kernels (KIA[6..8])
+  // and the separable P_lin of the linear term (KIA[9]). Every term of the
+  // cores (linear bias, RSD, magnification, IA, one-loop bias, the b_K
+  // k^2 P term) multiplies one of these, so the step masks the whole
+  // node; the RSD kernel KIA[1] is a radial weight and keeps its value.
+  // The threshold is the node's own k_max/D(a), or the lens bin's
+  // (gg_kwin.Kbin) when C_gs_tomo_core asks for the Limber terms that
+  // must cancel its FFTLog sum (per_bin = 1). In its own loop, so the
+  // precompute above stays as it is without a window.
+  // -----------------------------------------------------------------------
+  if (1 == gg_kwin.active) {
+    #pragma omp parallel for collapse(3) schedule(static)
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      for (int i = 0; i < nell; i++) {
+        for (int p = 0; p < npts_max; p++) {
+          const cosmo_nodes* cn = &cn_all[zl];
+          if (p >= cn->npts) {
+            continue; // padding node: bin zl has fewer nodes
+          }
+          const double k = (lx[i] + 0.5) / cn->data[CN_FK][p];
+          const double K = (1 == gg_kwin.per_bin) ?
+                           gg_kwin.Kbin[zl] :
+                           gg_kwin.kmax/cn->data[CN_GROWFAC][p];
+          const double pass = gg_kwin_pass(k, K);
+          KIA[0][zl][i][p] *= pass;
+          for (int m = 2; m < 10; m++) {
+            KIA[m][zl][i][p] *= pass;
           }
         }
       }
@@ -5321,6 +5415,12 @@ double C_gs_tomo_limber(
   static double* qdel = NULL;  //   grids: precomputed, no search)
   static double** tabc = NULL; // coarse C_ell values
   static double** cspl = NULL; // natural-cubic-spline c coefficients
+  // the k window serves the Fourier scale cuts only; this cached table
+  // feeds every real-space gamma_t and must never store windowed spectra
+  if (1 == gg_kwin.active) {
+    log_fatal("%s: the k window is on (Fourier scale cuts only)", __func__);
+    exit(1);
+  }
 
   // one row per ggl pair: cache[11] holds the pair count of the tables
   if (NULL == table ||
@@ -10821,7 +10921,15 @@ static double** C_gs_tomo_core(
   {
     double** tnl  = (double**) malloc2d(NSIZE, nlx);
     double** tlin = (double**) malloc2d(NSIZE, nlx);
+    // under the k window these Limber terms take the lens bin's step,
+    // as the FFTLog sum below, so the two still cancel at high l
+    if (1 == gg_kwin.active) {
+      gg_kwin.per_bin = 1;
+    }
     C_gs_tomo_limber_nl_lin_nointerp_ells(lx, nlx, NSIZE, tnl, tlin);
+    if (1 == gg_kwin.active) {
+      gg_kwin.per_bin = 0;
+    }
     for (int nz=0; nz<NSIZE; nz++) {
       for (int m=0; m<nlx; m++) {
         const int l = (int) lx[m];
@@ -11010,6 +11118,22 @@ static double** C_gs_tomo_core(
         }
       }
     }
+    // the lens bin's step (see gg_kwin), in its own loop so the fill
+    // above stays as it is without a window. One threshold per lens bin,
+    // k_max/D at its mean redshift (the redshift of the FKEM pivot), which
+    // every source bin of the pair inherits: the FFTLog sum corrects
+    // Limber where the narrow lens kernel makes it fail
+    if (1 == gg_kwin.active) {
+      #pragma omp parallel for collapse(3) schedule(static)
+      for (int zl=0; zl<redshift.clustering_nbin; zl++) {
+        for (int k=ks; k<ke; k++) {
+          for (int q=0; q<nchi; q++) {
+            const double k1cH0 = y[0][k][q]*real_coverH0;
+            PK[zl][k-ks][q] *= gg_kwin_pass(k1cH0, gg_kwin.Kbin[zl]);
+          }
+        }
+      }
+    }
 
     #pragma omp parallel for collapse(2) schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
@@ -11073,6 +11197,13 @@ void C_gs_tomo(
     double tol
   )
 {
+  // the k window serves the Fourier scale cuts only; the real-space
+  // projection continues converged pairs from the shared gs table and
+  // never runs under it
+  if (1 == gg_kwin.active) {
+    log_fatal("%s: the k window is on (Fourier scale cuts only)", __func__);
+    exit(1);
+  }
   const int LNL   = limits.LMAX_NOLIMBER;
   const int NSIZE = tomo.ggl_Npowerspectra;
   const int BLOCK = 16; // C_gs_tomo_core's per-block arrays

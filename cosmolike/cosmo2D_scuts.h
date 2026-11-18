@@ -183,6 +183,103 @@ void gg_scale_cuts_tomo_ells_work(
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: FOURIER C_ss AND C_gs (arXiv:2603.13031)
+// The split of the C_gg section above, for cosmic shear (Limber) and
+// galaxy-galaxy lensing (Limber or FKEM, as the likelihood selected),
+// through the same k window of cosmo2D.c
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+
+// The Fourier cosmic-shear EE spectra of every source pair along the
+// data-vector path, with the k window on for kmax > 0 (the IR part for
+// keep_ir = 1, the UV part for keep_ir = 0) or off for kmax <= 0 (the
+// full spectra).
+void C_ss_kwindow_tomo_ells(
+    const double kmax,    // cut at z = 0 in h/Mpc; <= 0 = no window
+    const int keep_ir,    // 1 = IR part, 0 = UV part
+    const double* ells,   // band centers (length nell)
+    const int nell,       // number of band centers
+    double** out_EE       // output [shear_Npowerspectra][nell]
+  );
+
+// The Fourier galaxy-galaxy lensing spectra of every ggl pair along the
+// data-vector path (Limber or FKEM, as adopt_limber_gs selects), with
+// the k window on for kmax > 0 or off for kmax <= 0.
+void C_gs_kwindow_tomo_ells(
+    const double kmax,    // cut at z = 0 in h/Mpc; <= 0 = no window
+    const int keep_ir,    // 1 = IR part, 0 = UV part
+    const double* ells,   // band centers (length nell)
+    const int nell,       // number of band centers
+    double** out          // output [ggl_Npowerspectra][nell]
+  );
+
+// The UV-fraction scale cuts of every cosmic-shear spectrum (rows =
+// source pairs in the ss data-vector order) on an ascending kmax grid:
+// as gg_scale_cuts_tomo_ells_work.
+void ss_scale_cuts_tomo_ells_work(
+    const double* kmax,   // cuts at z = 0 in h/Mpc, ascending (nkmax)
+    const int nkmax,      // number of cuts
+    const double alpha,   // allowed UV fraction
+    const double* ells,   // band centers, ascending (nell)
+    const int nell,       // number of band centers
+    double** full,        // output [shear_Npowerspectra][nell]
+    double*** ir,         // output [nkmax][shear_Npowerspectra][nell]
+    double*** uvfrac,     // output [nkmax][shear_Npowerspectra][nell]
+    int** nkeep           // output [nkmax][shear_Npowerspectra]
+  );
+
+// The UV-fraction scale cuts of every galaxy-galaxy lensing spectrum
+// (rows = ggl pairs in the gs data-vector order) on an ascending kmax
+// grid: as gg_scale_cuts_tomo_ells_work.
+void gs_scale_cuts_tomo_ells_work(
+    const double* kmax,   // cuts at z = 0 in h/Mpc, ascending (nkmax)
+    const int nkmax,      // number of cuts
+    const double alpha,   // allowed UV fraction
+    const double* ells,   // band centers, ascending (nell)
+    const int nell,       // number of band centers
+    double** full,        // output [ggl_Npowerspectra][nell]
+    double*** ir,         // output [nkmax][ggl_Npowerspectra][nell]
+    double*** uvfrac,     // output [nkmax][ggl_Npowerspectra][nell]
+    int** nkeep           // output [nkmax][ggl_Npowerspectra]
+  );
+
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: REAL-SPACE w_gg (arXiv:2603.13031)
+// The same split projected to w(theta) with the bin-averaged Legendre
+// kernel of w_gg_tomo: w = w_IR + w_UV; an angular bin is kept while
+// |w_UV|/(|w_UV| + |w_IR|) < alpha
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+
+// w(theta) of every lens bin (autos) with the engine the likelihood
+// selected (Limber, FKEM or low-rank), with the k window on for
+// kmax > 0 (IR part for keep_ir = 1, UV part for keep_ir = 0) or off
+// for kmax <= 0 (the full w; with adopt_limber_gg = 1 equal to
+// w_gg_tomo bit for bit). Its kernel and Limber table are its own; it
+// never touches the caches of the data vector.
+void w_gg_kwindow_tomo(
+    const double kmax,    // cut at z = 0 in h/Mpc; <= 0 = no window
+    const int keep_ir,    // 1 = IR part, 0 = UV part
+    double* w_vec         // output [clustering_nbin*Ntheta], nz*Ntheta + i
+  );
+
+// The UV-fraction scale cuts of w(theta) per lens bin on an ascending
+// kmax grid: the full w, its IR parts, the UV fractions and the number
+// of angular bins kept (a suffix in theta, shortened where needed so
+// the cut tightens as kmax decreases).
+void w_gg_scale_cuts_tomo_work(
+    const double* kmax,   // cuts at z = 0 in h/Mpc, ascending (nkmax)
+    const int nkmax,      // number of cuts
+    const double alpha,   // allowed UV fraction
+    double** full,        // output [clustering_nbin][Ntheta]
+    double*** ir,         // output [nkmax][clustering_nbin][Ntheta]
+    double*** uvfrac,     // output [nkmax][clustering_nbin][Ntheta]
+    int** nkeep           // output [nkmax][clustering_nbin]
+  );
+
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 #ifdef __cplusplus
 }

@@ -2896,3 +2896,769 @@ void gg_scale_cuts_tomo_ells_work(
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: FOURIER C_ss AND C_gs (arXiv:2603.13031)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The cut of the Fourier gg section above, applied to cosmic shear C_ss
+// and galaxy-galaxy lensing C_gs: the same split C_l = C_l^IR + C_l^UV by
+// a step on the 3D power spectrum at kmax/D(z), the same criterion
+//
+//   |C_l^UV| / (|C_l^UV| + |C_l^IR|) < alpha,
+//
+// and the same window of cosmo2D.c (gg_kwin; the gg_ prefix of its names
+// is historical). The criterion matters most for shear: the lensing
+// efficiency spans the whole line of sight from the observer to the
+// source, so one multipole l collects 3D modes k = (l + 1/2)/chi from a
+// decade or more of wavenumbers, and a sharp cut in k never maps onto a
+// sharp cut in l. GGL sits between gg and ss: one narrow lens kernel, one
+// broad lensing kernel.
+//
+// Where each engine applies the step:
+//
+//   C_ss (Limber only; the core has no non-Limber shear engine) - per
+//     line-of-sight node, at the node's own kmax/D(a), on P_delta and,
+//     under TATT, on the one-loop IA kernels. Under NLA the GG, GI and II
+//     terms all multiply P_delta at the node's k, so one step splits them
+//     coherently.
+//
+//   C_gs, Limber (adopt_limber_gs = 1) - per node, at the node's own
+//     kmax/D(a), on every spectrum of the integrand (P_delta, the TATT
+//     and one-loop bias kernels).
+//
+//   C_gs, FKEM (adopt_limber_gs = 0) - the Limber value at the band
+//     centers keeps the per-node step; the final sum over the FFTLog
+//     wavenumbers, and the Limber terms that must cancel it at high l,
+//     use one threshold per pair, kmax/D at the lens bin's mean redshift
+//     (the redshift of the engine's own pivot).
+//
+// No white-noise correction exists for these probes (the one-loop gs
+// kernels carry no sigma4 constant, ss has none) and neither has a
+// low-rank engine, so UV = full - IR is exact by the window being a
+// partition. Running the cut never changes the engine the likelihood
+// selected. The BB part of shear is not cut: the data vector carries EE
+// only, and the NLA BB spectrum vanishes identically.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The Fourier cosmic-shear EE spectra of every source pair with or
+// without the k window. It runs the call of the data-vector assembly
+// (C_ss_tomo_limber_nointerp_ells, Limber), so with kmax <= 0 it returns
+// the data vector's own spectra, before the shear calibration and the
+// mask. The BB output of the engine goes into scratch and is discarded.
+//
+// Parameters:
+//   kmax    - the cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = the IR part (k <= kmax/D(z)), 0 = the UV part
+//   ells    - band centers (length nell)
+//   nell    - number of band centers
+//   out_EE  - output [shear_Npowerspectra][nell], row s = the source pair
+//             (Z1(s), Z2(s))
+// ---------------------------------------------------------------------------
+void C_ss_kwindow_tomo_ells(
+    const double kmax,
+    const int keep_ir,
+    const double* ells,
+    const int nell,
+    double** out_EE
+  )
+{
+  const int NSIZE = tomo.shear_Npowerspectra;
+  if (NSIZE <= 0) {
+    log_fatal("C_ss_kwindow_tomo_ells: shear_Npowerspectra = %d", NSIZE);
+    exit(1);
+  }
+  double** out_BB = (double**) malloc2d(NSIZE, nell);
+  if (kmax > 0.0) {
+    set_gg_kwindow(kmax, keep_ir);
+  }
+  C_ss_tomo_limber_nointerp_ells(ells, nell, NSIZE, out_EE, out_BB);
+  unset_gg_kwindow();
+  free(out_BB);
+}
+
+// ---------------------------------------------------------------------------
+// The Fourier galaxy-galaxy lensing spectra of every ggl pair with or
+// without the k window, along the engine the likelihood selected
+// (like.adopt_limber[LIMBER_GS]: Limber at every band center, or FKEM
+// below LMAX_NOLIMBER), with the calls of the data-vector assembly. With
+// kmax <= 0 it returns the data vector's own spectra, before the shear
+// calibration and the mask.
+//
+// Parameters:
+//   kmax    - the cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = the IR part (k <= kmax/D(z)), 0 = the UV part
+//   ells    - band centers (length nell)
+//   nell    - number of band centers
+//   out     - output [ggl_Npowerspectra][nell], row s = the ggl pair
+//             (ZL(s), ZS(s)) the project keeps after init_ggl_exclude
+// ---------------------------------------------------------------------------
+void C_gs_kwindow_tomo_ells(
+    const double kmax,
+    const int keep_ir,
+    const double* ells,
+    const int nell,
+    double** out
+  )
+{
+  const int NSIZE = tomo.ggl_Npowerspectra;
+  if (NSIZE <= 0) {
+    log_fatal("C_gs_kwindow_tomo_ells: ggl_Npowerspectra = %d", NSIZE);
+    exit(1);
+  }
+  if (kmax > 0.0) {
+    set_gg_kwindow(kmax, keep_ir);
+  }
+  if (1 == like.adopt_limber[LIMBER_GS]) {
+    C_gs_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
+  }
+  else {
+    C_gs_tomo_ells(ells, nell, NSIZE, out);
+  }
+  unset_gg_kwindow();
+}
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cuts of every Fourier cosmic-shear spectrum on a
+// grid of kmax: gg_scale_cuts_tomo_ells_work above, line for line, with
+// C_ss_kwindow_tomo_ells as the engine. Rows s = 0 .. shear_Npowerspectra
+// - 1 are the source pairs (Z1(s), Z2(s)), the order of the ss block of
+// the data vector. The criterion, the sign convention (absolute values
+// after the projection), the prefix in l and the monotone fix from the
+// largest kmax down are explained there.
+//
+// Validation: nkmax > 0 with kmax > 0 strictly ascending, 0 < alpha
+// < 1, ells strictly ascending; violations are fatal.
+//
+// Parameters:
+//   kmax   - the cuts at z = 0 in h/Mpc, ascending (length nkmax)
+//   nkmax  - number of cuts
+//   alpha  - the UV fraction allowed (0.05 in the paper's baseline)
+//   ells   - band centers, ascending (length nell)
+//   nell   - number of band centers
+//   full   - output [shear_Npowerspectra][nell], the full spectra
+//   ir     - output [nkmax][shear_Npowerspectra][nell], the IR parts
+//   uvfrac - output [nkmax][shear_Npowerspectra][nell], the UV fractions
+//   nkeep  - output [nkmax][shear_Npowerspectra], bands kept (a prefix)
+// ---------------------------------------------------------------------------
+void ss_scale_cuts_tomo_ells_work(
+    const double* kmax,
+    const int nkmax,
+    const double alpha,
+    const double* ells,
+    const int nell,
+    double** full,
+    double*** ir,
+    double*** uvfrac,
+    int** nkeep
+  )
+{
+  if (nkmax < 1) {
+    log_fatal("ss_scale_cuts_tomo_ells_work: no kmax");
+    exit(1);
+  }
+  for (int m=0; m<nkmax; m++) {
+    if (!(kmax[m] > 0.0) ||
+        (m > 0 &&
+         !(kmax[m] > kmax[m-1]))) {
+      log_fatal("ss_scale_cuts_tomo_ells_work: kmax must be positive "
+                "and strictly ascending (kmax[%d] = %e)", m, kmax[m]);
+      exit(1);
+    }
+  }
+  if (!(alpha > 0.0 && alpha < 1.0)) {
+    log_fatal("ss_scale_cuts_tomo_ells_work: alpha = %e not in (0, 1)",
+              alpha);
+    exit(1);
+  }
+  for (int i=1; i<nell; i++) {
+    if (!(ells[i] > ells[i-1])) {
+      log_fatal("ss_scale_cuts_tomo_ells_work: band centers must be "
+                "strictly ascending");
+      exit(1);
+    }
+  }
+  const int NSPEC = tomo.shear_Npowerspectra;
+
+  // the spectra of one evaluation, filled by the driver
+  double** cs = (double**) malloc2d(NSPEC, nell);
+
+  C_ss_kwindow_tomo_ells(-1.0, 1, ells, nell, cs);
+  for (int s=0; s<NSPEC; s++) {
+    for (int i=0; i<nell; i++) {
+      full[s][i] = cs[s][i];
+    }
+  }
+  for (int m=0; m<nkmax; m++) {
+    C_ss_kwindow_tomo_ells(kmax[m], 1, ells, nell, cs);
+    for (int s=0; s<NSPEC; s++) {
+      for (int i=0; i<nell; i++) {
+        const double cir = cs[s][i];
+        const double cuv = full[s][i] - cir;
+        const double den = fabs(cuv) + fabs(cir);
+        ir[m][s][i] = cir;
+        // den = 0 means both sectors vanish (see the gg work): a band
+        // with no signal at all has nothing to contaminate
+        uvfrac[m][s][i] = (den > 0.0) ? fabs(cuv)/den : 0.0;
+      }
+    }
+  }
+  free(cs);
+
+  // the prefix of each spectrum, then the conservative monotonic fix
+  // from the largest kmax down
+  for (int m=0; m<nkmax; m++) {
+    for (int s=0; s<NSPEC; s++) {
+      int n = 0;
+      while (n < nell && uvfrac[m][s][n] < alpha) {
+        n++;
+      }
+      nkeep[m][s] = n;
+    }
+  }
+  for (int m=nkmax-2; m>=0; m--) {
+    for (int s=0; s<NSPEC; s++) {
+      if (nkeep[m][s] > nkeep[m+1][s]) {
+        nkeep[m][s] = nkeep[m+1][s];
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cuts of every Fourier galaxy-galaxy lensing
+// spectrum on a grid of kmax: gg_scale_cuts_tomo_ells_work above, line
+// for line, with C_gs_kwindow_tomo_ells as the engine (Limber or FKEM,
+// as the likelihood selected). Rows s = 0 .. ggl_Npowerspectra - 1 are
+// the ggl pairs (ZL(s), ZS(s)) the project keeps after init_ggl_exclude,
+// the order of the gs block of the data vector.
+//
+// C_gs can change sign (the IA term is negative where lens and source
+// overlap in redshift; RSD and magnification add signed pieces). A band
+// sitting on a cancellation gets a UV fraction near 1/2 and is cut, and
+// the monotone fix keeps the cut tightening as kmax decreases; the raw
+// fraction is never smoothed.
+//
+// Validation: nkmax > 0 with kmax > 0 strictly ascending, 0 < alpha
+// < 1, ells strictly ascending; violations are fatal.
+//
+// Parameters:
+//   kmax   - the cuts at z = 0 in h/Mpc, ascending (length nkmax)
+//   nkmax  - number of cuts
+//   alpha  - the UV fraction allowed (0.05 in the paper's baseline)
+//   ells   - band centers, ascending (length nell)
+//   nell   - number of band centers
+//   full   - output [ggl_Npowerspectra][nell], the full spectra
+//   ir     - output [nkmax][ggl_Npowerspectra][nell], the IR parts
+//   uvfrac - output [nkmax][ggl_Npowerspectra][nell], the UV fractions
+//   nkeep  - output [nkmax][ggl_Npowerspectra], bands kept (a prefix)
+// ---------------------------------------------------------------------------
+void gs_scale_cuts_tomo_ells_work(
+    const double* kmax,
+    const int nkmax,
+    const double alpha,
+    const double* ells,
+    const int nell,
+    double** full,
+    double*** ir,
+    double*** uvfrac,
+    int** nkeep
+  )
+{
+  if (nkmax < 1) {
+    log_fatal("gs_scale_cuts_tomo_ells_work: no kmax");
+    exit(1);
+  }
+  for (int m=0; m<nkmax; m++) {
+    if (!(kmax[m] > 0.0) ||
+        (m > 0 &&
+         !(kmax[m] > kmax[m-1]))) {
+      log_fatal("gs_scale_cuts_tomo_ells_work: kmax must be positive "
+                "and strictly ascending (kmax[%d] = %e)", m, kmax[m]);
+      exit(1);
+    }
+  }
+  if (!(alpha > 0.0 && alpha < 1.0)) {
+    log_fatal("gs_scale_cuts_tomo_ells_work: alpha = %e not in (0, 1)",
+              alpha);
+    exit(1);
+  }
+  for (int i=1; i<nell; i++) {
+    if (!(ells[i] > ells[i-1])) {
+      log_fatal("gs_scale_cuts_tomo_ells_work: band centers must be "
+                "strictly ascending");
+      exit(1);
+    }
+  }
+  const int NSPEC = tomo.ggl_Npowerspectra;
+
+  // the spectra of one evaluation, filled by the driver
+  double** cs = (double**) malloc2d(NSPEC, nell);
+
+  C_gs_kwindow_tomo_ells(-1.0, 1, ells, nell, cs);
+  for (int s=0; s<NSPEC; s++) {
+    for (int i=0; i<nell; i++) {
+      full[s][i] = cs[s][i];
+    }
+  }
+  for (int m=0; m<nkmax; m++) {
+    C_gs_kwindow_tomo_ells(kmax[m], 1, ells, nell, cs);
+    for (int s=0; s<NSPEC; s++) {
+      for (int i=0; i<nell; i++) {
+        const double cir = cs[s][i];
+        const double cuv = full[s][i] - cir;
+        const double den = fabs(cuv) + fabs(cir);
+        ir[m][s][i] = cir;
+        // den = 0 means both sectors vanish (see the gg work): a band
+        // with no signal at all has nothing to contaminate
+        uvfrac[m][s][i] = (den > 0.0) ? fabs(cuv)/den : 0.0;
+      }
+    }
+  }
+  free(cs);
+
+  // the prefix of each spectrum, then the conservative monotonic fix
+  // from the largest kmax down
+  for (int m=0; m<nkmax; m++) {
+    for (int s=0; s<NSPEC; s++) {
+      int n = 0;
+      while (n < nell && uvfrac[m][s][n] < alpha) {
+        n++;
+      }
+      nkeep[m][s] = n;
+    }
+  }
+  for (int m=nkmax-2; m>=0; m--) {
+    for (int s=0; s<NSPEC; s++) {
+      if (nkeep[m][s] > nkeep[m+1][s]) {
+        nkeep[m][s] = nkeep[m+1][s];
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// UV-FRACTION SCALE CUT: REAL-SPACE w_gg (arXiv:2603.13031)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The real-space version of the cut above, for the angular correlation
+// function of galaxy clustering, w(theta).
+//
+// w_gg_tomo (cosmo2D.c) builds w(theta) as a sum over integer
+// multipoles,
+//
+//   w(theta_i) = sum_l Pl(i, l) C_l,
+//
+// where theta_i is angular bin i and the kernel Pl(i, l) is the
+// Legendre polynomial P_l(cos theta), times (2l + 1)/(4 pi), averaged
+// over that bin. The sum is linear in C_l, so the split
+// C_l = C_l^IR + C_l^UV of the Fourier section carries over term by
+// term:
+//
+//   w(theta_i) = w_IR(theta_i) + w_UV(theta_i),
+//
+// with w_IR the same sum over C_l^IR. w_IR is the part of the
+// correlation sourced by modes below the cut, k <= kmax/D(z), with D
+// the linear growth factor normalized to D(0) = 1 and kmax quoted at
+// z = 0 in h/Mpc, as in the Fourier section; w_UV is the rest. The UV
+// fraction of a bin is
+//
+//   |w_UV| / (|w_UV| + |w_IR|),
+//
+// with the absolute values taken after the projection, as for C_l.
+//
+// Small angles collect their power from large multipoles. The bins a
+// cut keeps are therefore a suffix in theta - every bin from the
+// largest angle down to a smallest kept angle theta_min - where the
+// Fourier cut keeps a prefix in l.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// w(theta) of every lens bin with or without the k window: kmax <= 0
+// gives the full w(theta) of the data vector; kmax > 0 gives its IR part
+// (keep_ir = 1) or its UV part (keep_ir = 0). Autos only, as in
+// w_gg_tomo.
+//
+// Why a separate driver, and not w_gg_tomo under the window: the Limber
+// fill of w_gg_tomo reads the interpolation table of C_gg_tomo_limber.
+// Every real-space data vector shares that table, so it refuses to run
+// under the window and can never hold windowed spectra; its non-Limber
+// engines, C_cl_tomo and C_cl_tomo_lowrank, continue converged bins
+// from that table and refuse the window for the same reason. This
+// driver owns its kernel Pl and its Limber table. It reads no cache of
+// w_gg_tomo and writes none, so the data vector is untouched.
+//
+// The fill of C_l at every integer l follows the engine the likelihood
+// selected (like.adopt_limber[LIMBER_GG], use_lowrank_DD_GG); the cut
+// adds no switch of its own:
+//
+//   Limber (adopt_limber_gg = 1): the sequence of w_gg_tomo - the exact
+//     Limber C_l at l = 1 .. LMIN_tab - 1, then the Limber table,
+//     interpolated linearly in ln l, up to Ntable.LMAX - 1. Under the
+//     window every line-of-sight node applies its own threshold
+//     kmax/D(a), in the exact values and in the table nodes alike. With
+//     the window off the result equals w_gg_tomo bit for bit (the
+//     scale-cut tests check this).
+//
+//   non-Limber (adopt_limber_gg = 0): below the engine's multipole cap
+//     (limits.LMAX_NOLIMBER for FKEM, lowrank_DD_GG_lmax for the
+//     low-rank engine) the C_l at every integer l come from
+//     C_gg_kwindow_tomo_ells above, the window-aware Fourier entry of
+//     the same engine; the Limber table fills the multipoles above. At
+//     an integer the Fourier entry is exactly the non-Limber C_l (its
+//     interpolation between integers drops out), and it brings along
+//     what the window needs on the low-rank path: the white-noise
+//     correction of the IR part and UV = full - IR.
+//
+// The Fourier entry has no early exit (tol = 0): every bin is computed
+// non-Limber up to the cap. The non-Limber w_gg_tomo instead switches a
+// bin to Limber once |C_l/C_l^limber - 1| < 0.002, so the two full
+// w(theta) differ by that switching step. The cut takes its full w from
+// this driver too, so w, w_IR and w_UV share one sequence.
+//
+// Every path that turns the window on turns it off again right after
+// its spectra are computed.
+//
+// Parameters:
+//   kmax    - the cut at z = 0 in h/Mpc; kmax <= 0 = no window
+//   keep_ir - 1 = IR part (k <= kmax/D(z)), 0 = UV part
+//   w_vec   - output [clustering_nbin*Ntable.Ntheta], entry
+//             nz*Ntheta + i = lens bin nz, angular bin i (the layout of
+//             w_gg_tomo's cache)
+// ---------------------------------------------------------------------------
+void w_gg_kwindow_tomo(
+    const double kmax,
+    const int keep_ir,
+    double* w_vec
+  )
+{
+  if (0 == Ntable.Ntheta) {
+    log_fatal("w_gg_kwindow_tomo: Ntable.Ntheta not initialized");
+    exit(1);
+  }
+  const int NSIZE = tomo.clustering_Npowerspectra;
+  if (NSIZE <= 0) {
+    log_fatal("w_gg_kwindow_tomo: tomo.clustering_Npowerspectra = %d",
+              NSIZE);
+    exit(1);
+  }
+  // the same consistency check as w_gg_tomo: the non-Limber engines
+  // write one row per lens bin into tables sized by the pair count
+  if (NSIZE != redshift.clustering_nbin) {
+    log_fatal("w_gg_kwindow_tomo: tomo.clustering_Npowerspectra = %d != "
+              "clustering_nbin = %d: call init_ntomo_powerspectra after "
+              "changing the lens bins", NSIZE, redshift.clustering_nbin);
+    exit(1);
+  }
+  const int limber = like.adopt_limber[LIMBER_GG];
+
+  // C_0 and the kernel at l = 0 are zero, as in w_gg_tomo: the sums
+  // start at l = 1
+  const int lmin = 1;
+
+  // --- 1. THE BIN-AVERAGED LEGENDRE KERNEL ---
+  //
+  // Pl(i, l) is the average of (2l + 1)/(4 pi) P_l(x) over angular bin
+  // i, with x = cos(theta). The antiderivative of P_l is
+  // [P_{l+1} - P_{l-1}]/(2l + 1), so the average is the difference of
+  // P_{l+1} - P_{l-1} at the two bin edges, divided by 4 pi and by the
+  // bin width in x. xmin and xmax are the cosines of the bin's smaller
+  // and larger angle (set_bin_average's convention: xmin > xmax).
+  //
+  // This block repeats the kernel of w_gg_tomo statement by statement,
+  // with the same expression and operation order: the kernel then
+  // agrees to the last bit, which the window-off identity needs.
+  double* lnell = (double*) malloc1d(Ntable.LMAX + 1);
+  for (int l=1; l<=Ntable.LMAX; l++) {
+    lnell[l] = log((double) l);
+  }
+
+  double** Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);
+  double*** P = (double***) malloc3d(2, Ntable.Ntheta, Ntable.LMAX + 1);
+  double** Pmin = P[0];  // P_l at the cosine of the bin's smaller angle
+  double** Pmax = P[1];  // P_l at the cosine of the bin's larger angle
+
+  double xmin[Ntable.Ntheta];
+  double xmax[Ntable.Ntheta];
+  // serial, as in w_gg_tomo: the first call of set_bin_average fills its
+  // own static Legendre tables
+  for (int i=0; i<Ntable.Ntheta; i++) {
+    bin_avg r = set_bin_average(i, 0);
+    xmin[i] = r.xmin;
+    xmax[i] = r.xmax;
+  }
+
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int i=0; i<Ntable.Ntheta; i++) {
+    for (int l=0; l<(Ntable.LMAX+1); l++) {
+      bin_avg r = set_bin_average(i, l);
+      Pmin[i][l] = r.Pmin;
+      Pmax[i][l] = r.Pmax;
+    }
+  }
+
+  for (int i=0; i<Ntable.Ntheta; i++) {
+    for (int l=0; l<lmin; l++) {
+      Pl[i][l] = 0.0;
+    }
+  }
+
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int i=0; i<Ntable.Ntheta; i++) {
+    for (int l=lmin; l<Ntable.LMAX; l++) {
+      const double tmp = (1.0/(xmin[i] - xmax[i]))*(1. / (4.0 * M_PI));
+      Pl[i][l] = tmp*(Pmin[i][l + 1] - Pmax[i][l + 1]
+                      - Pmin[i][l - 1] + Pmax[i][l - 1]);
+    }
+  }
+  free(P);
+
+  // --- 2. C_l AT EVERY INTEGER l ---
+  //
+  // The Limber table: the geometry of C_gg_tomo_limber's shared table
+  // (Ntable.N_ell[NODES_DENSE] nodes, log-spaced from LMIN_tab to
+  // Ntable.LMAX + 1), filled by the same batch call. Window off, its
+  // nodes are those of the shared table bit for bit; window on, they
+  // carry the step. Either way the shared table is never written.
+  //
+  //   lim[0] = ln of the first node, lim[1] = ln of the last node,
+  //   lim[2] = the node spacing in ln l
+  const int nell = Ntable.N_ell[NODES_DENSE];
+  double lim[3];
+  lim[0] = log(fmax(limits.LMIN_tab, 1.0));
+  lim[1] = log(Ntable.LMAX + 1);
+  lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.0);
+
+  double* lx = (double*) malloc1d(nell);
+  for (int i=0; i<nell; i++) {
+    lx[i] = exp(lim[0] + i*lim[2]);
+  }
+  double** table = (double**) malloc2d(NSIZE, nell);  // [lens bin][node]
+  double** Cl = (double**) malloc2d(NSIZE, Ntable.LMAX);
+  for (int i=0; i<NSIZE; i++) {
+    for (int l=0; l<lmin; l++) {
+      Cl[i][l] = 0.0;
+    }
+  }
+
+  if (kmax > 0.0) {
+    set_gg_kwindow(kmax, keep_ir);
+  }
+  C_gg_tomo_limber_nointerp_ells(lx, nell, NSIZE, table);
+
+  // lfill = the first multipole the Limber table fills; below it the
+  // exact Limber batch (Limber path) or the non-Limber engine runs
+  int lfill = 0;
+  if (1 == limber) {
+    C_gg_tomo_limber_nointerp_batch(lmin, limits.LMIN_tab, NSIZE, Cl);
+    lfill = limits.LMIN_tab;
+  }
+  unset_gg_kwindow();
+
+  if (0 == limber) {
+    // the cap of the engine the likelihood selected
+    int cap = limits.LMAX_NOLIMBER;
+    if (1 == get_use_lowrank_DD_GG()) {
+      cap = get_lowrank_DD_GG_lmax();
+    }
+    if (cap > Ntable.LMAX) {
+      log_fatal("w_gg_kwindow_tomo: non-Limber cap %d > Ntable.LMAX = %d",
+                cap, Ntable.LMAX);
+      exit(1);
+    }
+
+    // the integers l = 1 .. cap - 1 as "band centers" of the Fourier
+    // entry, which sets and unsets the window itself; real-space w has
+    // no cross pairs, so their rows (when a pair list is installed) are
+    // computed and discarded
+    const int nl = cap - 1;
+    const int npairs = get_gg_cross_npairs();
+    double* ells = (double*) malloc1d(nl);
+    for (int i=0; i<nl; i++) {
+      ells[i] = (double) (i + 1);
+    }
+    double** cnl = (double**) malloc2d(NSIZE, nl);
+    double** cx = (npairs > 0) ? (double**) malloc2d(npairs, nl) : NULL;
+    C_gg_kwindow_tomo_ells(kmax, keep_ir, ells, nl, cnl, cx);
+    for (int nz=0; nz<NSIZE; nz++) {
+      for (int i=0; i<nl; i++) {
+        Cl[nz][i + 1] = cnl[nz][i];
+      }
+    }
+    free(ells);
+    free(cnl);
+    if (cx != NULL) {
+      free(cx);
+    }
+    lfill = cap;
+  }
+
+  // linear interpolation in ln l of bin nz's table row at every integer
+  // l = lfill .. LMAX - 1 (limber_fill_interp, cosmo2D.c); each bin
+  // writes only its own row of Cl
+  #pragma omp parallel for schedule(static)
+  for (int nz=0; nz<NSIZE; nz++) {
+    const double* tab[1] = { table[nz] };
+    double* dst[1] = { Cl[nz] };
+    limber_fill_interp(1, tab, dst, lfill, Ntable.LMAX, lnell,
+                       lim[0], 1.0/lim[2], nell);
+  }
+
+  // --- 3. THE LEGENDRE SUMS ---
+  legendre_sums(NSIZE, Ntable.Ntheta, lmin, Ntable.LMAX, Pl, Cl, w_vec);
+
+  free(Cl);
+  free(table);
+  free(lx);
+  free(Pl);
+  free(lnell);
+}
+
+// ---------------------------------------------------------------------------
+// The UV-fraction scale cut of w(theta), per lens bin, on a grid of kmax:
+// per angular bin the fraction of w from modes above the cut kmax/D(z),
+//
+//   uvfrac = |w_UV| / (|w_UV| + |w_IR|),
+//
+// and the bins each kmax keeps, uvfrac < alpha. The quantities and
+// their reading are those of gg_scale_cuts_tomo_ells_work, the Fourier
+// version above: w_UV = w - w_IR (the window partitions P(k)), a zero
+// denominator means both parts vanish and gives a fraction of 0, and
+// the cut diagnoses the evaluated model only.
+//
+// w(theta) changes sign at large angles, and either part can change
+// sign on its own. Near such a cancellation the fraction approaches 1/2
+// however small the UV part is in absolute terms. The fraction is never
+// smoothed; the two rules below make the selection robust instead, as
+// arXiv:2603.13031 does at the zero crossing of xi_plus:
+//
+//   1. The bins kept are a suffix in theta. The scan starts at the
+//      largest angle and keeps bins while the fraction is below alpha;
+//      the first bin at or above alpha ends the suffix, and a smaller
+//      angle whose fraction dips back below alpha stays cut. A bin on a
+//      cancellation therefore ends the suffix: the conservative outcome.
+//
+//   2. The cut only tightens as kmax decreases. From the largest kmax
+//      down, a suffix longer than that of the next larger kmax is
+//      shortened to it.
+//
+// Cost: one run of the driver for the full w plus one per kmax.
+//
+// Validation: nkmax > 0 with kmax > 0 strictly ascending and
+// 0 < alpha < 1; violations are fatal.
+//
+// Parameters:
+//   kmax   - the cuts at z = 0 in h/Mpc, ascending (length nkmax)
+//   nkmax  - number of cuts
+//   alpha  - the UV fraction allowed (0.05 in the paper's baseline)
+//   full   - output [clustering_nbin][Ntheta], the full w(theta)
+//   ir     - output [nkmax][clustering_nbin][Ntheta], the IR parts
+//   uvfrac - output [nkmax][clustering_nbin][Ntheta], the UV fractions
+//   nkeep  - output [nkmax][clustering_nbin], the number of angular bins
+//            kept: bins Ntheta - nkeep .. Ntheta - 1 (a suffix)
+// ---------------------------------------------------------------------------
+void w_gg_scale_cuts_tomo_work(
+    const double* kmax,
+    const int nkmax,
+    const double alpha,
+    double** full,
+    double*** ir,
+    double*** uvfrac,
+    int** nkeep
+  )
+{
+  if (nkmax < 1) {
+    log_fatal("w_gg_scale_cuts_tomo_work: no kmax");
+    exit(1);
+  }
+  for (int m=0; m<nkmax; m++) {
+    if (!(kmax[m] > 0.0) ||
+        (m > 0 &&
+         !(kmax[m] > kmax[m-1]))) {
+      log_fatal("w_gg_scale_cuts_tomo_work: kmax must be positive "
+                "and strictly ascending (kmax[%d] = %e)", m, kmax[m]);
+      exit(1);
+    }
+  }
+  if (!(alpha > 0.0 && alpha < 1.0)) {
+    log_fatal("w_gg_scale_cuts_tomo_work: alpha = %e not in (0, 1)",
+              alpha);
+    exit(1);
+  }
+  const int NSIZE  = tomo.clustering_Npowerspectra;
+  const int NTHETA = Ntable.Ntheta;
+  if (NSIZE <= 0 || NTHETA <= 0) {
+    log_fatal("w_gg_scale_cuts_tomo_work: clustering_Npowerspectra = %d, "
+              "Ntheta = %d (initialize the tomography and the real-space "
+              "binning first)", NSIZE, NTHETA);
+    exit(1);
+  }
+
+  // one run of the driver, entry nz*NTHETA + i
+  double* wv = (double*) malloc1d(NSIZE*NTHETA);
+
+  w_gg_kwindow_tomo(-1.0, 1, wv);
+  for (int s=0; s<NSIZE; s++) {
+    for (int i=0; i<NTHETA; i++) {
+      full[s][i] = wv[s*NTHETA + i];
+    }
+  }
+  for (int m=0; m<nkmax; m++) {
+    w_gg_kwindow_tomo(kmax[m], 1, wv);
+    for (int s=0; s<NSIZE; s++) {
+      for (int i=0; i<NTHETA; i++) {
+        const double wir = wv[s*NTHETA + i];
+        const double wuv = full[s][i] - wir;
+        const double den = fabs(wuv) + fabs(wir);
+        ir[m][s][i] = wir;
+        // den = 0 means both parts vanish (see the header): a bin with
+        // no signal at all has nothing to contaminate
+        uvfrac[m][s][i] = (den > 0.0) ? fabs(wuv)/den : 0.0;
+      }
+    }
+  }
+  free(wv);
+
+  // rule 1, the suffix of each lens bin: n counts the kept bins from the
+  // largest angle (i = NTHETA - 1) downward
+  for (int m=0; m<nkmax; m++) {
+    for (int s=0; s<NSIZE; s++) {
+      int n = 0;
+      while (n < NTHETA && uvfrac[m][s][NTHETA - 1 - n] < alpha) {
+        n++;
+      }
+      nkeep[m][s] = n;
+    }
+  }
+  // rule 2, from the largest kmax down
+  for (int m=nkmax-2; m>=0; m--) {
+    for (int s=0; s<NSIZE; s++) {
+      if (nkeep[m][s] > nkeep[m+1][s]) {
+        nkeep[m][s] = nkeep[m+1][s];
+      }
+    }
+  }
+}
