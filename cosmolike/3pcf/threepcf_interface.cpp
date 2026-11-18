@@ -55,18 +55,6 @@ using int_array_3pcf = py::array_t<int, py::array::c_style>;
 // [SECTION] VALIDATION HELPERS
 // ============================================================================
 
-// Abort with a diagnostic when an input breaks its contract.
-static void require_3pcf(
-    const bool condition, // required shape or physical-domain condition
-    const char* message // diagnostic for a violated input contract
-  )
-{
-  if (!condition) {
-    spdlog::critical("3pcf interface: {}", message);
-    std::exit(1);
-  }
-}
-
 
 // Check the rank and axis lengths of a borrowed NumPy argument, naming
 // the offending argument in the diagnostic.
@@ -213,7 +201,10 @@ static py::tuple aperture_weights_production_3pcf(
   rank_3pcf(d3, 1, "d3");
   rank_3pcf(phi, 1, "phi");
   rank_3pcf(filters, 2, "filters");
-  require_3pcf(filters.shape(1) == 3, "filters need three columns");
+  if (!(filters.shape(1) == 3)) {
+    spdlog::critical("3pcf interface: filters need three columns");
+    std::exit(1);
+  }
   finite_3pcf(d2, "d2");
   finite_3pcf(d3, "d3");
   finite_3pcf(phi, "phi");
@@ -221,14 +212,20 @@ static py::tuple aperture_weights_production_3pcf(
   lower_bound_3pcf(d2, true, "d2");
   lower_bound_3pcf(d3, true, "d3");
   lower_bound_3pcf(filters, true, "filters");
-  require_3pcf(std::isfinite(dlnd)
-      && dlnd > 0.0
-      && std::isfinite(dphi)
-      && dphi > 0.0, "bin widths must be finite and positive");
+  if (!(std::isfinite(dlnd)
+        && dlnd > 0.0
+        && std::isfinite(dphi)
+        && dphi > 0.0)) {
+    spdlog::critical("3pcf interface: bin widths must be finite and positive");
+    std::exit(1);
+  }
   for (py::ssize_t index=0; index<phi.size(); index++) {
-    require_3pcf(phi.data()[index] > 0.0
-        && phi.data()[index] < std::acos(-1.0),
-        "phi must lie strictly between zero and pi");
+    if (!(phi.data()[index] > 0.0
+          && phi.data()[index] < std::acos(-1.0))) {
+      spdlog::critical("3pcf interface: phi must lie strictly between zero "
+        "and pi");
+      std::exit(1);
+    }
   }
 
   // C receives an int triangle count. Check before multiplying, so a
@@ -237,9 +234,14 @@ static py::tuple aperture_weights_production_3pcf(
   const int nd3 = static_cast<int>(d3.size());
   const int nphi = static_cast<int>(phi.size());
   const int nfilter = static_cast<int>(filters.shape(0));
-  require_3pcf(nd2 <= INT_MAX/nd3, "triangle count exceeds C int range");
-  require_3pcf(nd2*nd3 <= INT_MAX/nphi,
-      "triangle count exceeds C int range");
+  if (!(nd2 <= INT_MAX/nd3)) {
+    spdlog::critical("3pcf interface: triangle count exceeds C int range");
+    std::exit(1);
+  }
+  if (!(nd2*nd3 <= INT_MAX/nphi)) {
+    spdlog::critical("3pcf interface: triangle count exceeds C int range");
+    std::exit(1);
+  }
   const int ntriangle = nd2*nd3*nphi;
   array_3pcf weights_real({nfilter, 4, ntriangle});
   array_3pcf weights_imag({nfilter, 4, ntriangle});
@@ -272,12 +274,15 @@ static array_3pcf aperture_apply_production_3pcf(
   rank_3pcf(weights_imag, 3, "wi");
   rank_3pcf(gamma_real, 3, "gr");
   rank_3pcf(gamma_imag, 3, "gi");
-  require_3pcf(same_shape_3pcf(weights_real, weights_imag)
-      && same_shape_3pcf(gamma_real, gamma_imag)
-      && weights_real.shape(1) == 4
-      && gamma_real.shape(1) == 4
-      && weights_real.shape(2) == gamma_real.shape(2),
-      "aperture component and triangle axes disagree");
+  if (!(same_shape_3pcf(weights_real, weights_imag)
+        && same_shape_3pcf(gamma_real, gamma_imag)
+        && weights_real.shape(1) == 4
+        && gamma_real.shape(1) == 4
+        && weights_real.shape(2) == gamma_real.shape(2))) {
+    spdlog::critical("3pcf interface: aperture component and triangle axes "
+      "disagree");
+    std::exit(1);
+  }
   finite_3pcf(weights_real, "wr");
   finite_3pcf(weights_imag, "wi");
   finite_3pcf(gamma_real, "gr");
@@ -321,11 +326,14 @@ static array_3pcf filtered_pair_production_3pcf(
   rank_3pcf(radius, 1, "r");
   rank_3pcf(filters, 2, "filters");
   rank_3pcf(power, 3, "power");
-  require_3pcf(ell_weights.size() == ell.size()
-      && filters.shape(1) == ell.size()
-      && power.shape(0) == filters.shape(0)
-      && power.shape(1) == filters.shape(0)
-      && power.shape(2) == ell.size(), "filtered-pair axes disagree");
+  if (!(ell_weights.size() == ell.size()
+        && filters.shape(1) == ell.size()
+        && power.shape(0) == filters.shape(0)
+        && power.shape(1) == filters.shape(0)
+        && power.shape(2) == ell.size())) {
+    spdlog::critical("3pcf interface: filtered-pair axes disagree");
+    std::exit(1);
+  }
   finite_3pcf(ell, "ell");
   finite_3pcf(ell_weights, "ell_weights");
   finite_3pcf(radius, "r");
@@ -362,8 +370,11 @@ static array_3pcf connected_gram_production_3pcf(
 {
   rank_3pcf(responses, 2, "responses");
   rank_3pcf(weights, 1, "weights");
-  require_3pcf(responses.shape(1) == weights.size(),
-      "response-node and weight counts must agree");
+  if (!(responses.shape(1) == weights.size())) {
+    spdlog::critical("3pcf interface: response-node and weight counts must "
+      "agree");
+    std::exit(1);
+  }
   finite_3pcf(responses, "responses");
   finite_3pcf(weights, "weights");
   lower_bound_3pcf(weights, false, "weights");
@@ -399,12 +410,14 @@ static array_3pcf gaussian_covariance_production_3pcf(
   rank_3pcf(pair_zero, 2, "pair_zero");
   rank_3pcf(radial_weights, 1, "radial_weights");
   aligned_3pcf(triplets, alignof(int), "triplets");
-  require_3pcf(triplets.shape(1) == 3
-      && pair.shape(0) == pair.shape(1)
-      && pair_zero.shape(0) == pair.shape(0)
-      && pair_zero.shape(1) == pair.shape(0)
-      && radial_weights.size() == pair.shape(2),
-      "Gaussian covariance axes disagree");
+  if (!(triplets.shape(1) == 3
+        && pair.shape(0) == pair.shape(1)
+        && pair_zero.shape(0) == pair.shape(0)
+        && pair_zero.shape(1) == pair.shape(0)
+        && radial_weights.size() == pair.shape(2))) {
+    spdlog::critical("3pcf interface: Gaussian covariance axes disagree");
+    std::exit(1);
+  }
   finite_3pcf(pair, "pair");
   finite_3pcf(pair_zero, "pair_zero");
   finite_3pcf(radial_weights, "radial_weights");
@@ -418,11 +431,17 @@ static array_3pcf gaussian_covariance_production_3pcf(
   // the same Gaussian covariance only for symmetric field correlations.
   for (int first=0; first<nfield; first++) {
     for (int second=0; second<first; second++) {
-      require_3pcf(symmetric_values_3pcf(*pair_zero.data(first, second),
-          *pair_zero.data(second, first)), "pair_zero must be symmetric");
+      if (!(symmetric_values_3pcf(*pair_zero.data(first, second),
+            *pair_zero.data(second, first)))) {
+        spdlog::critical("3pcf interface: pair_zero must be symmetric");
+        std::exit(1);
+      }
       for (int radial=0; radial<nr; radial++) {
-        require_3pcf(symmetric_values_3pcf(*pair.data(first, second, radial),
-            *pair.data(second, first, radial)), "pair must be symmetric");
+        if (!(symmetric_values_3pcf(*pair.data(first, second, radial),
+              *pair.data(second, first, radial)))) {
+          spdlog::critical("3pcf interface: pair must be symmetric");
+          std::exit(1);
+        }
       }
     }
   }
@@ -454,23 +473,34 @@ static Array notebook_input_3pcf(
     const int rank // physical rank: vector, matrix or cube
   )
 {
-  require_3pcf(py::isinstance<py::array>(input),
-      "notebook inputs must be NumPy arrays");
+  if (!(py::isinstance<py::array>(input))) {
+    spdlog::critical("3pcf interface: notebook inputs must be NumPy arrays");
+    std::exit(1);
+  }
   const py::array values = py::reinterpret_borrow<py::array>(input);
   rank_3pcf(values, rank, "notebook input");
   using Element = typename Array::elem_type;
   if constexpr (std::is_integral<Element>::value) {
-    require_3pcf(values.dtype().kind() == 'i'
-        || values.dtype().kind() == 'u', "triplets must have integer dtype");
+    if (!(values.dtype().kind() == 'i'
+          || values.dtype().kind() == 'u')) {
+      spdlog::critical("3pcf interface: triplets must have integer dtype");
+      std::exit(1);
+    }
     const double minimum = py::cast<double>(input.attr("min")());
     const double maximum = py::cast<double>(input.attr("max")());
-    require_3pcf(minimum >= INT_MIN
-        && maximum <= INT_MAX, "triplets exceed int32 range");
+    if (!(minimum >= INT_MIN
+          && maximum <= INT_MAX)) {
+      spdlog::critical("3pcf interface: triplets exceed int32 range");
+      std::exit(1);
+    }
   } else {
-    require_3pcf(values.dtype().kind() == 'f'
-        || values.dtype().kind() == 'i'
-        || values.dtype().kind() == 'u',
-        "physical inputs must have a real numeric dtype");
+    if (!(values.dtype().kind() == 'f'
+          || values.dtype().kind() == 'i'
+          || values.dtype().kind() == 'u')) {
+      spdlog::critical("3pcf interface: physical inputs must have a real "
+        "numeric dtype");
+      std::exit(1);
+    }
   }
   const py::object owned = input.attr("astype")(
       py::dtype::of<Element>(), py::arg("order") = "F",
@@ -504,13 +534,19 @@ static void set_threads_3pcf(
     const int nthreads // positive requested OpenMP team size
   )
 {
-  require_3pcf(nthreads > 0, "nthreads must be positive");
+  if (!(nthreads > 0)) {
+    spdlog::critical("3pcf interface: nthreads must be positive");
+    std::exit(1);
+  }
   openblas_set_num_threads(1);
 #ifdef _OPENMP
   omp_set_dynamic(0);
   omp_set_num_threads(nthreads);
 #else
-  require_3pcf(nthreads == 1, "this module was built without OpenMP");
+  if (!(nthreads == 1)) {
+    spdlog::critical("3pcf interface: this module was built without OpenMP");
+    std::exit(1);
+  }
 #endif
 }
 

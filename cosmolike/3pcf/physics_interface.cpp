@@ -62,19 +62,6 @@ using physics_int_array = py::array_t<int, py::array::c_style>;
 using physics_notebook_array = py::array_t<double, py::array::forcecast>;
 using physics_notebook_int = py::array;
 
-// Stop the program, printing which input contract failed, before any
-// partly built object can reach Python.
-static void require_physics_interface(
-  const bool condition, // required shape or physical-domain condition
-  const char* message // diagnostic for a violated input contract
-)
-{
-  if (!condition) {
-    spdlog::critical("3pcf physics interface: {}", message);
-    std::exit(1);
-  }
-}
-
 
 // ---------------------------------------------------------------------------
 // Check an array's rank and axis sizes before any allocation uses them.
@@ -96,18 +83,28 @@ static void shape_physics(
   const int rank
 )
 {
-  require_physics_interface(values.ndim() == rank, "wrong input rank");
+  if (!(values.ndim() == rank)) {
+    spdlog::critical("3pcf physics interface: wrong input rank");
+    std::exit(1);
+  }
   size_t product = 1;
   for (int axis=0; axis<rank; axis++) {
-    require_physics_interface(values.shape(axis) > 0
-      && values.shape(axis) <= INT_MAX, "invalid input dimension");
+    if (!(values.shape(axis) > 0
+          && values.shape(axis) <= INT_MAX)) {
+      spdlog::critical("3pcf physics interface: invalid input dimension");
+      std::exit(1);
+    }
     const size_t length = static_cast<size_t>(values.shape(axis));
-    require_physics_interface(length <= SIZE_MAX/product,
-      "input shape product overflows");
+    if (!(length <= SIZE_MAX/product)) {
+      spdlog::critical("3pcf physics interface: input shape product overflows");
+      std::exit(1);
+    }
     product *= length;
   }
-  require_physics_interface(product <= SIZE_MAX/values.itemsize(),
-    "input byte count overflows");
+  if (!(product <= SIZE_MAX/values.itemsize())) {
+    spdlog::critical("3pcf physics interface: input byte count overflows");
+    std::exit(1);
+  }
 }
 
 
@@ -128,8 +125,11 @@ static void aligned_physics(
 )
 {
   const auto address = reinterpret_cast<std::uintptr_t>(values.data());
-  require_physics_interface(address%alignment == 0,
-    "production input buffer is not aligned for its element type");
+  if (!(address%alignment == 0)) {
+    spdlog::critical("3pcf physics interface: production input buffer is "
+      "not aligned for its element type");
+    std::exit(1);
+  }
 }
 
 
@@ -145,8 +145,11 @@ static void finite_physics(const physics_array& values)
 {
   aligned_physics(values, alignof(double));
   for (py::ssize_t index=0; index<values.size(); index++) {
-    require_physics_interface(std::isfinite(values.data()[index]),
-      "input or result contains a nonfinite value");
+    if (!(std::isfinite(values.data()[index]))) {
+      spdlog::critical("3pcf physics interface: input or result contains a "
+        "nonfinite value");
+      std::exit(1);
+    }
   }
 }
 
@@ -173,8 +176,11 @@ static arma::Col<Number> copy_column_physics(
     // slice strides both read correctly.
     Number value;
     std::memcpy(&value, base + index*values.strides(0), sizeof(Number));
-    require_physics_interface(std::isfinite(static_cast<double>(value)),
-      "notebook input contains a nonfinite value");
+    if (!(std::isfinite(static_cast<double>(value)))) {
+      spdlog::critical("3pcf physics interface: notebook input contains a "
+        "nonfinite value");
+      std::exit(1);
+    }
     result(index) = value;
   }
   return result;
@@ -198,8 +204,11 @@ static arma::Mat<Number> copy_matrix_physics(
       Number value;
       std::memcpy(&value, base + row*values.strides(0)
         + column*values.strides(1), sizeof(Number));
-      require_physics_interface(std::isfinite(value),
-        "notebook matrix contains a nonfinite value");
+      if (!(std::isfinite(value))) {
+        spdlog::critical("3pcf physics interface: notebook matrix contains "
+          "a nonfinite value");
+        std::exit(1);
+      }
       result(row, column) = value;
     }
   }
@@ -225,13 +234,19 @@ static py::array_t<int, py::array::forcecast> integer_notebook_physics(
 )
 {
   shape_physics(values, rank);
-  require_physics_interface(values.dtype().kind() == 'i'
-    || values.dtype().kind() == 'u',
-    "notebook source bins must have integer dtype");
+  if (!(values.dtype().kind() == 'i'
+        || values.dtype().kind() == 'u')) {
+    spdlog::critical("3pcf physics interface: notebook source bins must "
+      "have integer dtype");
+    std::exit(1);
+  }
   const double minimum = py::cast<double>(values.attr("min")());
   const double maximum = py::cast<double>(values.attr("max")());
-  require_physics_interface(minimum >= INT_MIN && maximum <= INT_MAX,
-    "notebook source bins exceed int32 range");
+  if (!(minimum >= INT_MIN && maximum <= INT_MAX)) {
+    spdlog::critical("3pcf physics interface: notebook source bins exceed "
+      "int32 range");
+    std::exit(1);
+  }
   return py::array_t<int, py::array::forcecast>(values);
 }
 
@@ -322,7 +337,8 @@ static physics_ia_3pcf parameters_physics(const py::dict& values)
     } else if (key == "feedback_amplitude") {
       parameters.feedback_amplitude = py::cast<double>(item.second);
     } else {
-      require_physics_interface(false, "unknown IA dictionary key");
+      spdlog::critical("3pcf physics interface: unknown IA dictionary key");
+      std::exit(1);
     }
   }
   return parameters;
@@ -383,13 +399,22 @@ static physics_grid_settings_3pcf settings_physics_grid(const py::dict& values)
     const std::string name = py::cast<std::string>(item.first);
     if (real.count(name)) {
       *real.at(name) = py::cast<double>(item.second);
-      require_physics_interface(std::isfinite(*real.at(name)),
-        "nonfinite interpolation setting");
+      if (!(std::isfinite(*real.at(name)))) {
+        spdlog::critical("3pcf physics interface: nonfinite interpolation "
+          "setting");
+        std::exit(1);
+      }
     } else {
-      require_physics_interface(integer.count(name) != 0,
-        "unknown interpolation setting");
-      require_physics_interface(py::isinstance<py::int_>(item.second),
-        "interpolation counts must be integers");
+      if (!(integer.count(name) != 0)) {
+        spdlog::critical("3pcf physics interface: unknown interpolation "
+          "setting");
+        std::exit(1);
+      }
+      if (!(py::isinstance<py::int_>(item.second))) {
+        spdlog::critical("3pcf physics interface: interpolation counts must "
+          "be integers");
+        std::exit(1);
+      }
       *integer.at(name) = py::cast<int>(item.second);
     }
   }
@@ -464,8 +489,11 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   physics_array source_axis;
   py::ssize_t nsource = z.size();
   if (!source_z.is_none()) {
-    require_physics_interface(physics_array::check_(source_z),
-      "source_z must be a contiguous float64 NumPy array");
+    if (!(physics_array::check_(source_z))) {
+      spdlog::critical("3pcf physics interface: source_z must be a "
+        "contiguous float64 NumPy array");
+      std::exit(1);
+    }
     source_axis = py::reinterpret_borrow<physics_array>(source_z);
     shape_physics(source_axis, 1);
     finite_physics(source_axis);
@@ -476,12 +504,14 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   // axis; the nonlinear power is [nz,nk]; chi, dz/dchi and the growth
   // factor live on the z axis; each source row holds one density per
   // source-coordinate node.
-  require_physics_interface(p_linear0.size() == k.size()
-    && p_nonlinear.shape(0) == z.size()
-    && p_nonlinear.shape(1) == k.size()
-    && chi.size() == z.size() && dz_dchi.size() == z.size()
-    && growth.size() == z.size() && sources.shape(1) == nsource,
-    "model table shapes disagree");
+  if (!(p_linear0.size() == k.size()
+        && p_nonlinear.shape(0) == z.size()
+        && p_nonlinear.shape(1) == k.size()
+        && chi.size() == z.size() && dz_dchi.size() == z.size()
+        && growth.size() == z.size() && sources.shape(1) == nsource)) {
+    spdlog::critical("3pcf physics interface: model table shapes disagree");
+    std::exit(1);
+  }
   finite_physics(k);
   finite_physics(p_linear0);
   finite_physics(z);
@@ -529,13 +559,19 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   if (!feedback.empty()) {
     const char* names[6] = {"z", "logk", "logu", "v",
       "log_power", "log_bispectrum"};
-    require_physics_interface(feedback.size() == 8
-      && feedback.contains("boost") && feedback.contains("clamp"),
-      "feedback requires six arrays plus boost and clamp");
+    if (!(feedback.size() == 8
+          && feedback.contains("boost") && feedback.contains("clamp"))) {
+      spdlog::critical("3pcf physics interface: feedback requires six "
+        "arrays plus boost and clamp");
+      std::exit(1);
+    }
     for (int index=0; index<6; index++) {
-      require_physics_interface(feedback.contains(names[index])
-        && physics_array::check_(feedback[names[index]]),
-        "production feedback arrays must be contiguous float64 vectors");
+      if (!(feedback.contains(names[index])
+            && physics_array::check_(feedback[names[index]]))) {
+        spdlog::critical("3pcf physics interface: production feedback "
+          "arrays must be contiguous float64 vectors");
+        std::exit(1);
+      }
       response_arrays.push_back(py::reinterpret_borrow<physics_array>(
         feedback[names[index]]));
       shape_physics(response_arrays.back(), 1);
@@ -550,13 +586,16 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
     // preparation and must fit a C int; each division guard proves the
     // next multiplication cannot wrap around SIZE_MAX; the flattened
     // tables must then match their axis products exactly.
-    require_physics_interface(nz >= 4 && nk >= 4 && nu >= 4 && nv >= 4
-      && nz <= INT_MAX && nk <= INT_MAX && nu <= INT_MAX && nv <= INT_MAX
-      && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
-      && nz*nk*nu <= SIZE_MAX/nv
-      && static_cast<size_t>(response_arrays[4].size()) == nz*nk
-      && static_cast<size_t>(response_arrays[5].size()) == nz*nk*nu*nv,
-      "flattened paired feedback arrays disagree with their axes");
+    if (!(nz >= 4 && nk >= 4 && nu >= 4 && nv >= 4
+          && nz <= INT_MAX && nk <= INT_MAX && nu <= INT_MAX && nv <= INT_MAX
+          && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
+          && nz*nk*nu <= SIZE_MAX/nv
+          && static_cast<size_t>(response_arrays[4].size()) == nz*nk
+          && static_cast<size_t>(response_arrays[5].size()) == nz*nk*nu*nv)) {
+      spdlog::critical("3pcf physics interface: flattened paired feedback "
+        "arrays disagree with their axes");
+      std::exit(1);
+    }
     response.nz = static_cast<int>(nz);
     response.nk = static_cast<int>(nk);
     response.nu = static_cast<int>(nu);
@@ -576,12 +615,18 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   // least two samples.
   physics_array window;
   if (!pixel_window.is_none()) {
-    require_physics_interface(physics_array::check_(pixel_window),
-      "production pixel window must be a contiguous float64 vector");
+    if (!(physics_array::check_(pixel_window))) {
+      spdlog::critical("3pcf physics interface: production pixel window "
+        "must be a contiguous float64 vector");
+      std::exit(1);
+    }
     window = py::reinterpret_borrow<physics_array>(pixel_window);
     shape_physics(window, 1);
-    require_physics_interface(window.size() >= 2,
-      "pixel window needs at least two integer-ell samples");
+    if (!(window.size() >= 2)) {
+      spdlog::critical("3pcf physics interface: pixel window needs at least "
+        "two integer-ell samples");
+      std::exit(1);
+    }
     finite_physics(window);
     input.nwindow = static_cast<int>(window.size());
     input.window = window.data();
@@ -640,11 +685,17 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   if (!feedback.empty()) {
     const char* names[8] = {"z", "logk", "logu", "v", "log_power",
       "log_bispectrum", "boost", "clamp"};
-    require_physics_interface(feedback.size() == 8,
-      "feedback requires six arrays plus boost and clamp");
+    if (!(feedback.size() == 8)) {
+      spdlog::critical("3pcf physics interface: feedback requires six "
+        "arrays plus boost and clamp");
+      std::exit(1);
+    }
     for (const char* name : names) {
-      require_physics_interface(feedback.contains(name),
-        "missing notebook feedback field");
+      if (!(feedback.contains(name))) {
+        spdlog::critical("3pcf physics interface: missing notebook feedback "
+          "field");
+        std::exit(1);
+      }
     }
     response.z = copy_column_physics(py::cast<physics_notebook_array>(
       feedback["z"]));
@@ -714,17 +765,25 @@ static physics_array points_physics(
 {
   shape_physics(sides, 2);
   finite_physics(sides);
-  require_physics_interface(sides.shape(1) == 3,
-    "sides must have shape [point,3]");
+  if (!(sides.shape(1) == 3)) {
+    spdlog::critical("3pcf physics interface: sides must have shape [point,3]");
+    std::exit(1);
+  }
   if (operation == 2) {
     shape_physics(bins, 1);
     aligned_physics(bins, alignof(int));
-    require_physics_interface(bins.size() == 3, "three bins are required");
+    if (!(bins.size() == 3)) {
+      spdlog::critical("3pcf physics interface: three bins are required");
+      std::exit(1);
+    }
   } else {
     shape_physics(redshifts, 1);
     finite_physics(redshifts);
-    require_physics_interface(redshifts.size() == sides.shape(0),
-      "redshift and triangle counts disagree");
+    if (!(redshifts.size() == sides.shape(0))) {
+      spdlog::critical("3pcf physics interface: redshift and triangle "
+        "counts disagree");
+      std::exit(1);
+    }
   }
   const int count = static_cast<int>(sides.shape(0));
 
@@ -877,8 +936,10 @@ static physics_array multipoles_physics(
   shape_physics(bins, 1);
   finite_physics(ell);
   aligned_physics(bins, alignof(int));
-  require_physics_interface(bins.size() == 3 && lmax >= 0 && lmax < INT_MAX,
-    "invalid multipole dimensions");
+  if (!(bins.size() == 3 && lmax >= 0 && lmax < INT_MAX)) {
+    spdlog::critical("3pcf physics interface: invalid multipole dimensions");
+    std::exit(1);
+  }
   const size_t nell = static_cast<size_t>(ell.size());
 
   // Overflow guards before allocating [lmax+1,nell,nell]: first
@@ -886,11 +947,14 @@ static physics_array multipoles_physics(
   // uses PY_SSIZE_T_MAX because NumPy measures its allocations with
   // the signed ssize_t; the notebook twin in physics_wrapper.cpp
   // bounds the same count by std::vector's unsigned size_t instead.
-  require_physics_interface(nell <= SIZE_MAX/nell
-    && static_cast<size_t>(lmax + 1) <= SIZE_MAX/(nell*nell)
-    && static_cast<size_t>(lmax + 1)*nell*nell
-    <= static_cast<size_t>(PY_SSIZE_T_MAX)/sizeof(double),
-    "multipole allocation size overflows");
+  if (!(nell <= SIZE_MAX/nell
+        && static_cast<size_t>(lmax + 1) <= SIZE_MAX/(nell*nell)
+        && static_cast<size_t>(lmax + 1)*nell*nell
+        <= static_cast<size_t>(PY_SSIZE_T_MAX)/sizeof(double))) {
+    spdlog::critical("3pcf physics interface: multipole allocation size "
+      "overflows");
+    std::exit(1);
+  }
   physics_array result({static_cast<py::ssize_t>(lmax + 1),
     ell.size(), ell.size()});
   const physics_ia_3pcf ia = parameters_physics(parameters);
@@ -989,9 +1053,13 @@ static physics_array aperture_full_physics(
 
   // One chained check: each weight array matches its node array; each
   // filter row holds three radii; exactly three source bins arrive.
-  require_physics_interface(ell.size() == dell.size()
-    && phi.size() == dphi.size() && filters.shape(1) == 3 && bins.size() == 3,
-    "full-aperture input shapes disagree");
+  if (!(ell.size() == dell.size()
+        && phi.size() == dphi.size() && filters.shape(1) == 3
+        && bins.size() == 3)) {
+    spdlog::critical("3pcf physics interface: full-aperture input shapes "
+      "disagree");
+    std::exit(1);
+  }
   const physics_ia_3pcf ia = parameters_physics(parameters);
   physics_array output(filters.shape(0));
   {
@@ -1078,9 +1146,12 @@ static physics_array aperture_grid_physics(
   finite_physics(filters);
   // One chained check: each weight array matches its node array and
   // each filter row holds three radii.
-  require_physics_interface(ell.size() == dell.size()
-    && phi.size() == dphi.size() && filters.shape(1) == 3,
-    "grid aperture input shapes disagree");
+  if (!(ell.size() == dell.size()
+        && phi.size() == dphi.size() && filters.shape(1) == 3)) {
+    spdlog::critical("3pcf physics interface: grid aperture input shapes "
+      "disagree");
+    std::exit(1);
+  }
   physics_array output(filters.shape(0));
   {
     // Release the GIL for the C work (see points_physics); no Python
@@ -1115,8 +1186,11 @@ static physics_array projected_grid_physics(
 {
   shape_physics(sides, 2);
   finite_physics(sides);
-  require_physics_interface(sides.shape(1) == 3,
-    "projected grid sides must have shape [point,3]");
+  if (!(sides.shape(1) == 3)) {
+    spdlog::critical("3pcf physics interface: projected grid sides must "
+      "have shape [point,3]");
+    std::exit(1);
+  }
   const int count = static_cast<int>(sides.shape(0));
   physics_array output(count);
   const double* triangles = sides.data();
@@ -1167,10 +1241,14 @@ static physics_array multipoles_grid_physics(
 
   // Overflow guards as in multipoles_physics; the byte bound is
   // NumPy's signed ssize_t.
-  require_physics_interface(nell <= SIZE_MAX/nell
-    && norder <= SIZE_MAX/(nell*nell)
-    && norder*nell*nell <= static_cast<size_t>(PY_SSIZE_T_MAX)/sizeof(double),
-    "interpolated-multipole output size overflows");
+  if (!(nell <= SIZE_MAX/nell
+        && norder <= SIZE_MAX/(nell*nell)
+        && norder*nell*nell
+        <= static_cast<size_t>(PY_SSIZE_T_MAX)/sizeof(double))) {
+    spdlog::critical("3pcf physics interface: interpolated-multipole output "
+      "size overflows");
+    std::exit(1);
+  }
   physics_array output({static_cast<py::ssize_t>(norder),
     ell.size(), ell.size()});
   {
@@ -1473,8 +1551,11 @@ void bind_threepcf_physics(py::module_& module)
       const py::dict& settings) {
     shape_physics(bins, 1);
     aligned_physics(bins, alignof(int));
-    require_physics_interface(bins.size() == 3,
-      "three source bins are required");
+    if (!(bins.size() == 3)) {
+      spdlog::critical("3pcf physics interface: three source bins are "
+        "required");
+      std::exit(1);
+    }
     const physics_ia_3pcf ia = parameters_physics(parameters);
     const physics_grid_settings_3pcf configuration
       = settings_physics_grid(settings);
@@ -1491,8 +1572,11 @@ void bind_threepcf_physics(py::module_& module)
       const py::dict& settings) {
     shape_physics(bins, 2);
     aligned_physics(bins, alignof(int));
-    require_physics_interface(bins.shape(1) == 3,
-      "batch bins must have shape [ntriplet,3]");
+    if (!(bins.shape(1) == 3)) {
+      spdlog::critical("3pcf physics interface: batch bins must have shape "
+        "[ntriplet,3]");
+      std::exit(1);
+    }
     const physics_ia_3pcf ia = parameters_physics(parameters);
     const physics_grid_settings_3pcf configuration
       = settings_physics_grid(settings);
@@ -1532,7 +1616,10 @@ void bind_threepcf_physics(py::module_& module)
       const physics_notebook_int& bins, const py::dict& parameters,
       const py::dict& settings) {
     const arma::Col<int> source = copy_column_physics(bins);
-    require_physics_interface(source.n_elem == 3, "three bins are required");
+    if (!(source.n_elem == 3)) {
+      spdlog::critical("3pcf physics interface: three bins are required");
+      std::exit(1);
+    }
     const physics_ia_3pcf ia = parameters_physics(parameters);
     const physics_grid_settings_3pcf configuration
       = settings_physics_grid(settings);
@@ -1584,8 +1671,11 @@ void bind_threepcf_physics(py::module_& module)
     shape_physics(z, 1);
     finite_physics(k);
     finite_physics(z);
-    require_physics_interface(k.size() == z.size(),
-      "power k and z arrays must have equal length");
+    if (!(k.size() == z.size())) {
+      spdlog::critical("3pcf physics interface: power k and z arrays must "
+        "have equal length");
+      std::exit(1);
+    }
     physics_array result(k.size());
     for (py::ssize_t index=0; index<k.size(); index++) {
       result.mutable_data()[index] = physics_power_3pcf(owner.get(),
@@ -1604,8 +1694,11 @@ void bind_threepcf_physics(py::module_& module)
     shape_physics(z, 1);
     finite_physics(k);
     finite_physics(z);
-    require_physics_interface(k.size() == z.size(),
-      "power-response k and z arrays must have equal length");
+    if (!(k.size() == z.size())) {
+      spdlog::critical("3pcf physics interface: power-response k and z "
+        "arrays must have equal length");
+      std::exit(1);
+    }
     physics_array result(k.size());
     for (py::ssize_t index=0; index<k.size(); index++) {
       result.mutable_data()[index] = physics_feedback_power_3pcf(owner.get(),
@@ -1650,7 +1743,10 @@ void bind_threepcf_physics(py::module_& module)
     shape_physics(bins, 1);
     finite_physics(ell);
     aligned_physics(bins, alignof(int));
-    require_physics_interface(bins.size() == 2, "two power bins are required");
+    if (!(bins.size() == 2)) {
+      spdlog::critical("3pcf physics interface: two power bins are required");
+      std::exit(1);
+    }
     const physics_ia_3pcf ia = parameters_physics(parameters);
     physics_array result(ell.size());
     {

@@ -10,6 +10,7 @@
 
 #include "simde/x86/sse2.h"
 #include "aperture_3pcf.h"
+#include "log.c/src/log.h"
 
 // ===========================================================================
 // FINITE TRIANGLE INTEGRATION FOR APERTURE MASS
@@ -68,15 +69,8 @@ typedef simde__m128d v2d;
 // dimensionless products below. The checks in this file stop the
 // program before a zero or infinite denominator enters a kernel,
 // because replacing such a value by a clipped one would change the
-// kernel silently. This helper prints which arithmetic stage failed,
-// so every check reports in the same form, and then exits.
-static inline void aperture_geometry_error_3pcf(const char* stage)
-{
-  fprintf(stderr,
-    "aperture_weights_3pcf: geometry is not representable at %s; "
-    "check nearly collinear triangles and length/radius ratios\n", stage);
-  exit(EXIT_FAILURE);
-}
+// kernel silently. Each check names the arithmetic stage that failed
+// through log_fatal and then exits.
 
 
 // ---------------------------------------------------------------------------
@@ -146,7 +140,10 @@ static inline void aperture_kernel_3pcf(
       || ratio3 <= 0.0
       || ratio2 > largest_ratio
       || ratio3 > largest_ratio) {
-    aperture_geometry_error_3pcf("dimensionless lengths");
+    log_fatal("aperture_weights_3pcf: geometry is not representable at "
+      "dimensionless lengths; check nearly collinear triangles and "
+      "length/radius ratios");
+    exit(1);
   }
   const double radius2_sq = ratio2*ratio2;
   const double radius3_sq = ratio3*ratio3;
@@ -154,13 +151,19 @@ static inline void aperture_kernel_3pcf(
       || radius2_sq <= 0.0
       || !isfinite(radius3_sq)
       || radius3_sq <= 0.0) {
-    aperture_geometry_error_3pcf("squared radius ratios");
+    log_fatal("aperture_weights_3pcf: geometry is not representable at "
+      "squared radius ratios; check nearly collinear triangles and "
+      "length/radius ratios");
+    exit(1);
   }
   const double theta_argument = (radius2_sq + radius3_sq
                                 + radius2_sq*radius3_sq)/3.0;
   if (!isfinite(theta_argument)
       || theta_argument <= 0.0) {
-    aperture_geometry_error_3pcf("Gaussian radius normalization");
+    log_fatal("aperture_weights_3pcf: geometry is not representable at "
+      "Gaussian radius normalization; check nearly collinear "
+      "triangles and length/radius ratios");
+    exit(1);
   }
   const double theta2 = sqrt(theta_argument);
   const double theta4 = theta2*theta2;
@@ -169,7 +172,10 @@ static inline void aperture_kernel_3pcf(
       || theta4 <= 0.0
       || !isfinite(theta6)
       || theta6 <= 0.0) {
-    aperture_geometry_error_3pcf("Gaussian radius powers");
+    log_fatal("aperture_weights_3pcf: geometry is not representable at "
+      "Gaussian radius powers; check nearly collinear triangles and "
+      "length/radius ratios");
+    exit(1);
   }
   const double aperture_sq[3] = {
     1.0/theta2, radius2_sq/theta2, radius3_sq/theta2
@@ -205,7 +211,10 @@ static inline void aperture_kernel_3pcf(
     distance_sq[vertex] = real_part*real_part + imag_part*imag_part;
     if (!isfinite(distance_sq[vertex])
         || distance_sq[vertex] <= 0.0) {
-      aperture_geometry_error_3pcf("centroid squared distance");
+      log_fatal("aperture_weights_3pcf: geometry is not representable at "
+        "centroid squared distance; check nearly collinear "
+        "triangles and length/radius ratios");
+      exit(1);
     }
     const double complex direction =
       (centroid[next] - centroid[last])/centroid[vertex];
@@ -236,7 +245,10 @@ static inline void aperture_kernel_3pcf(
   // still multiply to an overflowing or underflowing product.
   if (!isfinite(radial_product)
       || radial_product <= 0.0) {
-    aperture_geometry_error_3pcf("centroid distance product");
+    log_fatal("aperture_weights_3pcf: geometry is not representable at "
+      "centroid distance product; check nearly collinear triangles "
+      "and length/radius ratios");
+    exit(1);
   }
   const double prefactor = -aperture_sq[0]*aperture_sq[1]
     *aperture_sq[2]*exp(-exponent)/theta4;
@@ -380,7 +392,10 @@ void aperture_weights_3pcf(
             || side <= 0.0
             || !isfinite(other_length)
             || other_length <= 0.0) {
-          aperture_geometry_error_3pcf("side-to-radius ratios");
+          log_fatal("aperture_weights_3pcf: geometry is not representable "
+            "at side-to-radius ratios; check nearly collinear "
+            "triangles and length/radius ratios");
+          exit(1);
         }
         const double measure = bin_factor*side*side
           *other_length*other_length;

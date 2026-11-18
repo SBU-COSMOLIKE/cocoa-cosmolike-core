@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include "simde/x86/sse2.h"
 #include "fftlog_3pcf.h"
+#include "log.c/src/log.h"
 
 // Two-dimensional FFTLog for the double-Bessel projection integrals of
 // the shear three-point transform. The algorithm is the two-Bessel
@@ -109,22 +110,6 @@ struct fftlog_workspace_3pcf {
 };
 
 
-// Print one diagnostic and stop. Every check below guards a table or
-// transform that later numerical work builds on, so a failed condition
-// means the workspace cannot produce a trustworthy number; stopping
-// beats returning a partial result.
-static void require_fftlog_3pcf(
-  const int condition, // required geometry or allocation condition
-  const char* message // diagnostic
-)
-{
-  if (!condition) {
-    fprintf(stderr, "fftlog_3pcf: %s\n", message);
-    exit(EXIT_FAILURE);
-  }
-}
-
-
 // FFTW's allocator returns memory aligned for its vector code. All
 // numeric blocks are flat, with an explicitly rounded worker stride,
 // so no hidden row-pointer padding exists anywhere in the workspace.
@@ -133,9 +118,15 @@ static void* allocate_fftlog_3pcf(
   const size_t size // bytes per element
 )
 {
-  require_fftlog_3pcf(count <= SIZE_MAX/size, "allocation size overflow");
+  if (!(count <= SIZE_MAX/size)) {
+    log_fatal("fftlog_3pcf: allocation size overflow");
+    exit(1);
+  }
   void* result = fftw_malloc(count*size);
-  require_fftlog_3pcf(result != NULL, "allocation failed");
+  if (!(result != NULL)) {
+    log_fatal("fftlog_3pcf: allocation failed");
+    exit(1);
+  }
   return result;
 }
 
@@ -170,8 +161,10 @@ int next_fft_size_3pcf(
   const int minimum // minimum even smooth transform length
 )
 {
-  require_fftlog_3pcf(minimum >= 2 && minimum < INT_MAX-2,
-      "invalid minimum FFT length");
+  if (!(minimum >= 2 && minimum < INT_MAX-2)) {
+    log_fatal("fftlog_3pcf: invalid minimum FFT length");
+    exit(1);
+  }
   // Round the request up to an even number, then test even candidates
   // only, since an odd candidate can never satisfy the evenness rule.
   int candidate = minimum+(minimum%2);
@@ -192,7 +185,8 @@ int next_fft_size_3pcf(
       return candidate;
     }
   }
-  require_fftlog_3pcf(0, "no representable FFT length");
+  log_fatal("fftlog_3pcf: no representable FFT length");
+  exit(1);
   return 0;
 }
 
@@ -345,8 +339,10 @@ static double complex kernel_fftlog_3pcf(
       eta/2.0, &numerator_log, &numerator_phase);
   const int status2 = gsl_sf_lngamma_complex_e((order+2.5-nu)/2.0,
       -eta/2.0, &denominator_log, &denominator_phase);
-  require_fftlog_3pcf(status1 == GSL_SUCCESS && status2 == GSL_SUCCESS,
-      "complex gamma evaluation failed");
+  if (!(status1 == GSL_SUCCESS && status2 == GSL_SUCCESS)) {
+    log_fatal("fftlog_3pcf: complex gamma evaluation failed");
+    exit(1);
+  }
   const double complex logarithm = exponent*log(2.0)
       +numerator_log.val-denominator_log.val
       +I*(numerator_phase.val-denominator_phase.val-eta*phase_origin);
@@ -358,8 +354,10 @@ static double complex kernel_fftlog_3pcf(
     const double denominator = expm1(2.0*dlnt)/2.0;
     value *= expm1_complex_3pcf(slope*dlnt)/(slope*denominator);
   }
-  require_fftlog_3pcf(isfinite(creal(value)) && isfinite(cimag(value)),
-      "nonfinite Mellin kernel");
+  if (!(isfinite(creal(value)) && isfinite(cimag(value)))) {
+    log_fatal("fftlog_3pcf: nonfinite Mellin kernel");
+    exit(1);
+  }
   return value;
 }
 
@@ -404,30 +402,40 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   // slope = 2.5 - nu reaches zero. Inside the open interval every
   // kernel entry stays finite. The grid must be positive and uniformly
   // log-spaced, because the common step enters every kernel phase.
-  require_fftlog_3pcf(n >= 2 && n%2 == 0 && ell != NULL
-      && max_order >= 0 && max_order < INT_MAX-1 && workers > 0
-      && padding >= 0 && padding <= (INT_MAX-n)/2,
-      "invalid dimensions or padding");
-  require_fftlog_3pcf(isfinite(nu1) && nu1 > 0.5 && nu1 < 2.5
-      && isfinite(nu2) && nu2 > 0.5 && nu2 < 2.5
-      && isfinite(xy) && xy > 0.0 && isfinite(dlnt) && dlnt >= 0.0
-      && isfinite(window_width) && window_width >= 0.0
-      && window_width <= 1.0 && (window == 0 || window == 1),
-      "invalid bias, bin width, phase or window");
+  if (!(n >= 2 && n%2 == 0 && ell != NULL
+        && max_order >= 0 && max_order < INT_MAX-1 && workers > 0
+        && padding >= 0 && padding <= (INT_MAX-n)/2)) {
+    log_fatal("fftlog_3pcf: invalid dimensions or padding");
+    exit(1);
+  }
+  if (!(isfinite(nu1) && nu1 > 0.5 && nu1 < 2.5
+        && isfinite(nu2) && nu2 > 0.5 && nu2 < 2.5
+        && isfinite(xy) && xy > 0.0 && isfinite(dlnt) && dlnt >= 0.0
+        && isfinite(window_width) && window_width >= 0.0
+        && window_width <= 1.0 && (window == 0 || window == 1))) {
+    log_fatal("fftlog_3pcf: invalid bias, bin width, phase or window");
+    exit(1);
+  }
   for (int index=0; index<n; index++) {
-    require_fftlog_3pcf(isfinite(ell[index]) && ell[index] > 0.0,
-        "ell must be positive and finite");
+    if (!(isfinite(ell[index]) && ell[index] > 0.0)) {
+      log_fatal("fftlog_3pcf: ell must be positive and finite");
+      exit(1);
+    }
   }
   const double step = log(ell[1]/ell[0]);
-  require_fftlog_3pcf(isfinite(step) && step > 0.0,
-      "ell must increase");
+  if (!(isfinite(step) && step > 0.0)) {
+    log_fatal("fftlog_3pcf: ell must increase");
+    exit(1);
+  }
   // The tolerance 1.0e-10*step accepts grids a caller built by
   // exponentiating a uniform array, whose spacing wobbles at roundoff
   // level; a genuinely nonuniform grid still fails by a wide margin.
   for (int index=1; index<n; index++) {
     const double actual = log(ell[index]/ell[index-1]);
-    require_fftlog_3pcf(fabs(actual-step) <= 1.0e-10*step,
-        "ell must be uniformly spaced in logarithm");
+    if (!(fabs(actual-step) <= 1.0e-10*step)) {
+      log_fatal("fftlog_3pcf: ell must be uniformly spaced in logarithm");
+      exit(1);
+    }
   }
 
   // --- 2. STRIDES AND ALLOCATION ---
@@ -436,7 +444,10 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   // the slices of different workers never share a cache line. The
   // overflow checks run before any multiplication that could wrap.
   fftlog_workspace_3pcf* work = calloc(1, sizeof(*work));
-  require_fftlog_3pcf(work != NULL, "workspace allocation failed");
+  if (!(work != NULL)) {
+    log_fatal("fftlog_3pcf: workspace allocation failed");
+    exit(1);
+  }
   work->n = n;
   work->padded = n+2*padding;
   work->padding = padding;
@@ -444,15 +455,19 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   work->workers = workers;
   const size_t nfft = work->padded;
   const size_t nfrequency = nfft/2+1;
-  require_fftlog_3pcf(nfft <= SIZE_MAX/nfft/sizeof(double),
-      "FFT array size overflow");
+  if (!(nfft <= SIZE_MAX/nfft/sizeof(double))) {
+    log_fatal("fftlog_3pcf: FFT array size overflow");
+    exit(1);
+  }
   work->input_stride = (((size_t)n*n+7)/8)*8;
   work->real_stride = ((nfft*nfft+7)/8)*8;
   work->complex_stride = ((nfft*nfrequency+3)/4)*4;
-  require_fftlog_3pcf((size_t)workers <= SIZE_MAX/work->real_stride
-      && (size_t)workers <= SIZE_MAX/work->complex_stride
-      && (size_t)(max_order+1) <= SIZE_MAX/nfft,
-      "worker or Mellin table size overflow");
+  if (!((size_t)workers <= SIZE_MAX/work->real_stride
+        && (size_t)workers <= SIZE_MAX/work->complex_stride
+        && (size_t)(max_order+1) <= SIZE_MAX/nfft)) {
+    log_fatal("fftlog_3pcf: worker or Mellin table size overflow");
+    exit(1);
+  }
   work->input = allocate_fftlog_3pcf(
       work->input_stride*workers, sizeof(double));
   work->real = allocate_fftlog_3pcf(
@@ -555,8 +570,11 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       work->real, work->forward, FFTW_ESTIMATE);
   work->inverse_plan = fftw_plan_dft_c2r_2d(work->padded, work->padded,
       work->scratch, work->real, FFTW_ESTIMATE);
-  require_fftlog_3pcf(work->forward_plan != NULL
-      && work->inverse_plan != NULL, "FFTW planning failed");
+  if (!(work->forward_plan != NULL
+        && work->inverse_plan != NULL)) {
+    log_fatal("fftlog_3pcf: FFTW planning failed");
+    exit(1);
+  }
   return work;
 }
 
@@ -607,13 +625,18 @@ void fftlog_select_3pcf(
   const int* indices // positions on xy/reversed(ell)
 )
 {
-  require_fftlog_3pcf(work != NULL && ntheta > 0 && ntheta <= work->n
-      && indices != NULL && work->selected_count == 0,
-      "invalid or repeated FFT output selection");
+  if (!(work != NULL && ntheta > 0 && ntheta <= work->n
+        && indices != NULL && work->selected_count == 0)) {
+    log_fatal("fftlog_3pcf: invalid or repeated FFT output selection");
+    exit(1);
+  }
   for (int index=0; index<ntheta; index++) {
-    require_fftlog_3pcf(indices[index] >= 0 && indices[index] < work->n
-        && (index == 0 || indices[index] > indices[index-1]),
-        "FFT output indices must increase within the original grid");
+    if (!(indices[index] >= 0 && indices[index] < work->n
+          && (index == 0 || indices[index] > indices[index-1]))) {
+      log_fatal("fftlog_3pcf: FFT output indices must increase within the "
+        "original grid");
+      exit(1);
+    }
   }
   work->selected_count = (size_t)ntheta*ntheta;
   work->selected_offsets = allocate_fftlog_3pcf(
@@ -644,8 +667,10 @@ double* fftlog_input_3pcf(
   const int worker // requested private slice
 )
 {
-  require_fftlog_3pcf(work != NULL && worker >= 0 && worker < work->workers,
-      "worker exceeds allocated scratch");
+  if (!(work != NULL && worker >= 0 && worker < work->workers)) {
+    log_fatal("fftlog_3pcf: worker exceeds allocated scratch");
+    exit(1);
+  }
   return work->input+(size_t)worker*work->input_stride;
 }
 
@@ -752,9 +777,11 @@ const double* fftlog_inverse_3pcf(
 )
 {
   double* output = fftlog_input_3pcf(work, worker);
-  require_fftlog_3pcf(order1 >= 0 && order1 <= work->max_order
-      && order2 >= 0 && order2 <= work->max_order,
-      "Bessel order exceeds prepared kernels");
+  if (!(order1 >= 0 && order1 <= work->max_order
+        && order2 >= 0 && order2 <= work->max_order)) {
+    log_fatal("fftlog_3pcf: Bessel order exceeds prepared kernels");
+    exit(1);
+  }
   const size_t nfrequency = (size_t)work->padded/2+1;
   const fftw_complex* forward =
       work->forward+(size_t)worker*work->complex_stride;

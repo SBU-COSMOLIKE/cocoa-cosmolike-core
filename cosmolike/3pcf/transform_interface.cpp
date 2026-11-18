@@ -69,18 +69,6 @@ using transform_indices = py::array_t<int, py::array::c_style>;
 // [SECTION] VALIDATION HELPERS
 // ============================================================================
 
-// Abort with a diagnostic when an input or output breaks its contract.
-static void require_transform(
-    const bool condition, // input or output requirement
-    const char* message // failure explanation
-  )
-{
-  if (!condition) {
-    spdlog::critical("3pcf transform: {}", message);
-    std::exit(1);
-  }
-}
-
 
 // Check the rank, axis lengths and pointer alignment of a borrowed
 // NumPy array before the first typed read. C-contiguity describes
@@ -92,14 +80,23 @@ static void shape_transform(
     const int rank // required number of axes
   )
 {
-  require_transform(values.ndim() == rank, "array has wrong rank");
+  if (!(values.ndim() == rank)) {
+    spdlog::critical("3pcf transform: array has wrong rank");
+    std::exit(1);
+  }
   for (int axis=0; axis<rank; axis++) {
-    require_transform(values.shape(axis) > 0
-        && values.shape(axis) <= INT_MAX, "invalid array axis");
+    if (!(values.shape(axis) > 0
+          && values.shape(axis) <= INT_MAX)) {
+      spdlog::critical("3pcf transform: invalid array axis");
+      std::exit(1);
+    }
   }
   using scalar = typename Array::value_type;
   const auto address = reinterpret_cast<std::uintptr_t>(values.data());
-  require_transform(address%alignof(scalar) == 0, "unaligned array");
+  if (!(address%alignof(scalar) == 0)) {
+    spdlog::critical("3pcf transform: unaligned array");
+    std::exit(1);
+  }
 }
 
 
@@ -109,8 +106,10 @@ static void finite_transform(
   )
 {
   for (py::ssize_t index=0; index<values.size(); index++) {
-    require_transform(std::isfinite(values.data()[index]),
-        "array must contain finite values");
+    if (!(std::isfinite(values.data()[index]))) {
+      spdlog::critical("3pcf transform: array must contain finite values");
+      std::exit(1);
+    }
   }
 }
 
@@ -141,8 +140,11 @@ static int projection_transform(
   if (projection == "centroid" || projection == "centroid_tatt") {
     return 1;
   }
-  require_transform(projection == "centroid_main",
-      "projection must be X, centroid_tatt, or centroid_main");
+  if (!(projection == "centroid_main")) {
+    spdlog::critical("3pcf transform: projection must be X, centroid_tatt, "
+      "or centroid_main");
+    std::exit(1);
+  }
   return 2;
 }
 
@@ -171,10 +173,16 @@ static Array notebook_transform_input(
   py::object converted = numpy.attr("asarray")(values).attr("astype")(
       numpy.attr("float64"), py::arg("order")="F", py::arg("copy")=true);
   py::array_t<double, py::array::f_style> input(converted);
-  require_transform(input.ndim() == rank, "wrong notebook array rank");
+  if (!(input.ndim() == rank)) {
+    spdlog::critical("3pcf transform: wrong notebook array rank");
+    std::exit(1);
+  }
   for (int axis=0; axis<rank; axis++) {
-    require_transform(input.shape(axis) > 0
-        && input.shape(axis) <= INT_MAX, "invalid notebook axis");
+    if (!(input.shape(axis) > 0
+          && input.shape(axis) <= INT_MAX)) {
+      spdlog::critical("3pcf transform: invalid notebook axis");
+      std::exit(1);
+    }
   }
   Array output;
   if constexpr (std::is_same_v<Array, arma::Col<double>>) {
@@ -185,7 +193,10 @@ static Array notebook_transform_input(
     output.set_size(input.shape(0), input.shape(1), input.shape(2));
   }
   std::copy_n(input.data(), input.size(), output.memptr());
-  require_transform(output.is_finite(), "nonfinite notebook input");
+  if (!(output.is_finite())) {
+    spdlog::critical("3pcf transform: nonfinite notebook input");
+    std::exit(1);
+  }
   return output;
 }
 
@@ -245,10 +256,14 @@ class transform_owner_3pcf {
     shape_transform(indices, 1);
     finite_transform(ell);
     finite_transform(phi);
-    require_transform(lmax >= 0 && lmax < INT_MAX-1,
-        "invalid Legendre cutoff");
-    require_transform(convention == "fastnc" || convention == "treecorr",
-        "convention must be fastnc or treecorr");
+    if (!(lmax >= 0 && lmax < INT_MAX-1)) {
+      spdlog::critical("3pcf transform: invalid Legendre cutoff");
+      std::exit(1);
+    }
+    if (!(convention == "fastnc" || convention == "treecorr")) {
+      spdlog::critical("3pcf transform: convention must be fastnc or treecorr");
+      std::exit(1);
+    }
     nell_ = static_cast<int>(ell.size());
     ntheta_ = static_cast<int>(indices.size());
     nphi_ = static_cast<int>(phi.size());
@@ -310,10 +325,12 @@ class transform_owner_3pcf {
   {
     const auto input =
         notebook_transform_input<arma::Cube<double>>(multipoles, 3);
-    require_transform(input.n_rows == static_cast<arma::uword>(lmax_+1)
-        && input.n_cols == static_cast<arma::uword>(nell_)
-        && input.n_slices == static_cast<arma::uword>(nell_),
-        "notebook multipoles mismatch plan");
+    if (!(input.n_rows == static_cast<arma::uword>(lmax_+1)
+          && input.n_cols == static_cast<arma::uword>(nell_)
+          && input.n_slices == static_cast<arma::uword>(nell_))) {
+      spdlog::critical("3pcf transform: notebook multipoles mismatch plan");
+      std::exit(1);
+    }
     auto output = natural_cpp_3pcf(plan_, input, ntheta_, nphi_);
     py::object real = carma::cube_to_arr(std::move(output.real));
     py::object imag = carma::cube_to_arr(std::move(output.imag));
@@ -343,11 +360,17 @@ class transform_owner_3pcf {
     shape_transform(real, 3);
     shape_transform(imag, 3);
     const int triangles = ntheta_*ntheta_*nphi_;
-    require_transform(real.shape(1) == 4 && real.shape(2) == triangles,
-        "weights do not match this plan's triangle grid");
+    if (!(real.shape(1) == 4 && real.shape(2) == triangles)) {
+      spdlog::critical("3pcf transform: weights do not match this plan's "
+        "triangle grid");
+      std::exit(1);
+    }
     for (int axis=0; axis<3; axis++) {
-      require_transform(real.shape(axis) == imag.shape(axis),
-          "real and imaginary weight shapes differ");
+      if (!(real.shape(axis) == imag.shape(axis))) {
+        spdlog::critical("3pcf transform: real and imaginary weight shapes "
+          "differ");
+        std::exit(1);
+      }
     }
     finite_transform(real);
     finite_transform(imag);
@@ -380,11 +403,17 @@ class transform_owner_3pcf {
     shape_transform(real, 3);
     shape_transform(imag, 3);
     const int triangles = ntheta_*ntheta_*nphi_;
-    require_transform(real.shape(1) == 4 && real.shape(2) == triangles,
-        "weights do not match this plan's triangle grid");
+    if (!(real.shape(1) == 4 && real.shape(2) == triangles)) {
+      spdlog::critical("3pcf transform: weights do not match this plan's "
+        "triangle grid");
+      std::exit(1);
+    }
     for (int axis=0; axis<3; axis++) {
-      require_transform(real.shape(axis) == imag.shape(axis),
-          "real and imaginary weight shapes differ");
+      if (!(real.shape(axis) == imag.shape(axis))) {
+        spdlog::critical("3pcf transform: real and imaginary weight shapes "
+          "differ");
+        std::exit(1);
+      }
     }
     finite_transform(real);
     finite_transform(imag);
@@ -435,9 +464,12 @@ class transform_owner_3pcf {
     ) const
   {
     shape_transform(multipoles, 3);
-    require_transform(multipoles.shape(0) == lmax_+1
-        && multipoles.shape(1) == nell_
-        && multipoles.shape(2) == nell_, "multipoles mismatch plan shape");
+    if (!(multipoles.shape(0) == lmax_+1
+          && multipoles.shape(1) == nell_
+          && multipoles.shape(2) == nell_)) {
+      spdlog::critical("3pcf transform: multipoles mismatch plan shape");
+      std::exit(1);
+    }
     finite_transform(multipoles);
   }
 
@@ -560,9 +592,12 @@ static transform_array coupling_production(
 {
   shape_transform(psi, 1);
   finite_transform(psi);
-  require_transform(lmax >= 0 && lmax < INT_MAX-1
-      && mmax >= 0 && mmax < INT_MAX-1
-      && lmax <= INT_MAX-1-mmax, "invalid coupling cutoffs");
+  if (!(lmax >= 0 && lmax < INT_MAX-1
+        && mmax >= 0 && mmax < INT_MAX-1
+        && lmax <= INT_MAX-1-mmax)) {
+    spdlog::critical("3pcf transform: invalid coupling cutoffs");
+    std::exit(1);
+  }
   const int nquery = static_cast<int>(psi.size());
   transform_array output({mmax+1, lmax+1, nquery});
   legendre_coupling_3pcf(lmax, mmax, nquery, psi.data(), npsi,
@@ -609,9 +644,15 @@ static transform_array bessel_production(
   shape_transform(integrand, 2);
   finite_transform(ell);
   finite_transform(integrand);
-  require_transform(integrand.shape(0) == ell.size()
-      && integrand.shape(1) == ell.size(), "integrand shape mismatch");
-  require_transform(order1 >= 0 && order2 >= 0, "negative Bessel order");
+  if (!(integrand.shape(0) == ell.size()
+        && integrand.shape(1) == ell.size())) {
+    spdlog::critical("3pcf transform: integrand shape mismatch");
+    std::exit(1);
+  }
+  if (!(order1 >= 0 && order2 >= 0)) {
+    spdlog::critical("3pcf transform: negative Bessel order");
+    std::exit(1);
+  }
   const int nell = static_cast<int>(ell.size());
 
   // Create a one-shot workspace. The literal 1 is the worker count:

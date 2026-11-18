@@ -9,6 +9,7 @@
 #include <gsl/gsl_sf_gamma.h>
 #include "simde/x86/sse2.h"
 #include "physics_3pcf.h"
+#include "log.c/src/log.h"
 #ifdef _OPENMP
 #include <omp.h>
 #else
@@ -266,22 +267,6 @@ static void triangle_physics(double first, double second, double third);
 
 
 // ---------------------------------------------------------------------------
-// require_physics: stop with a clear message when an input or a
-// numerical invariant fails. The module prefers one hard stop over
-// recovery machinery for conditions that valid inputs never reach.
-static void require_physics(
-  const int condition,
-  const char* message
-)
-{
-  if (!condition) {
-    fprintf(stderr, "physics_3pcf: %s\n", message);
-    exit(EXIT_FAILURE);
-  }
-}
-
-
-// ---------------------------------------------------------------------------
 // allocate_physics: zero-initialized allocation with overflow and
 // failure checks. Models are independent owned objects, rather than
 // CosmoLike global state. Each allocation is a single flat array, so
@@ -292,10 +277,15 @@ static void* allocate_physics(
   const size_t element_size
 )
 {
-  require_physics(count > 0 && count <= SIZE_MAX/element_size,
-    "allocation size overflow");
+  if (!(count > 0 && count <= SIZE_MAX/element_size)) {
+    log_fatal("physics_3pcf: allocation size overflow");
+    exit(1);
+  }
   void* result = calloc(count, element_size);
-  require_physics(result != NULL, "allocation failed");
+  if (!(result != NULL)) {
+    log_fatal("physics_3pcf: allocation failed");
+    exit(1);
+  }
   return result;
 }
 
@@ -310,13 +300,23 @@ static void increasing_physics(
   const int positive
 )
 {
-  require_physics(values != NULL && count >= 2, "missing grid");
+  if (!(values != NULL && count >= 2)) {
+    log_fatal("physics_3pcf: missing grid");
+    exit(1);
+  }
   for (int index=0; index<count; index++) {
-    require_physics(isfinite(values[index]), "nonfinite grid value");
-    require_physics(!positive || values[index] > 0.0,
-      "grid must be positive");
-    require_physics(index == 0 || values[index] > values[index - 1],
-      "grid must be strictly increasing");
+    if (!(isfinite(values[index]))) {
+      log_fatal("physics_3pcf: nonfinite grid value");
+      exit(1);
+    }
+    if (!(!positive || values[index] > 0.0)) {
+      log_fatal("physics_3pcf: grid must be positive");
+      exit(1);
+    }
+    if (!(index == 0 || values[index] > values[index - 1])) {
+      log_fatal("physics_3pcf: grid must be strictly increasing");
+      exit(1);
+    }
   }
 }
 
@@ -360,7 +360,10 @@ static physics_spline make_spline(
   result.slope_high = (y[count - 1] - y[count - 2])
     /(x[count - 1] - x[count - 2]);
   for (int index=0; index<count; index++) {
-    require_physics(isfinite(y[index]), "nonfinite spline data");
+    if (!(isfinite(y[index]))) {
+      log_fatal("physics_3pcf: nonfinite spline data");
+      exit(1);
+    }
   }
   if (count == 2) {
     return result;
@@ -593,7 +596,10 @@ static physics_spline uniform_storage(
 )
 {
   physics_spline result = {0};
-  require_physics(count >= 2 && upper > lower, "invalid uniform table");
+  if (!(count >= 2 && upper > lower)) {
+    log_fatal("physics_3pcf: invalid uniform table");
+    exit(1);
+  }
   result.n = count;
   result.x = allocate_physics((size_t)count, sizeof(double));
   result.y = allocate_physics((size_t)count, sizeof(double));
@@ -612,8 +618,11 @@ static physics_spline uniform_storage(
 // overflowing int.
 static int boosted_count(const int original, const int boost)
 {
-  require_physics(boost >= 1 && original >= 2
-    && original - 1 <= (INT_MAX - 1)/boost, "dense table count overflows");
+  if (!(boost >= 1 && original >= 2
+        && original - 1 <= (INT_MAX - 1)/boost)) {
+    log_fatal("physics_3pcf: dense table count overflows");
+    exit(1);
+  }
   return (original - 1)*boost + 1;
 }
 
@@ -813,7 +822,10 @@ static double variance_physics(
 )
 {
   double values[2000];
-  require_physics(count <= 2000 && count >= 3, "invalid variance grid");
+  if (!(count <= 2000 && count >= 3)) {
+    log_fatal("physics_3pcf: invalid variance grid");
+    exit(1);
+  }
   const double logk_max = log(100.0);
   const double spacing = (logk_max - logk_min)/(count - 1);
   const double inverse_two_pi_squared = 0.05066059182116888572;
@@ -859,13 +871,18 @@ static double variance_physics(
     gsl_sf_result upper_gamma;
     const int status = gsl_sf_gamma_inc_e(0.5*slope,
       lower*lower, &upper_gamma);
-    require_physics(status == GSL_SUCCESS || status == GSL_EUNDRFLW,
-      "Gaussian variance tail failed");
+    if (!(status == GSL_SUCCESS || status == GSL_EUNDRFLW)) {
+      log_fatal("physics_3pcf: Gaussian variance tail failed");
+      exit(1);
+    }
     sum += 0.5*exp(logdelta_last - slope*logk_max)
       *pow(radius, -slope)*upper_gamma.val
       *inverse_two_pi_squared*growth_squared;
   }
-  require_physics(isfinite(sum) && sum > 0.0, "invalid variance");
+  if (!(isfinite(sum) && sum > 0.0)) {
+    log_fatal("physics_3pcf: invalid variance");
+    exit(1);
+  }
   return sum;
 }
 
@@ -969,8 +986,10 @@ static physics_bh_coefficients bh_coefficients(
 static void prepare_bihalofit(physics_model_3pcf* model)
 {
   const double zmax = model->growth.x[model->nz - 1];
-  require_physics(zmax/0.15 < INT_MAX - 8,
-    "BiHalofit coefficient grid is too large");
+  if (!(zmax/0.15 < INT_MAX - 8)) {
+    log_fatal("physics_3pcf: BiHalofit coefficient grid is too large");
+    exit(1);
+  }
   const int capacity = model->source_readers
     ? (int)ceil(zmax/0.15) + 8 : model->fit_nz;
   double* redshift = allocate_physics((size_t)capacity, sizeof(double));
@@ -1015,8 +1034,11 @@ static void prepare_bihalofit(physics_model_3pcf* model)
     }
     const double at_upper = variance_physics(model, upper, growth_squared,
       log(1.0e-4), 1000, 1, 1) - 1.0;
-    require_physics(at_lower >= 0.0 && at_upper <= 0.0,
-      "nonlinear radius is not bracketed by the BiHalofit domain");
+    if (!(at_lower >= 0.0 && at_upper <= 0.0)) {
+      log_fatal("physics_3pcf: nonlinear radius is not bracketed by the "
+        "BiHalofit domain");
+      exit(1);
+    }
     for (int iteration=0; iteration<100; iteration++) {
       const double middle = 0.5*(lower + upper);
       const double value = variance_physics(model, middle, growth_squared,
@@ -1126,8 +1148,10 @@ static void prepare_radial(physics_model_3pcf* model)
     model->los_chi[node] = read_spline(&model->distance,
       model->los_z[node], 0);
     model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
-    require_physics(model->los_chi[node] > 0.0,
-      "line-of-sight distance must be positive");
+    if (!(model->los_chi[node] > 0.0)) {
+      log_fatal("physics_3pcf: line-of-sight distance must be positive");
+      exit(1);
+    }
   }
   // Trapezoid weights: an interior node owns half the distance
   // between its two neighbors, and each endpoint owns half of its
@@ -1159,7 +1183,10 @@ static void prepare_radial(physics_model_3pcf* model)
     // The input n(z) need not integrate to one; this norm divides it
     // out of every average below.
     const double redshift_norm = trapezoid(source_z, density, nz);
-    require_physics(redshift_norm > 0.0, "empty source distribution");
+    if (!(redshift_norm > 0.0)) {
+      log_fatal("physics_3pcf: empty source distribution");
+      exit(1);
+    }
     for (int node=0; node<nkernel; node++) {
       const double distance = model->kernel_chi[node];
       for (int source=0; source<nz; source++) {
@@ -1185,7 +1212,10 @@ static void prepare_radial(physics_model_3pcf* model)
     // restores on the combined kernel.
     const double nla_norm = trapezoid(model->kernel_chi,
       nla_shape, nkernel);
-    require_physics(nla_norm > 0.0, "empty sampled NLA source kernel");
+    if (!(nla_norm > 0.0)) {
+      log_fatal("physics_3pcf: empty sampled NLA source kernel");
+      exit(1);
+    }
     for (int node=0; node<nkernel; node++) {
       nla_shape[node] /= nla_norm*model->kernel_chi[node]
         *(1.0 + model->kernel_z[node]);
@@ -1198,7 +1228,10 @@ static void prepare_radial(physics_model_3pcf* model)
       integrand[source] = density[source]*model->source_jacobian[source];
     }
     const double shape_norm = trapezoid(source_chi, integrand, nz);
-    require_physics(shape_norm > 0.0, "empty shape source kernel");
+    if (!(shape_norm > 0.0)) {
+      log_fatal("physics_3pcf: empty shape source kernel");
+      exit(1);
+    }
     for (int source=0; source<nz; source++) {
       // Only the actual observer sits at zero distance, where the
       // 1/chi factor would diverge; the observer hosts no sources, so
@@ -1240,52 +1273,88 @@ static void prepare_radial(physics_model_3pcf* model)
 // identical model values at identical redshifts.
 physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
 {
-  require_physics(input != NULL, "missing model input");
-  require_physics(input->nk >= 4 && input->nz >= 4 && input->nbin > 0
-    && input->nlos >= 2 && input->kernel_nz >= 4,
-    "insufficient model grid dimensions");
+  if (!(input != NULL)) {
+    log_fatal("physics_3pcf: missing model input");
+    exit(1);
+  }
+  if (!(input->nk >= 4 && input->nz >= 4 && input->nbin > 0
+        && input->nlos >= 2 && input->kernel_nz >= 4)) {
+    log_fatal("physics_3pcf: insufficient model grid dimensions");
+    exit(1);
+  }
   increasing_physics(input->k, input->nk, 1);
   increasing_physics(input->z, input->nz, 0);
   increasing_physics(input->chi, input->nz, 0);
   increasing_physics(input->los_z, input->nlos, 1);
-  require_physics(input->z[0] == 0.0 && input->chi[0] == 0.0,
-    "background tables must start at z=chi=0");
-  require_physics(input->los_z[input->nlos - 1] <= input->z[input->nz - 1],
-    "LOS nodes extend beyond the supplied physical tables");
-  require_physics(input->p_linear0 && input->p_nonlinear && input->growth
-    && input->dz_dchi && input->sources, "missing physical input table");
-  require_physics(fabs(input->growth[0] - 1.0) <= 1.0e-10,
-    "growth must be normalized to one at z=0");
-  require_physics(isfinite(input->omega_m) && input->omega_m > 0.0
-    && isfinite(input->omega_de) && input->omega_de >= 0.0
-    && isfinite(input->w0) && isfinite(input->wa)
-    && isfinite(input->ns) && isfinite(input->sigma8)
-    && input->sigma8 > 0.0, "invalid cosmological scalars");
+  if (!(input->z[0] == 0.0 && input->chi[0] == 0.0)) {
+    log_fatal("physics_3pcf: background tables must start at z=chi=0");
+    exit(1);
+  }
+  if (!(input->los_z[input->nlos - 1] <= input->z[input->nz - 1])) {
+    log_fatal("physics_3pcf: LOS nodes extend beyond the supplied physical "
+      "tables");
+    exit(1);
+  }
+  if (!(input->p_linear0 && input->p_nonlinear && input->growth
+        && input->dz_dchi && input->sources)) {
+    log_fatal("physics_3pcf: missing physical input table");
+    exit(1);
+  }
+  if (!(fabs(input->growth[0] - 1.0) <= 1.0e-10)) {
+    log_fatal("physics_3pcf: growth must be normalized to one at z=0");
+    exit(1);
+  }
+  if (!(isfinite(input->omega_m) && input->omega_m > 0.0
+        && isfinite(input->omega_de) && input->omega_de >= 0.0
+        && isfinite(input->w0) && isfinite(input->wa)
+        && isfinite(input->ns) && isfinite(input->sigma8)
+        && input->sigma8 > 0.0)) {
+    log_fatal("physics_3pcf: invalid cosmological scalars");
+    exit(1);
+  }
   const double density_sum = input->omega_m + input->omega_de;
-  require_physics(isfinite(density_sum) && fabs(density_sum - 1.0) <= 1.0e-8,
-    "flat geometry requires abs(omega_m + omega_de - 1) <= 1e-8");
-  require_physics(input->source_readers == 0 || input->source_readers == 1,
-    "source_readers must be zero or one");
-  require_physics(input->source_z != NULL || input->nsource == 0,
-    "nsource requires an independent source_z array");
+  if (!(isfinite(density_sum) && fabs(density_sum - 1.0) <= 1.0e-8)) {
+    log_fatal("physics_3pcf: flat geometry requires abs(omega_m + omega_de "
+      "- 1) <= 1e-8");
+    exit(1);
+  }
+  if (!(input->source_readers == 0 || input->source_readers == 1)) {
+    log_fatal("physics_3pcf: source_readers must be zero or one");
+    exit(1);
+  }
+  if (!(input->source_z != NULL || input->nsource == 0)) {
+    log_fatal("physics_3pcf: nsource requires an independent source_z array");
+    exit(1);
+  }
   const int nsource = input->source_z ? input->nsource : input->nz;
   const double* source_z = input->source_z ? input->source_z : input->z;
-  require_physics(nsource >= 4, "source grid needs at least four nodes");
+  if (!(nsource >= 4)) {
+    log_fatal("physics_3pcf: source grid needs at least four nodes");
+    exit(1);
+  }
   increasing_physics(source_z, nsource, 0);
-  require_physics(source_z[0] >= 0.0
-    && source_z[nsource - 1] <= input->z[input->nz - 1],
-    "source grid lies outside the background range");
+  if (!(source_z[0] >= 0.0
+        && source_z[nsource - 1] <= input->z[input->nz - 1])) {
+    log_fatal("physics_3pcf: source grid lies outside the background range");
+    exit(1);
+  }
   physics_model_3pcf* model = allocate_physics(1, sizeof(*model));
-  require_physics(input->nwindow == 0
-    || (input->nwindow >= 2 && input->window != NULL),
-    "pixel window needs at least two integer-ell samples or count zero");
+  if (!(input->nwindow == 0
+        || (input->nwindow >= 2 && input->window != NULL))) {
+    log_fatal("physics_3pcf: pixel window needs at least two integer-ell "
+      "samples or count zero");
+    exit(1);
+  }
   model->nwindow = input->nwindow;
   if (model->nwindow > 0) {
     model->window = allocate_physics((size_t)model->nwindow, sizeof(double));
     for (int index=0; index<model->nwindow; index++) {
-      require_physics(isfinite(input->window[index])
-        && input->window[index] >= 0.0,
-        "pixel window samples must be finite and nonnegative");
+      if (!(isfinite(input->window[index])
+            && input->window[index] >= 0.0)) {
+        log_fatal("physics_3pcf: pixel window samples must be finite and "
+          "nonnegative");
+        exit(1);
+      }
       model->window[index] = input->window[index];
     }
   }
@@ -1298,8 +1367,14 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->source_readers = input->source_readers;
   model->table_boost = input->table_boost == 0 ? 8 : input->table_boost;
   model->fit_nz = input->fit_nz == 0 ? 33 : input->fit_nz;
-  require_physics(model->table_boost >= 1, "table_boost must be positive");
-  require_physics(model->fit_nz >= 4, "fit_nz must be at least four");
+  if (!(model->table_boost >= 1)) {
+    log_fatal("physics_3pcf: table_boost must be positive");
+    exit(1);
+  }
+  if (!(model->fit_nz >= 4)) {
+    log_fatal("physics_3pcf: fit_nz must be at least four");
+    exit(1);
+  }
   model->npower_z = input->nz;
   model->nsource = nsource;
   model->zmax = input->z[input->nz - 1];
@@ -1316,8 +1391,11 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   double* logk = allocate_physics((size_t)nk, sizeof(double));
   double* logpower = allocate_physics((size_t)nk, sizeof(double));
   for (int index=0; index<nk; index++) {
-    require_physics(isfinite(input->p_linear0[index])
-      && input->p_linear0[index] > 0.0, "linear power must be positive");
+    if (!(isfinite(input->p_linear0[index])
+          && input->p_linear0[index] > 0.0)) {
+      log_fatal("physics_3pcf: linear power must be positive");
+      exit(1);
+    }
     logk[index] = log(input->k[index]);
     logpower[index] = log(input->p_linear0[index]);
   }
@@ -1330,12 +1408,17 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   }
   model->nonlinear = allocate_physics((size_t)nz, sizeof(physics_spline));
   for (int redshift=0; redshift<nz; redshift++) {
-    require_physics(input->growth[redshift] > 0.0
-      && input->dz_dchi[redshift] > 0.0, "growth and dz/dchi must be positive");
+    if (!(input->growth[redshift] > 0.0
+          && input->dz_dchi[redshift] > 0.0)) {
+      log_fatal("physics_3pcf: growth and dz/dchi must be positive");
+      exit(1);
+    }
     for (int index=0; index<nk; index++) {
       const double power = input->p_nonlinear[(size_t)redshift*nk + index];
-      require_physics(isfinite(power) && power > 0.0,
-        "nonlinear power must be positive");
+      if (!(isfinite(power) && power > 0.0)) {
+        log_fatal("physics_3pcf: nonlinear power must be positive");
+        exit(1);
+      }
       logpower[index] = log(power);
     }
     model->nonlinear[redshift] = make_spline(logk, logpower, nk);
@@ -1361,24 +1444,33 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     model->source_jacobian[index] = same_source_grid
       ? input->dz_dchi[index]
       : read_spline(&model->dz_dchi, source_z[index], 0);
-    require_physics(isfinite(model->source_jacobian[index])
-      && model->source_jacobian[index] > 0.0,
-      "source background Jacobian is not positive");
+    if (!(isfinite(model->source_jacobian[index])
+          && model->source_jacobian[index] > 0.0)) {
+      log_fatal("physics_3pcf: source background Jacobian is not positive");
+      exit(1);
+    }
   }
   increasing_physics(model->source_chi, nsource, 0);
-  require_physics(model->source_chi[0] >= 0.0,
-    "source distance is negative");
+  if (!(model->source_chi[0] >= 0.0)) {
+    log_fatal("physics_3pcf: source distance is negative");
+    exit(1);
+  }
   model->sources = allocate_physics((size_t)input->nbin*nsource,
     sizeof(double));
   for (size_t index=0; index<(size_t)input->nbin*nsource; index++) {
-    require_physics(isfinite(input->sources[index])
-      && input->sources[index] >= 0.0, "source densities must be nonnegative");
+    if (!(isfinite(input->sources[index])
+          && input->sources[index] >= 0.0)) {
+      log_fatal("physics_3pcf: source densities must be nonnegative");
+      exit(1);
+    }
     model->sources[index] = input->sources[index];
   }
   for (int bin=0; bin<input->nbin; bin++) {
-    require_physics(source_z[0] != 0.0
-      || model->sources[(size_t)bin*nsource] == 0.0,
-      "source density must vanish at z=0");
+    if (!(source_z[0] != 0.0
+          || model->sources[(size_t)bin*nsource] == 0.0)) {
+      log_fatal("physics_3pcf: source density must vanish at z=0");
+      exit(1);
+    }
   }
   model->los_z = allocate_physics((size_t)input->nlos, sizeof(double));
   memcpy(model->los_z, input->los_z, (size_t)input->nlos*sizeof(double));
@@ -1461,7 +1553,10 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
 // stay zero, so the default model has no intrinsic alignment.
 void physics_default_ia_3pcf(physics_ia_3pcf* parameters)
 {
-  require_physics(parameters != NULL, "missing alignment parameters");
+  if (!(parameters != NULL)) {
+    log_fatal("physics_3pcf: missing alignment parameters");
+    exit(1);
+  }
   memset(parameters, 0, sizeof(*parameters));
   parameters->zpivot = 0.62;
   parameters->c1rho = 0.0134;
@@ -1508,7 +1603,10 @@ const double* physics_window_samples_3pcf(
   int* count
 )
 {
-  require_physics(model && count, "missing window model or count output");
+  if (!(model && count)) {
+    log_fatal("physics_3pcf: missing window model or count output");
+    exit(1);
+  }
   *count = model->nwindow;
   return model->window;
 }
@@ -1606,9 +1704,12 @@ double physics_power_3pcf(
   const int mode
 )
 {
-  require_physics(model && isfinite(k) && k > 0.0 && isfinite(z)
-    && z >= 0.0 && z <= model->zmax
-    && mode >= 0 && mode <= 2, "invalid power query");
+  if (!(model && isfinite(k) && k > 0.0 && isfinite(z)
+        && z >= 0.0 && z <= model->zmax
+        && mode >= 0 && mode <= 2)) {
+    log_fatal("physics_3pcf: invalid power query");
+    exit(1);
+  }
   const physics_power_row row = prepare_power_row(model, z, mode);
   return read_power_row(&row, k);
 }
@@ -1624,8 +1725,11 @@ double physics_feedback_power_3pcf(
   const double amplitude
 )
 {
-  require_physics(model && isfinite(k) && k > 0.0
-    && isfinite(z) && z >= 0.0, "invalid power-response coordinates");
+  if (!(model && isfinite(k) && k > 0.0
+        && isfinite(z) && z >= 0.0)) {
+    log_fatal("physics_3pcf: invalid power-response coordinates");
+    exit(1);
+  }
   return feedback_power_3pcf(model->feedback, k, z, amplitude);
 }
 
@@ -1640,8 +1744,10 @@ double physics_feedback_bispectrum_3pcf(
   const double amplitude
 )
 {
-  require_physics(model && sides && isfinite(z) && z >= 0.0,
-    "invalid bispectrum-response coordinates");
+  if (!(model && sides && isfinite(z) && z >= 0.0)) {
+    log_fatal("physics_3pcf: invalid bispectrum-response coordinates");
+    exit(1);
+  }
   triangle_physics(sides[0], sides[1], sides[2]);
   return feedback_bispectrum_3pcf(model->feedback, sides, z, amplitude);
 }
@@ -1748,8 +1854,11 @@ static physics_triangle_geometry triangle_geometry(
   frexp(maximum, &exponent);
   for (int leg=0; leg<3; leg++) {
     geometry.sides[leg] = scalbn(sides[leg], -exponent);
-    require_physics(geometry.sides[leg] > 0.0,
-      "triangle side ratio underflows double precision");
+    if (!(geometry.sides[leg] > 0.0)) {
+      log_fatal("physics_3pcf: triangle side ratio underflows double "
+        "precision");
+      exit(1);
+    }
   }
   const double small = fmin(geometry.sides[0],
     fmin(geometry.sides[1], geometry.sides[2]));
@@ -1902,9 +2011,11 @@ static void triangle_physics(
 {
   const double largest = fmax(first, fmax(second, third));
   const double sum = first + second + third;
-  require_physics(isfinite(sum) && first > 0.0 && second > 0.0
-    && third > 0.0 && 2.0*largest <= sum*(1.0 + 32.0*DBL_EPSILON),
-    "wavevector lengths do not form a finite triangle");
+  if (!(isfinite(sum) && first > 0.0 && second > 0.0
+        && third > 0.0 && 2.0*largest <= sum*(1.0 + 32.0*DBL_EPSILON))) {
+    log_fatal("physics_3pcf: wavevector lengths do not form a finite triangle");
+    exit(1);
+  }
 }
 
 
@@ -2076,9 +2187,12 @@ double physics_matter_3pcf(
   const double fb
 )
 {
-  require_physics(model && component >= 0 && component <= 3
-    && isfinite(z) && z >= 0.0 && z <= model->zmax
-    && isfinite(fb), "invalid matter query");
+  if (!(model && component >= 0 && component <= 3
+        && isfinite(z) && z >= 0.0 && z <= model->zmax
+        && isfinite(fb))) {
+    log_fatal("physics_3pcf: invalid matter query");
+    exit(1);
+  }
   triangle_physics(k1, k2, k3);
   const double sides[3] = {k1, k2, k3};
   const physics_bh_coefficients coefficients = bh_coefficients(model, z);
@@ -2095,25 +2209,40 @@ double physics_matter_3pcf(
 // selectors before any evaluation path reads them.
 static void check_ia(const physics_ia_3pcf* parameters)
 {
-  require_physics(parameters != NULL, "missing alignment parameters");
-  require_physics(isfinite(parameters->a1) && isfinite(parameters->eta1)
-    && isfinite(parameters->a2) && isfinite(parameters->eta2)
-    && isfinite(parameters->bta) && isfinite(parameters->ct)
-    && isfinite(parameters->zpivot) && parameters->zpivot > -1.0
-    && isfinite(parameters->c1rho) && parameters->c1rho > 0.0
-    && isfinite(parameters->fb) && isfinite(parameters->feedback_amplitude),
-    "nonfinite alignment or baryon parameter");
-  require_physics(parameters->fb == 0.0
-    || parameters->feedback_amplitude == 0.0,
-    "paired feedback cannot be combined with legacy bispectrum-only fb");
-  require_physics(parameters->power_mode >= 0 && parameters->power_mode <= 2
-    && parameters->ct_mode >= 0 && parameters->ct_mode <= 1
-    && parameters->suppress_only >= 0 && parameters->suppress_only <= 1,
-    "unknown alignment or baryon convention");
-  require_physics(parameters->operator_component >= 0
-    && parameters->operator_component <= 4
-    && parameters->intrinsic_legs >= -1 && parameters->intrinsic_legs <= 7,
-    "operator_component must be 0..4 and intrinsic_legs must be -1..7");
+  if (!(parameters != NULL)) {
+    log_fatal("physics_3pcf: missing alignment parameters");
+    exit(1);
+  }
+  if (!(isfinite(parameters->a1) && isfinite(parameters->eta1)
+        && isfinite(parameters->a2) && isfinite(parameters->eta2)
+        && isfinite(parameters->bta) && isfinite(parameters->ct)
+        && isfinite(parameters->zpivot) && parameters->zpivot > -1.0
+        && isfinite(parameters->c1rho) && parameters->c1rho > 0.0
+        && isfinite(parameters->fb)
+        && isfinite(parameters->feedback_amplitude))) {
+    log_fatal("physics_3pcf: nonfinite alignment or baryon parameter");
+    exit(1);
+  }
+  if (!(parameters->fb == 0.0
+        || parameters->feedback_amplitude == 0.0)) {
+    log_fatal("physics_3pcf: paired feedback cannot be combined with legacy "
+      "bispectrum-only fb");
+    exit(1);
+  }
+  if (!(parameters->power_mode >= 0 && parameters->power_mode <= 2
+        && parameters->ct_mode >= 0 && parameters->ct_mode <= 1
+        && parameters->suppress_only >= 0 && parameters->suppress_only <= 1)) {
+    log_fatal("physics_3pcf: unknown alignment or baryon convention");
+    exit(1);
+  }
+  if (!(parameters->operator_component >= 0
+        && parameters->operator_component <= 4
+        && parameters->intrinsic_legs >= -1
+        && parameters->intrinsic_legs <= 7)) {
+    log_fatal("physics_3pcf: operator_component must be 0..4 and "
+      "intrinsic_legs must be -1..7");
+    exit(1);
+  }
 }
 
 
@@ -2422,8 +2551,11 @@ void physics_ia_bispectra_3pcf(
   double* out
 )
 {
-  require_physics(model && out && isfinite(z) && z >= 0.0
-    && z <= model->zmax, "invalid alignment query");
+  if (!(model && out && isfinite(z) && z >= 0.0
+        && z <= model->zmax)) {
+    log_fatal("physics_3pcf: invalid alignment query");
+    exit(1);
+  }
   check_ia(parameters);
   triangle_physics(k1, k2, k3);
   const double sides[3] = {k1, k2, k3};
@@ -2451,16 +2583,21 @@ void physics_ia_same_shape_3pcf(
   double* out
 )
 {
-  require_physics(model && sides && z && out && npoint > 0,
-    "invalid common-shape IA buffers");
+  if (!(model && sides && z && out && npoint > 0)) {
+    log_fatal("physics_3pcf: invalid common-shape IA buffers");
+    exit(1);
+  }
   check_ia(parameters);
   triangle_physics(sides[0], sides[1], sides[2]);
   const physics_triangle_geometry geometry = triangle_geometry(sides, 1);
   for (int point=0; point<npoint; point++) {
     const double* triangle = sides + (size_t)point*3;
     triangle_physics(triangle[0], triangle[1], triangle[2]);
-    require_physics(isfinite(z[point]) && z[point] >= 0.0
-      && z[point] <= model->zmax, "invalid common-shape IA redshift");
+    if (!(isfinite(z[point]) && z[point] >= 0.0
+          && z[point] <= model->zmax)) {
+      log_fatal("physics_3pcf: invalid common-shape IA redshift");
+      exit(1);
+    }
     for (int leg=1; leg<3; leg++) {
       // Common-shape tolerance: every triangle must share one shape
       // for the prepared geometry to apply. Side ratios formed from a
@@ -2470,9 +2607,12 @@ void physics_ia_same_shape_3pcf(
       // misses by far more.
       const double ratio = triangle[leg]/triangle[0];
       const double reference = sides[leg]/sides[0];
-      require_physics(fabs(ratio - reference)
-        <= 64.0*DBL_EPSILON*fmax(fabs(reference), fabs(ratio)),
-        "IA same-shape inputs change a triangle side ratio");
+      if (!(fabs(ratio - reference)
+            <= 64.0*DBL_EPSILON*fmax(fabs(reference), fabs(ratio)))) {
+        log_fatal("physics_3pcf: IA same-shape inputs change a triangle "
+          "side ratio");
+        exit(1);
+      }
     }
   }
   // Every point evaluates the same triangle shape at its own scale
@@ -2514,8 +2654,10 @@ static void field_kernel_physics(
   double* out
 )
 {
-  require_physics(model && out && bin >= 0 && bin < model->nbin,
-    "invalid source bin");
+  if (!(model && out && bin >= 0 && bin < model->nbin)) {
+    log_fatal("physics_3pcf: invalid source bin");
+    exit(1);
+  }
   check_ia(parameters);
   const int count = model->kernel_nz;
   double* kernel = allocate_physics((size_t)count, sizeof(double));
@@ -2595,13 +2737,21 @@ physics_projection_3pcf* physics_projector_create_3pcf(
   const int* bins
 )
 {
-  require_physics(model && bins, "missing projection model or bins");
+  if (!(model && bins)) {
+    log_fatal("physics_3pcf: missing projection model or bins");
+    exit(1);
+  }
   check_ia(parameters);
-  require_physics(model->feedback || parameters->feedback_amplitude == 0.0,
-    "nonzero paired feedback needs response tables in the physical model");
+  if (!(model->feedback || parameters->feedback_amplitude == 0.0)) {
+    log_fatal("physics_3pcf: nonzero paired feedback needs response tables "
+      "in the physical model");
+    exit(1);
+  }
   for (int leg=0; leg<3; leg++) {
-    require_physics(bins[leg] >= 0 && bins[leg] < model->nbin,
-      "projection source bin is out of range");
+    if (!(bins[leg] >= 0 && bins[leg] < model->nbin)) {
+      log_fatal("physics_3pcf: projection source bin is out of range");
+      exit(1);
+    }
   }
   const int count = model->nlos;
   physics_projection_3pcf* projection = allocate_physics(1,
@@ -2702,8 +2852,10 @@ double physics_projected_3pcf(
   const int component
 )
 {
-  require_physics(projection && component >= 0 && component <= 2,
-    "invalid projected component");
+  if (!(projection && component >= 0 && component <= 2)) {
+    log_fatal("physics_3pcf: invalid projected component");
+    exit(1);
+  }
   triangle_physics(ell1, ell2, ell3);
   const physics_model_3pcf* model = projection->model;
   const int count = model->nlos;
@@ -2760,9 +2912,11 @@ double physics_projected_puv_extension_3pcf(
   const double ell3
 )
 {
-  require_physics(projection && isfinite(ell1) && isfinite(ell2)
-    && isfinite(ell3) && ell1 > 0.0 && ell2 > 0.0 && ell3 >= 0.0,
-    "invalid source PUV interpolation corner");
+  if (!(projection && isfinite(ell1) && isfinite(ell2)
+        && isfinite(ell3) && ell1 > 0.0 && ell2 > 0.0 && ell3 >= 0.0)) {
+    log_fatal("physics_3pcf: invalid source PUV interpolation corner");
+    exit(1);
+  }
   if (ell3 == 0.0) {
     return 0.0;
   }
@@ -2826,23 +2980,35 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
   physics_projection_3pcf* const* projections // validated before any worker
 )
 {
-  require_physics(nprojection > 0 && projections && projections[0]
-    && projections[0]->model, "invalid prepared projection batch");
+  if (!(nprojection > 0 && projections && projections[0]
+        && projections[0]->model)) {
+    log_fatal("physics_3pcf: invalid prepared projection batch");
+    exit(1);
+  }
   const physics_projection_3pcf* first = projections[0];
   const int count = first->model->nlos;
-  require_physics(count > 0 && (size_t)count <= SIZE_MAX/8,
-    "prepared projection radial size overflows");
+  if (!(count > 0 && (size_t)count <= SIZE_MAX/8)) {
+    log_fatal("physics_3pcf: prepared projection radial size overflows");
+    exit(1);
+  }
   const size_t rows = (size_t)count*8;
-  require_physics((size_t)nprojection <= SIZE_MAX/rows,
-    "prepared projection weight count overflows");
+  if (!((size_t)nprojection <= SIZE_MAX/rows)) {
+    log_fatal("physics_3pcf: prepared projection weight count overflows");
+    exit(1);
+  }
   const size_t nweight = rows*(size_t)nprojection;
-  require_physics(nweight <= SIZE_MAX/sizeof(double),
-    "prepared projection weight bytes overflow");
+  if (!(nweight <= SIZE_MAX/sizeof(double))) {
+    log_fatal("physics_3pcf: prepared projection weight bytes overflow");
+    exit(1);
+  }
   for (int triplet=0; triplet<nprojection; triplet++) {
-    require_physics(projections[triplet]
-      && projections[triplet]->model == first->model
-      && same_ia_parameters(&projections[triplet]->ia, &first->ia),
-      "batch projections must share one model and the same IA parameters");
+    if (!(projections[triplet]
+          && projections[triplet]->model == first->model
+          && same_ia_parameters(&projections[triplet]->ia, &first->ia))) {
+      log_fatal("physics_3pcf: batch projections must share one model and "
+        "the same IA parameters");
+      exit(1);
+    }
   }
   physics_projection_batch_3pcf* batch = allocate_physics(1, sizeof(*batch));
   batch->first = first;
@@ -2943,23 +3109,33 @@ void physics_projected_batch_3pcf(
   double* out                                 // [nprojection]
 )
 {
-  require_physics(nprojection > 0 && projections && out
-    && component >= 0 && component <= 2,
-    "invalid batch projection input");
+  if (!(nprojection > 0 && projections && out
+        && component >= 0 && component <= 2)) {
+    log_fatal("physics_3pcf: invalid batch projection input");
+    exit(1);
+  }
   const physics_projection_3pcf* first = projections[0];
-  require_physics(first != NULL, "missing batch projection");
+  if (!(first != NULL)) {
+    log_fatal("physics_3pcf: missing batch projection");
+    exit(1);
+  }
   if (!puv_extension) {
     triangle_physics(ell1, ell2, ell3);
   } else {
-    require_physics(component == 2 && isfinite(ell1) && isfinite(ell2)
-      && isfinite(ell3) && ell1 > 0.0 && ell2 > 0.0 && ell3 >= 0.0,
-      "invalid batch PUV corner");
+    if (!(component == 2 && isfinite(ell1) && isfinite(ell2)
+          && isfinite(ell3) && ell1 > 0.0 && ell2 > 0.0 && ell3 >= 0.0)) {
+      log_fatal("physics_3pcf: invalid batch PUV corner");
+      exit(1);
+    }
   }
   for (int triplet=0; triplet<nprojection; triplet++) {
-    require_physics(projections[triplet]
-      && projections[triplet]->model == first->model
-      && same_ia_parameters(&projections[triplet]->ia, &first->ia),
-      "batch projections must share one model and the same IA parameters");
+    if (!(projections[triplet]
+          && projections[triplet]->model == first->model
+          && same_ia_parameters(&projections[triplet]->ia, &first->ia))) {
+      log_fatal("physics_3pcf: batch projections must share one model and "
+        "the same IA parameters");
+      exit(1);
+    }
     out[triplet] = 0.0;
   }
   if (puv_extension && ell3 == 0.0) {
@@ -3060,14 +3236,18 @@ void physics_projection_batch_evaluate_3pcf(
   double* out // private [nprojection] output, never aliases inputs
 )
 {
-  require_physics(batch && out && component >= 0 && component <= 2,
-    "invalid prepared batch projection input");
+  if (!(batch && out && component >= 0 && component <= 2)) {
+    log_fatal("physics_3pcf: invalid prepared batch projection input");
+    exit(1);
+  }
   if (!puv_extension) {
     triangle_physics(ell1, ell2, ell3);
   } else {
-    require_physics(component == 2 && isfinite(ell1) && isfinite(ell2)
-      && isfinite(ell3) && ell1 > 0.0 && ell2 > 0.0 && ell3 >= 0.0,
-      "invalid batch PUV corner");
+    if (!(component == 2 && isfinite(ell1) && isfinite(ell2)
+          && isfinite(ell3) && ell1 > 0.0 && ell2 > 0.0 && ell3 >= 0.0)) {
+      log_fatal("physics_3pcf: invalid batch PUV corner");
+      exit(1);
+    }
   }
   const int nprojection = batch->nprojection;
   for (int triplet=0; triplet<nprojection; triplet++) {
@@ -3190,7 +3370,10 @@ static void gauss_legendre_physics(
       if (fabs(step) <= 4.0*DBL_EPSILON) {
         break;
       }
-      require_physics(iteration < 99, "Legendre root did not converge");
+      if (!(iteration < 99)) {
+        log_fatal("physics_3pcf: Legendre root did not converge");
+        exit(1);
+      }
     }
     nodes[root] = -coordinate;
     nodes[count - 1 - root] = coordinate;
@@ -3228,16 +3411,22 @@ void physics_multipoles_3pcf(
   double* out                        // b_L [lmax+1, nell, nell]
 )
 {
-  require_physics(ell && out && nell > 0 && lmax >= 0 && lmax < INT_MAX
-    && nmu >= 2 && nmu > lmax && component >= 0 && component <= 2,
-    "invalid multipole grid or component");
-  require_physics((size_t)nell <= SIZE_MAX/(size_t)nell
-    && (size_t)(lmax + 1) <= SIZE_MAX/((size_t)nell*nell)
-    && (size_t)(lmax + 1)*nell*nell <= SIZE_MAX/sizeof(double),
-    "multipole output size overflows");
+  if (!(ell && out && nell > 0 && lmax >= 0 && lmax < INT_MAX
+        && nmu >= 2 && nmu > lmax && component >= 0 && component <= 2)) {
+    log_fatal("physics_3pcf: invalid multipole grid or component");
+    exit(1);
+  }
+  if (!((size_t)nell <= SIZE_MAX/(size_t)nell
+        && (size_t)(lmax + 1) <= SIZE_MAX/((size_t)nell*nell)
+        && (size_t)(lmax + 1)*nell*nell <= SIZE_MAX/sizeof(double))) {
+    log_fatal("physics_3pcf: multipole output size overflows");
+    exit(1);
+  }
   for (int index=0; index<nell; index++) {
-    require_physics(isfinite(ell[index]) && ell[index] > 0.0,
-      "multipoles require positive ell");
+    if (!(isfinite(ell[index]) && ell[index] > 0.0)) {
+      log_fatal("physics_3pcf: multipoles require positive ell");
+      exit(1);
+    }
   }
   physics_projection_3pcf* projection = physics_projector_create_3pcf(
     model, parameters, bins);
@@ -3279,8 +3468,10 @@ void physics_multipoles_3pcf(
   // direct scientific reference path.
   const size_t worker_stride = (((size_t)nmu + 7)/8 + 1)*8;
   const size_t workers = (size_t)omp_get_max_threads();
-  require_physics(workers > 0 && worker_stride <= SIZE_MAX/workers,
-    "multipole worker storage overflows");
+  if (!(workers > 0 && worker_stride <= SIZE_MAX/workers)) {
+    log_fatal("physics_3pcf: multipole worker storage overflows");
+    exit(1);
+  }
   double* scratch = allocate_physics(worker_stride*workers, sizeof(double));
   #pragma omp parallel if(!omp_in_parallel())
   {
@@ -3368,8 +3559,10 @@ void physics_radial_3pcf(
   const double** shape
 )
 {
-  require_physics(model && nbin && nlos && z && chi && dchi && lens && shape,
-    "missing radial output pointer");
+  if (!(model && nbin && nlos && z && chi && dchi && lens && shape)) {
+    log_fatal("physics_3pcf: missing radial output pointer");
+    exit(1);
+  }
   *nbin = model->nbin;
   *nlos = model->nlos;
   *z = model->los_z;
@@ -3384,7 +3577,10 @@ void physics_radial_3pcf(
 // physics_omega_m_3pcf: today's matter density fraction of the model.
 double physics_omega_m_3pcf(const physics_model_3pcf* model)
 {
-  require_physics(model != NULL, "missing model");
+  if (!(model != NULL)) {
+    log_fatal("physics_3pcf: missing model");
+    exit(1);
+  }
   return model->omega_m;
 }
 
@@ -3397,8 +3593,10 @@ double physics_omega_m_z_3pcf(
   const double z
 )
 {
-  require_physics(model && isfinite(z) && z >= 0.0,
-    "invalid background matter-fraction query");
+  if (!(model && isfinite(z) && z >= 0.0)) {
+    log_fatal("physics_3pcf: invalid background matter-fraction query");
+    exit(1);
+  }
   return omega_m_physics(model, z);
 }
 
@@ -3496,13 +3694,21 @@ void physics_nla_power_batch_3pcf(
 )
 {
   check_ia(parameters);
-  require_physics(model && ell && out && nell > 0,
-    "invalid angular power buffers");
-  require_physics(model->feedback || parameters->feedback_amplitude == 0.0,
-    "nonzero paired feedback needs response tables in the physical model");
-  require_physics(parameters->a2 == 0.0 && parameters->bta == 0.0
-    && parameters->ct == 0.0 && parameters->fb == 0.0,
-    "NLA power rejects TATT loops and legacy bispectrum-only fb");
+  if (!(model && ell && out && nell > 0)) {
+    log_fatal("physics_3pcf: invalid angular power buffers");
+    exit(1);
+  }
+  if (!(model->feedback || parameters->feedback_amplitude == 0.0)) {
+    log_fatal("physics_3pcf: nonzero paired feedback needs response tables "
+      "in the physical model");
+    exit(1);
+  }
+  if (!(parameters->a2 == 0.0 && parameters->bta == 0.0
+        && parameters->ct == 0.0 && parameters->fb == 0.0)) {
+    log_fatal("physics_3pcf: NLA power rejects TATT loops and legacy "
+      "bispectrum-only fb");
+    exit(1);
+  }
   const int count = model->nlos;
   double* first = allocate_physics((size_t)count, sizeof(double));
   double* second = allocate_physics((size_t)count, sizeof(double));
@@ -3518,8 +3724,10 @@ void physics_nla_power_batch_3pcf(
     logchi[node] = log(distance);
   }
   for (int index=0; index<nell; index++) {
-    require_physics(isfinite(ell[index]) && ell[index] > 0.0,
-      "angular power requires positive finite ell");
+    if (!(isfinite(ell[index]) && ell[index] > 0.0)) {
+      log_fatal("physics_3pcf: angular power requires positive finite ell");
+      exit(1);
+    }
     logell[index] = log(ell[index]);
   }
   const int capacity = nell < 256 ? nell : 256;
@@ -3721,33 +3929,45 @@ void physics_aperture_integrate_3pcf(
   double* out                            // one moment per triplet [nfilter]
 )
 {
-  require_physics(context && reader && ell && dell && phi
-    && dphi && filters && out && nell > 0 && nphi > 0 && nfilter > 0,
-    "invalid full-aperture buffers or dimensions");
-  require_physics((size_t)nell <= SIZE_MAX/(size_t)nell
-    && (size_t)nphi <= SIZE_MAX/((size_t)nell*nell),
-    "aperture triangle count overflows");
+  if (!(context && reader && ell && dell && phi
+        && dphi && filters && out && nell > 0 && nphi > 0 && nfilter > 0)) {
+    log_fatal("physics_3pcf: invalid full-aperture buffers or dimensions");
+    exit(1);
+  }
+  if (!((size_t)nell <= SIZE_MAX/(size_t)nell
+        && (size_t)nphi <= SIZE_MAX/((size_t)nell*nell))) {
+    log_fatal("physics_3pcf: aperture triangle count overflows");
+    exit(1);
+  }
   const size_t ntriangle = (size_t)nell*nell*nphi;
   for (int node=0; node<nell; node++) {
-    require_physics(isfinite(ell[node]) && ell[node] > 0.0
-      && isfinite(dell[node]) && dell[node] > 0.0
-      && (node == 0 || ell[node] > ell[node - 1]),
-      "invalid full-aperture ell quadrature");
+    if (!(isfinite(ell[node]) && ell[node] > 0.0
+          && isfinite(dell[node]) && dell[node] > 0.0
+          && (node == 0 || ell[node] > ell[node - 1]))) {
+      log_fatal("physics_3pcf: invalid full-aperture ell quadrature");
+      exit(1);
+    }
   }
   double angle_norm = 0.0;
   for (int node=0; node<nphi; node++) {
-    require_physics(isfinite(phi[node]) && phi[node] >= 0.0
-      && phi[node] <= 6.28318530717958647693
-      && isfinite(dphi[node]) && dphi[node] > 0.0
-      && (node == 0 || phi[node] > phi[node - 1]),
-      "invalid full-aperture angular quadrature");
+    if (!(isfinite(phi[node]) && phi[node] >= 0.0
+          && phi[node] <= 6.28318530717958647693
+          && isfinite(dphi[node]) && dphi[node] > 0.0
+          && (node == 0 || phi[node] > phi[node - 1]))) {
+      log_fatal("physics_3pcf: invalid full-aperture angular quadrature");
+      exit(1);
+    }
     angle_norm += dphi[node];
   }
-  require_physics(fabs(angle_norm - 6.28318530717958647693) < 1.0e-10,
-    "full-aperture angular weights must sum to 2pi");
+  if (!(fabs(angle_norm - 6.28318530717958647693) < 1.0e-10)) {
+    log_fatal("physics_3pcf: full-aperture angular weights must sum to 2pi");
+    exit(1);
+  }
   for (size_t index=0; index<(size_t)nfilter*3; index++) {
-    require_physics(isfinite(filters[index]) && filters[index] > 0.0,
-      "full-aperture radii must be positive");
+    if (!(isfinite(filters[index]) && filters[index] > 0.0)) {
+      log_fatal("physics_3pcf: full-aperture radii must be positive");
+      exit(1);
+    }
   }
   const size_t capacity = 4096;
   double* values = allocate_physics(capacity, sizeof(double));

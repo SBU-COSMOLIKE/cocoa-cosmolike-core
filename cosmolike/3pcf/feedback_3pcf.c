@@ -7,6 +7,7 @@
 #include <string.h>
 #include <gsl/gsl_spline.h>
 #include "feedback_3pcf.h"
+#include "log.c/src/log.h"
 
 // Baryonic feedback - gas cooling and the energetic outflows from
 // active galactic nuclei and supernovae - moves matter around inside
@@ -41,18 +42,6 @@ struct feedback_3pcf {
   int clamp; // 0 refuses out-of-domain queries; 1 holds boundary values
 };
 
-// Every validation failure in this file routes through this helper:
-// it prints one message with the module name and ends the program.
-// The checks guard input consistency, not recoverable runtime
-// conditions, so stopping beats returning a wrong ratio.
-static void require_feedback(const int condition, const char* message)
-{
-  if (!condition) {
-    fprintf(stderr, "feedback_3pcf: %s\n", message);
-    exit(EXIT_FAILURE);
-  }
-}
-
 
 // Multiply the node counts of the leading axes into one flat element
 // count. The check inside the loop proves, one factor at a time, that
@@ -67,9 +56,12 @@ static size_t table_size(const int* counts, const int dimensions)
 {
   size_t size = 1;
   for (int axis=0; axis<dimensions; axis++) {
-    require_feedback(counts[axis] > 0
-      && size <= SIZE_MAX/sizeof(double)/(size_t)counts[axis],
-      "response dimensions overflow addressable storage");
+    if (!(counts[axis] > 0
+          && size <= SIZE_MAX/sizeof(double)/(size_t)counts[axis])) {
+      log_fatal("feedback_3pcf: response dimensions overflow addressable "
+        "storage");
+      exit(1);
+    }
     size *= (size_t)counts[axis];
   }
   return size;
@@ -81,9 +73,15 @@ static size_t table_size(const int* counts, const int dimensions)
 // sizeof(double) representable before malloc sees it.
 static double* allocate_feedback(const size_t size)
 {
-  require_feedback(size <= SIZE_MAX/sizeof(double), "allocation overflows");
+  if (!(size <= SIZE_MAX/sizeof(double))) {
+    log_fatal("feedback_3pcf: allocation overflows");
+    exit(1);
+  }
   double* values = malloc(size*sizeof(double));
-  require_feedback(values != NULL, "response allocation failed");
+  if (!(values != NULL)) {
+    log_fatal("feedback_3pcf: response allocation failed");
+    exit(1);
+  }
   return values;
 }
 
@@ -127,7 +125,10 @@ static double* dense_table(
   const size_t size = table_size(current, dimensions);
   double* table = allocate_feedback(size);
   for (size_t index=0; index<size; index++) {
-    require_feedback(isfinite(source[index]), "nonfinite log response");
+    if (!(isfinite(source[index]))) {
+      log_fatal("feedback_3pcf: nonfinite log response");
+      exit(1);
+    }
     table[index] = source[index];
   }
   if (boost == 1) {
@@ -158,7 +159,10 @@ static double* dense_table(
     double* line = allocate_feedback((size_t)old_count);
     gsl_spline* spline = gsl_spline_alloc(gsl_interp_cspline, old_count);
     gsl_interp_accel* search = gsl_interp_accel_alloc();
-    require_feedback(spline && search, "spline preparation allocation failed");
+    if (!(spline && search)) {
+      log_fatal("feedback_3pcf: spline preparation allocation failed");
+      exit(1);
+    }
     for (size_t block=0; block<blocks; block++) {
       for (size_t inner=0; inner<stride; inner++) {
         for (int node=0; node<old_count; node++) {
@@ -179,7 +183,10 @@ static double* dense_table(
               *node/(new_count - 1);
             value = gsl_spline_eval(spline, coordinate, search);
           }
-          require_feedback(isfinite(value), "nonfinite prepared log response");
+          if (!(isfinite(value))) {
+            log_fatal("feedback_3pcf: nonfinite prepared log response");
+            exit(1);
+          }
           dense[(block*new_count + node)*stride + inner] = value;
         }
       }
@@ -220,26 +227,39 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
   if (input == NULL) {
     return NULL;
   }
-  require_feedback(input->boost >= 1 && input->clamp >= 0 && input->clamp <= 1
-    && input->log_power && input->log_bispectrum,
-    "both response tables, boost>=1 and clamp=0/1 are required");
+  if (!(input->boost >= 1 && input->clamp >= 0 && input->clamp <= 1
+        && input->log_power && input->log_bispectrum)) {
+    log_fatal("feedback_3pcf: both response tables, boost>=1 and clamp=0/1 "
+      "are required");
+    exit(1);
+  }
   const int counts[4] = {input->nz, input->nk, input->nu, input->nv};
   const double* axes[4] = {input->z, input->logk, input->logu, input->v};
   feedback_3pcf* response = calloc(1, sizeof(*response));
-  require_feedback(response != NULL, "response owner allocation failed");
+  if (!(response != NULL)) {
+    log_fatal("feedback_3pcf: response owner allocation failed");
+    exit(1);
+  }
   response->clamp = input->clamp;
   for (int axis=0; axis<4; axis++) {
     const int count = counts[axis];
-    require_feedback(count >= 4 && axes[axis]
-      && count - 1 <= (INT_MAX - 1)/input->boost,
-      "each response axis needs four nodes and representable dense size");
+    if (!(count >= 4 && axes[axis]
+          && count - 1 <= (INT_MAX - 1)/input->boost)) {
+      log_fatal("feedback_3pcf: each response axis needs four nodes and "
+        "representable dense size");
+      exit(1);
+    }
     const double low = axes[axis][0];
     const double high = axes[axis][count - 1];
-    require_feedback(isfinite(low) && isfinite(high) && high > low,
-      "response coordinates must increase");
+    if (!(isfinite(low) && isfinite(high) && high > low)) {
+      log_fatal("feedback_3pcf: response coordinates must increase");
+      exit(1);
+    }
     const double step = (high - low)/(count - 1);
-    require_feedback(isfinite(step) && step > 0.0,
-      "response spacing is not representable");
+    if (!(isfinite(step) && step > 0.0)) {
+      log_fatal("feedback_3pcf: response spacing is not representable");
+      exit(1);
+    }
     // Purpose of this uniformity check: the query path converts a
     // coordinate to a grid index by multiplying with one stored
     // inverse spacing, and that shortcut is correct only on a uniform
@@ -251,23 +271,31 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
     // still fails clearly.
     for (int node=0; node<count; node++) {
       const double expected = low + node*step;
-      require_feedback(isfinite(axes[axis][node])
-        && (node == 0 || axes[axis][node] > axes[axis][node - 1])
-        && fabs(axes[axis][node] - expected)
-          <= 64.0*DBL_EPSILON*fmax(1.0, fmax(fabs(low), fabs(high))),
-        "response coordinates must be uniform");
+      if (!(isfinite(axes[axis][node])
+            && (node == 0 || axes[axis][node] > axes[axis][node - 1])
+            && fabs(axes[axis][node] - expected)
+              <= 64.0*DBL_EPSILON*fmax(1.0, fmax(fabs(low), fabs(high))))) {
+        log_fatal("feedback_3pcf: response coordinates must be uniform");
+        exit(1);
+      }
     }
     response->count[axis] = input->boost*(count - 1) + 1;
     response->lower[axis] = low;
     response->upper[axis] = high;
     response->inverse[axis] = (response->count[axis] - 1)/(high - low);
-    require_feedback(isfinite(response->inverse[axis])
-      && response->inverse[axis] > 0.0,
-      "dense response inverse spacing is not representable");
+    if (!(isfinite(response->inverse[axis])
+          && response->inverse[axis] > 0.0)) {
+      log_fatal("feedback_3pcf: dense response inverse spacing is not "
+        "representable");
+      exit(1);
+    }
   }
-  require_feedback(input->z[0] >= 0.0 && input->logu[input->nu - 1] <= 0.0
-    && input->v[0] >= 0.0 && input->v[input->nv - 1] <= 1.0,
-    "response z/u/v axes must describe physical sorted triangles");
+  if (!(input->z[0] >= 0.0 && input->logu[input->nu - 1] <= 0.0
+        && input->v[0] >= 0.0 && input->v[input->nv - 1] <= 1.0)) {
+    log_fatal("feedback_3pcf: response z/u/v axes must describe physical "
+      "sorted triangles");
+    exit(1);
+  }
   response->power = dense_table(input->log_power, counts, axes, 2,
     input->boost);
   response->bispectrum = dense_table(input->log_bispectrum, counts, axes, 4,
@@ -315,11 +343,17 @@ static double read_response(
   const double amplitude
 )
 {
-  require_feedback(isfinite(amplitude), "feedback amplitude must be finite");
+  if (!(isfinite(amplitude))) {
+    log_fatal("feedback_3pcf: feedback amplitude must be finite");
+    exit(1);
+  }
   if (amplitude == 0.0) {
     return 1.0;
   }
-  require_feedback(response != NULL, "nonzero feedback needs paired tables");
+  if (!(response != NULL)) {
+    log_fatal("feedback_3pcf: nonzero feedback needs paired tables");
+    exit(1);
+  }
   int cells[4];
   double fractions[4];
   for (int axis=0; axis<dimensions; axis++) {
@@ -335,9 +369,12 @@ static double read_response(
     // clamp = 1 every finite query passes, and the fmin/fmax below
     // hold the boundary value.
     const double tolerance = 64.0*DBL_EPSILON*fmax(1.0, fabs(value));
-    require_feedback(isfinite(value) && (response->clamp
-      || (value >= low - tolerance && value <= high + tolerance)),
-      "feedback query exceeds its declared table domain");
+    if (!(isfinite(value) && (response->clamp
+          || (value >= low - tolerance && value <= high + tolerance)))) {
+      log_fatal("feedback_3pcf: feedback query exceeds its declared table "
+        "domain");
+      exit(1);
+    }
     const double position = (fmax(low, fmin(high, value)) - low)
       *response->inverse[axis];
     cells[axis] = (int)fmin(response->count[axis] - 2, floor(position));
@@ -369,8 +406,11 @@ static double read_response(
     logarithm += weight*table[index];
   }
   const double result = exp(amplitude*logarithm);
-  require_feedback(isfinite(result) && result > 0.0,
-    "feedback amplitude produces an unrepresentable positive ratio");
+  if (!(isfinite(result) && result > 0.0)) {
+    log_fatal("feedback_3pcf: feedback amplitude produces an "
+      "unrepresentable positive ratio");
+    exit(1);
+  }
   return result;
 }
 

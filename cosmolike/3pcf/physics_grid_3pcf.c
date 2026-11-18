@@ -7,6 +7,7 @@
 #include <string.h>
 #include "simde/x86/sse2.h"
 #include "physics_grid_3pcf.h"
+#include "log.c/src/log.h"
 #ifdef _OPENMP
 #include <omp.h>
 #else
@@ -149,27 +150,20 @@ struct physics_grid_query_3pcf {
 // [SECTION] AXIS AND ALLOCATION HELPERS
 // ============================================================================
 
-// Stop with a message when a structural requirement fails. The grid code
-// treats any such failure as a programming error, never as a recoverable
-// runtime state.
-static void grid_require(const int condition, const char* message)
-{
-  if (!condition) {
-    fprintf(stderr, "physics_grid_3pcf: %s\n", message);
-    exit(EXIT_FAILURE);
-  }
-}
-
-
 // Allocate zero-initialized storage after checking that the byte count
 // cannot overflow. The zero fill matters physically: it is what lets a
 // pure-NLA grid keep untouched residual planes at exactly zero.
 static void* grid_allocate(const size_t count, const size_t bytes)
 {
-  grid_require(count > 0 && count <= SIZE_MAX/bytes,
-    "grid allocation overflows");
+  if (!(count > 0 && count <= SIZE_MAX/bytes)) {
+    log_fatal("physics_grid_3pcf: grid allocation overflows");
+    exit(1);
+  }
   void* result = calloc(count, bytes);
-  grid_require(result != NULL, "grid allocation failed");
+  if (!(result != NULL)) {
+    log_fatal("physics_grid_3pcf: grid allocation failed");
+    exit(1);
+  }
   return result;
 }
 
@@ -179,11 +173,16 @@ static void* grid_allocate(const size_t count, const size_t bytes)
 // the same line even when calloc's starting address is not 64-byte aligned.
 static double* worker_storage(const size_t count, size_t* stride)
 {
-  grid_require(count <= SIZE_MAX - 15, "worker stride overflows");
+  if (!(count <= SIZE_MAX - 15)) {
+    log_fatal("physics_grid_3pcf: worker stride overflows");
+    exit(1);
+  }
   *stride = ((count + 7)/8 + 1)*8;
   const size_t workers = (size_t)omp_get_max_threads();
-  grid_require(workers > 0 && *stride <= SIZE_MAX/workers,
-    "worker storage size overflows");
+  if (!(workers > 0 && *stride <= SIZE_MAX/workers)) {
+    log_fatal("physics_grid_3pcf: worker storage size overflows");
+    exit(1);
+  }
   return grid_allocate(workers*(*stride), sizeof(double));
 }
 
@@ -192,11 +191,15 @@ static double* worker_storage(const size_t count, size_t* stride)
 // aborting on overflow before any allocation can use the product.
 static size_t grid_product(const int first, const int second, const int third)
 {
-  grid_require(first > 0 && second > 0 && third > 0,
-    "grid dimensions must be positive");
-  grid_require((size_t)first <= SIZE_MAX/(size_t)second
-    && (size_t)third <= SIZE_MAX/((size_t)first*second),
-    "grid dimension product overflows");
+  if (!(first > 0 && second > 0 && third > 0)) {
+    log_fatal("physics_grid_3pcf: grid dimensions must be positive");
+    exit(1);
+  }
+  if (!((size_t)first <= SIZE_MAX/(size_t)second
+        && (size_t)third <= SIZE_MAX/((size_t)first*second))) {
+    log_fatal("physics_grid_3pcf: grid dimension product overflows");
+    exit(1);
+  }
   return (size_t)first*second*third;
 }
 
@@ -226,7 +229,10 @@ static size_t grid_product(const int first, const int second, const int third)
 // ---------------------------------------------------------------------------
 void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings)
 {
-  grid_require(settings != NULL, "missing grid settings");
+  if (!(settings != NULL)) {
+    log_fatal("physics_grid_3pcf: missing grid settings");
+    exit(1);
+  }
   settings->ell_min = 0.1;
   settings->ell_max = 1.0e5;
   settings->epmu = 1.0e-7;
@@ -259,8 +265,11 @@ void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings)
 // each coarse interval, checking that the arithmetic fits in an int.
 static int dense_grid_count(const int count, const int boost)
 {
-  grid_require(count >= 2 && boost >= 1
-    && count - 1 <= (INT_MAX - 1)/boost, "dense grid count overflows");
+  if (!(count >= 2 && boost >= 1
+        && count - 1 <= (INT_MAX - 1)/boost)) {
+    log_fatal("physics_grid_3pcf: dense grid count overflows");
+    exit(1);
+  }
   return (count - 1)*boost + 1;
 }
 
@@ -381,9 +390,11 @@ static double* upsample_uniform_grid(double* input, int* dimensions,
     for (int index=axis + 1; index<3; index++) {
       after *= (size_t)dimensions[index];
     }
-    grid_require(before <= SIZE_MAX/after
-      && (size_t)new_count <= SIZE_MAX/(before*after),
-      "upsampled tensor size overflows");
+    if (!(before <= SIZE_MAX/after
+          && (size_t)new_count <= SIZE_MAX/(before*after))) {
+      log_fatal("physics_grid_3pcf: upsampled tensor size overflows");
+      exit(1);
+    }
     double* output = grid_allocate(before*after*new_count, sizeof(double));
     // The natural-cubic matrix and subcell coordinates depend only on
     // this axis's count and boost. Share their exact original values
@@ -480,8 +491,11 @@ static double coordinate_to_shape(const double coordinate, const double minimum,
 static double* linear_axis(const double lower, const double upper,
   const int count)
 {
-  grid_require(count >= 2 && isfinite(lower) && isfinite(upper)
-    && upper > lower, "invalid interpolation axis");
+  if (!(count >= 2 && isfinite(lower) && isfinite(upper)
+        && upper > lower)) {
+    log_fatal("physics_grid_3pcf: invalid interpolation axis");
+    exit(1);
+  }
   double* result = grid_allocate((size_t)count, sizeof(double));
   for (int index=0; index<count; index++) {
     result[index] = lower + (upper - lower)*index/(count - 1);
@@ -538,11 +552,17 @@ static double* physical_psi_axis(const double* coordinates, const int count,
       }
     }
     logarithms[index] = left + 0.5*(right - left);
-    grid_require(logarithms[index] > logarithms[index - 1],
-      "mixed PSI chart has indistinguishable physical nodes");
+    if (!(logarithms[index] > logarithms[index - 1])) {
+      log_fatal("physics_grid_3pcf: mixed PSI chart has indistinguishable "
+        "physical nodes");
+      exit(1);
+    }
   }
-  grid_require(logarithms[count - 1] > logarithms[count - 2],
-    "mixed PSI chart has indistinguishable physical endpoints");
+  if (!(logarithms[count - 1] > logarithms[count - 2])) {
+    log_fatal("physics_grid_3pcf: mixed PSI chart has indistinguishable "
+      "physical endpoints");
+    exit(1);
+  }
   return logarithms;
 }
 
@@ -557,10 +577,15 @@ static double* physical_psi_axis(const double* coordinates, const int count,
 static double* loglinear_axis(const double lower, const double join,
   const double upper, const int nlog, const int nlinear, int* count)
 {
-  grid_require(lower > 0.0 && upper > lower && nlog >= 0 && nlinear >= 2,
-    "invalid mixed logarithmic/linear axis");
+  if (!(lower > 0.0 && upper > lower && nlog >= 0 && nlinear >= 2)) {
+    log_fatal("physics_grid_3pcf: invalid mixed logarithmic/linear axis");
+    exit(1);
+  }
   const int logarithmic = lower < join ? nlog : 0;
-  grid_require(logarithmic <= INT_MAX - nlinear, "mixed axis is too large");
+  if (!(logarithmic <= INT_MAX - nlinear)) {
+    log_fatal("physics_grid_3pcf: mixed axis is too large");
+    exit(1);
+  }
   *count = logarithmic + nlinear;
   double* result = grid_allocate((size_t)*count, sizeof(double));
   for (int index=0; index<logarithmic; index++) {
@@ -608,8 +633,11 @@ static double corrected_coordinate(const double coordinate,
   if (coordinate > upper && coordinate - upper <= upper_tolerance) {
     return upper;
   }
-  grid_require(isfinite(coordinate) && coordinate >= lower
-    && coordinate <= upper, "query lies outside prepared grid support");
+  if (!(isfinite(coordinate) && coordinate >= lower
+        && coordinate <= upper)) {
+    log_fatal("physics_grid_3pcf: query lies outside prepared grid support");
+    exit(1);
+  }
   return coordinate;
 }
 
@@ -756,9 +784,11 @@ double physics_grid_projected_3pcf(
   const int component // total=0, NLA baseline=1, residual IA=2
 )
 {
-  grid_require(grid && ell1 > 0.0 && ell2 > 0.0 && ell3 > 0.0
-    && isfinite(ell1 + ell2 + ell3) && component >= 0 && component <= 2,
-    "invalid projected-grid query");
+  if (!(grid && ell1 > 0.0 && ell2 > 0.0 && ell3 > 0.0
+        && isfinite(ell1 + ell2 + ell3) && component >= 0 && component <= 2)) {
+    log_fatal("physics_grid_3pcf: invalid projected-grid query");
+    exit(1);
+  }
   const physics_grid_settings_3pcf* settings = &grid->settings;
   const double maximum = fmax(ell1, fmax(ell2, ell3));
   const double minimum = fmin(ell1, fmin(ell2, ell3));
@@ -767,8 +797,10 @@ double physics_grid_projected_3pcf(
   // perimeter: quadrature callers build the closing side from the two
   // legs, and an exactly degenerate triangle would otherwise fail on
   // the last bit of that construction.
-  grid_require(2.0*maximum <= perimeter*(1.0 + 32.0*DBL_EPSILON),
-    "projected-grid query is not a triangle");
+  if (!(2.0*maximum <= perimeter*(1.0 + 32.0*DBL_EPSILON))) {
+    log_fatal("physics_grid_3pcf: projected-grid query is not a triangle");
+    exit(1);
+  }
   double baseline = 0.0;
   double residual = 0.0;
   if (component != 2) {
@@ -980,7 +1012,10 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
   const int nell = grid->nell;
   const int npsi = grid->npsi;
   const size_t per_chart = grid_product(lmax + 1, nell, npsi);
-  grid_require(per_chart <= SIZE_MAX/4, "multipole charts are too large");
+  if (!(per_chart <= SIZE_MAX/4)) {
+    log_fatal("physics_grid_3pcf: multipole charts are too large");
+    exit(1);
+  }
   grid->multipoles = grid_allocate(4*per_chart, sizeof(double));
   double* weights = source_legendre_weights(grid);
   // Interleave the weights of adjacent Legendre degrees so one vector
@@ -1237,31 +1272,39 @@ static physics_grid_3pcf* allocate_grid(
   const int has_residual
 )
 {
-  grid_require(settings != NULL, "missing grid settings");
-  grid_require(settings->ell_min > 0.0
-    && settings->ell_max > settings->ell_min && isfinite(settings->ell_max)
-    && settings->epmu > 0.0 && settings->epmu < 0.05
-    && settings->psi_scale >= 0.0 && isfinite(settings->psi_scale)
-    && (settings->psi_scale == 0.0
-      || isfinite(0.78539816339744830962/settings->psi_scale))
-    && settings->shape_stretch > 0.0 && isfinite(settings->shape_stretch)
-    && tanh(settings->shape_stretch) < 1.0
-    && settings->nr >= 2 && settings->nu >= 2 && settings->nv >= 2
-    && settings->np >= 2 && settings->npu_log >= 2
-    && settings->npu_linear >= 2 && settings->nell >= 2
-    && settings->npsi_log >= 0 && settings->npsi_linear >= 2
-    && settings->nmu_log >= 1 && settings->nmu_linear >= 2
-    && settings->lmax >= 0 && settings->lmax < INT_MAX/4 - 1
-    && settings->reference_mode >= 0 && settings->reference_mode <= 1
-    && settings->table_boost >= 1 && settings->multipole_boost >= 1
-    && settings->npsi >= 2 && settings->nshape >= 2
-    && settings->prepare_multipoles >= 0
-    && settings->prepare_multipoles <= 1
-    && settings->signed_baseline >= 0 && settings->signed_baseline <= 1
-    && settings->residual_scaling >= 0 && settings->residual_scaling <= 1,
-    "invalid interpolation settings");
-  grid_require(settings->npu_log <= (INT_MAX - settings->npu_linear - 2)/2,
-    "PUV axis is too large");
+  if (!(settings != NULL)) {
+    log_fatal("physics_grid_3pcf: missing grid settings");
+    exit(1);
+  }
+  if (!(settings->ell_min > 0.0
+        && settings->ell_max > settings->ell_min && isfinite(settings->ell_max)
+        && settings->epmu > 0.0 && settings->epmu < 0.05
+        && settings->psi_scale >= 0.0 && isfinite(settings->psi_scale)
+        && (settings->psi_scale == 0.0
+          || isfinite(0.78539816339744830962/settings->psi_scale))
+        && settings->shape_stretch > 0.0 && isfinite(settings->shape_stretch)
+        && tanh(settings->shape_stretch) < 1.0
+        && settings->nr >= 2 && settings->nu >= 2 && settings->nv >= 2
+        && settings->np >= 2 && settings->npu_log >= 2
+        && settings->npu_linear >= 2 && settings->nell >= 2
+        && settings->npsi_log >= 0 && settings->npsi_linear >= 2
+        && settings->nmu_log >= 1 && settings->nmu_linear >= 2
+        && settings->lmax >= 0 && settings->lmax < INT_MAX/4 - 1
+        && settings->reference_mode >= 0 && settings->reference_mode <= 1
+        && settings->table_boost >= 1 && settings->multipole_boost >= 1
+        && settings->npsi >= 2 && settings->nshape >= 2
+        && settings->prepare_multipoles >= 0
+        && settings->prepare_multipoles <= 1
+        && settings->signed_baseline >= 0 && settings->signed_baseline <= 1
+        && settings->residual_scaling >= 0
+        && settings->residual_scaling <= 1)) {
+    log_fatal("physics_grid_3pcf: invalid interpolation settings");
+    exit(1);
+  }
+  if (!(settings->npu_log <= (INT_MAX - settings->npu_linear - 2)/2)) {
+    log_fatal("physics_grid_3pcf: PUV axis is too large");
+    exit(1);
+  }
   physics_grid_3pcf* grid = grid_allocate(1, sizeof(*grid));
   grid->settings = *settings;
   grid->has_residual = has_residual;
@@ -1409,8 +1452,11 @@ static void finish_grid(physics_grid_3pcf* grid)
         const int scale_boosts[3] = {boost, 1, 1};
         grid->log_residual_scale = upsample_uniform_grid(
           grid->log_residual_scale, scale_shape, scale_boosts);
-        grid_require(scale_shape[0] == residual_shape[0],
-          "residual scale and ratio have different perimeter counts");
+        if (!(scale_shape[0] == residual_shape[0])) {
+          log_fatal("physics_grid_3pcf: residual scale and ratio have "
+            "different perimeter counts");
+          exit(1);
+        }
       }
     }
     double* log_r = linear_axis(grid->log_r[0], grid->log_r[grid->nr - 1],
@@ -1518,12 +1564,20 @@ void physics_grid_create_many_3pcf(
   physics_grid_3pcf** out
 )
 {
-  grid_require(model && parameters && bins && out && ntriplet > 0,
-    "missing batch grid inputs");
-  grid_require(settings != NULL, "missing batch grid settings");
-  grid_require((parameters->operator_component == 0
-      && parameters->intrinsic_legs == -1) || settings->signed_baseline,
-    "component grids require signed_baseline=1 for common GGG scaling");
+  if (!(model && parameters && bins && out && ntriplet > 0)) {
+    log_fatal("physics_grid_3pcf: missing batch grid inputs");
+    exit(1);
+  }
+  if (!(settings != NULL)) {
+    log_fatal("physics_grid_3pcf: missing batch grid settings");
+    exit(1);
+  }
+  if (!((parameters->operator_component == 0
+        && parameters->intrinsic_legs == -1) || settings->signed_baseline)) {
+    log_fatal("physics_grid_3pcf: component grids require signed_baseline=1 "
+      "for common GGG scaling");
+    exit(1);
+  }
   physics_projection_3pcf** projections = grid_allocate((size_t)ntriplet,
     sizeof(*projections));
   // Pure NLA omits the residual entirely, including any scale table.
@@ -1642,19 +1696,28 @@ void physics_grid_create_many_3pcf(
           radius*(1.0 + ratio*first->v[iv]), radius, radius*ratio, 1, 0,
           gravity);
         for (int triplet=0; triplet<ntriplet; triplet++) {
-          grid_require(gravity[triplet] > 0.0 && isfinite(gravity[triplet])
-            && isfinite(values[triplet]),
-            "signed RUV baseline requires finite NLA and positive GGG");
+          if (!(gravity[triplet] > 0.0 && isfinite(gravity[triplet])
+                && isfinite(values[triplet]))) {
+            log_fatal("physics_grid_3pcf: signed RUV baseline requires "
+              "finite NLA and positive GGG");
+            exit(1);
+          }
           const double signed_ratio = values[triplet]/gravity[triplet];
-          grid_require(isfinite(signed_ratio),
-            "signed RUV baseline ratio is not representable");
+          if (!(isfinite(signed_ratio))) {
+            log_fatal("physics_grid_3pcf: signed RUV baseline ratio is not "
+              "representable");
+            exit(1);
+          }
           out[triplet]->log_baseline[index] = log(gravity[triplet]);
           out[triplet]->baseline_ratio[index] = signed_ratio;
         }
       } else {
         for (int triplet=0; triplet<ntriplet; triplet++) {
-          grid_require(values[triplet] > 0.0 && isfinite(values[triplet]),
-            "RUV log-baseline requires positive B; use signed_baseline=1");
+          if (!(values[triplet] > 0.0 && isfinite(values[triplet]))) {
+            log_fatal("physics_grid_3pcf: RUV log-baseline requires "
+              "positive B; use signed_baseline=1");
+            exit(1);
+          }
           out[triplet]->log_baseline[index] = log(values[triplet]);
         }
       }
@@ -1671,8 +1734,11 @@ void physics_grid_create_many_3pcf(
       physics_projection_batch_evaluate_3pcf(gravity_batch,
         side, side, side, 1, 0, values);
       for (int triplet=0; triplet<ntriplet; triplet++) {
-        grid_require(values[triplet] > 0.0 && isfinite(values[triplet]),
-          "residual scaling requires finite positive equilateral GGG");
+        if (!(values[triplet] > 0.0 && isfinite(values[triplet]))) {
+          log_fatal("physics_grid_3pcf: residual scaling requires finite "
+            "positive equilateral GGG");
+          exit(1);
+        }
         scales[(size_t)ip*ntriplet + triplet] = values[triplet];
         out[triplet]->log_residual_scale[ip] = log(values[triplet]);
       }
@@ -1699,12 +1765,18 @@ void physics_grid_create_many_3pcf(
       physics_projection_batch_evaluate_3pcf(batch,
         side1, side2, side3, 2, 1, values);
       for (int triplet=0; triplet<ntriplet; triplet++) {
-        grid_require(isfinite(values[triplet]), "nonfinite PUV residual");
+        if (!(isfinite(values[triplet]))) {
+          log_fatal("physics_grid_3pcf: nonfinite PUV residual");
+          exit(1);
+        }
         const double residual = scaled_residual
           ? values[triplet]/scales[(size_t)ip*ntriplet + triplet]
           : values[triplet];
-        grid_require(isfinite(residual),
-          "scaled PUV residual is not representable");
+        if (!(isfinite(residual))) {
+          log_fatal("physics_grid_3pcf: scaled PUV residual is not "
+            "representable");
+          exit(1);
+        }
         out[triplet]->residual[index] = residual;
       }
     }
@@ -1841,22 +1913,37 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
   const double* ell // [nell], copied here and never kept by pointer
 )
 {
-  grid_require(grid && ell && nell > 0, "invalid multipole query geometry");
-  grid_require(grid->settings.prepare_multipoles && grid->multipoles,
-    "this grid omitted b_L; recreate with prepare_multipoles=1");
+  if (!(grid && ell && nell > 0)) {
+    log_fatal("physics_grid_3pcf: invalid multipole query geometry");
+    exit(1);
+  }
+  if (!(grid->settings.prepare_multipoles && grid->multipoles)) {
+    log_fatal("physics_grid_3pcf: this grid omitted b_L; recreate with "
+      "prepare_multipoles=1");
+    exit(1);
+  }
   const int lmax = grid->settings.lmax;
-  grid_require(lmax >= 0 && lmax < INT_MAX && grid->nell >= 2
-    && grid->npsi >= 2 && grid->log_ell && grid->log_psi
-    && grid->psi_coordinate,
-    "invalid prepared multipole axes");
+  if (!(lmax >= 0 && lmax < INT_MAX && grid->nell >= 2
+        && grid->npsi >= 2 && grid->log_ell && grid->log_psi
+        && grid->psi_coordinate)) {
+    log_fatal("physics_grid_3pcf: invalid prepared multipole axes");
+    exit(1);
+  }
   const size_t output_count = grid_product(lmax + 1, nell, nell);
-  grid_require(output_count <= SIZE_MAX/sizeof(double),
-    "multipole query output size overflows");
+  if (!(output_count <= SIZE_MAX/sizeof(double))) {
+    log_fatal("physics_grid_3pcf: multipole query output size overflows");
+    exit(1);
+  }
   const size_t npoint = grid_product(1, nell, nell);
-  grid_require(npoint <= SIZE_MAX/4, "multipole query weight count overflows");
+  if (!(npoint <= SIZE_MAX/4)) {
+    log_fatal("physics_grid_3pcf: multipole query weight count overflows");
+    exit(1);
+  }
   for (int index=0; index<nell; index++) {
-    grid_require(isfinite(ell[index]) && ell[index] > 0.0,
-      "invalid Fourier multipole");
+    if (!(isfinite(ell[index]) && ell[index] > 0.0)) {
+      log_fatal("physics_grid_3pcf: invalid Fourier multipole");
+      exit(1);
+    }
   }
   physics_grid_query_3pcf* query = grid_allocate(1, sizeof(*query));
   query->nell = nell;
@@ -1954,7 +2041,10 @@ int physics_grid_query_nell_3pcf(
   const physics_grid_query_3pcf* query // fixed output Fourier size
 )
 {
-  grid_require(query != NULL, "missing multipole query geometry");
+  if (!(query != NULL)) {
+    log_fatal("physics_grid_3pcf: missing multipole query geometry");
+    exit(1);
+  }
   return query->nell;
 }
 
@@ -1963,7 +2053,10 @@ int physics_grid_query_lmax_3pcf(
   const physics_grid_query_3pcf* query // fixed maximum Legendre degree
 )
 {
-  grid_require(query != NULL, "missing multipole query geometry");
+  if (!(query != NULL)) {
+    log_fatal("physics_grid_3pcf: missing multipole query geometry");
+    exit(1);
+  }
   return query->lmax;
 }
 
@@ -2003,10 +2096,15 @@ void physics_grid_query_evaluate_3pcf(
   double* out // [lmax+1,nell,nell], independent writable output
 )
 {
-  grid_require(query && grid && out && component >= 0 && component <= 2,
-    "invalid prepared multipole query");
-  grid_require(physics_grid_query_matches_3pcf(query, grid),
-    "multipole query axes differ; recreate the query for this grid");
+  if (!(query && grid && out && component >= 0 && component <= 2)) {
+    log_fatal("physics_grid_3pcf: invalid prepared multipole query");
+    exit(1);
+  }
+  if (!(physics_grid_query_matches_3pcf(query, grid))) {
+    log_fatal("physics_grid_3pcf: multipole query axes differ; recreate the "
+      "query for this grid");
+    exit(1);
+  }
   const int nell = query->nell;
   const int lmax = query->lmax;
   const int* charts = query->charts;
@@ -2146,8 +2244,10 @@ void physics_grid_query_destroy_3pcf(
 void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
   const int nell, const double* ell, const int component, double* out)
 {
-  grid_require(out && component >= 0 && component <= 2,
-    "invalid multipole table output or component");
+  if (!(out && component >= 0 && component <= 2)) {
+    log_fatal("physics_grid_3pcf: invalid multipole table output or component");
+    exit(1);
+  }
   physics_grid_query_3pcf* query = physics_grid_query_create_3pcf(grid,
     nell, ell);
   physics_grid_query_evaluate_3pcf(query, grid, component, out);
@@ -2158,8 +2258,10 @@ void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
 void physics_grid_axis_3pcf(const physics_grid_3pcf* grid,
   const int axis, int* count, const double** values)
 {
-  grid_require(grid && axis >= 0 && axis <= 7 && count && values,
-    "invalid grid-axis query");
+  if (!(grid && axis >= 0 && axis <= 7 && count && values)) {
+    log_fatal("physics_grid_3pcf: invalid grid-axis query");
+    exit(1);
+  }
   const int counts[8] = {grid->nr, grid->nu, grid->nv, grid->np, grid->npu,
     grid->nell, grid->npsi, grid->nmu};
   const double* axes[8] = {grid->log_r, grid->log_u, grid->v, grid->log_p,

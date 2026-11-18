@@ -12,6 +12,7 @@
 #include "coupling_3pcf.h"
 #include "fftlog_3pcf.h"
 #include "transform_3pcf.h"
+#include "log.c/src/log.h"
 
 // Natural components of the shear three-point correlation function.
 // The code follows Sunao Sugiyama's fastnc, MIT revision
@@ -106,21 +107,6 @@ struct transform_plan_3pcf {
 };
 
 
-// Print one diagnostic and stop. A failed geometry or size condition
-// means the plan cannot produce a trustworthy prediction, so stopping
-// beats returning a partial result.
-static void require_transform_3pcf(
-  const int condition, // required domain or size condition
-  const char* message // diagnostic
-)
-{
-  if (!condition) {
-    fprintf(stderr, "transform_3pcf: %s\n", message);
-    exit(EXIT_FAILURE);
-  }
-}
-
-
 // Zero-initialized allocation with an explicit overflow check before
 // the multiplication that could wrap.
 static void* allocate_transform_3pcf(
@@ -128,10 +114,15 @@ static void* allocate_transform_3pcf(
   const size_t size // element size
 )
 {
-  require_transform_3pcf(count <= SIZE_MAX/size,
-      "allocation size overflow");
+  if (!(count <= SIZE_MAX/size)) {
+    log_fatal("transform_3pcf: allocation size overflow");
+    exit(1);
+  }
   void* result = calloc(count, size);
-  require_transform_3pcf(result != NULL, "allocation failed");
+  if (!(result != NULL)) {
+    log_fatal("transform_3pcf: allocation failed");
+    exit(1);
+  }
   return result;
 }
 
@@ -154,8 +145,10 @@ static double complex spin_phase_3pcf(
 )
 {
   const double length = cabs(side);
-  require_transform_3pcf(isfinite(length) && length > 0.0,
-      "centroid direction is not representable");
+  if (!(isfinite(length) && length > 0.0)) {
+    log_fatal("transform_3pcf: centroid direction is not representable");
+    exit(1);
+  }
   const double complex unit = side/length;
   return unit*unit;
 }
@@ -210,24 +203,38 @@ transform_plan_3pcf* transform_create_3pcf(
   // arithmetic below, angles outside (0,pi), and settings without a
   // defined meaning. The checks run before the first allocation so a
   // bad call never leaks memory.
-  require_transform_3pcf(nell >= 2 && nell <= (INT_MAX-1)/2
-      && ntheta > 0 && nphi > 0 && lmax >= 0 && lmax < INT_MAX-1
-      && mmax >= 0 && lmax <= INT_MAX-1-mmax
-      && mmax < INT_MAX-3 && workers > 0 && ell != NULL
-      && indices != NULL && phi != NULL, "invalid dimensions");
-  require_transform_3pcf(ntheta <= INT_MAX/ntheta
-      && ntheta*ntheta <= INT_MAX/nphi, "too many triangles");
-  require_transform_3pcf(projection >= 0 && projection <= 2
-      && convention >= 0 && convention <= 1
-      && ordered_legs >= 0 && ordered_legs <= 1
-      && mmax < (INT_MAX-1)/2,
-      "unknown projection or component convention");
-  require_transform_3pcf(isfinite(dphi) && dphi >= 0.0
-      && dphi <= acos(-1.0), "invalid opening-angle bin width");
+  if (!(nell >= 2 && nell <= (INT_MAX-1)/2
+        && ntheta > 0 && nphi > 0 && lmax >= 0 && lmax < INT_MAX-1
+        && mmax >= 0 && lmax <= INT_MAX-1-mmax
+        && mmax < INT_MAX-3 && workers > 0 && ell != NULL
+        && indices != NULL && phi != NULL)) {
+    log_fatal("transform_3pcf: invalid dimensions");
+    exit(1);
+  }
+  if (!(ntheta <= INT_MAX/ntheta
+        && ntheta*ntheta <= INT_MAX/nphi)) {
+    log_fatal("transform_3pcf: too many triangles");
+    exit(1);
+  }
+  if (!(projection >= 0 && projection <= 2
+        && convention >= 0 && convention <= 1
+        && ordered_legs >= 0 && ordered_legs <= 1
+        && mmax < (INT_MAX-1)/2)) {
+    log_fatal("transform_3pcf: unknown projection or component convention");
+    exit(1);
+  }
+  if (!(isfinite(dphi) && dphi >= 0.0
+        && dphi <= acos(-1.0))) {
+    log_fatal("transform_3pcf: invalid opening-angle bin width");
+    exit(1);
+  }
   // One grid point cannot define an interpolation segment, so the
   // coupling accepts zero (exact evaluation) or at least two points.
-  require_transform_3pcf(npsi >= 0 && npsi != 1,
-      "coupling grid needs zero or at least two points");
+  if (!(npsi >= 0 && npsi != 1)) {
+    log_fatal("transform_3pcf: coupling grid needs zero or at least two "
+      "points");
+    exit(1);
+  }
 
   // --- 2. SIZES AND ALLOCATION ---
   // Worker caps: the multipole stage runs one job per signed mode, so
@@ -251,10 +258,14 @@ transform_plan_3pcf* transform_create_3pcf(
   const size_t radial_pairs = (size_t)ntheta*ntheta;
   const size_t triangles = radial_pairs*nphi;
   plan->workers = workers < (int)triangles ? workers : (int)triangles;
-  require_transform_3pcf((size_t)(mmax+1) <= SIZE_MAX/(lmax+1)/nratio,
-      "coupling size overflow");
-  require_transform_3pcf((size_t)nmodes <= SIZE_MAX/4/radial_pairs,
-      "mode size overflow");
+  if (!((size_t)(mmax+1) <= SIZE_MAX/(lmax+1)/nratio)) {
+    log_fatal("transform_3pcf: coupling size overflow");
+    exit(1);
+  }
+  if (!((size_t)nmodes <= SIZE_MAX/4/radial_pairs)) {
+    log_fatal("transform_3pcf: mode size overflow");
+    exit(1);
+  }
   plan->indices = allocate_transform_3pcf(ntheta, sizeof(int));
   plan->ell = allocate_transform_3pcf(nell, sizeof(double));
   plan->ell2 = allocate_transform_3pcf(nell, sizeof(double));
@@ -276,11 +287,15 @@ transform_plan_3pcf* transform_create_3pcf(
   // checks grid positivity and uniform log spacing before any
   // grid-dependent work below, and it creates every FFTW plan.
   for (int index=0; index<ntheta; index++) {
-    require_transform_3pcf(indices[index] >= 0 && indices[index] < nell,
-        "radial index outside Fourier grid");
+    if (!(indices[index] >= 0 && indices[index] < nell)) {
+      log_fatal("transform_3pcf: radial index outside Fourier grid");
+      exit(1);
+    }
     if (index > 0) {
-      require_transform_3pcf(indices[index] > indices[index-1],
-          "radial indices must strictly increase");
+      if (!(indices[index] > indices[index-1])) {
+        log_fatal("transform_3pcf: radial indices must strictly increase");
+        exit(1);
+      }
     }
     plan->indices[index] = indices[index];
   }
@@ -293,8 +308,10 @@ transform_plan_3pcf* transform_create_3pcf(
   for (int index=0; index<nell; index++) {
     plan->ell[index] = ell[index];
     plan->ell2[index] = ell[index]*ell[index];
-    require_transform_3pcf(isfinite(plan->ell2[index]),
-        "squared Fourier radius overflow");
+    if (!(isfinite(plan->ell2[index]))) {
+      log_fatal("transform_3pcf: squared Fourier radius overflow");
+      exit(1);
+    }
   }
 
   // --- 4. ANGULAR COUPLING IN PSI ---
@@ -343,8 +360,11 @@ transform_plan_3pcf* transform_create_3pcf(
   // bin center, as this API specifies, and is not an exact average of
   // the varying centroid-projected shear.
   for (int angle=0; angle<nphi; angle++) {
-    require_transform_3pcf(isfinite(phi[angle]) && phi[angle] > 0.0
-        && phi[angle] < acos(-1.0), "phi must lie in (0,pi)");
+    if (!(isfinite(phi[angle]) && phi[angle] > 0.0
+          && phi[angle] < acos(-1.0))) {
+      log_fatal("transform_3pcf: phi must lie in (0,pi)");
+      exit(1);
+    }
     for (int mode=0; mode<=mmax; mode++) {
       const size_t offset = ((size_t)mode*nphi+angle)*2;
       const double half_width = 0.5*mode*dphi;
@@ -484,8 +504,11 @@ void transform_natural_3pcf(
   double* gamma_imag // same shape
 )
 {
-  require_transform_3pcf(plan != NULL && multipoles != NULL
-      && gamma_real != NULL && gamma_imag != NULL, "null array");
+  if (!(plan != NULL && multipoles != NULL
+        && gamma_real != NULL && gamma_imag != NULL)) {
+    log_fatal("transform_3pcf: null array");
+    exit(1);
+  }
   const int nell = plan->nell;
   const int ntheta = plan->ntheta;
   const int nphi = plan->nphi;
@@ -893,8 +916,11 @@ void transform_aperture_3pcf(
   double* output // real aperture moments
 )
 {
-  require_transform_3pcf(plan != NULL && plan->projection != 0,
-      "aperture contraction requires centroid projection");
+  if (!(plan != NULL && plan->projection != 0)) {
+    log_fatal("transform_3pcf: aperture contraction requires centroid "
+      "projection");
+    exit(1);
+  }
   const int triangles = plan->ntheta*plan->ntheta*plan->nphi;
   double* real = plan->gamma;
   double* imag = plan->gamma+4*(size_t)triangles;
@@ -940,20 +966,30 @@ void transform_aperture_grid_3pcf(
   double* output // [filter]
 )
 {
-  require_transform_3pcf(plan && grid && weights_real && weights_imag
-      && output && nfilter > 0, "invalid prepared-grid aperture input");
+  if (!(plan && grid && weights_real && weights_imag
+        && output && nfilter > 0)) {
+    log_fatal("transform_3pcf: invalid prepared-grid aperture input");
+    exit(1);
+  }
   if (!physics_grid_query_matches_3pcf(plan->query, grid)) {
     physics_grid_query_destroy_3pcf(plan->query);
     plan->query = physics_grid_query_create_3pcf(grid, plan->nell, plan->ell);
   }
-  require_transform_3pcf(physics_grid_query_lmax_3pcf(plan->query) == plan->lmax
-      && physics_grid_query_nell_3pcf(plan->query) == plan->nell,
-      "projected-grid multipoles mismatch the transform plan");
-  require_transform_3pcf((size_t)plan->nell <= SIZE_MAX/(size_t)plan->nell,
-      "prepared-grid Fourier size overflow");
+  if (!(physics_grid_query_lmax_3pcf(plan->query) == plan->lmax
+        && physics_grid_query_nell_3pcf(plan->query) == plan->nell)) {
+    log_fatal("transform_3pcf: projected-grid multipoles mismatch the "
+      "transform plan");
+    exit(1);
+  }
+  if (!((size_t)plan->nell <= SIZE_MAX/(size_t)plan->nell)) {
+    log_fatal("transform_3pcf: prepared-grid Fourier size overflow");
+    exit(1);
+  }
   const size_t pairs = (size_t)plan->nell*plan->nell;
-  require_transform_3pcf((size_t)(plan->lmax + 1) <= SIZE_MAX/pairs,
-      "prepared-grid multipole size overflow");
+  if (!((size_t)(plan->lmax + 1) <= SIZE_MAX/pairs)) {
+    log_fatal("transform_3pcf: prepared-grid multipole size overflow");
+    exit(1);
+  }
   const size_t count = (size_t)(plan->lmax + 1)*pairs;
   if (plan->grid_multipoles == NULL) {
     plan->grid_multipoles = allocate_transform_3pcf(count, sizeof(double));
@@ -971,7 +1007,10 @@ void transform_aperture_grid_3pcf(
   // The reduction combines integer validity flags only. No
   // floating-point sum is reordered; the interpolation and the
   // transforms behind it are unchanged by the worker count.
-  require_transform_3pcf(finite, "nonfinite prepared-grid multipoles");
+  if (!(finite)) {
+    log_fatal("transform_3pcf: nonfinite prepared-grid multipoles");
+    exit(1);
+  }
   transform_aperture_3pcf(plan, plan->grid_multipoles, nfilter,
       weights_real, weights_imag, output);
 }

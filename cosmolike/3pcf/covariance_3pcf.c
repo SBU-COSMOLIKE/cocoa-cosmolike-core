@@ -9,6 +9,7 @@
 #include <gsl/gsl_sf_bessel.h>
 #include "simde/x86/sse2.h"
 #include "covariance_3pcf.h"
+#include "log.c/src/log.h"
 
 // ===========================================================================
 // Covariance contractions for filtered scalar fields
@@ -111,21 +112,21 @@ void filtered_pair_3pcf(
       || filters == NULL
       || power == NULL
       || out == NULL) {
-    fprintf(stderr, "filtered_pair_3pcf: invalid dimensions or pointer\n");
-    exit(EXIT_FAILURE);
+    log_fatal("filtered_pair_3pcf: invalid dimensions or pointer");
+    exit(1);
   }
   // 1/(2*pi) written to 20 digits, more than double precision holds,
   // so the compiler stores the nearest double to the exact flat-sky
   // measure factor in dell*ell/(2*pi).
   const double inverse_two_pi = 0.15915494309189533577;
   if ((size_t)nell > SIZE_MAX/sizeof(double)/(size_t)nr) {
-    fprintf(stderr, "filtered_pair_3pcf: Bessel table size overflow\n");
-    exit(EXIT_FAILURE);
+    log_fatal("filtered_pair_3pcf: Bessel table size overflow");
+    exit(1);
   }
   double* bessel_table = malloc((size_t)nell*nr*sizeof(double));
   if (bessel_table == NULL) {
-    fprintf(stderr, "filtered_pair_3pcf: Bessel table allocation failed\n");
-    exit(EXIT_FAILURE);
+    log_fatal("filtered_pair_3pcf: Bessel table allocation failed");
+    exit(1);
   }
 
   // J0 depends only on the two geometric coordinates. Calculate it once
@@ -244,8 +245,8 @@ void connected_gram_3pcf(
       || responses == NULL
       || weights == NULL
       || out == NULL) {
-    fprintf(stderr, "connected_gram_3pcf: invalid dimensions or pointer\n");
-    exit(EXIT_FAILURE);
+    log_fatal("connected_gram_3pcf: invalid dimensions or pointer");
+    exit(1);
   }
   // All output writes use this restrict-qualified pointer. No input
   // aliases its storage; the binding checks the weight domain and sizes.
@@ -376,9 +377,9 @@ void gaussian_aperture_covariance_3pcf(
       || pair_zero == NULL
       || radial_weights == NULL
       || out == NULL) {
-    fprintf(stderr,
-      "gaussian_aperture_covariance_3pcf: invalid dimensions or pointer\n");
-    exit(EXIT_FAILURE);
+    log_fatal("gaussian_aperture_covariance_3pcf: invalid dimensions or "
+      "pointer");
+    exit(1);
   }
 
   // Check positional field labels before any worker turns them into pair
@@ -388,9 +389,9 @@ void gaussian_aperture_covariance_3pcf(
       const int field = triplets[(size_t)row*3 + position];
       if (field < 0
           || field >= nfield) {
-        fprintf(stderr,
-          "gaussian_aperture_covariance_3pcf: field index out of range\n");
-        exit(EXIT_FAILURE);
+        log_fatal("gaussian_aperture_covariance_3pcf: field index out of "
+          "range");
+        exit(1);
       }
     }
   }

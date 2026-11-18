@@ -8,6 +8,7 @@
 #include <omp.h>
 #endif
 #include "coupling_3pcf.h"
+#include "log.c/src/log.h"
 
 // Angular-coupling convention: fastnc by Sunao Sugiyama, MIT, revision
 // 7b2336ce37a909bed51f07f32a2a4f096e71b6ce, fastnc/coupling.py.
@@ -183,25 +184,25 @@ void legendre_coupling_3pcf(
   if (lmax < 0 || mmax < 0 || lmax > INT_MAX-1-mmax
       || nquery < 1 || npsi == 1 || npsi < 0
       || psi == NULL || output == NULL) {
-    fprintf(stderr, "legendre_coupling_3pcf: invalid input\n");
-    exit(EXIT_FAILURE);
+    log_fatal("legendre_coupling_3pcf: invalid input");
+    exit(1);
   }
   const double pi = acos(-1.0);
   for (int query=0; query<nquery; query++) {
     if (!isfinite(psi[query]) || psi[query] < 0.0 || psi[query] > pi/2.0) {
-      fprintf(stderr, "legendre_coupling_3pcf: psi outside [0,pi/2]\n");
-      exit(EXIT_FAILURE);
+      log_fatal("legendre_coupling_3pcf: psi outside [0,pi/2]");
+      exit(1);
     }
   }
   const size_t stride = (size_t)lmax+1;
   if (stride > SIZE_MAX/stride/sizeof(double)) {
-    fprintf(stderr, "legendre_coupling_3pcf: size overflow\n");
-    exit(EXIT_FAILURE);
+    log_fatal("legendre_coupling_3pcf: size overflow");
+    exit(1);
   }
   double* coefficients = calloc(stride*stride, sizeof(double));
   if (coefficients == NULL) {
-    fprintf(stderr, "legendre_coupling_3pcf: allocation failed\n");
-    exit(EXIT_FAILURE);
+    log_fatal("legendre_coupling_3pcf: allocation failed");
+    exit(1);
   }
   coefficients[0] = 1.0;
 

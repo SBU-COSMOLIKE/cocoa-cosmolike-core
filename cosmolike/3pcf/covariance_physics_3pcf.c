@@ -11,6 +11,7 @@
 #include <gsl/gsl_sf_expint.h>
 #include "simde/x86/sse2.h"
 #include "covariance_physics_3pcf.h"
+#include "log.c/src/log.h"
 
 // ---------------------------------------------------------------------------
 // covariance_physics_3pcf.c: the physical covariance of aperture-mass
@@ -86,18 +87,6 @@ typedef simde__m128d v2d;
 // [SECTION] UTILITIES: CHECKS, ALLOCATION AND THE ORDERED SIMD DOT
 // ============================================================================
 
-// Stop with a clear message when an input or a computed table is
-// invalid. The covariance has no recovery path: the caller must fix a
-// wrong grid; this file never patches one.
-static inline void covariance_require_3pcf(int condition, const char* text)
-{
-  if (!condition) {
-    fprintf(stderr, "physical 3pcf covariance: %s\n", text);
-    exit(EXIT_FAILURE);
-  }
-}
-
-
 // Multiply two array extents only after checking that their product
 // fits in a size_t. Checking count*sizeof(element) alone would come too
 // late, because the element count itself can already have wrapped.
@@ -106,8 +95,11 @@ static inline void covariance_require_3pcf(int condition, const char* text)
 // allocations.
 static size_t covariance_product_3pcf(size_t first, size_t second)
 {
-  covariance_require_3pcf(second > 0 && first <= (size_t)-1/second,
-    "workspace dimensions overflow the address range");
+  if (!(second > 0 && first <= (size_t)-1/second)) {
+    log_fatal("physical 3pcf covariance: workspace dimensions overflow the "
+      "address range");
+    exit(1);
+  }
   return first*second;
 }
 
@@ -118,7 +110,10 @@ static void* covariance_allocate_3pcf(size_t count, size_t size)
 {
   covariance_product_3pcf(count, size);
   void* memory = calloc(count, size);
-  covariance_require_3pcf(memory != NULL, "cannot allocate covariance tables");
+  if (!(memory != NULL)) {
+    log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
+    exit(1);
+  }
   return memory;
 }
 
@@ -353,8 +348,11 @@ void covariance_halos_3pcf(
   // mean matter density, the rho_m of the M200m halo definition.
   const double rho = 2.77536627e11*physics_omega_m_3pcf(model);
   const int nm = input->nmass;
-  covariance_require_3pcf(nz > 0 && nm > 0 && input->nk > 0
-    && nk_profile >= 0, "invalid halo-table dimensions");
+  if (!(nz > 0 && nm > 0 && input->nk > 0
+        && nk_profile >= 0)) {
+    log_fatal("physical 3pcf covariance: invalid halo-table dimensions");
+    exit(1);
+  }
   const size_t halo_count = covariance_product_3pcf(nz, nm);
   covariance_product_3pcf(halo_count, sizeof(double));
   if (nk_profile > 0) {
@@ -410,9 +408,12 @@ void covariance_halos_3pcf(
         variance += measure*window*window;
         slope += measure*window*derivative*(2.0/3.0);
       }
-      covariance_require_3pcf(isfinite(variance) && variance > 0.0
-        && isfinite(slope) && slope < 0.0,
-        "halo variance/slope is invalid; refine the k interval and rule");
+      if (!(isfinite(variance) && variance > 0.0
+            && isfinite(slope) && slope < 0.0)) {
+        log_fatal("physical 3pcf covariance: halo variance/slope is "
+          "invalid; refine the k interval and rule");
+        exit(1);
+      }
       // collapse_model = 1 adds the weak Omega_m(z) dependence of the
       // spherical-collapse threshold delta_c; model 0 keeps it constant.
       double collapse = input->delta_c;
@@ -776,8 +777,11 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   const size_t field_pairs = covariance_product_3pcf(nf, nf);
   const size_t source_triples = covariance_product_3pcf(
     covariance_product_3pcf(ns, (size_t)ns + 1), (size_t)ns + 2)/6;
-  covariance_require_3pcf(source_triples <= INT_MAX,
-    "source-triplet count exceeds the integer index range");
+  if (!(source_triples <= INT_MAX)) {
+    log_fatal("physical 3pcf covariance: source-triplet count exceeds the "
+      "integer index range");
+    exit(1);
+  }
   work->nt = (int)source_triples;
   work->ngeometry = covariance_product_3pcf(
     covariance_product_3pcf(nl, nl), in->nphi);
@@ -952,8 +956,11 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     }
   }
   for (int field=0; field<nf; field++) {
-    covariance_require_3pcf(in->field_source[field] >= 0
-      && in->field_source[field] < ns, "field source index out of range");
+    if (!(in->field_source[field] >= 0
+          && in->field_source[field] < ns)) {
+      log_fatal("physical 3pcf covariance: field source index out of range");
+      exit(1);
+    }
     for (int l=0; l<nl; l++) {
       work->filters[(size_t)field*nl + l] =
         covariance_filter_3pcf(in->ell[l], in->field_radius[field]);
@@ -1274,8 +1281,10 @@ void covariance_xi_from_power_3pcf(
   int* row_kernel = covariance_allocate_3pcf(nrow, sizeof(int));
   int nkernel = 0;
   for (int row=0; row<nrow; row++) {
-    covariance_require_3pcf(sign[row] == 1 || sign[row] == -1,
-      "xi sign must be +1 or -1");
+    if (!(sign[row] == 1 || sign[row] == -1)) {
+      log_fatal("physical 3pcf covariance: xi sign must be +1 or -1");
+      exit(1);
+    }
     int k = 0;
     for (; k<nkernel; k++) {
       const int previous = representative[k];
@@ -1434,11 +1443,17 @@ static void covariance_profile_plan_3pcf_prepare(
     return;
   }
   const int nc = in->nprofile;
-  covariance_require_3pcf(nc >= 3 && in->profile_upsample >= 1
-    && nc - 1 <= (INT_MAX - 1)/in->profile_upsample,
-    "profile preparation needs >=3 nodes and a valid upsample factor");
-  covariance_require_3pcf(in->ntheta <= INT_MAX/in->nphi,
-    "xi endpoint orientation count exceeds the index range");
+  if (!(nc >= 3 && in->profile_upsample >= 1
+        && nc - 1 <= (INT_MAX - 1)/in->profile_upsample)) {
+    log_fatal("physical 3pcf covariance: profile preparation needs >=3 "
+      "nodes and a valid upsample factor");
+    exit(1);
+  }
+  if (!(in->ntheta <= INT_MAX/in->nphi)) {
+    log_fatal("physical 3pcf covariance: xi endpoint orientation count "
+      "exceeds the index range");
+    exit(1);
+  }
   plan->coarse = nc;
   plan->fine = (nc - 1)*in->profile_upsample + 1;
   plan->per_radius = in->ntheta*in->nphi;
@@ -1459,13 +1474,19 @@ static void covariance_profile_plan_3pcf_prepare(
   plan->plus_fraction = covariance_allocate_3pcf(endpoints, sizeof(double));
   plan->endpoint_weight = covariance_allocate_3pcf(endpoints, sizeof(double));
   const double scale = in->profile_radius[1];
-  covariance_require_3pcf(in->profile_radius[0] == 0.0 && scale > 0.0,
-    "profile preparation nodes must start with zero then a positive radius");
+  if (!(in->profile_radius[0] == 0.0 && scale > 0.0)) {
+    log_fatal("physical 3pcf covariance: profile preparation nodes must "
+      "start with zero then a positive radius");
+    exit(1);
+  }
   for (int r=0; r<nc; r++) {
     plan->x[r] = log1p(in->profile_radius[r]/scale);
-    covariance_require_3pcf(isfinite(plan->x[r])
-      && (r == 0 || plan->x[r] > plan->x[r - 1]),
-      "profile coordinates must be finite and strictly increasing");
+    if (!(isfinite(plan->x[r])
+          && (r == 0 || plan->x[r] > plan->x[r - 1]))) {
+      log_fatal("physical 3pcf covariance: profile coordinates must be "
+        "finite and strictly increasing");
+      exit(1);
+    }
   }
   // The spline's second derivatives solve a tridiagonal linear system
   // whose matrix depends only on the node geometry, not on the shear
@@ -1524,9 +1545,12 @@ static void covariance_profile_plan_3pcf_prepare(
           const double xp = in->radius[r] + dx;
           const double rm = hypot(xm, dy);
           const double rp = hypot(xp, dy);
-          covariance_require_3pcf(rm <= in->profile_radius[nc - 1]
-            && rp <= in->profile_radius[nc - 1],
-            "profile grid does not enclose displaced xi endpoints");
+          if (!(rm <= in->profile_radius[nc - 1]
+                && rp <= in->profile_radius[nc - 1])) {
+            log_fatal("physical 3pcf covariance: profile grid does not "
+              "enclose displaced xi endpoints");
+            exit(1);
+          }
           // Fine-grid coordinates of the two endpoints: um and up are
           // continuous positions in units of the fine step; im and ip
           // are the containing cells, clamped so the last node still
@@ -2816,24 +2840,46 @@ void covariance_physical_3pcf(
 {
   int pixel_count;
   physics_window_samples_3pcf(model, &pixel_count);
-  covariance_require_3pcf(pixel_count == 0,
-    "pixel-smoothed means require a separately matched covariance");
-  covariance_require_3pcf(input->estimator == 0,
-    "finite-triangle or catalogue-mask covariance is not this estimator");
-  covariance_require_3pcf(input->ia_model == 0,
-    "nonlinear IA connected covariance requires additional cumulants");
-  covariance_require_3pcf(input->noise_mode == 0 || input->noise_mode == 1,
-    "noise_mode must select finite-band (0) or uniform-area xi noise (1)");
-  covariance_require_3pcf(input->noise_mode == 0
-    || (input->large_area == 1 && input->theta_edges != NULL),
-    "analytic xi noise requires large_area=1 and exact theta_edges");
-  covariance_require_3pcf(input->center_window == 1
-    || input->center_window == 2, "choose a circle or square center window");
-  covariance_require_3pcf(input->nell > 0 && input->nwindow > 0
-    && input->nphi > 0 && input->nr > 0 && input->nprofile >= 3
-    && input->nk > 0 && input->nmass > 0 && input->nfield > 0
-    && input->nrow > 0 && input->ntheta > 0 && input->area > 0.0,
-    "invalid covariance dimensions or area");
+  if (!(pixel_count == 0)) {
+    log_fatal("physical 3pcf covariance: pixel-smoothed means require a "
+      "separately matched covariance");
+    exit(1);
+  }
+  if (!(input->estimator == 0)) {
+    log_fatal("physical 3pcf covariance: finite-triangle or catalogue-mask "
+      "covariance is not this estimator");
+    exit(1);
+  }
+  if (!(input->ia_model == 0)) {
+    log_fatal("physical 3pcf covariance: nonlinear IA connected covariance "
+      "requires additional cumulants");
+    exit(1);
+  }
+  if (!(input->noise_mode == 0 || input->noise_mode == 1)) {
+    log_fatal("physical 3pcf covariance: noise_mode must select finite-band "
+      "(0) or uniform-area xi noise (1)");
+    exit(1);
+  }
+  if (!(input->noise_mode == 0
+        || (input->large_area == 1 && input->theta_edges != NULL))) {
+    log_fatal("physical 3pcf covariance: analytic xi noise requires "
+      "large_area=1 and exact theta_edges");
+    exit(1);
+  }
+  if (!(input->center_window == 1
+        || input->center_window == 2)) {
+    log_fatal("physical 3pcf covariance: choose a circle or square center "
+      "window");
+    exit(1);
+  }
+  if (!(input->nell > 0 && input->nwindow > 0
+        && input->nphi > 0 && input->nr > 0 && input->nprofile >= 3
+        && input->nk > 0 && input->nmass > 0 && input->nfield > 0
+        && input->nrow > 0 && input->ntheta > 0 && input->area > 0.0)) {
+    log_fatal("physical 3pcf covariance: invalid covariance dimensions or "
+      "area");
+    exit(1);
+  }
   const int no = input->nrow; // covariance rows
   const int nl = input->nell; // Fourier nodes
   const size_t matrix = covariance_product_3pcf(no, no);
@@ -2845,42 +2891,64 @@ void covariance_physical_3pcf(
   // positive filter radius.
   for (int row=0; row<no; row++) {
     const int kind = input->row_kind[row];
-    covariance_require_3pcf(kind >= 0 && kind <= 3, "invalid row kind");
+    if (!(kind >= 0 && kind <= 3)) {
+      log_fatal("physical 3pcf covariance: invalid row kind");
+      exit(1);
+    }
     const int nleg = kind == 1 ? 3 : 2;
     for (int leg=0; leg<nleg; leg++) {
       const int field = input->row_fields[(size_t)row*3 + leg];
-      covariance_require_3pcf(field >= 0 && field < input->nfield,
-        "row field index out of range");
-      covariance_require_3pcf(kind >= 2 ? input->field_radius[field] == 0.0
-        : input->field_radius[field] > 0.0,
-        "xi legs require R=0; aperture legs require positive R");
+      if (!(field >= 0 && field < input->nfield)) {
+        log_fatal("physical 3pcf covariance: row field index out of range");
+        exit(1);
+      }
+      if (!(kind >= 2 ? input->field_radius[field] == 0.0
+            : input->field_radius[field] > 0.0)) {
+        log_fatal("physical 3pcf covariance: xi legs require R=0; aperture "
+          "legs require positive R");
+        exit(1);
+      }
     }
     if (kind >= 2) {
       if (input->noise_mode == 1) {
         const double lower = input->theta_edges[(size_t)row*2];
         const double upper = input->theta_edges[(size_t)row*2 + 1];
-        covariance_require_3pcf(isfinite(lower) && isfinite(upper)
-          && lower > 0.0 && upper > lower,
-          "analytic xi noise requires positive ordered bin edges");
+        if (!(isfinite(lower) && isfinite(upper)
+              && lower > 0.0 && upper > lower)) {
+          log_fatal("physical 3pcf covariance: analytic xi noise requires "
+            "positive ordered bin edges");
+          exit(1);
+        }
         for (int t=0; t<input->ntheta; t++) {
           const double theta = input->theta[(size_t)row*input->ntheta + t];
-          covariance_require_3pcf(theta >= lower && theta <= upper,
-            "xi quadrature node lies outside declared analytic-noise bin");
+          if (!(theta >= lower && theta <= upper)) {
+            log_fatal("physical 3pcf covariance: xi quadrature node lies "
+              "outside declared analytic-noise bin");
+            exit(1);
+          }
         }
       }
       double weight = 0.0;
       for (int t=0; t<input->ntheta; t++) {
         const size_t index = (size_t)row*input->ntheta + t;
-        covariance_require_3pcf(input->theta[index] > 0.0
-          && input->theta_weight[index] >= 0.0,
-          "xi separations must be positive and bin weights nonnegative");
-        covariance_require_3pcf(input->profile_radius[input->nprofile - 1]
-          >= input->radius[input->nr - 1] + 0.5*input->theta[index],
-          "profile_radius must cover radius_max + theta_max/2");
+        if (!(input->theta[index] > 0.0
+              && input->theta_weight[index] >= 0.0)) {
+          log_fatal("physical 3pcf covariance: xi separations must be "
+            "positive and bin weights nonnegative");
+          exit(1);
+        }
+        if (!(input->profile_radius[input->nprofile - 1]
+              >= input->radius[input->nr - 1] + 0.5*input->theta[index])) {
+          log_fatal("physical 3pcf covariance: profile_radius must cover "
+            "radius_max + theta_max/2");
+          exit(1);
+        }
         weight += input->theta_weight[index];
       }
-      covariance_require_3pcf(fabs(weight - 1.0) < 1.0e-10,
-        "xi bin weights must sum to one");
+      if (!(fabs(weight - 1.0) < 1.0e-10)) {
+        log_fatal("physical 3pcf covariance: xi bin weights must sum to one");
+        exit(1);
+      }
     }
   }
   covariance_work_3pcf work;
@@ -2954,8 +3022,11 @@ void covariance_physical_3pcf(
     for (int i=0; i<no; i++) {
       for (int j=i; j<no; j++) {
         const double value = terms[(size_t)term*matrix + (size_t)i*no + j];
-        covariance_require_3pcf(isfinite(value),
-          "nonfinite covariance term; inspect physical inputs and grids");
+        if (!(isfinite(value))) {
+          log_fatal("physical 3pcf covariance: nonfinite covariance term; "
+            "inspect physical inputs and grids");
+          exit(1);
+        }
         terms[(size_t)term*matrix + (size_t)j*no + i] = value;
       }
     }

@@ -25,20 +25,6 @@ namespace cosmolike_interface {
 // cannot replace values an earlier caller still holds.
 // ---------------------------------------------------------------------------
 
-// Abort with a diagnostic when a notebook input breaks its contract.
-// The notebook route favors a hard stop over an exception: a partial
-// covariance must never reach an interactive session silently.
-static void require_3pcf(
-    const bool condition, // required input condition
-    const char* message // diagnostic naming the violated contract
-  )
-{
-  if (!condition) {
-    spdlog::critical("3pcf notebook: {}", message);
-    std::exit(1);
-  }
-}
-
 
 // Convert an Armadillo axis length to the C int the kernels take,
 // aborting when the length is zero or exceeds the int range.
@@ -177,24 +163,44 @@ aperture_weights_result_3pcf aperture_weights_cpp_3pcf(
   const int nd3 = count_3pcf(d3.n_elem, "d3");
   const int nphi = count_3pcf(phi.n_elem, "phi");
   const int nfilter = count_3pcf(filters.n_rows, "filter");
-  require_3pcf(filters.n_cols == 3, "filters must have three columns");
-  require_3pcf(d2.is_finite()
-      && d3.is_finite()
-      && phi.is_finite()
-      && filters.is_finite(), "aperture inputs must be finite");
-  require_3pcf(std::isfinite(dlnd)
-      && dlnd > 0.0
-      && std::isfinite(dphi)
-      && dphi > 0.0, "bin widths must be positive");
-  require_3pcf(d2.min() > 0.0
-      && d3.min() > 0.0
-      && filters.min() > 0.0, "side lengths and radii must be positive");
-  require_3pcf(phi.min() > 0.0
-      && phi.max() < std::acos(-1.0),
-      "phi must lie strictly between zero and pi");
-  require_3pcf(nd2 <= INT_MAX/nd3, "triangle count exceeds C int range");
-  require_3pcf(nd2*nd3 <= INT_MAX/nphi,
-      "triangle count exceeds C int range");
+  if (!(filters.n_cols == 3)) {
+    spdlog::critical("3pcf notebook: filters must have three columns");
+    std::exit(1);
+  }
+  if (!(d2.is_finite()
+        && d3.is_finite()
+        && phi.is_finite()
+        && filters.is_finite())) {
+    spdlog::critical("3pcf notebook: aperture inputs must be finite");
+    std::exit(1);
+  }
+  if (!(std::isfinite(dlnd)
+        && dlnd > 0.0
+        && std::isfinite(dphi)
+        && dphi > 0.0)) {
+    spdlog::critical("3pcf notebook: bin widths must be positive");
+    std::exit(1);
+  }
+  if (!(d2.min() > 0.0
+        && d3.min() > 0.0
+        && filters.min() > 0.0)) {
+    spdlog::critical("3pcf notebook: side lengths and radii must be positive");
+    std::exit(1);
+  }
+  if (!(phi.min() > 0.0
+        && phi.max() < std::acos(-1.0))) {
+    spdlog::critical("3pcf notebook: phi must lie strictly between zero and "
+      "pi");
+    std::exit(1);
+  }
+  if (!(nd2 <= INT_MAX/nd3)) {
+    spdlog::critical("3pcf notebook: triangle count exceeds C int range");
+    std::exit(1);
+  }
+  if (!(nd2*nd3 <= INT_MAX/nphi)) {
+    spdlog::critical("3pcf notebook: triangle count exceeds C int range");
+    std::exit(1);
+  }
   const int ntriangle = nd2*nd3*nphi;
 
   const arma::Col<double> packed_filters = pack_matrix_3pcf(filters);
@@ -204,8 +210,11 @@ aperture_weights_result_3pcf aperture_weights_cpp_3pcf(
   aperture_weights_3pcf(nd2, nd3, nphi, nfilter, d2.memptr(), d3.memptr(),
       phi.memptr(), dlnd, dphi, packed_filters.memptr(),
       weights_real.memptr(), weights_imag.memptr());
-  require_3pcf(weights_real.is_finite()
-      && weights_imag.is_finite(), "aperture weights are not finite");
+  if (!(weights_real.is_finite()
+        && weights_imag.is_finite())) {
+    spdlog::critical("3pcf notebook: aperture weights are not finite");
+    std::exit(1);
+  }
 
   aperture_weights_result_3pcf result;
   result.real = unpack_cube_3pcf(weights_real, nfilter, 4, ntriangle);
@@ -230,18 +239,26 @@ arma::Mat<double> aperture_apply_cpp_3pcf(
   const int nfilter = count_3pcf(weights_real.n_rows, "filter");
   const int ntriangle = count_3pcf(weights_real.n_slices, "triangle");
   const int nsample = count_3pcf(gamma_real.n_rows, "sample");
-  require_3pcf(weights_real.n_cols == 4
-      && gamma_real.n_cols == 4,
-      "aperture cubes must have four natural components");
-  require_3pcf(arma::size(weights_real) == arma::size(weights_imag)
-      && arma::size(gamma_real) == arma::size(gamma_imag)
-      && gamma_real.n_slices == weights_real.n_slices,
-      "real/imaginary cube shapes and triangle counts must agree");
-  require_3pcf(weights_real.is_finite()
-      && weights_imag.is_finite()
-      && gamma_real.is_finite()
-      && gamma_imag.is_finite(),
-      "aperture cubes must be finite");
+  if (!(weights_real.n_cols == 4
+        && gamma_real.n_cols == 4)) {
+    spdlog::critical("3pcf notebook: aperture cubes must have four natural "
+      "components");
+    std::exit(1);
+  }
+  if (!(arma::size(weights_real) == arma::size(weights_imag)
+        && arma::size(gamma_real) == arma::size(gamma_imag)
+        && gamma_real.n_slices == weights_real.n_slices)) {
+    spdlog::critical("3pcf notebook: real/imaginary cube shapes and "
+      "triangle counts must agree");
+    std::exit(1);
+  }
+  if (!(weights_real.is_finite()
+        && weights_imag.is_finite()
+        && gamma_real.is_finite()
+        && gamma_imag.is_finite())) {
+    spdlog::critical("3pcf notebook: aperture cubes must be finite");
+    std::exit(1);
+  }
 
   const arma::Col<double> packed_wr = pack_cube_3pcf(weights_real);
   const arma::Col<double> packed_wi = pack_cube_3pcf(weights_imag);
@@ -251,7 +268,10 @@ arma::Mat<double> aperture_apply_cpp_3pcf(
   aperture_apply_3pcf(nfilter, ntriangle, nsample, packed_wr.memptr(),
       packed_wi.memptr(), packed_gr.memptr(), packed_gi.memptr(),
       output.memptr());
-  require_3pcf(output.is_finite(), "aperture result is not finite");
+  if (!(output.is_finite())) {
+    spdlog::critical("3pcf notebook: aperture result is not finite");
+    std::exit(1);
+  }
   return unpack_matrix_3pcf(output, nsample, nfilter);
 }
 
@@ -271,19 +291,27 @@ arma::Cube<double> filtered_pair_cpp_3pcf(
   const int nell = count_3pcf(ell.n_elem, "multipole");
   const int nr = count_3pcf(radius.n_elem, "separation");
   const int nfield = count_3pcf(filters.n_rows, "field");
-  require_3pcf(ell_weights.n_elem == ell.n_elem
-      && filters.n_cols == ell.n_elem
-      && power.n_rows == filters.n_rows
-      && power.n_cols == filters.n_rows
-      && power.n_slices == ell.n_elem, "filtered-pair axes disagree");
-  require_3pcf(ell.is_finite()
-      && ell_weights.is_finite()
-      && radius.is_finite()
-      && filters.is_finite()
-      && power.is_finite(),
-      "filtered-pair inputs must be finite");
-  require_3pcf(ell.min() >= 0.0
-      && radius.min() >= 0.0, "multipoles and separations must be >=0");
+  if (!(ell_weights.n_elem == ell.n_elem
+        && filters.n_cols == ell.n_elem
+        && power.n_rows == filters.n_rows
+        && power.n_cols == filters.n_rows
+        && power.n_slices == ell.n_elem)) {
+    spdlog::critical("3pcf notebook: filtered-pair axes disagree");
+    std::exit(1);
+  }
+  if (!(ell.is_finite()
+        && ell_weights.is_finite()
+        && radius.is_finite()
+        && filters.is_finite()
+        && power.is_finite())) {
+    spdlog::critical("3pcf notebook: filtered-pair inputs must be finite");
+    std::exit(1);
+  }
+  if (!(ell.min() >= 0.0
+        && radius.min() >= 0.0)) {
+    spdlog::critical("3pcf notebook: multipoles and separations must be >=0");
+    std::exit(1);
+  }
 
   const arma::Col<double> packed_filters = pack_matrix_3pcf(filters);
   const arma::Col<double> packed_power = pack_cube_3pcf(power);
@@ -291,7 +319,10 @@ arma::Cube<double> filtered_pair_cpp_3pcf(
   filtered_pair_3pcf(nfield, nell, nr, ell.memptr(), ell_weights.memptr(),
       radius.memptr(), packed_filters.memptr(), packed_power.memptr(),
       output.memptr());
-  require_3pcf(output.is_finite(), "filtered-pair result is not finite");
+  if (!(output.is_finite())) {
+    spdlog::critical("3pcf notebook: filtered-pair result is not finite");
+    std::exit(1);
+  }
   return unpack_cube_3pcf(output, nfield, nfield, nr);
 }
 
@@ -307,18 +338,29 @@ arma::Mat<double> connected_gram_cpp_3pcf(
 {
   const int nrow = count_3pcf(responses.n_rows, "response row");
   const int nnode = count_3pcf(responses.n_cols, "response node");
-  require_3pcf(weights.n_elem == responses.n_cols,
-      "response-node and weight counts must agree");
-  require_3pcf(responses.is_finite()
-      && weights.is_finite(),
-      "response inputs must be finite");
-  require_3pcf(weights.min() >= 0.0, "Gram weights must be nonnegative");
+  if (!(weights.n_elem == responses.n_cols)) {
+    spdlog::critical("3pcf notebook: response-node and weight counts must "
+      "agree");
+    std::exit(1);
+  }
+  if (!(responses.is_finite()
+        && weights.is_finite())) {
+    spdlog::critical("3pcf notebook: response inputs must be finite");
+    std::exit(1);
+  }
+  if (!(weights.min() >= 0.0)) {
+    spdlog::critical("3pcf notebook: Gram weights must be nonnegative");
+    std::exit(1);
+  }
 
   const arma::Col<double> packed_responses = pack_matrix_3pcf(responses);
   arma::Col<double> output(arma::uword(nrow)*nrow);
   connected_gram_3pcf(nrow, nnode, packed_responses.memptr(),
       weights.memptr(), output.memptr());
-  require_3pcf(output.is_finite(), "Gram result is not finite");
+  if (!(output.is_finite())) {
+    spdlog::critical("3pcf notebook: Gram result is not finite");
+    std::exit(1);
+  }
   return unpack_matrix_3pcf(output, nrow, nrow);
 }
 
@@ -340,27 +382,41 @@ arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
   const int nrow = count_3pcf(triplets.n_rows, "triplet");
   const int nfield = count_3pcf(pair.n_rows, "field");
   const int nr = count_3pcf(pair.n_slices, "separation");
-  require_3pcf(triplets.n_cols == 3
-      && pair.n_cols == pair.n_rows
-      && pair_zero.n_rows == pair.n_rows
-      && pair_zero.n_cols == pair.n_rows
-      && radial_weights.n_elem == pair.n_slices,
-      "Gaussian covariance axes disagree");
-  require_3pcf(pair.is_finite()
-      && pair_zero.is_finite()
-      && radial_weights.is_finite(), "Gaussian inputs must be finite");
-  require_3pcf(radial_weights.min() >= 0.0,
-      "radial window weights must be nonnegative");
+  if (!(triplets.n_cols == 3
+        && pair.n_cols == pair.n_rows
+        && pair_zero.n_rows == pair.n_rows
+        && pair_zero.n_cols == pair.n_rows
+        && radial_weights.n_elem == pair.n_slices)) {
+    spdlog::critical("3pcf notebook: Gaussian covariance axes disagree");
+    std::exit(1);
+  }
+  if (!(pair.is_finite()
+        && pair_zero.is_finite()
+        && radial_weights.is_finite())) {
+    spdlog::critical("3pcf notebook: Gaussian inputs must be finite");
+    std::exit(1);
+  }
+  if (!(radial_weights.min() >= 0.0)) {
+    spdlog::critical("3pcf notebook: radial window weights must be "
+      "nonnegative");
+    std::exit(1);
+  }
 
   // The C loop fills one covariance triangle and reflects it. That is
   // the same Gaussian covariance only for symmetric field correlations.
   for (int first=0; first<nfield; first++) {
     for (int second=0; second<first; second++) {
-      require_3pcf(symmetric_values_3pcf(pair_zero(first, second),
-          pair_zero(second, first)), "pair_zero must be symmetric");
+      if (!(symmetric_values_3pcf(pair_zero(first, second),
+            pair_zero(second, first)))) {
+        spdlog::critical("3pcf notebook: pair_zero must be symmetric");
+        std::exit(1);
+      }
       for (int radial=0; radial<nr; radial++) {
-        require_3pcf(symmetric_values_3pcf(pair(first, second, radial),
-            pair(second, first, radial)), "pair must be symmetric");
+        if (!(symmetric_values_3pcf(pair(first, second, radial),
+              pair(second, first, radial)))) {
+          spdlog::critical("3pcf notebook: pair must be symmetric");
+          std::exit(1);
+        }
       }
     }
   }
@@ -372,7 +428,10 @@ arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
   gaussian_aperture_covariance_3pcf(nfield, nr, nrow,
       packed_triplets.memptr(), packed_pair.memptr(), packed_zero.memptr(),
       radial_weights.memptr(), output.memptr());
-  require_3pcf(output.is_finite(), "Gaussian result is not finite");
+  if (!(output.is_finite())) {
+    spdlog::critical("3pcf notebook: Gaussian result is not finite");
+    std::exit(1);
+  }
   return unpack_matrix_3pcf(output, nrow, nrow);
 }
 

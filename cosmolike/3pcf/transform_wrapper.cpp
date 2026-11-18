@@ -29,20 +29,6 @@ namespace cosmolike_interface {
 // the notebook plan owner and carries only geometry and scratch.
 // ---------------------------------------------------------------------------
 
-// Abort with a diagnostic when a notebook input breaks its contract.
-// The notebook route favors a hard stop over an exception: a partial
-// transform result must never reach an interactive session silently.
-static void require_wrapper_transform(
-    const bool condition, // shape or finite-input requirement
-    const char* message // diagnostic
-  )
-{
-  if (!condition) {
-    spdlog::critical("3pcf transform wrapper: {}", message);
-    std::exit(1);
-  }
-}
-
 
 // ---------------------------------------------------------------------------
 // Angular coupling table G_ML(psi). The C routine evaluates
@@ -77,10 +63,13 @@ arma::Cube<double> coupling_cpp_3pcf(
   // cutoff is nonnegative and leaves room for the +1 of its table axis;
   // and lmax + mmax stays within int, because the coupling's Fourier
   // sum reaches the combined harmonic M + L.
-  require_wrapper_transform(psi.n_elem > 0 && psi.n_elem <= INT_MAX
-      && psi.is_finite() && lmax >= 0 && lmax < INT_MAX-1
-      && mmax >= 0 && mmax < INT_MAX-1
-      && lmax <= INT_MAX-1-mmax, "invalid coupling input");
+  if (!(psi.n_elem > 0 && psi.n_elem <= INT_MAX
+        && psi.is_finite() && lmax >= 0 && lmax < INT_MAX-1
+        && mmax >= 0 && mmax < INT_MAX-1
+        && lmax <= INT_MAX-1-mmax)) {
+    spdlog::critical("3pcf transform wrapper: invalid coupling input");
+    std::exit(1);
+  }
   const arma::uword count = (arma::uword)(mmax+1)*(lmax+1)*psi.n_elem;
   arma::Col<double> packed(count);
   legendre_coupling_3pcf(lmax, mmax, static_cast<int>(psi.n_elem),
@@ -100,7 +89,10 @@ arma::Cube<double> coupling_cpp_3pcf(
       }
     }
   }
-  require_wrapper_transform(result.is_finite(), "nonfinite coupling");
+  if (!(result.is_finite())) {
+    spdlog::critical("3pcf transform wrapper: nonfinite coupling");
+    std::exit(1);
+  }
   return result;
 }
 
@@ -146,11 +138,13 @@ arma::Mat<double> bessel_cpp_3pcf(
   // populated and counts within a C int; the integrand is square on
   // that grid and every value, grid included, is finite; and both
   // Bessel orders are nonnegative.
-  require_wrapper_transform(ell.n_elem > 0 && ell.n_elem <= INT_MAX
-      && integrand.n_rows == ell.n_elem
-      && integrand.n_cols == ell.n_elem && ell.is_finite()
-      && integrand.is_finite() && order1 >= 0 && order2 >= 0,
-      "invalid two-Bessel input");
+  if (!(ell.n_elem > 0 && ell.n_elem <= INT_MAX
+        && integrand.n_rows == ell.n_elem
+        && integrand.n_cols == ell.n_elem && ell.is_finite()
+        && integrand.is_finite() && order1 >= 0 && order2 >= 0)) {
+    spdlog::critical("3pcf transform wrapper: invalid two-Bessel input");
+    std::exit(1);
+  }
   const int nell = static_cast<int>(ell.n_elem);
 
   // Create a one-shot workspace. The literal 1 is the worker count: one
@@ -188,7 +182,10 @@ arma::Mat<double> bessel_cpp_3pcf(
 
   // Release the workspace before validating, so an abort cannot leak it.
   fftlog_destroy_3pcf(work);
-  require_wrapper_transform(result.is_finite(), "nonfinite transform");
+  if (!(result.is_finite())) {
+    spdlog::critical("3pcf transform wrapper: nonfinite transform");
+    std::exit(1);
+  }
   return result;
 }
 
@@ -215,8 +212,10 @@ natural_result_cpp_3pcf natural_cpp_3pcf(
     const int nphi // output angular count
   )
 {
-  require_wrapper_transform(multipoles.is_finite(),
-      "nonfinite bispectrum multipoles");
+  if (!(multipoles.is_finite())) {
+    spdlog::critical("3pcf transform wrapper: nonfinite bispectrum multipoles");
+    std::exit(1);
+  }
 
   // Pack b_L into the row-major order the C transform reads: cell
   // (degree, first, second) lives at (degree*nell + first)*nell +
@@ -254,8 +253,11 @@ natural_result_cpp_3pcf natural_cpp_3pcf(
       }
     }
   }
-  require_wrapper_transform(result.real.is_finite()
-      && result.imag.is_finite(), "nonfinite natural components");
+  if (!(result.real.is_finite()
+        && result.imag.is_finite())) {
+    spdlog::critical("3pcf transform wrapper: nonfinite natural components");
+    std::exit(1);
+  }
   return result;
 }
 
@@ -282,12 +284,16 @@ arma::Col<double> aperture_grid_cpp_3pcf(
   // component axis holds the four natural components and the triangle
   // axis matches the plan the caller prepared; and the imaginary cube
   // matches the real cube in shape, with every value finite.
-  require_wrapper_transform(plan && grid && real.n_rows > 0
-      && real.n_rows <= INT_MAX && real.n_cols == 4 && ntriangle > 0
-      && real.n_slices == static_cast<arma::uword>(ntriangle)
-      && imag.n_rows == real.n_rows && imag.n_cols == real.n_cols
-      && imag.n_slices == real.n_slices && real.is_finite() && imag.is_finite(),
-      "invalid notebook prepared-grid aperture weights");
+  if (!(plan && grid && real.n_rows > 0
+        && real.n_rows <= INT_MAX && real.n_cols == 4 && ntriangle > 0
+        && real.n_slices == static_cast<arma::uword>(ntriangle)
+        && imag.n_rows == real.n_rows && imag.n_cols == real.n_cols
+        && imag.n_slices == real.n_slices && real.is_finite()
+        && imag.is_finite())) {
+    spdlog::critical("3pcf transform wrapper: invalid notebook "
+      "prepared-grid aperture weights");
+    std::exit(1);
+  }
 
   // Armadillo stores its first axis contiguously, and a notebook cube
   // may arrive strided or read-only. Pack the weights explicitly into
@@ -307,7 +313,10 @@ arma::Col<double> aperture_grid_cpp_3pcf(
   arma::Col<double> result(real.n_rows);
   transform_aperture_grid_3pcf(plan, grid, static_cast<int>(real.n_rows),
       packed_real.memptr(), packed_imag.memptr(), result.memptr());
-  require_wrapper_transform(result.is_finite(), "nonfinite aperture moment");
+  if (!(result.is_finite())) {
+    spdlog::critical("3pcf transform wrapper: nonfinite aperture moment");
+    std::exit(1);
+  }
   return result;
 }
 }
