@@ -4486,6 +4486,9 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
   // ------------------
   // ia[1][0] = A2_ia        if IA_REDSHIFT_EVOLUTION
   // ia[1][1] = eta_ia_tt    if IA_REDSHIFT_EVOLUTION
+  // ia[1][2] = C_t          if IA_REDSHIFT_EVOLUTION (velocity-shear
+  //           amplitude of the three-point function, Gomes et al.,
+  //           arXiv:2601.09133; read by no two-point code path)
   // ------------------
   // ia[2][MAX_SIZE_ARRAYS] = b_ta_z[MAX_SIZE_ARRAYS]
 
@@ -4541,6 +4544,56 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
     }
   }
   if(1 == cache_update || 1 == force_cache_update_test) {
+    nuisance.random_ia = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Set the velocity-shear intrinsic-alignment amplitude
+// C_t = nuisance.ia[1][2] of the three-point function (Gomes et al.,
+// arXiv:2601.09133). C_t scales how strongly galaxy shapes align with
+// the large-scale velocity shear; the slot is reserved for the
+// three-point routines, and no two-point code path reads it, so every
+// two-point data vector is bitwise independent of the stored value.
+//
+// The value is meaningful under IA_REDSHIFT_EVOLUTION only: under
+// IA_REDSHIFT_BINNING, ia[1][i] holds the per-bin tidal-torque
+// amplitude A2 of shear bin i, so ia[1][2] is already taken. The setter
+// stores the value either way and leaves mode policing to the caller.
+//
+// Cache invalidation:
+// bumps nuisance.random_ia when the stored value changed (fdiff);
+// unchanged input leaves the key alone.
+//
+// Validation: no NaN input, else critical() + exit(1).
+//
+// Parameters:
+//   CT - C_t, the velocity-shear alignment amplitude (dimensionless)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void set_nuisance_IA_ct(const double CT)
+{
+  static constexpr std::string_view fname = "set_nuisance_IA_ct"sv;
+  debug("{}: {}", fname, errbegins);
+  if (std::isnan(CT)) [[unlikely]] {
+    critical(errnance2, fname, 0, errnance); exit(1);
+  }
+  int cache_update = 0;
+  if (fdiff(nuisance.ia[1][2], CT)) {
+    nuisance.ia[1][2] = CT;
+    cache_update = 1;
+  }
+  if (1 == cache_update || 1 == force_cache_update_test) {
     nuisance.random_ia = RandomNumber::get_instance().get();
   }
   debug("{}: {}", fname, errends);

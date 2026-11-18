@@ -929,6 +929,9 @@ void set_nuisance_IA(
     arma::Col<double> BTA
   );
 
+// velocity-shear IA amplitude C_t of the three-point function, dimensionless
+void set_nuisance_IA_ct(const double CT);
+
 void set_nuisance_magnification_bias(
     arma::Col<double> B_MAG
   );

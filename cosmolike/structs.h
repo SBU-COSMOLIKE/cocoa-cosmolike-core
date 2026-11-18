@@ -352,6 +352,9 @@ typedef struct
   // ------------------
   // ia[1][0] = A2_ia        if IA_REDSHIFT_EVOLUTION
   // ia[1][1] = eta_ia_tt    if IA_REDSHIFT_EVOLUTION
+  // ia[1][2] = C_t          if IA_REDSHIFT_EVOLUTION (velocity-shear
+  //           amplitude of the three-point function, Gomes et al.,
+  //           arXiv:2601.09133; read by no two-point code path)
   // ------------------
   // ia[2][MAX_SIZE_ARRAYS] = b_ta_z[MAX_SIZE_ARRAYS]
   int IA;
