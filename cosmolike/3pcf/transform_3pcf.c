@@ -126,7 +126,8 @@ static double complex spin_phase_3pcf(
 )
 {
   const double length = cabs(side);
-  if (!(isfinite(length) && length > 0.0)) {
+  if (!(isfinite(length)
+        && length > 0.0)) {
     log_fatal("transform_3pcf: centroid direction is not representable");
     exit(1);
   }
@@ -185,11 +186,19 @@ transform_plan_3pcf* transform_create_3pcf(
   // arithmetic below, angles outside (0,pi), and settings without a
   // defined meaning. The checks run before the first allocation so a
   // bad call never leaks memory.
-  if (!(nell >= 2 && nell <= (INT_MAX-1)/2
-        && ntheta > 0 && nphi > 0 && lmax >= 0 && lmax < INT_MAX-1
-        && mmax >= 0 && lmax <= INT_MAX-1-mmax
-        && mmax < INT_MAX-3 && workers > 0 && ell != NULL
-        && indices != NULL && phi != NULL)) {
+  if (!(nell >= 2
+        && nell <= (INT_MAX-1)/2
+        && ntheta > 0
+        && nphi > 0
+        && lmax >= 0
+        && lmax < INT_MAX-1
+        && mmax >= 0
+        && lmax <= INT_MAX-1-mmax
+        && mmax < INT_MAX-3
+        && workers > 0
+        && ell != NULL
+        && indices != NULL
+        && phi != NULL)) {
     log_fatal("transform_3pcf: invalid dimensions");
     exit(1);
   }
@@ -198,14 +207,18 @@ transform_plan_3pcf* transform_create_3pcf(
     log_fatal("transform_3pcf: too many triangles");
     exit(1);
   }
-  if (!(projection >= 0 && projection <= 2
-        && convention >= 0 && convention <= 1
-        && ordered_legs >= 0 && ordered_legs <= 1
+  if (!(projection >= 0
+        && projection <= 2
+        && convention >= 0
+        && convention <= 1
+        && ordered_legs >= 0
+        && ordered_legs <= 1
         && mmax < (INT_MAX-1)/2)) {
     log_fatal("transform_3pcf: unknown projection or component convention");
     exit(1);
   }
-  if (!(isfinite(dphi) && dphi >= 0.0
+  if (!(isfinite(dphi)
+        && dphi >= 0.0
         && dphi <= M_PI)) {
     log_fatal("transform_3pcf: invalid opening-angle bin width");
     exit(1);
@@ -213,7 +226,8 @@ transform_plan_3pcf* transform_create_3pcf(
 
   // One grid point cannot define an interpolation segment, so the
   // coupling accepts zero (exact evaluation) or at least two points.
-  if (!(npsi >= 0 && npsi != 1)) {
+  if (!(npsi >= 0
+        && npsi != 1)) {
     log_fatal("transform_3pcf: coupling grid needs zero or at least two "
       "points");
     exit(1);
@@ -283,7 +297,8 @@ transform_plan_3pcf* transform_create_3pcf(
   // checks grid positivity and uniform log spacing before any
   // grid-dependent work below, and it creates every FFTW plan.
   for (int index=0; index<ntheta; index++) {
-    if (!(indices[index] >= 0 && indices[index] < nell)) {
+    if (!(indices[index] >= 0
+          && indices[index] < nell)) {
       log_fatal("transform_3pcf: radial index outside Fourier grid");
       exit(1);
     }
@@ -362,7 +377,8 @@ transform_plan_3pcf* transform_create_3pcf(
   // bin center, as this API specifies, and is not an exact average of
   // the varying centroid-projected shear.
   for (int angle=0; angle<nphi; angle++) {
-    if (!(isfinite(phi[angle]) && phi[angle] > 0.0
+    if (!(isfinite(phi[angle])
+          && phi[angle] > 0.0
           && phi[angle] < M_PI)) {
       log_fatal("transform_3pcf: phi must lie in (0,pi)");
       exit(1);
@@ -509,8 +525,10 @@ void transform_natural_3pcf(
   double* gamma_imag // same shape
 )
 {
-  if (!(plan != NULL && multipoles != NULL
-        && gamma_real != NULL && gamma_imag != NULL)) {
+  if (!(plan != NULL
+        && multipoles != NULL
+        && gamma_real != NULL
+        && gamma_imag != NULL)) {
     log_fatal("transform_3pcf: null array");
     exit(1);
   }
@@ -936,7 +954,8 @@ void transform_aperture_3pcf(
   double* output // real aperture moments
 )
 {
-  if (!(plan != NULL && plan->projection != 0)) {
+  if (!(plan != NULL
+        && plan->projection != 0)) {
     log_fatal("transform_3pcf: aperture contraction requires centroid "
       "projection");
     exit(1);
@@ -990,8 +1009,12 @@ void transform_aperture_grid_3pcf(
   double* output // [filter]
 )
 {
-  if (!(plan && grid && weights_real && weights_imag
-        && output && nfilter > 0)) {
+  if (!(plan
+        && grid
+        && weights_real
+        && weights_imag
+        && output
+        && nfilter > 0)) {
     log_fatal("transform_3pcf: invalid prepared-grid aperture input");
     exit(1);
   }

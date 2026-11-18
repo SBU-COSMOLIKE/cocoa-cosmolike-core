@@ -149,7 +149,8 @@ static double* dense_table(
     double* line = malloc1d(old_count);
     gsl_spline* spline = gsl_spline_alloc(gsl_interp_cspline, old_count);
     gsl_interp_accel* search = gsl_interp_accel_alloc();
-    if (!(spline && search)) {
+    if (!(spline
+          && search)) {
       log_fatal("feedback_3pcf: spline preparation allocation failed");
       exit(1);
     }
@@ -220,8 +221,11 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
   if (input == NULL) {
     return NULL;
   }
-  if (!(input->boost >= 1 && input->clamp >= 0 && input->clamp <= 1
-        && input->log_power && input->log_bispectrum)) {
+  if (!(input->boost >= 1
+        && input->clamp >= 0
+        && input->clamp <= 1
+        && input->log_power
+        && input->log_bispectrum)) {
     log_fatal("feedback_3pcf: both response tables, boost>=1 and clamp=0/1 "
       "are required");
     exit(1);
@@ -239,7 +243,8 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
 
   for (int axis=0; axis<4; axis++) {
     const int count = counts[axis];
-    if (!(count >= 4 && axes[axis]
+    if (!(count >= 4
+          && axes[axis]
           && count - 1 <= (INT_MAX - 1)/input->boost)) {
       log_fatal("feedback_3pcf: each response axis needs four nodes and "
         "representable dense size");
@@ -248,13 +253,16 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
 
     const double low = axes[axis][0];
     const double high = axes[axis][count - 1];
-    if (!(isfinite(low) && isfinite(high) && high > low)) {
+    if (!(isfinite(low)
+          && isfinite(high)
+          && high > low)) {
       log_fatal("feedback_3pcf: response coordinates must increase");
       exit(1);
     }
 
     const double step = (high - low)/(count - 1);
-    if (!(isfinite(step) && step > 0.0)) {
+    if (!(isfinite(step)
+          && step > 0.0)) {
       log_fatal("feedback_3pcf: response spacing is not representable");
       exit(1);
     }
@@ -291,8 +299,10 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
     }
   }
 
-  if (!(input->z[0] >= 0.0 && input->logu[input->nu - 1] <= 0.0
-        && input->v[0] >= 0.0 && input->v[input->nv - 1] <= 1.0)) {
+  if (!(input->z[0] >= 0.0
+        && input->logu[input->nu - 1] <= 0.0
+        && input->v[0] >= 0.0
+        && input->v[input->nv - 1] <= 1.0)) {
     log_fatal("feedback_3pcf: response z/u/v axes must describe physical "
       "sorted triangles");
     exit(1);
@@ -375,8 +385,9 @@ static double read_response(
     // clamp = 1 every finite query passes, and the fmin/fmax below
     // hold the boundary value.
     const double tolerance = 64.0*DBL_EPSILON*fmax(1.0, fabs(value));
-    if (!(isfinite(value) && (response->clamp
-          || (value >= low - tolerance && value <= high + tolerance)))) {
+    if (!(isfinite(value)
+          && (response->clamp
+              || (value >= low - tolerance && value <= high + tolerance)))) {
       log_fatal("feedback_3pcf: feedback query exceeds its declared table "
         "domain");
       exit(1);
@@ -416,7 +427,8 @@ static double read_response(
   }
 
   const double result = exp(amplitude*logarithm);
-  if (!(isfinite(result) && result > 0.0)) {
+  if (!(isfinite(result)
+        && result > 0.0)) {
     log_fatal("feedback_3pcf: feedback amplitude produces an "
       "unrepresentable positive ratio");
     exit(1);

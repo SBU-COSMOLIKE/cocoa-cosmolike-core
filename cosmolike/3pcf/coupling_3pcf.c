@@ -183,15 +183,22 @@ void legendre_coupling_3pcf(
   double* output // [mmax+1,lmax+1,nquery], C order
 )
 {
-  if (lmax < 0 || mmax < 0 || lmax > INT_MAX-1-mmax
-      || nquery < 1 || npsi == 1 || npsi < 0
-      || psi == NULL || output == NULL) {
+  if (lmax < 0
+      || mmax < 0
+      || lmax > INT_MAX-1-mmax
+      || nquery < 1
+      || npsi == 1
+      || npsi < 0
+      || psi == NULL
+      || output == NULL) {
     log_fatal("legendre_coupling_3pcf: invalid input");
     exit(1);
   }
 
   for (int query=0; query<nquery; query++) {
-    if (!isfinite(psi[query]) || psi[query] < 0.0 || psi[query] > M_PI*0.5) {
+    if (!isfinite(psi[query])
+        || psi[query] < 0.0
+        || psi[query] > M_PI*0.5) {
       log_fatal("legendre_coupling_3pcf: psi outside [0,pi/2]");
       exit(1);
     }

@@ -232,7 +232,8 @@ static double complex kernel_fftlog_3pcf(
   const int status2 = gsl_sf_lngamma_complex_e((order+2.5-nu)*0.5,
       -eta*0.5, &denominator_log, &denominator_phase);
 
-  if (!(status1 == GSL_SUCCESS && status2 == GSL_SUCCESS)) {
+  if (!(status1 == GSL_SUCCESS
+        && status2 == GSL_SUCCESS)) {
     log_fatal("fftlog_3pcf: complex gamma evaluation failed");
     exit(1);
   }
@@ -250,7 +251,8 @@ static double complex kernel_fftlog_3pcf(
     value *= expm1_complex(slope*dlnt)/(slope*denominator);
   }
 
-  if (!(isfinite(creal(value)) && isfinite(cimag(value)))) {
+  if (!(isfinite(creal(value))
+        && isfinite(cimag(value)))) {
     log_fatal("fftlog_3pcf: nonfinite Mellin kernel");
     exit(1);
   }
@@ -299,29 +301,45 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   // slope = 2.5 - nu reaches zero. Inside the open interval every
   // kernel entry stays finite. The grid must be positive and uniformly
   // log-spaced, because the common step enters every kernel phase.
-  if (!(n >= 2 && n%2 == 0 && ell != NULL
-        && max_order >= 0 && max_order < INT_MAX-1 && workers > 0
-        && padding >= 0 && padding <= (INT_MAX-n)/2)) {
+  if (!(n >= 2
+        && n%2 == 0
+        && ell != NULL
+        && max_order >= 0
+        && max_order < INT_MAX-1
+        && workers > 0
+        && padding >= 0
+        && padding <= (INT_MAX-n)/2)) {
     log_fatal("fftlog_3pcf: invalid dimensions or padding");
     exit(1);
   }
-  if (!(isfinite(nu1) && nu1 > 0.5 && nu1 < 2.5
-        && isfinite(nu2) && nu2 > 0.5 && nu2 < 2.5
-        && isfinite(xy) && xy > 0.0 && isfinite(dlnt) && dlnt >= 0.0
-        && isfinite(window_width) && window_width >= 0.0
-        && window_width <= 1.0 && (window == 0 || window == 1))) {
+  if (!(isfinite(nu1)
+        && nu1 > 0.5
+        && nu1 < 2.5
+        && isfinite(nu2)
+        && nu2 > 0.5
+        && nu2 < 2.5
+        && isfinite(xy)
+        && xy > 0.0
+        && isfinite(dlnt)
+        && dlnt >= 0.0
+        && isfinite(window_width)
+        && window_width >= 0.0
+        && window_width <= 1.0
+        && (window == 0 || window == 1))) {
     log_fatal("fftlog_3pcf: invalid bias, bin width, phase or window");
     exit(1);
   }
   for (int index=0; index<n; index++) {
-    if (!(isfinite(ell[index]) && ell[index] > 0.0)) {
+    if (!(isfinite(ell[index])
+          && ell[index] > 0.0)) {
       log_fatal("fftlog_3pcf: ell must be positive and finite");
       exit(1);
     }
   }
 
   const double step = log(ell[1]/ell[0]);
-  if (!(isfinite(step) && step > 0.0)) {
+  if (!(isfinite(step)
+        && step > 0.0)) {
     log_fatal("fftlog_3pcf: ell must increase");
     exit(1);
   }
@@ -385,8 +403,13 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   work->output = fftw_malloc(sizeof(double)*2*n);
   work->kernel = fftw_malloc(
       sizeof(fftw_complex)*((size_t)(max_order+1)*(nfft+nfrequency)));
-  if (!(work->input && work->real && work->forward && work->scratch
-        && work->bias && work->output && work->kernel)) {
+  if (!(work->input
+        && work->real
+        && work->forward
+        && work->scratch
+        && work->bias
+        && work->output
+        && work->kernel)) {
     log_fatal("fftlog_3pcf: allocation failed");
     exit(1);
   }
@@ -538,13 +561,17 @@ void fftlog_select_3pcf(
   const int* indices // positions on xy/reversed(ell)
 )
 {
-  if (!(work != NULL && ntheta > 0 && ntheta <= work->n
-        && indices != NULL && work->selected_count == 0)) {
+  if (!(work != NULL
+        && ntheta > 0
+        && ntheta <= work->n
+        && indices != NULL
+        && work->selected_count == 0)) {
     log_fatal("fftlog_3pcf: invalid or repeated FFT output selection");
     exit(1);
   }
   for (int index=0; index<ntheta; index++) {
-    if (!(indices[index] >= 0 && indices[index] < work->n
+    if (!(indices[index] >= 0
+          && indices[index] < work->n
           && (index == 0 || indices[index] > indices[index-1]))) {
       log_fatal("fftlog_3pcf: FFT output indices must increase within the "
         "original grid");
@@ -562,7 +589,8 @@ void fftlog_select_3pcf(
       fftw_malloc(sizeof(size_t)*work->selected_count);
   work->selected_first = fftw_malloc(sizeof(double)*work->selected_count);
   work->selected_second = fftw_malloc(sizeof(double)*work->selected_count);
-  if (!(work->selected_offsets && work->selected_first
+  if (!(work->selected_offsets
+        && work->selected_first
         && work->selected_second)) {
     log_fatal("fftlog_3pcf: allocation failed");
     exit(1);
@@ -591,7 +619,9 @@ double* fftlog_input_3pcf(
   const int worker // requested private slice
 )
 {
-  if (!(work != NULL && worker >= 0 && worker < work->workers)) {
+  if (!(work != NULL
+        && worker >= 0
+        && worker < work->workers)) {
     log_fatal("fftlog_3pcf: worker exceeds allocated scratch");
     exit(1);
   }
@@ -707,8 +737,10 @@ const double* fftlog_inverse_3pcf(
 {
   double* output = fftlog_input_3pcf(work, worker);
 
-  if (!(order1 >= 0 && order1 <= work->max_order
-        && order2 >= 0 && order2 <= work->max_order)) {
+  if (!(order1 >= 0
+        && order1 <= work->max_order
+        && order2 >= 0
+        && order2 <= work->max_order)) {
     log_fatal("fftlog_3pcf: Bessel order exceeds prepared kernels");
     exit(1);
   }
