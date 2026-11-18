@@ -171,6 +171,14 @@ typedef struct
   int halo_ia_lmax; // halo-model IA: highest multipole (2, 4 or 6)
   int halo_ia_na;   // halo-model IA tables: a nodes over the source range
                     // (boosted)
+  // Gaussian-window variance tables of cosmo3D.c (sigma2_gauss and the
+  // BiHalofit background readers rnl_gauss/neff_gauss); all three are
+  // boosted by nested interval doubling, so coarser grids' nodes stay
+  // a subset of finer ones
+  int sigma_gauss_nr;   // dense lnR nodes of sigma_G^2 and its slope
+  int sigma_gauss_na;   // their scale-factor rows over [a_min, 1]
+  int sigma_gauss_ninv; // nodes of each row's uniform inverse table
+                        // lnR(ln sigma_G^2), read at sigma_G = 1
   // ---------------------------------------------------
   // ---------------------------------------------------
   // n(z) fin-sampling

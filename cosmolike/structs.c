@@ -300,6 +300,11 @@ void reset_Ntable_struct(void)
   Ntable.halo_na_lens = 51;  // p_gm/p_gg a nodes per lens bin
   Ntable.halo_ia_lmax = 6;   // halo IA multipoles: F21's l <= 6
   Ntable.halo_ia_na = 51;    // halo IA a nodes over the source range
+  // Gaussian-window variance tables (cosmo3D.c): dense lnR and a node
+  // counts and the per-row inverse-table density
+  Ntable.sigma_gauss_nr = 256;   // sigma_G^2/slope lnR nodes
+  Ntable.sigma_gauss_na = 256;   // sigma_G^2/slope a rows
+  Ntable.sigma_gauss_ninv = 256; // inverse-table nodes per a row
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.NL_Nchi_boost = 1.0; // init_nonlimber_accuracy_boost
   // the early-exit tolerances of the non-Limber real-space C_l

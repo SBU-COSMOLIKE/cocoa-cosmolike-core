@@ -99,6 +99,18 @@ double dlnsigma_dlnm_field(const double M, const double a, const int field);
 // sigma2 above is the cb variance halo statistics use). M in M_sun/h.
 double sigma2_matter(const double M, const double a);
 
+// BiHalofit background quantities from the Gaussian-window variance of
+// the linear total-matter field (cosmo3D.c, the Gaussian-window
+// section): sigma_G^2(R,a) and its logarithmic slope at R in Mpc/h,
+// the nonlinear radius R_NL(a) with sigma_G(R_NL,a) = 1, the effective
+// spectral slope n_eff(a) = -3 - dln sigma_G^2/dlnR at R_NL, and
+// sigma8(a) read from the total-matter top-hat table at R = 8 Mpc/h.
+double sigma2_gauss(const double R, const double a);
+double dlnsigma2_gauss_dlnr(const double R, const double a);
+double rnl_gauss(const double a);
+double neff_gauss(const double a);
+double sigma8_matter(const double a);
+
 #ifdef __cplusplus
 }
 #endif

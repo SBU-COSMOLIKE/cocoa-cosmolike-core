@@ -2115,3 +2115,847 @@ double sigma2_matter(
 {
   return sigma2_field(M, a, HALO_FIELD_MATTER);
 }
+
+
+// ---------------------------------------------------------------------------
+// ============================================================================
+// [SECTION] GAUSSIAN-WINDOW VARIANCE AND THE BIHALOFIT BACKGROUND
+// ============================================================================
+//
+// PHYSICAL DERIVATION & LOGIC FLOW
+//
+// 1. Why a second, Gaussian-smoothed variance exists.
+//
+//    The halofit family of nonlinear fits defines its background not
+//    through halo masses but through a smoothing radius of the linear
+//    TOTAL-MATTER density field. Smoothing with a Gaussian ball of
+//    radius R instead of a uniform sphere gives the variance
+//
+//      sigma_G^2(R,a) = integral dlnk Delta^2(k,a) exp(-(k R)^2),
+//      Delta^2(k,a)   = k^3 P(k,a) / (2 pi^2),
+//
+//    where the real-space window W_G(x) = exp(-x^2/2), x = k R, enters
+//    squared, giving exp(-x^2). Smith et al. (astro-ph/0207664)
+//    introduced this convention for halofit, and the BiHalofit
+//    bispectrum fit of Takahashi et al. (arXiv:1911.07886) keeps it.
+//    Both fits read three numbers from sigma_G^2 at each redshift:
+//
+//      R_NL(a):  the radius where sigma_G(R_NL, a) = 1, i.e. where the
+//                Gaussian-smoothed linear field reaches unit variance.
+//                Its inverse is the nonlinear wavenumber k_NL = 1/R_NL.
+//      n_eff(a): the effective spectral slope at that radius,
+//                n_eff = -3 - dln sigma_G^2/dlnR at R = R_NL. For a
+//                pure power law P ~ k^n this equals n exactly, so it
+//                summarizes the local shape of the spectrum at the
+//                nonlinear scale.
+//      sigma8(a): the ordinary top-hat variance at R = 8 Mpc/h, read
+//                from the total-matter top-hat table (sigma2_matter).
+//
+//    The Gaussian window is used for R_NL and n_eff because it is
+//    smooth in both real and Fourier space: sigma_G(R) decreases
+//    strictly and smoothly in R, so its unit crossing and logarithmic
+//    slope are well defined without the oscillatory tail of the
+//    top-hat window.
+//
+// 2. The same FFTLog method, with the Gaussian window's Mellin factor.
+//
+//    The derivation before sigma2_fields_build applies unchanged: put
+//    u = ln k, divide Delta^2 by k^bias, Fourier-expand on the uniform
+//    u grid, and integrate each mode k^s, s = bias + i eta,
+//    analytically against the squared window. Only the window integral
+//    differs. Substituting t = x^2 (so dx = dt / (2 sqrt(t))) gives
+//
+//      Mellin_G(s) = integral_0^infinity dx x^(s-1) exp(-x^2)
+//                  = (1/2) integral_0^infinity dt t^(s/2-1) exp(-t)
+//                  = Gamma(s/2) / 2,
+//
+//    the Gamma-function integral itself, valid for Re(s) > 0 (the
+//    bias below satisfies this). |Gamma(s/2)| decays exponentially in
+//    |eta|, so high-frequency modes are strongly damped: the Gaussian
+//    kernel is better conditioned than the top-hat one.
+//
+// 3. The slope from the same forward transform.
+//
+//    Each mode depends on R only through R^(-s), and d[R^(-s)]/dlnR =
+//    -s R^(-s). A second inverse FFT with kernel -s Mellin_G(s) gives
+//    d sigma_G^2/dlnR directly; dividing by sigma_G^2 forms the
+//    logarithmic slope with no finite difference in R.
+//
+// 4. Inverting sigma_G(lnR) for the nonlinear radius.
+//
+//    sigma_G^2 strictly decreases with R (its lnR derivative is
+//    -2 integral dlnk Delta^2 x^2 e^(-x^2) < 0), so y = ln sigma_G^2
+//    is monotone in lnR and has a single-valued inverse. At each a the
+//    build tabulates lnR on a UNIFORM grid in y, filled by one
+//    monotone merge pass over the dense row (a table construction, not
+//    a per-read search). The reader then finds y = 0, i.e.
+//    sigma_G = 1, by pure index arithmetic, like every other reader in
+//    this file.
+//
+// 5. Storage, units and grids.
+//
+//    k in h/Mpc, R in Mpc/h; the variance and slope are dimensionless.
+//    The dense tables live on uniform (lnR, a) grids sized by
+//    Ntable.sigma_gauss_nr and sigma_gauss_na; each row's inverse
+//    table has Ntable.sigma_gauss_ninv nodes. The variance is stored
+//    as ln(sigma_G^2/a^2), like the top-hat table: in matter
+//    domination sigma_G^2 is nearly proportional to a^2, and removing
+//    that curvature keeps the linear interpolation in a accurate at
+//    early times.
+//
+//    Everything is built from the total-matter linear power
+//    (cosmology.lnPL), the BiHalofit convention explained at
+//    sigma2_matter; there is no cb variant of these tables.
+// ---------------------------------------------------------------------------
+static struct {
+  uint64_t cosmology_tag; // cosmology generation represented by the tables
+  uint64_t ntable_tag;    // numerical-settings generation used for the grids
+
+  int nfft;               // transform length, including appended zeros
+  int ninput;             // k nodes containing the continued power spectrum
+  int nradial;            // FFT radius nodes for the spline, with end margins
+  int nthreads;           // number of threads with allocated work buffers
+  int nr;                 // radius nodes in each output row
+  int na;                 // scale-factor rows in each output table
+  int ninv;               // nodes of each row's inverse table
+  int nk;                 // k nodes in the supplied power-spectrum table
+
+  double lnk0;            // natural logarithm of the first supplied k (h/Mpc)
+  double dlnk;            // spacing in lnk, also the FFT spacing in lnR
+  double lnr0;            // natural logarithm of the smallest radius (Mpc/h)
+  double dlnr;            // spacing between output radius nodes in lnR
+  double amin;            // smallest tabulated scale factor
+  double da;              // spacing between scale-factor rows
+
+  // [quantity][a][radius]: quantity 0 = ln(sigma_G^2/a^2),
+  // quantity 1 = dln sigma_G^2/dlnR.
+  double*** table;        // cached Gaussian variance and radial slope
+
+  // [a][node]: lnR at that row's uniform ln sigma_G^2 nodes.
+  double** inverse;       // cached inverse of the monotone sigma_G(lnR)
+
+  // [a][0] = the row's smallest ln sigma_G^2 (at the largest radius);
+  // [a][1] = the row's uniform spacing in ln sigma_G^2.
+  double** inverse_y;     // origin and spacing of each row's inverse grid
+
+  // [thread][role][FFT node]: role 0 = input g, role 1 = variance,
+  // role 2 = its lnR derivative (before normalization and splining).
+  double*** fft_real;     // each thread's real input and two FFT outputs
+
+  // [thread][role][radial node]: role 0 = cubic coefficients,
+  // role 1 = temporary values for the tridiagonal spline solve.
+  double*** spline_work;  // each thread's spline workspace
+
+  // [2*thread+role][frequency]: role 0 = forward FFT of g,
+  // role 1 = forward coefficients multiplied by the integration kernel.
+  fftw_complex** fft_complex; // each thread's forward FFT and kernel product
+
+  // [derivative][frequency]: 0 = Mellin_G(s), 1 = -s Mellin_G(s),
+  // both conjugated and shifted to the FFT radius origin.
+  fftw_complex** kernel;  // the two analytic integration kernels
+  fftw_plan plan_forward; // cached instructions for the real-to-complex FFT
+  fftw_plan plan_inverse; // cached instructions for the complex-to-real FFT
+} sigma_gauss_ = {0};
+
+
+// ---------------------------------------------------------------------------
+// Build the Gaussian-window variance, slope and inverse tables.
+//
+// The function mirrors sigma2_fields_build stage by stage - the same
+// input continuation, FFT lengths, taper, plan reuse and threading -
+// with three differences, each explained at its stage below:
+//
+//   - the analytic kernel is Gamma(s/2)/2, the Gaussian window's
+//     Mellin transform (derivation above), not the top-hat ratio;
+//   - the output axis is the radius itself on a uniform lnR grid,
+//     so no mass-to-radius map enters and the kernels, including
+//     their origin shift, depend only on the grids. They are built
+//     in the geometry tier and reused across cosmologies;
+//   - after each row's resample, a monotone merge pass fills that
+//     row's uniform inverse table of lnR(ln sigma_G^2).
+//
+// Only the total-matter spectrum is transformed: one field, na rows.
+//
+// Cache invalidation:
+//   geometry/workspace: Ntable.random, the three sigma_gauss_* node
+//                       counts, k grid, a range, threads (each size
+//                       the allocations use is compared directly)
+//   table values:      cosmology.random, or any geometry rebuild
+//   kernels:           only a geometry rebuild (cosmology-free here)
+// The tags cover every input: initial_setup resets the structs the
+// tags and sizes come from, so a new model rebuilds these tables, and
+// no separate reset hook is needed (the sigma_fields_ discipline).
+//
+// Call once outside any consumer's OpenMP loop to build the lazy
+// cache (the serial warm-up discipline of the top-hat build; the
+// thread test in the fast path assumes a single-valued
+// OMP_NUM_THREADS, as explained there).
+// ---------------------------------------------------------------------------
+static void sigma2_gauss_build(void)
+{
+  // Fast path: the tables hold this cosmology, these numerical
+  // settings and this thread count. Block 1b compares the k grid and
+  // every allocation size before reusing the workspace.
+  if (sigma_gauss_.table != NULL
+      && !fdiff2(sigma_gauss_.cosmology_tag, cosmology.random)
+      && !fdiff2(sigma_gauss_.ntable_tag, Ntable.random)
+      && sigma_gauss_.nthreads == omp_get_max_threads()) {
+    return;
+  }
+
+
+
+  // --- 1a. CHOOSE THE INPUT k GRID AND THE OUTPUT (lnR, a) GRIDS ---
+
+  // The FFTLog weighting and the continued k range are the measured
+  // top-hat configuration (sigma2_fields_build): bias 0.8 balances
+  // roundoff against periodic images, and the same continuation keeps
+  // the two variance pipelines directly comparable. Re(s) = bias > 0
+  // lies inside the Gaussian kernel's validity domain.
+  const double bias = 0.8;        // power divided out before the FFT
+  const double kmin = 1.e-7;      // h/Mpc: low-k continuation
+  const double kmax = 1.e25;      // h/Mpc: log-log continuation
+  const int padding = 16;         // radial spline boundary margin
+
+  // The radius window must contain every radius a consumer reads:
+  // the nonlinear radius R_NL stays below ~10 Mpc/h at z = 0 and
+  // shrinks with redshift, so [1e-3, 1e2] Mpc/h brackets it with wide
+  // margins on both sides, and the inverse tables below keep the unit
+  // crossing sigma_G = 1 well inside each row for ordinary
+  // amplitudes. Queries outside are clamped to the edge, like the
+  // top-hat reader's mass clamp.
+  const double rmin = 1.e-3;      // Mpc/h: smallest tabulated radius
+  const double rmax = 1.e+2;      // Mpc/h: largest tabulated radius
+
+  const int nk = cosmology.lnPL_nk;
+  const int nz = cosmology.lnPL_nz;
+  const int threads = omp_get_max_threads();
+
+  if (NULL == cosmology.lnPL || nk < 2 || nz < 2) {
+    log_fatal("sigma2_gauss needs a linear power table with at least two "
+              "k and z nodes; call set_linear_power_spectrum first");
+    exit(1);
+  }
+
+  // The likelihood supplies uniform log10 k nodes. Convert the origin
+  // and spacing to natural logarithms, the coordinate used by FFTLog.
+  const double lnk0 = log(10.0)*cosmology.lnPL[0][nz];
+  const double dlnk = log(10.0)*(cosmology.lnPL[nk-1][nz]
+                                - cosmology.lnPL[0][nz])/(nk-1);
+
+  if (!(dlnk > 0.0)) {
+    log_fatal("sigma2_gauss: the input k grid must be increasing");
+    exit(1);
+  }
+
+  // Continue on the same grid until both integration bounds are
+  // covered; first may be negative when the continuation reaches
+  // lower k (the arithmetic of sigma2_fields_build).
+  const int first = (int) floor((log(kmin)-lnk0)/dlnk);
+  const int last  = (int) ceil((log(kmax)-lnk0)/dlnk);
+  const int ninput = last-first+1;
+  const int nfft = sigma2_fft_size(ninput);
+
+  const int nr = Ntable.sigma_gauss_nr;
+  const int na = Ntable.sigma_gauss_na;
+  const int ninv = Ntable.sigma_gauss_ninv;
+  const double lnr0 = log(rmin);
+  const double dlnr = (log(rmax)-lnr0)/(nr-1);
+
+  // The FFT writes the variance at radii spaced by dlnk; the output
+  // grid is resampled from those nodes, so the FFT window must cover
+  // the output window plus the spline's boundary margin on each side.
+  const int nradial = (int) ceil((log(rmax)-lnr0)/dlnk)+2*padding+1;
+  if (nradial > nfft || nr < 2 || na < 2 || ninv < 2) {
+    log_fatal("sigma2_gauss: incompatible FFT/radius/a grid; use finer "
+              "logarithmic k sampling and at least two nodes per axis");
+    exit(1);
+  }
+
+
+
+  // --- 1b. REUSE THE WORKSPACE, OR REBUILD IT IF ITS SHAPE CHANGED ---
+
+  if (NULL == sigma_gauss_.table
+      || fdiff2(sigma_gauss_.ntable_tag, Ntable.random)
+      || sigma_gauss_.nk != nk
+      || sigma_gauss_.lnk0 != lnk0
+      || sigma_gauss_.dlnk != dlnk
+      || sigma_gauss_.nthreads != threads
+      || sigma_gauss_.nr != nr
+      || sigma_gauss_.na != na
+      || sigma_gauss_.ninv != ninv
+      || sigma_gauss_.amin != limits.a_min) {
+    // Each multidimensional allocator returns one owned block. Free it
+    // once, including its row pointers; never free the individual rows.
+    if (sigma_gauss_.table != NULL) {
+      fftw_destroy_plan(sigma_gauss_.plan_forward);
+      fftw_destroy_plan(sigma_gauss_.plan_inverse);
+      free(sigma_gauss_.table);
+      free(sigma_gauss_.inverse);
+      free(sigma_gauss_.inverse_y);
+      free(sigma_gauss_.fft_real);
+      free(sigma_gauss_.spline_work);
+      free(sigma_gauss_.fft_complex);
+      free(sigma_gauss_.kernel);
+    }
+
+    sigma_gauss_.table = (double***) malloc3d(2, na, nr);
+    sigma_gauss_.inverse = (double**) malloc2d(na, ninv);
+    sigma_gauss_.inverse_y = (double**) malloc2d(na, 2);
+    sigma_gauss_.fft_real = (double***) malloc3d(threads, 3, nfft);
+    sigma_gauss_.spline_work = (double***) malloc3d(threads, 2, nradial);
+    sigma_gauss_.fft_complex =
+        (fftw_complex**) malloc2d_fftwc(2*threads, nfft/2+1);
+    sigma_gauss_.kernel = (fftw_complex**) malloc2d_fftwc(2, nfft/2+1);
+
+    // The plans describe transforms of length nfft, not a cosmology.
+    // Plan against thread zero's aligned arrays; during execution each
+    // thread supplies its own equally aligned rows to the same plan.
+    sigma_gauss_.plan_forward = fftw_plan_dft_r2c_1d(nfft,
+        sigma_gauss_.fft_real[0][0], sigma_gauss_.fft_complex[0],
+        FFTW_ESTIMATE);
+    sigma_gauss_.plan_inverse = fftw_plan_dft_c2r_1d(nfft,
+        sigma_gauss_.fft_complex[1], sigma_gauss_.fft_real[0][1],
+        FFTW_ESTIMATE);
+
+    sigma_gauss_.nfft = nfft;
+    sigma_gauss_.ninput = ninput;
+    sigma_gauss_.nradial = nradial;
+    sigma_gauss_.nthreads = threads;
+    sigma_gauss_.nr = nr;
+    sigma_gauss_.na = na;
+    sigma_gauss_.ninv = ninv;
+    sigma_gauss_.nk = nk;
+    sigma_gauss_.lnk0 = lnk0;
+    sigma_gauss_.dlnk = dlnk;
+    sigma_gauss_.lnr0 = lnr0;
+    sigma_gauss_.dlnr = dlnr;
+    sigma_gauss_.amin = limits.a_min;
+    sigma_gauss_.da = (1.0-limits.a_min)/(na-1);
+
+
+
+    // --- 1c. INTEGRATE EACH FOURIER MODE ANALYTICALLY ---
+
+    // Unlike the top-hat path, the radius origin of the output grid
+    // is a fixed constant (lnr0 - padding*dlnk): no mean density maps
+    // mass to radius here. The shifted kernels therefore depend only
+    // on the grids and are built once per workspace, in this tier,
+    // and reused across cosmologies.
+    const double lnkin = lnk0+first*dlnk;
+    const double lnr0_fft = lnr0-padding*dlnk;
+
+    for (int mode=0; mode<=nfft/2; mode++) {
+      const double eta = 2.0*M_PI*mode/(nfft*dlnk);
+
+      // ln Gamma(s/2) at s = bias + i eta: GSL returns ln|Gamma| and
+      // arg(Gamma), so the division by two in Mellin_G(s) =
+      // Gamma(s/2)/2 becomes a subtraction of ln 2.
+      gsl_sf_result amplitude; // logarithm of |Gamma(s/2)|
+      gsl_sf_result phase;     // complex argument of Gamma(s/2)
+      gsl_sf_lngamma_complex_e(bias/2.0, eta/2.0, &amplitude, &phase);
+
+      const double lnamp = amplitude.val-log(2.0);
+
+      // The same high-frequency taper as the top-hat build: a finite
+      // FFT treats its input as periodic, and the window
+      // t - sin(2 pi t)/(2 pi) smoothly reduces the top quarter of
+      // frequencies to suppress oscillations from the periodic seam.
+      const double fraction = 2.0*mode/nfft;
+      double window = 1.0;
+      if (fraction > 0.75) {
+        const double taper = (1.0-fraction)/0.25;
+        window = taper-sin(2.0*M_PI*taper)/(2.0*M_PI);
+      }
+
+      // Fourier coefficients refer to samples starting at lnkin, and
+      // the output starts at lnr0_fft; exp[-i eta (lnkin+lnr0_fft)]
+      // accounts for both origins. FFTW's inverse uses
+      // exp(+i eta lnR) while the integrated mode varies as
+      // exp(-i eta lnR): conjugate the kernel here and the forward
+      // coefficient below, as in the top-hat build.
+      const double angle = phase.val-eta*(lnkin+lnr0_fft);
+      const double real_kernel = exp(lnamp)*window*cos(angle);
+      const double imag_kernel = -exp(lnamp)*window*sin(angle);
+      sigma_gauss_.kernel[0][mode][0] = real_kernel;
+      sigma_gauss_.kernel[0][mode][1] = imag_kernel;
+
+      // Differentiating R^(-bias-i*eta) gives -(bias+i*eta);
+      // conjugation reverses the sign of i in the inverse-FFT kernel.
+      sigma_gauss_.kernel[1][mode][0] = -bias*real_kernel
+                                        -eta*imag_kernel;
+      sigma_gauss_.kernel[1][mode][1] = -bias*imag_kernel
+                                        +eta*real_kernel;
+    }
+  }
+
+
+
+  // --- 2. TRANSFORM AND INVERT EACH SCALE-FACTOR ROW INDEPENDENTLY ---
+
+  const double lnkin = lnk0+first*dlnk;
+  const double lnr0_fft = lnr0-padding*dlnk;
+
+  // Each worker completes an entire a row: one forward FFT, two
+  // inverse FFTs, the resample onto the output lnR grid, and the
+  // row's inverse table. Workers share no writable data, so the
+  // result cannot depend on the schedule or the thread count.
+  #pragma omp parallel for schedule(static)
+  for (int row=0; row<na; row++) {
+    const int thread = omp_get_thread_num();
+
+    // Local restrict pointers, as in the top-hat build: each row
+    // below is a separate region of memory, and the promise lets the
+    // compiler keep values in registers across the loops.
+    double* restrict input = sigma_gauss_.fft_real[thread][0];
+    double* restrict radial = sigma_gauss_.fft_real[thread][1];
+    double* restrict derivative = sigma_gauss_.fft_real[thread][2];
+
+    double* restrict coeff = sigma_gauss_.spline_work[thread][0];
+    double* restrict scratch = sigma_gauss_.spline_work[thread][1];
+
+    double* restrict variance = sigma_gauss_.table[0][row];
+    double* restrict slope = sigma_gauss_.table[1][row];
+    double* restrict inverse = sigma_gauss_.inverse[row];
+
+    fftw_complex* restrict forward = sigma_gauss_.fft_complex[2*thread];
+    fftw_complex* restrict product =
+        sigma_gauss_.fft_complex[2*thread+1];
+
+
+    // --- 2a. READ THE TOTAL-MATTER SPECTRUM AT THIS SCALE FACTOR ---
+
+    const double a = limits.a_min+row*sigma_gauss_.da;
+    const double redshift = 1.0/a-1.0;
+
+    // The z bracket and the k continuation repeat the top-hat build's
+    // stage 3a (its comments explain the edge-bracket rule and the
+    // power-law continuation); only the cb branch is absent, because
+    // the BiHalofit convention reads total matter alone.
+    const int lower = piecewise_index(redshift, cosmology.lnPL_z_nseg,
+        cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
+        cosmology.lnPL_z_seg_xmin, cosmology.lnPL_z_seg_inv_dx, nz);
+
+    const double fraction_z = (redshift-cosmology.lnPL[nk][lower])
+        /(cosmology.lnPL[nk][lower+1]-cosmology.lnPL[nk][lower]);
+
+    for (int node=0; node<ninput; node++) {
+      const int source = node+first;
+      const int bracket = (int) fmin(fmax(source, 0), nk-2);
+
+      const double left = cosmology.lnPL[bracket][lower]
+          +fraction_z*(cosmology.lnPL[bracket][lower+1]
+                       -cosmology.lnPL[bracket][lower]);
+      const double right = cosmology.lnPL[bracket+1][lower]
+          +fraction_z*(cosmology.lnPL[bracket+1][lower+1]
+                       -cosmology.lnPL[bracket+1][lower]);
+
+      // g = k^(-bias) Delta^2 = k^(3-bias) P / (2 pi^2)
+      const double lnP = left+(source-bracket)*(right-left);
+      const double lnk = lnkin+node*dlnk;
+      input[node] = exp(lnP+(3.0-bias)*lnk)/(2.0*M_PI*M_PI);
+    }
+
+    // Zero the padding appended to reach the FFT-friendly length; it
+    // lies after the high-k continuation and adds no power.
+    for (int node=ninput; node<nfft; node++) {
+      input[node] = 0.0;
+    }
+
+
+    // --- 2b. ONE FORWARD FFT, TWO INVERSE FFTS ---
+
+    fftw_execute_dft_r2c(sigma_gauss_.plan_forward, input, forward);
+
+    for (int derivative_order=0; derivative_order<2; derivative_order++) {
+      const fftw_complex* restrict kernel =
+          sigma_gauss_.kernel[derivative_order];
+
+      for (int mode=0; mode<=nfft/2; mode++) {
+        const double real_kernel = kernel[mode][0];
+        const double imag_kernel = kernel[mode][1];
+
+        // conj(forward) times the conjugated Mellin/phase kernel.
+        const double real_product = forward[mode][0]*real_kernel
+                                    +forward[mode][1]*imag_kernel;
+        const double imag_product = forward[mode][0]*imag_kernel
+                                    -forward[mode][1]*real_kernel;
+
+        product[mode][0] = real_product;
+        product[mode][1] = imag_product;
+      }
+
+      double* output = radial;
+      if (derivative_order == 1) {
+        output = derivative;
+      }
+
+      fftw_execute_dft_c2r(sigma_gauss_.plan_inverse, product, output);
+    }
+
+
+    // --- 2c. RESTORE NORMALIZATION AND FORM THE RADIAL SLOPE ---
+
+    // The nfft and R^(-bias) factors cancel in the derivative/variance
+    // ratio, which is already the logarithmic slope dln sigma_G^2/dlnR
+    // (no 1/6: the output axis is lnR itself, not lnM). Divide out a^2
+    // before storing the logarithm, as the top-hat build does, to keep
+    // the early-time a interpolation accurate.
+    for (int node=0; node<nradial; node++) {
+      const double lnR = lnr0_fft+node*dlnk;
+      if (!(radial[node] > 0.0)) {
+        log_fatal("sigma2_gauss: nonpositive FFTLog variance at a=%g", a);
+        exit(1);
+      }
+
+      derivative[node] /= radial[node];
+      radial[node] = log(radial[node]/nfft)-bias*lnR-2.0*log(a);
+    }
+
+
+    // --- 2d. FROM FFT RADIUS NODES TO THE OUTPUT RADIUS NODES ---
+
+    for (int quantity=0; quantity<2; quantity++) {
+      const double* values = radial;
+      double* output = variance;
+      if (quantity == 1) {
+        values = derivative;
+        output = slope;
+      }
+
+      sigma2_spline_coeffs(values, nradial, dlnk, coeff, scratch);
+
+      // lnR - lnr0_fft = padding*dlnk + node*dlnr locates each output
+      // radius in the uniform FFT grid; the Horner form repeats the
+      // top-hat build's stage 3d.
+      for (int node=0; node<nr; node++) {
+        const double position = padding+node*sigma_gauss_.dlnr/dlnk;
+        const int cell = (int) floor(position);
+        const double offset = (position-cell)*dlnk;
+
+        const double linear = (values[cell+1]-values[cell])/dlnk
+            -dlnk*(coeff[cell+1]+2.0*coeff[cell])/3.0;
+        const double cubic = (coeff[cell+1]-coeff[cell])/(3.0*dlnk);
+
+        output[node] = values[cell]+offset*(linear
+                        +offset*(coeff[cell]+offset*cubic));
+      }
+    }
+
+
+    // --- 2e. THE ROW'S UNIFORM INVERSE TABLE OF lnR(ln sigma_G^2) ---
+
+    // y = ln sigma_G^2 at the output nodes, with the a^2 restored:
+    // the inverse answers "at which radius does sigma_G reach a given
+    // value", a question about the physical variance. y decreases
+    // strictly along the row (derivation note 4); the guard enforces
+    // what the inversion assumes.
+    const double two_lna = 2.0*log(a);
+    for (int node=0; node<nr-1; node++) {
+      if (!(variance[node]+two_lna > variance[node+1]+two_lna)) {
+        log_fatal("sigma2_gauss: sigma_G^2 is not strictly decreasing "
+                  "in R at a=%g", a);
+        exit(1);
+      }
+    }
+
+    const double ymin = variance[nr-1]+two_lna; // at the largest radius
+    const double ymax = variance[0]+two_lna;    // at the smallest radius
+    const double dy = (ymax-ymin)/(ninv-1);
+    sigma_gauss_.inverse_y[row][0] = ymin;
+    sigma_gauss_.inverse_y[row][1] = dy;
+
+    // One monotone merge pass: as the target y rises from ymin to
+    // ymax, the radius falls, so the cell index only ever moves left.
+    // Within a cell, invert the linear interpolant of y(lnR). The
+    // whole pass costs O(nr + ninv); no per-node search occurs here
+    // or in any reader.
+    int cell = nr-2;
+    for (int node=0; node<ninv; node++) {
+      const double target = ymin+node*dy;
+      while (cell > 0 && target > variance[cell]+two_lna) {
+        cell--;
+      }
+      const double y_left = variance[cell]+two_lna;
+      const double y_right = variance[cell+1]+two_lna;
+      const double fraction = (y_left-target)/(y_left-y_right);
+      inverse[node] = sigma_gauss_.lnr0
+                      +(cell+fraction)*sigma_gauss_.dlnr;
+    }
+  }
+
+  // Publish the cache tags only after every parallel row is complete.
+  sigma_gauss_.cosmology_tag = cosmology.random;
+  sigma_gauss_.ntable_tag = Ntable.random;
+}
+
+
+// ---------------------------------------------------------------------------
+// Read a Gaussian variance or slope from the cached (lnR, a) tables.
+//
+// Bilinear interpolation, exactly as sigma2_field_read: first in lnR
+// within the two neighboring a rows, then in a between those results.
+// The variance table stores ln(sigma_G^2/a^2); sigma2_gauss restores
+// a^2 after this interpolation. The slope table needs no rescaling.
+//
+// Parameters:
+//   R          - positive smoothing radius in Mpc/h
+//   a          - scale factor in [limits.a_min, 1]
+//   derivative - 0 reads ln(sigma_G^2/a^2); 1 reads dln sigma_G^2/dlnR
+//
+// Returns:
+//   the requested dimensionless table value. Radii outside the
+//   tabulated window use the nearest radius endpoint; invalid scale
+//   factors are errors.
+// ---------------------------------------------------------------------------
+static double sigma2_gauss_read(
+    const double R,      // smoothing radius in Mpc/h
+    const double a,      // scale factor
+    const int derivative // 0: ln(sigma_G^2/a^2), 1: dln sigma_G^2/dlnR
+  )
+{
+  if (!isfinite(R) || R <= 0.0 || !isfinite(a) || a < limits.a_min
+      || a > 1.0) {
+    log_fatal("sigma2_gauss: R=%g a=%g; require positive R and "
+              "a in [%g,1]", R, a, limits.a_min);
+    exit(1);
+  }
+
+  sigma2_gauss_build();
+
+  // Clamp out-of-window radii to the nearest tabulated endpoint, the
+  // top-hat reader's convention for masses.
+  double lnR = log(R);
+  const double lnr1 = sigma_gauss_.lnr0
+                      +(sigma_gauss_.nr-1)*sigma_gauss_.dlnr;
+  if (lnR < sigma_gauss_.lnr0) {
+    lnR = sigma_gauss_.lnr0;
+  } else if (lnR > lnr1) {
+    lnR = lnr1;
+  }
+
+  // Uniform grids: subtracting the origin and dividing by the spacing
+  // measures the position in table intervals (sigma2_field_read walks
+  // through the same arithmetic with a worked example).
+  const double radius_position = (lnR-sigma_gauss_.lnr0)
+                                 /sigma_gauss_.dlnr;
+  const double a_position = (a-sigma_gauss_.amin)/sigma_gauss_.da;
+
+  int radius_node = (int) radius_position;
+  int a_node = (int) a_position;
+
+  // The final node reads its interval from the left (fraction 1).
+  if (radius_node >= sigma_gauss_.nr-1) {
+    radius_node = sigma_gauss_.nr-2;
+  }
+  if (a_node >= sigma_gauss_.na-1) {
+    a_node = sigma_gauss_.na-2;
+  }
+
+  const double radius_fraction = radius_position-radius_node;
+  const double a_fraction = a_position-a_node;
+
+  double** values = sigma_gauss_.table[0];
+  if (derivative) {
+    values = sigma_gauss_.table[1];
+  }
+
+  const double lower = values[a_node][radius_node]+radius_fraction
+      *(values[a_node][radius_node+1]-values[a_node][radius_node]);
+  const double upper = values[a_node+1][radius_node]+radius_fraction
+      *(values[a_node+1][radius_node+1]-values[a_node+1][radius_node]);
+
+  return lower+a_fraction*(upper-lower);
+}
+
+
+// ---------------------------------------------------------------------------
+// Gaussian-window variance of the linear total-matter density at (R,a):
+// sigma_G^2(R,a) = integral dlnk Delta^2(k,a) exp(-(kR)^2), the
+// halofit/BiHalofit smoothing convention (derivation above).
+// Parameters: R in Mpc/h (clamped to the tabulated window), a the
+// scale factor. Returns: sigma_G^2(R,a), dimensionless.
+// ---------------------------------------------------------------------------
+double sigma2_gauss(
+    const double R, // smoothing radius in Mpc/h
+    const double a  // scale factor
+  )
+{
+  return exp(sigma2_gauss_read(R, a, 0))*a*a;
+}
+
+
+// ---------------------------------------------------------------------------
+// Logarithmic radial slope of the Gaussian-window variance,
+// dln sigma_G^2/dlnR at (R,a); -3 minus this slope at the nonlinear
+// radius is BiHalofit's effective spectral index (neff_gauss below).
+// Parameters: R in Mpc/h (clamped to the tabulated window), a the
+// scale factor. Returns: dln sigma_G^2/dlnR, dimensionless (negative).
+// ---------------------------------------------------------------------------
+double dlnsigma2_gauss_dlnr(
+    const double R, // smoothing radius in Mpc/h
+    const double a  // scale factor
+  )
+{
+  return sigma2_gauss_read(R, a, 1);
+}
+
+
+// ---------------------------------------------------------------------------
+// ln R_NL of one scale-factor row, read from that row's inverse table.
+//
+// The nonlinear radius solves sigma_G(R_NL) = 1, i.e. ln sigma_G^2 =
+// 0. The row's inverse table is uniform in y = ln sigma_G^2, so the
+// crossing is one index-arithmetic read: position = (0 - ymin)/dy,
+// then linear interpolation between the two bracketing lnR values.
+//
+// A row whose variance never crosses one has no nonlinear radius: at
+// high redshift a low-amplitude cosmology can keep sigma_G below one
+// at every tabulated radius. That is a physical absence, not a table
+// failure, so the guard stops with the achievable range in the
+// message rather than returning a clamped surrogate.
+// ---------------------------------------------------------------------------
+static double rnl_gauss_row(
+    const int row // scale-factor row index
+  )
+{
+  const double ymin = sigma_gauss_.inverse_y[row][0];
+  const double dy = sigma_gauss_.inverse_y[row][1];
+  const double ymax = ymin+(sigma_gauss_.ninv-1)*dy;
+
+  if (!(ymin <= 0.0 && 0.0 <= ymax)) {
+    log_fatal("rnl_gauss: sigma_G(R) never reaches 1 at a=%g "
+              "(ln sigma_G^2 spans [%g,%g] over the tabulated radii)",
+              sigma_gauss_.amin+row*sigma_gauss_.da, ymin, ymax);
+    exit(1);
+  }
+
+  const double position = (0.0-ymin)/dy;
+  int node = (int) position;
+  if (node >= sigma_gauss_.ninv-1) {
+    node = sigma_gauss_.ninv-2;
+  }
+  const double fraction = position-node;
+
+  const double* restrict inverse = sigma_gauss_.inverse[row];
+  return inverse[node]+fraction*(inverse[node+1]-inverse[node]);
+}
+
+
+// ---------------------------------------------------------------------------
+// BiHalofit nonlinear radius R_NL(a): the radius where the Gaussian-
+// smoothed linear total-matter field reaches unit variance,
+// sigma_G(R_NL, a) = 1 (Smith et al. astro-ph/0207664 define the
+// nonlinear wavenumber k_NL = 1/R_NL this way; Takahashi et al.
+// arXiv:1911.07886 keep the convention). Read from the per-row
+// inverse tables at the two a rows bracketing the request, then
+// interpolated linearly in a on ln R_NL.
+// Parameters: a the scale factor in [limits.a_min, 1].
+// Returns: R_NL(a) in Mpc/h. Errors if sigma_G never crosses one at
+// a bracketing row (see rnl_gauss_row).
+// ---------------------------------------------------------------------------
+double rnl_gauss(
+    const double a // scale factor
+  )
+{
+  if (!isfinite(a) || a < limits.a_min || a > 1.0) {
+    log_fatal("rnl_gauss: a=%g; require a in [%g,1]", a, limits.a_min);
+    exit(1);
+  }
+
+  sigma2_gauss_build();
+
+  const double a_position = (a-sigma_gauss_.amin)/sigma_gauss_.da;
+  int a_node = (int) a_position;
+  if (a_node >= sigma_gauss_.na-1) {
+    a_node = sigma_gauss_.na-2;
+  }
+  const double a_fraction = a_position-a_node;
+
+  const double lower = rnl_gauss_row(a_node);
+  const double upper = rnl_gauss_row(a_node+1);
+
+  return exp(lower+a_fraction*(upper-lower));
+}
+
+
+// ---------------------------------------------------------------------------
+// BiHalofit effective spectral slope n_eff(a) = -3 - dln sigma_G^2/dlnR
+// at R = R_NL(a): the local slope of the linear spectrum at the
+// nonlinear scale (for a power law P ~ k^n it equals n exactly). Each
+// bracketing a row reads its own nonlinear radius from its inverse
+// table and its slope at that radius from the dense slope table, both
+// by index arithmetic; the two row values interpolate linearly in a.
+// Parameters: a the scale factor in [limits.a_min, 1].
+// Returns: n_eff(a), dimensionless. Errors as rnl_gauss.
+// ---------------------------------------------------------------------------
+double neff_gauss(
+    const double a // scale factor
+  )
+{
+  if (!isfinite(a) || a < limits.a_min || a > 1.0) {
+    log_fatal("neff_gauss: a=%g; require a in [%g,1]", a, limits.a_min);
+    exit(1);
+  }
+
+  sigma2_gauss_build();
+
+  const double a_position = (a-sigma_gauss_.amin)/sigma_gauss_.da;
+  int a_node = (int) a_position;
+  if (a_node >= sigma_gauss_.na-1) {
+    a_node = sigma_gauss_.na-2;
+  }
+  const double a_fraction = a_position-a_node;
+
+  double neff[2]; // the two bracketing rows' effective slopes
+  for (int side=0; side<2; side++) {
+    const int row = a_node+side;
+    const double lnr_nl = rnl_gauss_row(row);
+
+    // The row's slope at its own nonlinear radius, read from the
+    // uniform lnR grid by index arithmetic (the radius lies inside
+    // the window whenever the unit crossing does).
+    const double position = (lnr_nl-sigma_gauss_.lnr0)
+                            /sigma_gauss_.dlnr;
+    int node = (int) position;
+    if (node >= sigma_gauss_.nr-1) {
+      node = sigma_gauss_.nr-2;
+    }
+    const double fraction = position-node;
+
+    const double* restrict slope = sigma_gauss_.table[1][row];
+    neff[side] = -3.0-(slope[node]
+                       +fraction*(slope[node+1]-slope[node]));
+  }
+
+  return neff[0]+a_fraction*(neff[1]-neff[0]);
+}
+
+
+// ---------------------------------------------------------------------------
+// sigma8(a): the rms of the linear total-matter density in a top-hat
+// sphere of radius 8 Mpc/h, read from the saved total-matter table.
+//
+// The top-hat table's axis is halo mass, so the 8 Mpc/h sphere enters
+// through the mass it contains, M_8 = (4 pi/3) rho_m 8^3 with rho_m
+// the mean comoving total-matter density. M_8 generally falls between
+// two lnM nodes, so this is an ordinary interpolated read of the
+// table, not an exact node value.
+// Parameters: a the scale factor in [limits.a_min, 1].
+// Returns: sigma8(a) = sigma_m(8 Mpc/h, a), dimensionless.
+// ---------------------------------------------------------------------------
+double sigma8_matter(
+    const double a // scale factor
+  )
+{
+  // rho_crit is stored per (c/H0)^3; convert to the Mpc/h volume unit
+  // before forming the mass of the 8 Mpc/h sphere, as the top-hat
+  // build does for its mass-radius map.
+  const double rho_unit = cosmology.rho_crit/pow(cosmology.coverH0, 3.0);
+  const double radius = 8.0; // Mpc/h, the sigma8 convention
+  const double mass_8 = 4.0*M_PI*rho_unit*cosmology.Omega_m
+                        *radius*radius*radius/3.0;
+
+  return sqrt(sigma2_matter(mass_8, a));
+}
