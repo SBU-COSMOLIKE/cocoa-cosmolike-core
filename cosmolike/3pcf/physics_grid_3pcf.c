@@ -75,6 +75,24 @@ struct physics_grid_3pcf {
   double* multipoles; // [baseline/residual,chart,L,nell,npsi]
 };
 
+// This owner retains geometry only: no sampled bispectrum or b_L value.
+// Its allocation dimensions are fixed at construction. The copied axes
+// and reader convention form the complete matching key for a later grid;
+// comparing endpoints alone would miss a changed irregular reference axis.
+// No pointer to the constructing grid, model or caller ell array survives.
+struct physics_grid_query_3pcf {
+  int nell; // requested Fourier values per leg, fixed for this query
+  int grid_nell; // interpolation log_ELL axis size
+  int grid_npsi; // interpolation log_small_PSI axis size
+  int lmax; // sets the physical table's L stride and output row count
+  int reference_mode; // determines coordinate tolerance and cell reader
+  double* log_ell; // owned complete interpolation-axis key
+  double* log_psi; // owned complete interpolation-axis key
+  int* charts; // [nell,nell], which ordered-leg chart is read
+  size_t* cells; // [nell,nell], lower-left interpolation offsets
+  double* fractions; // [nell,nell,4], ordered bilinear corner weights
+};
+
 static void grid_require(const int condition, const char* message)
 {
   if (!condition) {
@@ -160,13 +178,12 @@ static int dense_grid_count(const int count, const int boost)
 // cubic. Its dense output is subsequently read by arithmetic-index linear
 // interpolation, as in cosmo2D.c's Limber table preparation.
 static void upsample_uniform_row(const double* coarse, const int count,
-  const int boost, double* dense, double* second, double* diagonal)
+  const int boost, double* dense, double* second, const double* diagonal,
+  const double* offsets)
 {
   second[0] = 0.0;
   second[count - 1] = 0.0;
-  diagonal[0] = 1.0;
   for (int index=1; index<count - 1; index++) {
-    diagonal[index] = 4.0 - (index == 1 ? 0.0 : 1.0/diagonal[index - 1]);
     const double rhs = 6.0*(coarse[index + 1] - 2.0*coarse[index]
       + coarse[index - 1]);
     second[index] = rhs - (index == 1 ? 0.0
@@ -175,16 +192,21 @@ static void upsample_uniform_row(const double* coarse, const int count,
   for (int index=count - 2; index>=1; index--) {
     second[index] = (second[index] - second[index + 1])/diagonal[index];
   }
-  const int fine_count = dense_grid_count(count, boost);
-  for (int fine=0; fine<fine_count; fine++) {
-    const int index = fine/boost < count - 1 ? fine/boost : count - 2;
-    const double offset = (double)(fine - index*boost)/boost;
+  // Neighboring dense samples share one cubic's coefficients. Evaluate
+  // that polynomial with the same operations, using prepared offsets.
+  // Only the final interval writes its right endpoint, so every dense
+  // cell is written once, including a coarse grid with only two nodes.
+  for (int index=0; index<count - 1; index++) {
     const double linear = coarse[index + 1] - coarse[index]
       - (second[index + 1] + 2.0*second[index])/6.0;
     const double quadratic = 0.5*second[index];
     const double cubic = (second[index + 1] - second[index])/6.0;
-    dense[fine] = coarse[index]
-      + offset*(linear + offset*(quadratic + offset*cubic));
+    const int steps = index == count - 2 ? boost + 1 : boost;
+    for (int step=0; step<steps; step++) {
+      const double offset = offsets[step];
+      dense[index*boost + step] = coarse[index]
+        + offset*(linear + offset*(quadratic + offset*cubic));
+    }
   }
 }
 
@@ -215,15 +237,26 @@ static double* upsample_uniform_grid(double* input, int* dimensions,
       && (size_t)new_count <= SIZE_MAX/(before*after),
       "upsampled tensor size overflows");
     double* output = grid_allocate(before*after*new_count, sizeof(double));
+    // The natural-cubic matrix and subcell coordinates depend only on
+    // this axis's count and boost. Share their exact original values
+    // across all lines, before launching workers; no physical data enter.
+    double* diagonal = grid_allocate((size_t)old_count, sizeof(double));
+    diagonal[0] = 1.0;
+    for (int index=1; index<old_count - 1; index++) {
+      diagonal[index] = 4.0 - (index == 1 ? 0.0 : 1.0/diagonal[index - 1]);
+    }
+    double* offsets = grid_allocate((size_t)boost + 1, sizeof(double));
+    for (int step=0; step<=boost; step++) {
+      offsets[step] = (double)step/boost;
+    }
     size_t worker_stride;
-    double* scratch = worker_storage((size_t)3*old_count + new_count,
+    double* scratch = worker_storage((size_t)2*old_count + new_count,
       &worker_stride);
     #pragma omp parallel if(!omp_in_parallel())
     {
       double* coarse = scratch + (size_t)omp_get_thread_num()*worker_stride;
       double* fine = coarse + old_count;
       double* second = fine + new_count;
-      double* diagonal = second + old_count;
       #pragma omp for schedule(static)
       for (size_t line=0; line<before*after; line++) {
         const size_t outer = line/after;
@@ -231,13 +264,16 @@ static double* upsample_uniform_grid(double* input, int* dimensions,
         for (int index=0; index<old_count; index++) {
           coarse[index] = input[(outer*old_count + index)*after + inner];
         }
-        upsample_uniform_row(coarse, old_count, boost, fine, second, diagonal);
+        upsample_uniform_row(coarse, old_count, boost, fine, second,
+          diagonal, offsets);
         for (int index=0; index<new_count; index++) {
           output[(outer*new_count + index)*after + inner] = fine[index];
         }
       }
     }
     free(scratch);
+    free(diagonal);
+    free(offsets);
     free(input);
     input = output;
     dimensions[axis] = new_count;
@@ -518,6 +554,20 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
         const double magnitude = exp(grid->log_ell[scale]);
         const double small = exp(grid->log_psi[angle]);
         for (int chart=0; chart<2; chart++) {
+          if (chart == 1) {
+            // The baseline already uses the same sorted triangle samples
+            // in both charts. Copy its completed L sums; the ordered TATT
+            // residual still needs its own second-chart calculation.
+            for (int order=0; order<=lmax; order++) {
+              grid->multipoles[multipole_grid_index(grid, 0,
+                1, order, scale, angle)]
+                = grid->multipoles[multipole_grid_index(grid, 0,
+                0, order, scale, angle)];
+            }
+            if (!grid->has_residual) {
+              continue;
+            }
+          }
           const double psi = chart == 0 ? small
             : 1.57079632679489661923 - small;
           const double first = magnitude*cos(psi);
@@ -530,10 +580,15 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
               baseline[node] = physics_grid_projected_3pcf(grid,
                 first, second, third, 1);
             }
-            residual[node] = physics_grid_projected_3pcf(grid,
-              first, second, third, 2);
+            if (grid->has_residual) {
+              residual[node] = physics_grid_projected_3pcf(grid,
+                first, second, third, 2);
+            }
           }
-          for (int component=0; component<2; component++) {
+          // Pure NLA has exactly zero residual. Its calloc-initialized
+          // planes retain +0 without sampling or integrating zero values.
+          const int ncomponent = grid->has_residual ? 2 : 1;
+          for (int component=chart; component<ncomponent; component++) {
             const double* values = component == 0 ? baseline : residual;
             int order = 0;
             for (; order + 1<=lmax; order += 2) {
@@ -777,6 +832,11 @@ void physics_grid_create_many_3pcf(
     projections[triplet] = physics_projector_create_3pcf(model, parameters,
       bins + (size_t)triplet*3);
   }
+  // Validate common model/IA once and copy radial weights into contiguous
+  // triplet lanes. The batch borrows the first projector until destruction
+  // below; workers neither allocate nor modify any shared preparation.
+  physics_projection_batch_3pcf* batch = physics_projection_batch_create_3pcf(
+    ntriplet, projections);
   const physics_grid_3pcf* first = out[0];
   const size_t nbaseline = grid_product(first->nr, first->nu, first->nv);
   const size_t nresidual = has_residual
@@ -797,7 +857,7 @@ void physics_grid_create_many_3pcf(
       const int ir = index/((size_t)first->nv*first->nu);
       const double radius = exp(first->log_r[ir]);
       const double ratio = exp(first->log_u[iu]);
-      physics_projected_batch_3pcf(ntriplet, projections,
+      physics_projection_batch_evaluate_3pcf(batch,
         radius*(1.0 + ratio*first->v[iv]), radius, radius*ratio, 1, 0,
         values);
       for (int triplet=0; triplet<ntriplet; triplet++) {
@@ -815,7 +875,7 @@ void physics_grid_create_many_3pcf(
       const double side1 = perimeter*first->pu[iu];
       const double side2 = perimeter*first->pu[iv];
       const double side3 = perimeter*(1.0 - first->pu[iu] - first->pu[iv]);
-      physics_projected_batch_3pcf(ntriplet, projections,
+      physics_projection_batch_evaluate_3pcf(batch,
         side1, side2, side3, 2, 1, values);
       for (int triplet=0; triplet<ntriplet; triplet++) {
         grid_require(isfinite(values[triplet]), "nonfinite PUV residual");
@@ -824,6 +884,7 @@ void physics_grid_create_many_3pcf(
     }
   }
   free(scratch);
+  physics_projection_batch_destroy_3pcf(batch);
   for (int triplet=0; triplet<ntriplet; triplet++) {
     physics_projector_destroy_3pcf(projections[triplet]);
     finish_grid(out[triplet]);
@@ -897,28 +958,53 @@ void physics_grid_destroy_3pcf(physics_grid_3pcf* grid)
 }
 
 
-void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
-  const int nell, const double* ell, const int component, double* out)
+physics_grid_query_3pcf* physics_grid_query_create_3pcf(
+  const physics_grid_3pcf* grid, // prepared interpolation axes and L cutoff
+  const int nell, // requested Fourier values per leg
+  const double* ell // [nell], consumed once and not retained
+)
 {
-  grid_require(grid && ell && out && nell > 0
-    && component >= 0 && component <= 2, "invalid multipole table query");
-  grid_require(grid->settings.prepare_multipoles,
+  grid_require(grid && ell && nell > 0, "invalid multipole query geometry");
+  grid_require(grid->settings.prepare_multipoles && grid->multipoles,
     "this grid omitted b_L; recreate with prepare_multipoles=1");
   const int lmax = grid->settings.lmax;
-  grid_product(lmax + 1, nell, nell);
-  const size_t npoint = (size_t)nell*nell;
-  int* charts = grid_allocate(npoint, sizeof(int));
-  size_t* cells = grid_allocate(npoint, sizeof(size_t));
-  double* fractions = grid_allocate(4*npoint, sizeof(double));
+  grid_require(lmax >= 0 && lmax < INT_MAX && grid->nell >= 2
+    && grid->npsi >= 2 && grid->log_ell && grid->log_psi,
+    "invalid prepared multipole axes");
+  const size_t output_count = grid_product(lmax + 1, nell, nell);
+  grid_require(output_count <= SIZE_MAX/sizeof(double),
+    "multipole query output size overflows");
+  const size_t npoint = grid_product(1, nell, nell);
+  grid_require(npoint <= SIZE_MAX/4, "multipole query weight count overflows");
+  for (int index=0; index<nell; index++) {
+    grid_require(isfinite(ell[index]) && ell[index] > 0.0,
+      "invalid Fourier multipole");
+  }
+  physics_grid_query_3pcf* query = grid_allocate(1, sizeof(*query));
+  query->nell = nell;
+  query->grid_nell = grid->nell;
+  query->grid_npsi = grid->npsi;
+  query->lmax = lmax;
+  query->reference_mode = grid->settings.reference_mode;
+  query->log_ell = grid_allocate((size_t)grid->nell, sizeof(double));
+  query->log_psi = grid_allocate((size_t)grid->npsi, sizeof(double));
+  memcpy(query->log_ell, grid->log_ell, (size_t)grid->nell*sizeof(double));
+  memcpy(query->log_psi, grid->log_psi, (size_t)grid->npsi*sizeof(double));
+  query->charts = grid_allocate(npoint, sizeof(int));
+  query->cells = grid_allocate(npoint, sizeof(size_t));
+  query->fractions = grid_allocate(4*npoint, sizeof(double));
+  int* charts = query->charts;
+  size_t* cells = query->cells;
+  double* fractions = query->fractions;
   // The geometry is shared by every L and both physical components.
   // Compute its coordinate transforms, integer cells and four bilinear
   // weights once. The later interpolation loop contains neither a
   // logarithm nor a binary search nor repeated cell-index arithmetic.
+  // Each query owns one chart, cell and four weights. Sharing the read-only
+  // axes across workers changes neither the coordinates nor their rounding.
+  #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int first=0; first<nell; first++) {
     for (int second=0; second<nell; second++) {
-      grid_require(isfinite(ell[first]) && ell[first] > 0.0
-        && isfinite(ell[second]) && ell[second] > 0.0,
-        "invalid Fourier multipole");
       const int chart = ell[second] > ell[first] ? 1 : 0;
       const double small = atan2(fmin(ell[first], ell[second]),
         fmax(ell[first], ell[second]));
@@ -944,6 +1030,66 @@ void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
       fractions[point*4 + 3] = fraction_x*fraction_y;
     }
   }
+  return query;
+}
+
+
+int physics_grid_query_matches_3pcf(
+  const physics_grid_query_3pcf* query, // complete immutable geometry key
+  const physics_grid_3pcf* grid // physical values are deliberately not a key
+)
+{
+  if (!query || !grid || !grid->settings.prepare_multipoles
+      || !grid->multipoles || !grid->log_ell || !grid->log_psi
+      || query->grid_nell != grid->nell || query->grid_npsi != grid->npsi
+      || query->lmax != grid->settings.lmax
+      || query->reference_mode != grid->settings.reference_mode) {
+    return 0;
+  }
+  // Sizes were checked before copying these arrays. Exact byte comparison
+  // includes every interior axis value and distinguishes signed zero.
+  // The query's own ell coordinates cannot change after construction.
+  return memcmp(query->log_ell, grid->log_ell,
+      (size_t)query->grid_nell*sizeof(double)) == 0
+    && memcmp(query->log_psi, grid->log_psi,
+      (size_t)query->grid_npsi*sizeof(double)) == 0;
+}
+
+
+int physics_grid_query_nell_3pcf(
+  const physics_grid_query_3pcf* query // fixed output Fourier size
+)
+{
+  grid_require(query != NULL, "missing multipole query geometry");
+  return query->nell;
+}
+
+
+int physics_grid_query_lmax_3pcf(
+  const physics_grid_query_3pcf* query // fixed maximum Legendre degree
+)
+{
+  grid_require(query != NULL, "missing multipole query geometry");
+  return query->lmax;
+}
+
+
+void physics_grid_query_evaluate_3pcf(
+  const physics_grid_query_3pcf* query, // immutable geometric interpolation map
+  const physics_grid_3pcf* grid, // matching axes, fresh physical multipoles
+  const int component, // total=0, NLA baseline=1, residual IA=2
+  double* out // [lmax+1,nell,nell], independent writable output
+)
+{
+  grid_require(query && grid && out && component >= 0 && component <= 2,
+    "invalid prepared multipole query");
+  grid_require(physics_grid_query_matches_3pcf(query, grid),
+    "multipole query axes differ; recreate the query for this grid");
+  const int nell = query->nell;
+  const int lmax = query->lmax;
+  const int* charts = query->charts;
+  const size_t* cells = query->cells;
+  const double* fractions = query->fractions;
   const size_t plane = (size_t)grid->nell*grid->npsi;
   const size_t offsets[4] = {0, 1, (size_t)grid->npsi,
     (size_t)grid->npsi + 1};
@@ -1003,9 +1149,37 @@ void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
       }
     }
   }
-  free(charts);
-  free(cells);
-  free(fractions);
+}
+
+
+void physics_grid_query_destroy_3pcf(
+  physics_grid_query_3pcf* query // owned geometry only, never a physical grid
+)
+{
+  if (query == NULL) {
+    return;
+  }
+  free(query->log_ell);
+  free(query->log_psi);
+  free(query->charts);
+  free(query->cells);
+  free(query->fractions);
+  free(query);
+}
+
+
+// A one-shot caller keeps the existing interface. Repeated transform
+// queries may instead own one query object and reuse it across physical
+// grids after the same exact matching check performed by evaluate above.
+void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
+  const int nell, const double* ell, const int component, double* out)
+{
+  grid_require(out && component >= 0 && component <= 2,
+    "invalid multipole table output or component");
+  physics_grid_query_3pcf* query = physics_grid_query_create_3pcf(grid,
+    nell, ell);
+  physics_grid_query_evaluate_3pcf(query, grid, component, out);
+  physics_grid_query_destroy_3pcf(query);
 }
 
 

@@ -411,9 +411,11 @@ void fftlog_forward_3pcf(
   double* real = work->real+(size_t)worker*work->real_stride;
   fftw_complex* forward =
       work->forward+(size_t)worker*work->complex_stride;
-  // Clear every padded cell before copying the physical domain. Padding
-  // from a previous inverse must never become part of a later spectrum.
-  for (size_t index=0; index<work->real_stride; index++) {
+  // With no padding, the following loop overwrites every FFT input cell.
+  // Clear only the alignment tail in that case. With padding retain the
+  // full clear, so a previous inverse never supplies spurious edge values.
+  const size_t clear_start = work->padding == 0 ? (size_t)work->n*work->n : 0;
+  for (size_t index=clear_start; index<work->real_stride; index++) {
     real[index] = 0.0;
   }
   for (int first=0; first<work->n; first++) {

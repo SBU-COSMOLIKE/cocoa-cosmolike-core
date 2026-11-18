@@ -696,6 +696,12 @@ const physics_model_3pcf* borrow_physics_model_3pcf(py::handle owner)
 }
 
 
+const physics_grid_3pcf* borrow_physics_grid_3pcf(py::handle owner)
+{
+  return py::cast<const physics_grid_owner_3pcf&>(owner).get();
+}
+
+
 void bind_threepcf_physics(py::module_& module)
 {
   py::class_<physics_grid_owner_3pcf,

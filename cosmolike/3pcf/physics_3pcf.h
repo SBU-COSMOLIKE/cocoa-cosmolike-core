@@ -56,6 +56,7 @@ typedef struct {
 
 typedef struct physics_model_3pcf physics_model_3pcf;
 typedef struct physics_projection_3pcf physics_projection_3pcf;
+typedef struct physics_projection_batch_3pcf physics_projection_batch_3pcf;
 
 physics_model_3pcf* physics_create_3pcf(
   const physics_input_3pcf* input
@@ -149,6 +150,29 @@ void physics_projected_batch_3pcf(
   int component,
   int puv_extension,
   double* out
+);
+
+// Prepare one immutable batch before launching triangle workers. It owns
+// packed radial weights [node,8 terms,triplet] and borrows the first
+// projector and its model. Destroy the batch before either borrowed owner.
+// Every projector must use that same model and exactly equal IA settings;
+// ordered source bins may differ. Only output buffers are mutable during
+// evaluation. They must not overlap the packed weights or physical inputs.
+physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
+  int nprojection, // number of ordered source triplets
+  physics_projection_3pcf* const* projections // consumed during construction
+);
+void physics_projection_batch_evaluate_3pcf(
+  const physics_projection_batch_3pcf* batch, // shared immutable preparation
+  double ell1, // first angular Fourier side
+  double ell2, // second angular Fourier side
+  double ell3, // closing side, with the declared PUV extension below
+  int component, // total=0, NLA baseline=1, residual IA=2
+  int puv_extension, // nonzero retains the source PUV corner continuation
+  double* out // [nprojection], one private buffer per caller
+);
+void physics_projection_batch_destroy_3pcf(
+  physics_projection_batch_3pcf* batch // releases owned weights; NULL allowed
 );
 
 // The shared Fourier integrator accepts either a direct physical

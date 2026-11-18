@@ -119,6 +119,7 @@ bispectrum values while retaining a compatible transform plan.
 | Physical model | All physical arrays, cosmological scalars, source kernels and preparation controls |
 | Projection tables | Physical model, ordered source labels, all IA/baryon coefficients, triangle ranges and resolution controls |
 | Transform plan | Fourier and angular coordinates, selected bins, angular orders, FFT bias/padding/window, projection convention and worker capacity |
+| Multipole query map inside the plan | Exact requested Fourier nodes, complete projected-grid axes, their dimensions, the Legendre cutoff and reader convention |
 | Aperture weights | Side/angle bins, widths, three ordered filter radii and the shear convention |
 | Project mean | Immutable model, exact IA values and owned observable geometry; shear calibration is applied afterward |
 
@@ -128,6 +129,23 @@ curves or Fourier nodes. The allocation decision and the physical refill
 decision must both include every input they use. Python's exact parameter
 keys retain floating-point values without a rounding tolerance, so a small
 Fisher displacement is not mistaken for the reference cosmology.
+
+The query map makes this distinction concrete. A transform repeatedly asks
+for the bispectrum multipoles at the same pairs of Fourier nodes. For each
+pair, the map retains the interpolation cell and its four bilinear weights.
+Changing the cosmology or alignment amplitude changes the values at the
+cell's corners, so every call reads the current physical grid and overwrites
+the entire multipole buffer. The geometry alone can survive that change.
+Moving an interior interpolation node requires rebuilding the map even when
+the array dimensions and endpoints stay fixed. The key therefore compares
+every copied axis value, not just its size or address.
+
+`TransformPlan.aperture_from_grid` performs this read and the aperture
+calculation in C. Its notebook counterpart copies the supplied weights
+through Armadillo and returns the same one-dimensional filter vector.
+The two-step `grid.multipoles` followed by `aperture_from_multipoles` remains
+available when the multipoles themselves are needed. The plan owns its
+temporary buffer; editing a returned vector cannot modify a later result.
 
 The covariance has a different lifetime from the repeatedly evaluated
 mean. It is an offline calculation with explicit shared inputs. Within
@@ -145,6 +163,19 @@ For five distinct radii there are fifteen unordered radius pairs. Creating
 separate transforms for every source/radius label would repeat the same
 radial integral. This factorization requires the declared physical model;
 it must be rederived before adding a source-dependent halo prescription.
+
+The same separation reduces the $`P\,T`$ covariance term. Here $`P`$ joins
+one field from each cubic estimator, while the one-halo connected four-point
+function $`T`$ joins the other four. There are nine choices of the two fields
+assigned to $`P`$. Several covariance entries ask for the same radial dot
+product, specified by the two single-field labels and the two complementary
+radius pairs. Each needed ordered choice is calculated once per halo mass
+and distance. The remaining source weights and the nine-term sum retain
+their order in each matrix cell. Reversing the field pair is not used to
+merge entries: finite-window products can have a different rounding order.
+All contraction values are refilled at the next halo and released when the
+covariance call returns. The six additional finite-window terms remain
+separate from these nine contractions.
 
 ## OpenMP and SIMD <a name="parallel"></a>
 
@@ -169,6 +200,15 @@ outputs avoid changing an integration sum into an unordered reduction;
 where lane products must be summed, the code restores their scalar order.
 Odd output counts use an explicit scalar tail.
 
+Projection batches store radial weights with the source triplet as the
+contiguous index. Two SIMD lanes can therefore load neighboring triplets
+from one array while sharing the same matter and intrinsic-shape calculation.
+The weights depend on the immutable model and alignment parameters, and are
+prepared before triangle workers start. The packed owner is destroyed before
+the projectors it borrows. Increasing the batch size shares more physical
+work but keeps more projected grids in memory; it is a memory choice, not an
+accuracy control.
+
 A scalar tail must round at the same points as a vector lane. Strict
 floating-point flags can still permit a scalar fused multiply-add, which
 rounds once, while the explicit SIMD product and sum round separately.
@@ -190,6 +230,12 @@ angular modes can run on separate OpenMP workers, each with private
 Fourier scratch. Starting an additional FFT thread team inside each such
 worker would multiply the active workers and compete for the same cores.
 Thread-count changes must respect the capacity owned by the plan.
+Modes with two inverse transforms are scheduled after those with four.
+Workers take the next available mode, while each completed result is stored
+under its physical angular order. A worker still evaluates each Legendre
+sum in increasing order. The coupling table already includes its fixed
+$`(-1)^L`$ factor, and two independent SIMD pairs advance four output cells
+without regrouping any cell's sum.
 BLAS remains at one thread. Parallel CPU work belongs to OpenMP; a BLAS
 thread team inside an OpenMP worker would oversubscribe that allocation.
 

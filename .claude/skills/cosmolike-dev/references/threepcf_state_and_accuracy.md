@@ -19,6 +19,8 @@ Neither failure is tested by constructing every case in a fresh process.
 | Physical model | k/z/LOS/kernel counts, source count, coarse/dense fit counts | All physical axes and arrays, cosmology, source-reader convention | Constructor copies input; destructor releases owned arrays |
 | Projection grid | Triangle/multipole axes, L cap, chart choice and dense ratios | Model, ordered bins, every IA/baryon selector, bounds and coordinates | New owner for a changed definition; retained old grid stays valid |
 | Transform plan | FFT size/padding, selected cells, L/M caps, scratch capacity | ell/phi/selection values, biases, window, phase/projection convention | Constructor prepares serial FFTW plans; destructor releases plans/storage |
+| Multipole query map | Requested ell count, projected-grid axis counts and L cap | Exact copied log-ell/log-psi axes and reference-mode selector; requested ell fixed by plan | Plan owns the map; recreate when the complete axis key differs |
+| Projection batch | LOS count, eight terms, number of triplets | Copied radial weights from projectors sharing one immutable model and exactly equal IA parameters | Call-local owner, destroyed before borrowed first projector/model |
 | Aperture weights | Side/opening-angle/filter counts | Bin widths, coordinates and ordered filter radii | Caller owns the returned numerical weights |
 | Physical covariance | Source/field/row and all quadrature dimensions | All supplied arrays, windows/noise, halo prescription and estimator choices | Call-local preparation, released on return |
 | Python physical provider | Depends on the new C model | Exact cosmology, photo-z shifts, producer prescription and numerical controls | Replaces latest model; previously returned models remain owned and usable |
@@ -58,6 +60,11 @@ objects do not use the ordinary global initialization API:
   reader choices, IA conventions, source ordering and projected grid settings.
 - `data_vector/test_transform_setting_sequences.py`: FFT geometry, angular
   modes, selected outputs, aperture weights, caller/output mutations and workers.
+- `data_vector/test_grid_transform_reuse.py`: retained query geometry versus
+  refilled physical values, exact interior-axis keys, both adapters and a
+  ten-node Fourier axis exercising the two-cell SIMD tail.
+- `data_vector/test_transform_mode_schedule.py`: small signed-mode sets,
+  both phase conventions and worker counts with changed/restored multipoles.
 - `covariance/test_setting_sequences.py`: every allocation axis, individual
   coordinate/weight/model changes, estimator/noise switches and old models.
 - `test_pipeline_setting_sequences.py`: provider keys, IA/photo-z/calibration,

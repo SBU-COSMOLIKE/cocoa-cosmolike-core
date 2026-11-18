@@ -16,6 +16,7 @@
 #include "transform_3pcf.h"
 #include "transform_interface.hpp"
 #include "transform_wrapper.hpp"
+#include "physics_interface.hpp"
 
 namespace py = pybind11;
 namespace cosmolike_interface {
@@ -248,6 +249,50 @@ class transform_owner_3pcf {
     return result;
   }
 
+  transform_array aperture_grid(
+      const py::object& grid, // immutable physical grid, kept alive by Python
+      const transform_array& real, // borrowed [filter,4,triangle] weights
+      const transform_array& imag // same shape
+    )
+  {
+    shape_transform(real, 3);
+    shape_transform(imag, 3);
+    const int triangles = ntheta_*ntheta_*nphi_;
+    require_transform(real.shape(1) == 4 && real.shape(2) == triangles,
+        "weights do not match this plan's triangle grid");
+    for (int axis=0; axis<3; axis++) {
+      require_transform(real.shape(axis) == imag.shape(axis),
+          "real and imaginary weight shapes differ");
+    }
+    finite_transform(real);
+    finite_transform(imag);
+    const auto* physical = borrow_physics_grid_3pcf(grid);
+    const int nfilter = static_cast<int>(real.shape(0));
+    transform_array result(nfilter);
+    // The GIL remains held, as for the existing transform call: one plan
+    // owns mutable FFT and interpolation scratch until this method returns.
+    transform_aperture_grid_3pcf(plan_, physical, nfilter, real.data(),
+        imag.data(), result.mutable_data());
+    finite_transform(result);
+    return result;
+  }
+
+  py::object aperture_grid_notebook(
+      const py::object& grid,
+      const py::object& real,
+      const py::object& imag
+    )
+  {
+    const auto real_copy = notebook_transform_input<arma::Cube<double>>(real, 3);
+    const auto imag_copy = notebook_transform_input<arma::Cube<double>>(imag, 3);
+    const auto* physical = borrow_physics_grid_3pcf(grid);
+    py::object output = carma::col_to_arr(aperture_grid_cpp_3pcf(plan_, physical,
+        real_copy, imag_copy, ntheta_*ntheta_*nphi_));
+    // Armadillo columns arrive as [nfilter,1]. Both adapters expose the
+    // same one-dimensional [nfilter] aperture vector to Python callers.
+    return output.attr("reshape")(py::make_tuple(real_copy.n_rows));
+  }
+
   transform_array theta_full() const
   {
     transform_array result(nell_);
@@ -323,6 +368,16 @@ static void bind_transform_notebook_3pcf(
     return plan.natural_notebook(multipoles);
   }, "Copy b_L through Armadillo; execute the same prepared C plan.",
       py::arg("plan"), py::arg("b_l"));
+  notebook.def("aperture_from_grid", [](
+      transform_owner_3pcf& plan,
+      const py::object& grid,
+      const py::object& real,
+      const py::object& imag
+    ) {
+    return plan.aperture_grid_notebook(grid, real, imag);
+  }, "Copy weights through Armadillo and use the prepared C interpolation map.",
+      py::arg("plan"), py::arg("grid"), py::arg("weights_real"),
+      py::arg("weights_imag"));
 }
 
 
@@ -435,6 +490,11 @@ void bind_threepcf_transform(
           "supplied finite aperture weights [filter,4,triangle].",
           py::arg("b_l").noconvert(),
           py::arg("weights_real").noconvert(),
+          py::arg("weights_imag").noconvert())
+      .def("aperture_from_grid", &transform_owner_3pcf::aperture_grid,
+          "Read fresh b_L from a physical grid, reusing only query geometry "
+          "and temporary storage; return the same aperture moments.",
+          py::arg("grid"), py::arg("weights_real").noconvert(),
           py::arg("weights_imag").noconvert())
       .def_property_readonly("theta", &transform_owner_3pcf::theta)
       .def_property_readonly("theta_full", &transform_owner_3pcf::theta_full);

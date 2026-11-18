@@ -48,13 +48,16 @@ struct transform_plan_3pcf {
   int convention;
   int ordered_legs;
   int* indices; // radial selection copied from the caller
+  double* ell; // [nell], exact Fourier nodes for prepared-grid queries
   double* ell2; // [nell], squared Fourier radii
-  double* coupling; // [M,L,2*nell-1], ratio depends on j-i only
+  double* coupling; // [M,L,2*nell-1], includes (-1)^L; ratio uses j-i only
   double* modes; // [signed M,4,ntheta,ntheta], or historical positive M
   double* phases; // [4,triangle,2], real/imag centroid rotations
   double* angles; // [M,nphi,2], cos/sin(M phi)
   double* gamma; // [2,4,triangle], aperture-call temporary
   fftlog_workspace_3pcf* fft;
+  physics_grid_query_3pcf* query; // owned axis-keyed geometry, allocated on use
+  double* grid_multipoles; // [L,nell,nell], refilled for every physical grid
 };
 
 
@@ -156,6 +159,7 @@ transform_plan_3pcf* transform_create_3pcf(
   require_transform_3pcf((size_t)nmodes <= SIZE_MAX/4/radial_pairs,
       "mode size overflow");
   plan->indices = allocate_transform_3pcf(ntheta, sizeof(int));
+  plan->ell = allocate_transform_3pcf(nell, sizeof(double));
   plan->ell2 = allocate_transform_3pcf(nell, sizeof(double));
   plan->coupling = allocate_transform_3pcf(
       (size_t)(mmax+1)*(lmax+1)*nratio, sizeof(double));
@@ -180,6 +184,7 @@ transform_plan_3pcf* transform_create_3pcf(
       nu1, nu2, xy, dlnt, padding, window, window_width);
   fftlog_select_3pcf(plan->fft, ntheta, plan->indices);
   for (int index=0; index<nell; index++) {
+    plan->ell[index] = ell[index];
     plan->ell2[index] = ell[index]*ell[index];
     require_transform_3pcf(isfinite(plan->ell2[index]),
         "squared Fourier radius overflow");
@@ -192,6 +197,17 @@ transform_plan_3pcf* transform_create_3pcf(
   }
   legendre_coupling_3pcf(lmax, mmax, (int)nratio, psi, npsi,
       plan->coupling);
+  // The Legendre parity factor is geometric. Apply the same +/-1 product
+  // once here instead of repeating it at every cell of every prediction.
+  for (int mode=0; mode<=mmax; mode++) {
+    for (int degree=0; degree<=lmax; degree++) {
+      const size_t offset = ((size_t)mode*(lmax + 1) + degree)*nratio;
+      const double sign = degree%2 == 0 ? 1.0 : -1.0;
+      for (size_t ratio=0; ratio<nratio; ratio++) {
+        plan->coupling[offset + ratio] = sign*plan->coupling[offset + ratio];
+      }
+    }
+  }
   free(psi);
   for (int angle=0; angle<nphi; angle++) {
     require_transform_3pcf(isfinite(phi[angle]) && phi[angle] > 0.0
@@ -259,7 +275,10 @@ void transform_destroy_3pcf(
   }
   fftlog_destroy_3pcf(plan->fft);
   free(plan->indices);
+  free(plan->ell);
   free(plan->ell2);
+  physics_grid_query_destroy_3pcf(plan->query);
+  free(plan->grid_multipoles);
   free(plan->coupling);
   free(plan->modes);
   free(plan->phases);
@@ -291,10 +310,29 @@ void transform_natural_3pcf(
   // Each M owns its scratch and completed four-component output block.
   // L sums keep their prescribed order. No OpenMP reduction changes a
   // cancellation-sensitive multipole sum when the worker count changes.
+  // Modes +/-1 need two inverse transforms; the others need four. Queue
+  // these shorter jobs last, so the final worker can take both while its
+  // peers finish longer jobs. Dynamic assignment also accommodates actual
+  // team sizes smaller than the plan's allocated worker capacity.
   #pragma omp parallel for num_threads(plan->fft_workers) \
-      if(nmodes > 1) schedule(static)
-  for (int task=0; task<nmodes; task++) {
-    const int mode = plan->ordered_legs ? task-plan->mmax : task;
+      if(nmodes > 1) schedule(dynamic, 1)
+  for (int job=0; job<nmodes; job++) {
+    int mode = job;
+    if (plan->mmax > 0 && plan->ordered_legs) {
+      if (job < plan->mmax - 1) {
+        mode = job - plan->mmax;
+      } else if (job == plan->mmax - 1) {
+        mode = 0;
+      } else if (job < nmodes - 2) {
+        mode = job - plan->mmax + 2;
+      } else {
+        mode = job == nmodes - 2 ? -1 : 1;
+      }
+    } else if (plan->mmax > 0) {
+      mode = job == nmodes - 1 ? 1 : (job == 0 ? 0 : job + 1);
+    }
+    // The storage slot always follows physical M, regardless of job order.
+    const int task = plan->ordered_legs ? mode + plan->mmax : mode;
     int worker = 0;
     #ifdef _OPENMP
     worker = omp_get_thread_num();
@@ -305,14 +343,52 @@ void transform_natural_3pcf(
       // sums advance together without horizontal reductions or reassoci-
       // ation. Even nell means every row ends on a full vector. This uses
       // contiguous coupling and multipole loads, not vector gathers.
-      for (int second=0; second<nell; second+=2) {
+      int second = 0;
+      // Two independent SIMD pairs let the processor advance another L
+      // sum while the first addition completes. Each cell still visits
+      // L in its original order; this is ordinary loop unrolling.
+      for (; second + 3<nell; second+=4) {
+        const size_t cell = (size_t)first*nell+second;
+        const size_t ratio = second-first+nell-1;
+        simde__m128d sum0 = simde_mm_setzero_pd();
+        simde__m128d sum1 = simde_mm_setzero_pd();
+        for (int degree=0; degree<=plan->lmax; degree++) {
+          const size_t offset =
+              ((size_t)abs(mode)*(plan->lmax+1)+degree)*nratio;
+          simde__m128d coupling0;
+          simde__m128d coupling1;
+          if (mode >= 0) {
+            coupling0 = simde_mm_loadu_pd(plan->coupling+offset+ratio);
+            coupling1 = simde_mm_loadu_pd(plan->coupling+offset+ratio+2);
+          } else {
+            coupling0 = simde_mm_loadu_pd(
+                plan->coupling+offset+nratio-2-ratio);
+            coupling1 = simde_mm_loadu_pd(
+                plan->coupling+offset+nratio-4-ratio);
+            coupling0 = simde_mm_shuffle_pd(coupling0, coupling0, 1);
+            coupling1 = simde_mm_shuffle_pd(coupling1, coupling1, 1);
+          }
+          const double* values = multipoles+(size_t)degree*nell*nell+cell;
+          sum0 = simde_mm_add_pd(sum0,
+              simde_mm_mul_pd(coupling0, simde_mm_loadu_pd(values)));
+          sum1 = simde_mm_add_pd(sum1,
+              simde_mm_mul_pd(coupling1, simde_mm_loadu_pd(values+2)));
+        }
+        const simde__m128d first_factor = simde_mm_set1_pd(plan->ell2[first]);
+        const simde__m128d first0 = simde_mm_mul_pd(sum0, first_factor);
+        const simde__m128d first1 = simde_mm_mul_pd(sum1, first_factor);
+        simde_mm_storeu_pd(input+cell, simde_mm_mul_pd(first0,
+            simde_mm_loadu_pd(plan->ell2+second)));
+        simde_mm_storeu_pd(input+cell+2, simde_mm_mul_pd(first1,
+            simde_mm_loadu_pd(plan->ell2+second+2)));
+      }
+      for (; second<nell; second+=2) {
         const size_t cell = (size_t)first*nell+second;
         const size_t ratio = second-first+nell-1;
         simde__m128d sum = simde_mm_setzero_pd();
         for (int degree=0; degree<=plan->lmax; degree++) {
           const size_t offset =
               ((size_t)abs(mode)*(plan->lmax+1)+degree)*nratio;
-          const double sign = degree%2 == 0 ? 1.0 : -1.0;
           simde__m128d coupling;
           if (mode >= 0) {
             coupling = simde_mm_loadu_pd(plan->coupling+offset+ratio);
@@ -326,10 +402,8 @@ void transform_natural_3pcf(
           }
           const simde__m128d values = simde_mm_loadu_pd(
               multipoles+(size_t)degree*nell*nell+cell);
-          const simde__m128d signed_coupling =
-              simde_mm_mul_pd(simde_mm_set1_pd(sign), coupling);
           sum = simde_mm_add_pd(sum,
-              simde_mm_mul_pd(signed_coupling, values));
+              simde_mm_mul_pd(coupling, values));
         }
         const simde__m128d weighted_first =
             simde_mm_mul_pd(sum, simde_mm_set1_pd(plan->ell2[first]));
@@ -485,4 +559,48 @@ void transform_aperture_3pcf(
   }
   aperture_apply_3pcf(nfilter, triangles, 1, weights_real, weights_imag,
       real, imag, output);
+}
+
+
+void transform_aperture_grid_3pcf(
+  transform_plan_3pcf* plan, // one caller owns this plan's mutable scratch
+  const physics_grid_3pcf* grid, // immutable physical table for this call
+  const int nfilter, // number of supplied aperture filters
+  const double* weights_real, // [filter,4,triangle], TreeCorr convention
+  const double* weights_imag, // matching imaginary weights
+  double* output // [filter]
+)
+{
+  require_transform_3pcf(plan && grid && weights_real && weights_imag
+      && output && nfilter > 0, "invalid prepared-grid aperture input");
+  if (!physics_grid_query_matches_3pcf(plan->query, grid)) {
+    physics_grid_query_destroy_3pcf(plan->query);
+    plan->query = physics_grid_query_create_3pcf(grid, plan->nell, plan->ell);
+  }
+  require_transform_3pcf(physics_grid_query_lmax_3pcf(plan->query) == plan->lmax
+      && physics_grid_query_nell_3pcf(plan->query) == plan->nell,
+      "projected-grid multipoles mismatch the transform plan");
+  require_transform_3pcf((size_t)plan->nell <= SIZE_MAX/(size_t)plan->nell,
+      "prepared-grid Fourier size overflow");
+  const size_t pairs = (size_t)plan->nell*plan->nell;
+  require_transform_3pcf((size_t)(plan->lmax + 1) <= SIZE_MAX/pairs,
+      "prepared-grid multipole size overflow");
+  const size_t count = (size_t)(plan->lmax + 1)*pairs;
+  if (plan->grid_multipoles == NULL) {
+    plan->grid_multipoles = allocate_transform_3pcf(count, sizeof(double));
+  }
+  // Reusing this buffer is allocation reuse only: the entire prediction
+  // is overwritten even when geometry, IA settings or source bins agree.
+  physics_grid_query_evaluate_3pcf(plan->query, grid, 0, plan->grid_multipoles);
+  int finite = 1;
+  #pragma omp parallel for num_threads(plan->workers) if(count > 4096) \
+      reduction(&:finite) schedule(static)
+  for (size_t index=0; index<count; index++) {
+    finite &= isfinite(plan->grid_multipoles[index]) ? 1 : 0;
+  }
+  // Only integer validity flags are reduced. No floating-point sum is
+  // reordered; the interpolation and subsequent transforms are unchanged.
+  require_transform_3pcf(finite, "nonfinite prepared-grid multipoles");
+  transform_aperture_3pcf(plan, plan->grid_multipoles, nfilter,
+      weights_real, weights_imag, output);
 }

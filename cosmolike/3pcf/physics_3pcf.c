@@ -166,6 +166,16 @@ struct physics_projection_3pcf {
   physics_ia_coefficients* coefficients;
 };
 
+// A batch stores radial weights, not triangle-dependent predictions.
+// The first immutable projector supplies common IA coefficients and the
+// model. Its owner must outlive this object; the other weights are copied.
+// Adjacent triplets occupy adjacent doubles for an unaligned SIMD load.
+struct physics_projection_batch_3pcf {
+  const physics_projection_3pcf* first;
+  int nprojection;
+  double* weights; // [nlos,8,nprojection], baseline followed by seven IA terms
+};
+
 static physics_power_row prepare_power_row(
   const physics_model_3pcf* model,
   double z,
@@ -1350,8 +1360,12 @@ static double matter_prepared(
   const physics_triangle_geometry* prepared_geometry
 )
 {
-  const physics_triangle_geometry geometry = prepared_geometry
-    ? *prepared_geometry : triangle_geometry(sides);
+  physics_triangle_geometry local_geometry;
+  const physics_triangle_geometry* geometry = prepared_geometry;
+  if (geometry == NULL) {
+    local_geometry = triangle_geometry(sides);
+    geometry = &local_geometry;
+  }
   const physics_power_row row = prepared ? *prepared
     : prepare_power_row(model, z, 0);
   double linear[3];
@@ -1362,10 +1376,10 @@ static double matter_prepared(
     scaled[leg] = sides[leg]*coefficients->radius;
   }
   if (component == 1) {
-    return tree_sum_physics(&geometry, linear);
+    return tree_sum_physics(geometry, linear);
   }
-  const double ratio1 = geometry.minimum_ratio;
-  const double ratio2 = geometry.flattened_ratio;
+  const double ratio1 = geometry->minimum_ratio;
+  const double ratio2 = geometry->flattened_ratio;
   const double amplitude = pow(10.0, coefficients->loga
     - 0.310*pow(ratio1, coefficients->gamma));
   const double alpha = fmin(pow(10.0, coefficients->logalpha
@@ -1384,7 +1398,7 @@ static double matter_prepared(
       *(1.0 + pow(coefficients->p*q, -3.0)));
     damping /= 1.0 + coefficients->e*q;
   }
-  double three_halo = tree_sum_physics(&geometry, effective);
+  double three_halo = tree_sum_physics(geometry, effective);
   for (int leg=0; leg<3; leg++) {
     const int next = (leg + 1)%3;
     const int opposite = (leg + 2)%3;
@@ -1470,7 +1484,8 @@ static void ia_vertices(
   const double* power,
   const physics_ia_coefficients* coefficients,
   double vertices[3][3],
-  double* tree
+  double* tree,
+  const int e_only // omit helicity one when only E correlators are requested
 )
 {
   const double root_two_thirds = sqrt(2.0/3.0);
@@ -1493,9 +1508,11 @@ static void ia_vertices(
       *geometry->sine_squared[cyclic];
     vertices[cyclic][0] = 2.0*root_two_thirds*pair_power
       *(quadratic + density + velocity);
-    vertices[cyclic][1] = -pair_power
-      *(coefficients->quadratic + coefficients->density)
-      *(first_x*first_y + second_x*second_y);
+    if (!e_only) {
+      vertices[cyclic][1] = -pair_power
+        *(coefficients->quadratic + coefficients->density)
+        *(first_x*first_y + second_x*second_y);
+    }
     vertices[cyclic][2] = 2.0*pair_power
       *(0.5*coefficients->quadratic*dot*first_y*second_y
       + 0.25*coefficients->density
@@ -1577,7 +1594,8 @@ static void ia_prepared(
   const int remove_alignment,
   double* out,
   const physics_power_row* prepared,
-  const physics_triangle_geometry* prepared_geometry
+  const physics_triangle_geometry* prepared_geometry,
+  const int e_only // output[0..6] only; the public 19-component API uses zero
 )
 {
   if (coefficients->quadratic == 0.0 && coefficients->density == 0.0
@@ -1585,7 +1603,8 @@ static void ia_prepared(
       && (remove_alignment || coefficients->linear == 0.0)) {
     // With no quadratic shape vertex, subtracting the linear alignment
     // leaves exactly zero. This common NLA case needs no power reads.
-    for (int index=0; index<19; index++) {
+    const int ncomponent = e_only ? 7 : 19;
+    for (int index=0; index<ncomponent; index++) {
       out[index] = 0.0;
     }
     return;
@@ -1598,9 +1617,16 @@ static void ia_prepared(
   for (int leg=0; leg<3; leg++) {
     power[leg] = read_power_row(&row, sides[leg]);
   }
-  const physics_triangle_geometry geometry = prepared_geometry
-    ? *prepared_geometry : triangle_geometry(sides);
-  ia_vertices(&geometry, power, coefficients, vertices, tree);
+  // Projection already owns this immutable triangle throughout the LOS
+  // sum. Borrow it here; scalar queries construct their identical local
+  // geometry. No geometry is retained after this synchronous call.
+  physics_triangle_geometry local_geometry;
+  const physics_triangle_geometry* geometry = prepared_geometry;
+  if (geometry == NULL) {
+    local_geometry = triangle_geometry(sides);
+    geometry = &local_geometry;
+  }
+  ia_vertices(geometry, power, coefficients, vertices, tree, e_only);
   const double linear = coefficients->linear;
   const double root_three_halves = sqrt(3.0/2.0);
   const int single_e[3] = {0, 2, 1};
@@ -1617,13 +1643,18 @@ static void ia_prepared(
       *(root_three_halves*tensor022(vertices, tree, linear, cyclic, 0, 0)
       - tensor022(vertices, tree, linear, cyclic, 0, 2)
       - tensor022(vertices, tree, linear, cyclic, 2, 0));
-    out[single_b[cyclic]] = -tensor002(vertices, tree, linear, cyclic, 1);
-    out[mixed_eb[cyclic]] = -sqrt(3.0/8.0)
-      *tensor022(vertices, tree, linear, cyclic, 0, 1);
-    out[mixed_be[cyclic]] = -sqrt(3.0/8.0)
-      *tensor022(vertices, tree, linear, cyclic, 1, 0);
-    out[double_e_b[cyclic]] = -3.0/8.0
-      *tensor222(vertices, linear, cyclic, 0, 0, 1);
+    // Projection contracts the seven all-E terms above and below. Its
+    // result has never included these twelve B/mixed terms; omitting
+    // their calculation changes no retained tensor or radial sum.
+    if (!e_only) {
+      out[single_b[cyclic]] = -tensor002(vertices, tree, linear, cyclic, 1);
+      out[mixed_eb[cyclic]] = -sqrt(3.0/8.0)
+        *tensor022(vertices, tree, linear, cyclic, 0, 1);
+      out[mixed_be[cyclic]] = -sqrt(3.0/8.0)
+        *tensor022(vertices, tree, linear, cyclic, 1, 0);
+      out[double_e_b[cyclic]] = -3.0/8.0
+        *tensor222(vertices, linear, cyclic, 0, 0, 1);
+    }
   }
   out[6] = 3.0/16.0*(root_three_halves
     *tensor222(vertices, linear, 0, 0, 0, 0)
@@ -1635,7 +1666,7 @@ static void ia_prepared(
     // all-E correlator is C1 to the number of shapes times B_tree.
     // Adding this once is algebraically equal to its three placements.
     // The requested TATT residual never subtracts these large terms.
-    const double total_tree = tree_sum_physics(&geometry, power);
+    const double total_tree = tree_sum_physics(geometry, power);
     const double c1 = coefficients->c1;
     for (int index=0; index<3; index++) {
       out[index] += c1*total_tree;
@@ -1666,7 +1697,7 @@ void physics_ia_bispectra_3pcf(
   const physics_ia_coefficients coefficients = ia_coefficients(model,
     parameters, z, growth);
   ia_prepared(model, parameters, &coefficients, sides, z,
-    remove_alignment, out, NULL, NULL);
+    remove_alignment, out, NULL, NULL, 0);
 }
 
 
@@ -1707,7 +1738,7 @@ void physics_ia_same_shape_3pcf(
     const physics_ia_coefficients coefficients = ia_coefficients(model,
       parameters, z[point], growth);
     ia_prepared(model, parameters, &coefficients, sides + (size_t)point*3,
-      z[point], remove_alignment, out + (size_t)point*19, NULL, &geometry);
+      z[point], remove_alignment, out + (size_t)point*19, NULL, &geometry, 0);
   }
 }
 
@@ -1849,7 +1880,7 @@ double physics_projected_3pcf(
       double intrinsic[19];
       ia_prepared(model, &projection->ia, projection->coefficients + node,
         sides, redshift, 1, intrinsic, model->los_power
-        + (size_t)projection->ia.power_mode*count + node, &geometry);
+        + (size_t)projection->ia.power_mode*count + node, &geometry, 1);
       for (int term=0; term<7; term++) {
         residual += projection->weights[(size_t)(term + 1)*count + node]
           *intrinsic[term];
@@ -1884,7 +1915,7 @@ double physics_projected_puv_extension_3pcf(
     double intrinsic[19];
     ia_prepared(model, &projection->ia, projection->coefficients + node,
       sides, model->los_z[node], 1, intrinsic, model->los_power
-      + (size_t)projection->ia.power_mode*count + node, &geometry);
+      + (size_t)projection->ia.power_mode*count + node, &geometry, 1);
     for (int term=0; term<7; term++) {
       // The pinned outer IA class applies nan_to_num to each component.
       // Restrict that historical extension to the interpolation fill;
@@ -1911,6 +1942,100 @@ static int same_ia_parameters(
     && first->fb == second->fb && first->power_mode == second->power_mode
     && first->ct_mode == second->ct_mode
     && first->suppress_only == second->suppress_only;
+}
+
+
+physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
+  const int nprojection, // number of ordered source-triplet outputs
+  physics_projection_3pcf* const* projections // validated before any worker
+)
+{
+  require_physics(nprojection > 0 && projections && projections[0]
+    && projections[0]->model, "invalid prepared projection batch");
+  const physics_projection_3pcf* first = projections[0];
+  const int count = first->model->nlos;
+  require_physics(count > 0 && (size_t)count <= SIZE_MAX/8,
+    "prepared projection radial size overflows");
+  const size_t rows = (size_t)count*8;
+  require_physics((size_t)nprojection <= SIZE_MAX/rows,
+    "prepared projection weight count overflows");
+  const size_t nweight = rows*(size_t)nprojection;
+  require_physics(nweight <= SIZE_MAX/sizeof(double),
+    "prepared projection weight bytes overflow");
+  for (int triplet=0; triplet<nprojection; triplet++) {
+    require_physics(projections[triplet]
+      && projections[triplet]->model == first->model
+      && same_ia_parameters(&projections[triplet]->ia, &first->ia),
+      "batch projections must share one model and the same IA parameters");
+  }
+  physics_projection_batch_3pcf* batch = allocate_physics(1, sizeof(*batch));
+  batch->first = first;
+  batch->nprojection = nprojection;
+  batch->weights = allocate_physics(nweight, sizeof(double));
+  for (int node=0; node<count; node++) {
+    for (int term=0; term<8; term++) {
+      const size_t target = ((size_t)node*8 + term)*nprojection;
+      for (int triplet=0; triplet<nprojection; triplet++) {
+        batch->weights[target + triplet]
+          = projections[triplet]->weights[(size_t)term*count + node];
+      }
+    }
+  }
+  return batch;
+}
+
+
+void physics_projection_batch_destroy_3pcf(
+  physics_projection_batch_3pcf* batch // borrowed projector/model stay owned
+)
+{
+  if (batch != NULL) {
+    free(batch->weights);
+    free(batch);
+  }
+}
+
+
+// Both batch layouts share identical physical work at one LOS node.
+// The caller initializes intrinsic[19] and preserves the accumulation
+// order. This helper changes no triangle geometry, power prescription,
+// baryon convention or source PUV treatment between the two layouts.
+static double projected_node_physics(
+  const physics_projection_3pcf* first,
+  const double* angular_sides,
+  const physics_triangle_geometry* geometry,
+  const int node,
+  const int component,
+  const int puv_extension,
+  double* intrinsic
+)
+{
+  const physics_model_3pcf* model = first->model;
+  const int count = model->nlos;
+  const double distance = model->los_chi[node];
+  const double redshift = model->los_z[node];
+  const double sides[3] = {angular_sides[0]/distance,
+    angular_sides[1]/distance, angular_sides[2]/distance};
+  double baseline = 0.0;
+  if (component != 2) {
+    baseline = matter_prepared(model, model->los_bh + node,
+      sides, redshift, 0, model->los_power + node, geometry)
+      *baryon_physics(sides, redshift,
+      first->ia.fb, first->ia.suppress_only);
+  }
+  if (component != 1) {
+    ia_prepared(model, &first->ia, first->coefficients + node,
+      sides, redshift, 1, intrinsic, model->los_power
+      + (size_t)first->ia.power_mode*count + node, geometry, 1);
+    if (puv_extension) {
+      for (int term=0; term<7; term++) {
+        if (!isfinite(intrinsic[term])) {
+          intrinsic[term] = 0.0;
+        }
+      }
+    }
+  }
+  return baseline;
 }
 
 
@@ -1957,29 +2082,9 @@ void physics_projected_batch_3pcf(
   const double angular_sides[3] = {ell1, ell2, ell3};
   const physics_triangle_geometry geometry = triangle_geometry(angular_sides);
   for (int node=0; node<count; node++) {
-    const double distance = model->los_chi[node];
-    const double redshift = model->los_z[node];
-    const double sides[3] = {ell1/distance, ell2/distance, ell3/distance};
-    double baseline = 0.0;
     double intrinsic[19] = {0.0};
-    if (component != 2) {
-      baseline = matter_prepared(model, model->los_bh + node,
-        sides, redshift, 0, model->los_power + node, &geometry)
-        *baryon_physics(sides, redshift,
-        first->ia.fb, first->ia.suppress_only);
-    }
-    if (component != 1) {
-      ia_prepared(model, &first->ia, first->coefficients + node,
-        sides, redshift, 1, intrinsic, model->los_power
-        + (size_t)first->ia.power_mode*count + node, &geometry);
-      if (puv_extension) {
-        for (int term=0; term<7; term++) {
-          if (!isfinite(intrinsic[term])) {
-            intrinsic[term] = 0.0;
-          }
-        }
-      }
-    }
+    const double baseline = projected_node_physics(first, angular_sides,
+      &geometry, node, component, puv_extension, intrinsic);
     int triplet = 0;
     for (; triplet + 1<nprojection; triplet += 2) {
       const double* restrict first_weights = projections[triplet]->weights;
@@ -2020,6 +2125,82 @@ void physics_projected_batch_3pcf(
         for (int term=0; term<7; term++) {
           volatile double contribution =
             weights[(size_t)(term + 1)*count + node]*intrinsic[term];
+          out[triplet] += contribution;
+        }
+      }
+    }
+  }
+}
+
+
+void physics_projection_batch_evaluate_3pcf(
+  const physics_projection_batch_3pcf* batch, // immutable packed preparation
+  const double ell1, // ordered first Fourier side
+  const double ell2, // ordered second Fourier side
+  const double ell3, // closing side
+  const int component, // total, baseline or residual
+  const int puv_extension, // source continuation for residual grid corners
+  double* out // private [nprojection] output, never aliases inputs
+)
+{
+  require_physics(batch && out && component >= 0 && component <= 2,
+    "invalid prepared batch projection input");
+  if (!puv_extension) {
+    triangle_physics(ell1, ell2, ell3);
+  } else {
+    require_physics(component == 2 && isfinite(ell1) && isfinite(ell2)
+      && isfinite(ell3) && ell1 > 0.0 && ell2 > 0.0 && ell3 >= 0.0,
+      "invalid batch PUV corner");
+  }
+  const int nprojection = batch->nprojection;
+  for (int triplet=0; triplet<nprojection; triplet++) {
+    out[triplet] = 0.0;
+  }
+  if (puv_extension && ell3 == 0.0) {
+    return;
+  }
+  const physics_projection_3pcf* first = batch->first;
+  const int count = first->model->nlos;
+  const double angular_sides[3] = {ell1, ell2, ell3};
+  const physics_triangle_geometry geometry = triangle_geometry(angular_sides);
+  for (int node=0; node<count; node++) {
+    double intrinsic[19] = {0.0};
+    const double baseline = projected_node_physics(first, angular_sides,
+      &geometry, node, component, puv_extension, intrinsic);
+    const double* restrict weights = batch->weights
+      + (size_t)node*8*nprojection;
+    int triplet = 0;
+    for (; triplet + 1<nprojection; triplet += 2) {
+      // Each lane continues one triplet's existing sum. Loading adjacent
+      // weights replaces a gather, without exchanging terms or LOS nodes.
+      physics_v2d sum = simde_mm_loadu_pd(out + triplet);
+      if (component != 2) {
+        const physics_v2d weight = simde_mm_loadu_pd(weights + triplet);
+        const physics_v2d value = simde_mm_set1_pd(baseline);
+        sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, value));
+      }
+      if (component != 1) {
+        for (int term=0; term<7; term++) {
+          const size_t index = (size_t)(term + 1)*nprojection + triplet;
+          // Term planes have contiguous triplets, including odd batches.
+          const physics_v2d weight = simde_mm_loadu_pd(weights + index);
+          const physics_v2d value = simde_mm_set1_pd(intrinsic[term]);
+          sum = simde_mm_add_pd(sum, simde_mm_mul_pd(weight, value));
+        }
+      }
+      simde_mm_storeu_pd(out + triplet, sum);
+    }
+    if (triplet < nprojection) {
+      if (component != 2) {
+        // The odd triplet rounds its product before adding, exactly as
+        // the separate multiply/add SIMD instructions do for a full pair.
+        volatile double term = weights[triplet]*baseline;
+        out[triplet] += term;
+      }
+      if (component != 1) {
+        for (int term=0; term<7; term++) {
+          volatile double contribution =
+            weights[(size_t)(term + 1)*nprojection + triplet]*intrinsic[term];
           out[triplet] += contribution;
         }
       }

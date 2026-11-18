@@ -133,4 +133,39 @@ natural_result_cpp_3pcf natural_cpp_3pcf(
       && result.imag.is_finite(), "nonfinite natural components");
   return result;
 }
+
+
+arma::Col<double> aperture_grid_cpp_3pcf(
+    transform_plan_3pcf* plan,
+    const physics_grid_3pcf* grid,
+    const arma::Cube<double>& real,
+    const arma::Cube<double>& imag,
+    const int ntriangle
+  )
+{
+  require_wrapper_transform(plan && grid && real.n_rows > 0
+      && real.n_rows <= INT_MAX && real.n_cols == 4 && ntriangle > 0
+      && real.n_slices == static_cast<arma::uword>(ntriangle)
+      && imag.n_rows == real.n_rows && imag.n_cols == real.n_cols
+      && imag.n_slices == real.n_slices && real.is_finite() && imag.is_finite(),
+      "invalid notebook prepared-grid aperture weights");
+  // Armadillo's first axis is contiguous. Pack the C convention explicitly
+  // so strided or read-only notebook inputs reach the identical C engine.
+  arma::Col<double> packed_real(real.n_elem);
+  arma::Col<double> packed_imag(imag.n_elem);
+  for (arma::uword filter=0; filter<real.n_rows; filter++) {
+    for (int component=0; component<4; component++) {
+      for (int triangle=0; triangle<ntriangle; triangle++) {
+        const arma::uword cell = (filter*4 + component)*ntriangle + triangle;
+        packed_real(cell) = real(filter, component, triangle);
+        packed_imag(cell) = imag(filter, component, triangle);
+      }
+    }
+  }
+  arma::Col<double> result(real.n_rows);
+  transform_aperture_grid_3pcf(plan, grid, static_cast<int>(real.n_rows),
+      packed_real.memptr(), packed_imag.memptr(), result.memptr());
+  require_wrapper_transform(result.is_finite(), "nonfinite aperture moment");
+  return result;
+}
 }

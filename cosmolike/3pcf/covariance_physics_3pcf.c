@@ -1339,6 +1339,99 @@ static void covariance_halo_terms_3pcf(
     }
     row_shape[row] = s;
   }
+
+  // A P*T contraction chooses one field from each cubic estimator for
+  // the two-point function P. Each estimator's other two fields supply
+  // a pair of halo profiles in the connected four-point function T.
+  // The dot product depends only on those two single-field indices and
+  // two complementary radius pairs. Source weights on the four halo
+  // fields remain in the covariance-cell sum, in their original order.
+  // Gather only choices present in the requested cubic rows. These
+  // integer maps belong to this call; their values are fixed before any
+  // halo is visited, and the contraction values are refilled per halo.
+  size_t* row_entity = NULL;
+  int* entity_field = NULL;
+  size_t* entity_radius_pair = NULL;
+  size_t* contraction_index = NULL;
+  size_t* contraction_left = NULL;
+  size_t* contraction_right = NULL;
+  double* pt_contraction = NULL;
+  size_t nentity = 0;
+  size_t ncontraction = 0;
+  if (work->has_cubic) {
+    size_t ncubic = 0;
+    for (int row=0; row<no; row++) {
+      ncubic += in->row_kind[row] == 1;
+    }
+    const size_t capacity = covariance_product_3pcf(ncubic, 3);
+    row_entity = covariance_allocate_3pcf(
+      covariance_product_3pcf(no, 3), sizeof(size_t));
+    entity_field = covariance_allocate_3pcf(capacity, sizeof(int));
+    entity_radius_pair = covariance_allocate_3pcf(capacity, sizeof(size_t));
+    for (int row=0; row<no; row++) {
+      if (in->row_kind[row] != 1) {
+        continue;
+      }
+      const int* fields = in->row_fields + (size_t)row*3;
+      for (int p=0; p<3; p++) {
+        const size_t pair = covariance_radius_pair_3pcf(nrad,
+          radius_index[fields[(p + 1)%3]],
+          radius_index[fields[(p + 2)%3]]);
+        size_t e = 0;
+        while (e < nentity && (entity_field[e] != fields[p]
+          || entity_radius_pair[e] != pair)) {
+          e++;
+        }
+        if (e == nentity) {
+          entity_field[e] = fields[p];
+          entity_radius_pair[e] = pair;
+          nentity++;
+        }
+        row_entity[(size_t)row*3 + p] = e;
+      }
+    }
+    contraction_index = covariance_allocate_3pcf(
+      covariance_product_3pcf(nentity, nentity), sizeof(size_t));
+    // Preserve ordered entity pairs: the finite-window P table retains
+    // its ordered field multiplications, which can round differently
+    // when exchanged. Zero marks an unused pair; a positive entry will
+    // hold its compact contraction index plus one.
+    for (int i=0; i<no; i++) {
+      if (in->row_kind[i] != 1) {
+        continue;
+      }
+      for (int j=i; j<no; j++) {
+        if (in->row_kind[j] != 1) {
+          continue;
+        }
+        for (int p=0; p<3; p++) {
+          const size_t left = row_entity[(size_t)i*3 + p];
+          for (int q=0; q<3; q++) {
+            const size_t right = row_entity[(size_t)j*3 + q];
+            const size_t pair = left*nentity + right;
+            if (contraction_index[pair] == 0) {
+              contraction_index[pair] = 1;
+              ncontraction++;
+            }
+          }
+        }
+      }
+    }
+    contraction_left = covariance_allocate_3pcf(ncontraction, sizeof(size_t));
+    contraction_right = covariance_allocate_3pcf(ncontraction, sizeof(size_t));
+    pt_contraction = covariance_allocate_3pcf(ncontraction, sizeof(double));
+    size_t next = 0;
+    for (size_t left=0; left<nentity; left++) {
+      for (size_t right=0; right<nentity; right++) {
+        const size_t pair = left*nentity + right;
+        if (contraction_index[pair] != 0) {
+          contraction_left[next] = left;
+          contraction_right[next] = right;
+          contraction_index[pair] = ++next;
+        }
+      }
+    }
+  }
   covariance_profile_plan_3pcf profile_plan;
   memset(&profile_plan, 0, sizeof(profile_plan));
   if (!in->large_area) {
@@ -1543,7 +1636,29 @@ static void covariance_halo_terms_3pcf(
         }
       }
 
-      #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
+      // The pair-profile transforms above change with halo mass and
+      // distance. Refill every requested contraction before covariance
+      // workers read it. Each entry uses the same ordered quadrature as
+      // its uncached expression, including unequal aperture radii.
+      if (work->has_cubic) {
+        #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
+        for (size_t c=0; c<ncontraction; c++) {
+          const size_t left = contraction_left[c];
+          const size_t right = contraction_right[c];
+          const int a = entity_field[left];
+          const int b = entity_field[right];
+          pt_contraction[c] = covariance_dot_3pcf(nl,
+            work->pair_window + ((size_t)a*nf + b)*nl,
+            product_pair + entity_radius_pair[left]*nl,
+            product_pair + entity_radius_pair[right]*nl);
+        }
+      }
+
+      // Upper-triangle rows shorten as i increases, and cubic rows can
+      // be grouped together in the input. Assign successive rows to
+      // successive workers so both costs are spread across the team.
+      // Each worker still owns a row and visits its halo nodes in order.
+      #pragma omp parallel for if(!omp_in_parallel()) schedule(static,1)
       for (int i=0; i<no; i++) {
         const int* a = in->row_fields + (size_t)i*3;
         for (int j=i; j<no; j++) {
@@ -1563,14 +1678,11 @@ static void covariance_halo_terms_3pcf(
               for (int q=0; q<3; q++) {
                 const int b0 = b[(q + 1)%3];
                 const int b1 = b[(q + 2)%3];
-                const size_t pa = covariance_radius_pair_3pcf(nrad,
-                  radius_index[a0], radius_index[a1]);
-                const size_t pb = covariance_radius_pair_3pcf(nrad,
-                  radius_index[b0], radius_index[b1]);
+                const size_t left = row_entity[(size_t)i*3 + p];
+                const size_t right = row_entity[(size_t)j*3 + q];
+                const size_t c = contraction_index[left*nentity + right] - 1;
                 pt += field_lens[a0]*field_lens[a1]
-                  *field_lens[b0]*field_lens[b1]*covariance_dot_3pcf(nl,
-                  work->pair_window + ((size_t)a[p]*nf + b[q])*nl,
-                  product_pair + pa*nl, product_pair + pb*nl);
+                  *field_lens[b0]*field_lens[b1]*pt_contraction[c];
               }
               if (!in->large_area) {
                 pt += work->pair_zero[(size_t)a0*nf + a1]*row_lens[j]
@@ -1627,6 +1739,13 @@ static void covariance_halo_terms_3pcf(
   free(row_lens);
   free(product_pair);
   free(product_real);
+  free(row_entity);
+  free(entity_field);
+  free(entity_radius_pair);
+  free(contraction_index);
+  free(contraction_left);
+  free(contraction_right);
+  free(pt_contraction);
   free(response_real);
   free(response_fourier);
   free(response_zero);

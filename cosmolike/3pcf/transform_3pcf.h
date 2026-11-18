@@ -1,6 +1,8 @@
 #ifndef COSMOLIKE_TRANSFORM_3PCF_H
 #define COSMOLIKE_TRANSFORM_3PCF_H
 
+#include "physics_grid_3pcf.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -52,6 +54,18 @@ void transform_aperture_3pcf(
   const double* weights_real, // [nfilter,4,ntriangle], TreeCorr convention
   const double* weights_imag, // matching imaginary weights
   double* output // [nfilter], real aperture third moments
+);
+
+// Keep interpolation geometry and the intermediate b_L buffer inside this
+// plan. Every call refills b_L from the supplied physical grid. Changed
+// interpolation axes rebuild the geometry; no cosmological value is cached.
+void transform_aperture_grid_3pcf(
+  transform_plan_3pcf* plan,
+  const physics_grid_3pcf* grid,
+  int nfilter,
+  const double* weights_real,
+  const double* weights_imag,
+  double* output
 );
 
 #ifdef __cplusplus

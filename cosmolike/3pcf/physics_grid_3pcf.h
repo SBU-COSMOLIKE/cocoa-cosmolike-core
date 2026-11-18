@@ -36,6 +36,7 @@ typedef struct {
 } physics_grid_settings_3pcf;
 
 typedef struct physics_grid_3pcf physics_grid_3pcf;
+typedef struct physics_grid_query_3pcf physics_grid_query_3pcf;
 
 void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings);
 physics_grid_3pcf* physics_grid_create_3pcf(
@@ -78,6 +79,38 @@ void physics_grid_multipoles_3pcf(
   const double* ell,
   int component,
   double* out // [lmax+1,nell,nell], same convention as direct multipoles
+);
+
+// A query owns interpolation geometry for one fixed caller ell array.
+// It borrows neither the source grid nor its physical multipoles, so the
+// source grid may be destroyed after construction. Matching compares the
+// complete interpolation axes, their sizes, L cutoff and reader convention.
+// A changed cosmology or source triplet can reuse this geometry when those
+// keys agree exactly; evaluation always reads the supplied grid's fresh b_L.
+// Changing the caller's ell values requires a new query even at the same size.
+physics_grid_query_3pcf* physics_grid_query_create_3pcf(
+  const physics_grid_3pcf* grid, // prepared b_L grid defining interpolation
+  int nell, // number of requested Fourier values on each ordered leg
+  const double* ell // [nell], positive values consumed during construction
+);
+int physics_grid_query_matches_3pcf(
+  const physics_grid_query_3pcf* query, // immutable owned geometry
+  const physics_grid_3pcf* grid // returns zero for NULL or incompatible input
+);
+int physics_grid_query_nell_3pcf(
+  const physics_grid_query_3pcf* query // requested output Fourier size
+);
+int physics_grid_query_lmax_3pcf(
+  const physics_grid_query_3pcf* query // maximum retained Legendre degree
+);
+void physics_grid_query_evaluate_3pcf(
+  const physics_grid_query_3pcf* query, // immutable charts, cells and weights
+  const physics_grid_3pcf* grid, // matching geometry, current physical values
+  int component, // total=0, NLA baseline=1, residual IA=2
+  double* out // [lmax+1,nell,nell], must not alias grid or query storage
+);
+void physics_grid_query_destroy_3pcf(
+  physics_grid_query_3pcf* query // release owned arrays; NULL is allowed
 );
 
 // Expose the actual interpolation coordinates for diagnostics and records.

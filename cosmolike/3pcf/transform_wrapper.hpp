@@ -39,5 +39,13 @@ natural_result_cpp_3pcf natural_cpp_3pcf(
     int ntheta, // output radial count
     int nphi // output angle count
   );
+
+arma::Col<double> aperture_grid_cpp_3pcf(
+    transform_plan_3pcf* plan, // owns geometric query and temporary b_L
+    const physics_grid_3pcf* grid, // borrowed while this call runs
+    const arma::Cube<double>& real, // [filter,4,triangle]
+    const arma::Cube<double>& imag, // same shape, copied notebook values
+    int ntriangle // expected triangle count from the owning plan
+  );
 }
 #endif
