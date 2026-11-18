@@ -4,14 +4,18 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <type_traits>
+#include <vector>
 #include <utility>
 #include <carma.h>
 #include <spdlog/spdlog.h>
 #include "threepcf_interface.hpp"
 #include "threepcf_wrapper.hpp"
+#include "physics_wrapper.hpp"
 #include "aperture_3pcf.h"
 #include "covariance_3pcf.h"
+#include "threepcf_core_bridge.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -602,6 +606,417 @@ static void set_threads_3pcf(
 
 
 // ============================================================================
+// [SECTION] CORE-STRUCT BRIDGE ADAPTERS
+// ============================================================================
+// Python adapters of threepcf_core_bridge.h: the supplied-tier
+// setters, the standalone-module equivalents of the core struct
+// installers, the IA translation and the cached model factory. The
+// adapters validate NumPy arrays with the helpers above and forward
+// plain C pointers; every conversion and refusal lives in the C
+// bridge.
+
+// Borrow a one-dimensional contiguous float64 argument and abort on a
+// wrong rank, a misaligned buffer or a nonfinite entry.
+static const double* bridge_vector_3pcf(
+    const array_3pcf& values, // borrowed NumPy argument
+    const char* name // argument name for the diagnostic
+  )
+{
+  rank_3pcf(values, 1, name);
+  finite_3pcf(values, name);
+  return values.data();
+}
+
+// ---------------------------------------------------------------------------
+// The cached model owner. The C bridge owns the two-tier guard, the
+// key snapshot and the assembled input; this adapter owns the Python-
+// facing PhysicsModel. One shared owner is cached at file scope and
+// handed out unchanged while the guard reports no change, so repeated
+// factory calls during a chain never rebuild and downstream grids
+// keep borrowing one model. When the guard reports a change the
+// existing physics_owner_3pcf constructor rebuilds through
+// physics_create_3pcf - the same factory path the direct Python
+// constructor uses - and the previous owner lives on until its last
+// Python reference drops, which keeps borrowed projections valid.
+//
+// Cache invalidation:
+// threepcf_bridge_refresh decides; reset_threepcf_core_bridge clears
+// its snapshot, so the first factory call after a reset rebuilds.
+// The build runs with the GIL released, on the calling thread,
+// outside any parallel region (physics_create_3pcf's contract).
+// ---------------------------------------------------------------------------
+static std::shared_ptr<physics_owner_3pcf> model_from_core_3pcf()
+{
+  static std::shared_ptr<physics_owner_3pcf> cached;
+  const physics_input_3pcf* input = NULL;
+  {
+    py::gil_scoped_release release;
+    input = threepcf_bridge_refresh();
+  }
+  if (input == NULL && !cached) {
+    // the guard snapshot exists but this adapter never built: some
+    // other caller consumed a refresh without the owner this factory
+    // hands out; refuse rather than return an empty owner
+    spdlog::critical("3pcf interface: the bridge guard is committed "
+      "but no cached model exists; model_from_core must be the only "
+      "threepcf_bridge_refresh consumer in this process");
+    std::exit(1);
+  }
+  if (input != NULL) {
+    py::gil_scoped_release release;
+    cached = std::make_shared<physics_owner_3pcf>(*input);
+  }
+  return cached;
+}
+
+// Translate the stored nuisance IA state into the dictionary the
+// model queries accept; every physics_ia_3pcf field appears, so the
+// dictionary determines the parameter struct completely.
+static py::dict ia_parameters_from_core_3pcf()
+{
+  physics_ia_3pcf parameters;
+  threepcf_bridge_ia_from_core(&parameters);
+  py::dict result;
+  result["a1"] = parameters.a1;
+  result["eta1"] = parameters.eta1;
+  result["a2"] = parameters.a2;
+  result["eta2"] = parameters.eta2;
+  result["bta"] = parameters.bta;
+  result["ct"] = parameters.ct;
+  result["zpivot"] = parameters.zpivot;
+  result["c1rho"] = parameters.c1rho;
+  result["fb"] = parameters.fb;
+  result["power_mode"] = parameters.power_mode;
+  result["ct_mode"] = parameters.ct_mode;
+  result["suppress_only"] = parameters.suppress_only;
+  result["operator_component"] = parameters.operator_component;
+  result["intrinsic_legs"] = parameters.intrinsic_legs;
+  result["feedback_amplitude"] = parameters.feedback_amplitude;
+  return result;
+}
+
+// Supplied sources: both None clears the override, both arrays set
+// it; mixing is refused because a half-cleared override has no
+// meaning.
+static void bridge_sources_3pcf(
+    const py::object& source_z, // [nsource] redshifts, or None
+    const py::object& sources // [nbin,nsource] densities, or None
+  )
+{
+  if (source_z.is_none() && sources.is_none()) {
+    threepcf_bridge_set_sources(NULL, NULL, 0, 0);
+    return;
+  }
+  if (source_z.is_none() || sources.is_none()) {
+    spdlog::critical("3pcf interface: supplied sources need both "
+      "source_z and sources, or None twice to clear");
+    std::exit(1);
+  }
+  if (!(array_3pcf::check_(source_z) && array_3pcf::check_(sources))) {
+    spdlog::critical("3pcf interface: supplied sources must be "
+      "contiguous float64 arrays");
+    std::exit(1);
+  }
+  const auto axis = py::reinterpret_borrow<array_3pcf>(source_z);
+  const auto density = py::reinterpret_borrow<array_3pcf>(sources);
+  rank_3pcf(axis, 1, "source_z");
+  rank_3pcf(density, 2, "sources");
+  finite_3pcf(axis, "source_z");
+  finite_3pcf(density, "sources");
+  if (!(density.shape(1) == axis.size())) {
+    spdlog::critical("3pcf interface: sources must hold one column "
+      "per source_z node");
+    std::exit(1);
+  }
+  threepcf_bridge_set_sources(axis.data(), density.data(),
+      static_cast<int>(density.shape(0)),
+      static_cast<int>(axis.size()));
+}
+
+// Paired feedback response: the dictionary uses the same eight keys
+// as the PhysicsModel factory (feedback_3pcf.h documents each), with
+// the shared log-response amplitude alongside. An empty dictionary
+// with amplitude zero clears the stored response.
+static void bridge_feedback_3pcf(
+    const py::dict& feedback, // six arrays plus boost and clamp
+    const double amplitude // shared log-response amplitude
+  )
+{
+  if (feedback.empty()) {
+    if (amplitude != 0.0) {
+      spdlog::critical("3pcf interface: a feedback amplitude without "
+        "response tables has no meaning");
+      std::exit(1);
+    }
+    threepcf_bridge_set_feedback(NULL, 0, NULL, 0, NULL, 0, NULL, 0,
+        NULL, NULL, 0, 0, 0.0);
+    return;
+  }
+  const char* names[6] = {"z", "logk", "logu", "v", "log_power",
+    "log_bispectrum"};
+  if (!(feedback.size() == 8
+        && feedback.contains("boost") && feedback.contains("clamp"))) {
+    spdlog::critical("3pcf interface: feedback requires six arrays "
+      "plus boost and clamp");
+    std::exit(1);
+  }
+  std::vector<array_3pcf> arrays;
+  for (int index=0; index<6; index++) {
+    if (!(feedback.contains(names[index])
+          && array_3pcf::check_(feedback[names[index]]))) {
+      spdlog::critical("3pcf interface: feedback arrays must be "
+        "contiguous float64 vectors");
+      std::exit(1);
+    }
+    arrays.push_back(py::reinterpret_borrow<array_3pcf>(
+      feedback[names[index]]));
+    rank_3pcf(arrays.back(), 1, names[index]);
+    finite_3pcf(arrays.back(), names[index]);
+  }
+  const auto nz = static_cast<size_t>(arrays[0].size());
+  const auto nk = static_cast<size_t>(arrays[1].size());
+  const auto nu = static_cast<size_t>(arrays[2].size());
+  const auto nv = static_cast<size_t>(arrays[3].size());
+  // one chained check, as in the model factory: every axis fits an
+  // int, the products cannot wrap, and the flattened tables match
+  if (!(nz <= INT_MAX && nk <= INT_MAX && nu <= INT_MAX && nv <= INT_MAX
+        && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
+        && nz*nk*nu <= SIZE_MAX/nv
+        && static_cast<size_t>(arrays[4].size()) == nz*nk
+        && static_cast<size_t>(arrays[5].size()) == nz*nk*nu*nv)) {
+    spdlog::critical("3pcf interface: flattened feedback arrays "
+      "disagree with their axes");
+    std::exit(1);
+  }
+  threepcf_bridge_set_feedback(
+      arrays[0].data(), static_cast<int>(nz),
+      arrays[1].data(), static_cast<int>(nk),
+      arrays[2].data(), static_cast<int>(nu),
+      arrays[3].data(), static_cast<int>(nv),
+      arrays[4].data(), arrays[5].data(),
+      py::cast<int>(feedback["boost"]),
+      py::cast<int>(feedback["clamp"]), amplitude);
+}
+
+// Register every bridge entry point on the "core" submodule.
+static void bind_threepcf_core_bridge(py::module_& module)
+{
+  py::module_ core = module.def_submodule("core",
+      "Bridge between Cosmolike's global structs and the three-point "
+      "model: struct installers, supplied-tier setters and the cached "
+      "model_from_core factory (threepcf_core_bridge.h).");
+
+  // --- supplied tier -----------------------------------------------------
+  core.def("set_scalars", &threepcf_bridge_set_scalars,
+      "Supply ns, sigma8, w0 and wa; these scalars stay supplied "
+      "until a later stage retires them into the structs.",
+      py::arg("ns"), py::arg("sigma8"), py::arg("w0"), py::arg("wa"));
+
+  core.def("set_los", [](const array_3pcf& z) {
+    threepcf_bridge_set_los(bridge_vector_3pcf(z, "los_z"),
+        static_cast<int>(z.size()));
+  }, "Supply the line-of-sight node redshifts.",
+      py::arg("z").noconvert());
+
+  core.def("set_resolution", &threepcf_bridge_set_resolution,
+      "Supply the model preparation resolution (physics_3pcf.h); the "
+      "defaults equal the PhysicsModel constructor's.",
+      py::arg("kernel_nz") = 101, py::arg("source_readers") = 0,
+      py::arg("table_boost") = 8, py::arg("fit_nz") = 33);
+
+  core.def("set_sources", &bridge_sources_3pcf,
+      "Supply shifted source densities on their own redshift axis "
+      "(None, None clears; the struct-read path then requires every "
+      "photo-z shift to be exactly zero).",
+      py::arg("source_z") = py::none(), py::arg("sources") = py::none());
+
+  core.def("set_pixel_window", [](const py::object& window) {
+    if (window.is_none()) {
+      threepcf_bridge_set_pixel_window(NULL, 0);
+      return;
+    }
+    if (!(array_3pcf::check_(window))) {
+      spdlog::critical("3pcf interface: the pixel window must be a "
+        "contiguous float64 vector");
+      std::exit(1);
+    }
+    const auto values = py::reinterpret_borrow<array_3pcf>(window);
+    threepcf_bridge_set_pixel_window(
+        bridge_vector_3pcf(values, "pixel window"),
+        static_cast<int>(values.size()));
+  }, "Supply W(ell) at integer ell (None clears).",
+      py::arg("window") = py::none());
+
+  core.def("set_feedback", &bridge_feedback_3pcf,
+      "Supply the paired hydro/DMO response tables and the shared "
+      "log-response amplitude (empty dict with amplitude 0 clears).",
+      py::arg("feedback") = py::dict(), py::arg("amplitude") = 0.0);
+
+  core.def("set_prescriptions", &threepcf_bridge_set_prescriptions,
+      "Supply the IA prescription selectors power_mode, ct_mode and "
+      "suppress_only (physics_3pcf.h).",
+      py::arg("power_mode") = 1, py::arg("ct_mode") = 0,
+      py::arg("suppress_only") = 0);
+
+  // --- struct installers (standalone-module equivalents) -----------------
+  core.def("set_cosmological_parameters",
+      &threepcf_core_set_cosmological_parameters,
+      "Install Omega_m (massive neutrinos included), Omega_b, H0 in "
+      "km/s/Mpc and omega_nu h^2 into the cosmology struct.",
+      py::arg("omega_matter"), py::arg("omega_baryon"),
+      py::arg("hubble"), py::arg("omega_nu_h2") = 0.0);
+
+  core.def("set_distances", [](const array_3pcf& z,
+      const array_3pcf& chi) {
+    rank_3pcf(z, 1, "z");
+    rank_3pcf(chi, 1, "chi");
+    finite_3pcf(z, "z");
+    finite_3pcf(chi, "chi");
+    if (!(z.size() == chi.size())) {
+      spdlog::critical("3pcf interface: z and chi sizes disagree");
+      std::exit(1);
+    }
+    threepcf_core_set_distances(z.data(), chi.data(),
+        static_cast<int>(z.size()));
+  }, "Install chi(z) in Mpc/h into the cosmology struct.",
+      py::arg("z").noconvert(), py::arg("chi").noconvert());
+
+  core.def("set_growth", [](const array_3pcf& z, const array_3pcf& G) {
+    rank_3pcf(z, 1, "z");
+    rank_3pcf(G, 1, "G");
+    finite_3pcf(z, "z");
+    finite_3pcf(G, "G");
+    if (!(z.size() == G.size())) {
+      spdlog::critical("3pcf interface: z and G sizes disagree");
+      std::exit(1);
+    }
+    threepcf_core_set_growth(z.data(), G.data(),
+        static_cast<int>(z.size()));
+  }, "Install G(z) with D = G * a into the cosmology struct.",
+      py::arg("z").noconvert(), py::arg("G").noconvert());
+
+  // one lambda serves both power installers: same layout, same units
+  const auto power_installer = [](const array_3pcf& log10k,
+      const array_3pcf& z, const array_3pcf& lnP, const bool linear) {
+    rank_3pcf(log10k, 1, "log10k");
+    rank_3pcf(z, 1, "z");
+    rank_3pcf(lnP, 1, "lnP");
+    finite_3pcf(log10k, "log10k");
+    finite_3pcf(z, "z");
+    finite_3pcf(lnP, "lnP");
+    if (!(lnP.size() == log10k.size()*z.size())) {
+      spdlog::critical("3pcf interface: lnP must hold nk*nz entries "
+        "flattened as lnP[i*nz + j]");
+      std::exit(1);
+    }
+    if (linear) {
+      threepcf_core_set_linear_power_spectrum(log10k.data(),
+          static_cast<int>(log10k.size()), z.data(),
+          static_cast<int>(z.size()), lnP.data());
+    }
+    else {
+      threepcf_core_set_non_linear_power_spectrum(log10k.data(),
+          static_cast<int>(log10k.size()), z.data(),
+          static_cast<int>(z.size()), lnP.data());
+    }
+  };
+
+  core.def("set_linear_power_spectrum", [power_installer](
+      const array_3pcf& log10k, const array_3pcf& z,
+      const array_3pcf& lnP) {
+    power_installer(log10k, z, lnP, true);
+  }, "Install ln P_lin(log10 k, z), flattened as lnP[i*nz + j], into "
+      "the cosmology struct (k in h/Mpc, P in (Mpc/h)^3).",
+      py::arg("log10k").noconvert(), py::arg("z").noconvert(),
+      py::arg("lnP").noconvert());
+
+  core.def("set_non_linear_power_spectrum", [power_installer](
+      const array_3pcf& log10k, const array_3pcf& z,
+      const array_3pcf& lnP) {
+    power_installer(log10k, z, lnP, false);
+  }, "Install ln P_nonlin(log10 k, z), same layout and units as the "
+      "linear installer.",
+      py::arg("log10k").noconvert(), py::arg("z").noconvert(),
+      py::arg("lnP").noconvert());
+
+  core.def("set_source_sample_size",
+      &threepcf_core_set_source_sample_size,
+      "Declare the number of source tomographic bins.",
+      py::arg("ntomo"));
+
+  core.def("set_source_sample", [](const array_3pcf& nofz) {
+    rank_3pcf(nofz, 2, "nofz");
+    finite_3pcf(nofz, "nofz");
+    if (!(nofz.shape(1) >= 2)) {
+      spdlog::critical("3pcf interface: the n(z) table needs a z "
+        "column plus at least one bin column");
+      std::exit(1);
+    }
+    threepcf_core_set_source_sample(nofz.data(),
+        static_cast<int>(nofz.shape(0)),
+        static_cast<int>(nofz.shape(1)) - 1);
+  }, "Install the source n(z) table [nzbins, ntomo+1] (column 0 is "
+      "the redshift axis) into the redshift struct.",
+      py::arg("nofz").noconvert());
+
+  core.def("set_nuisance_shear_photoz", [](const array_3pcf& bias) {
+    threepcf_core_set_nuisance_shear_photoz(
+        bridge_vector_3pcf(bias, "photo-z shifts"),
+        static_cast<int>(bias.size()));
+  }, "Install the per-bin source photo-z shifts.",
+      py::arg("bias").noconvert());
+
+  core.def("init_IA", &threepcf_core_init_ia,
+      "Install the IA registry flags (IA.h: model and redshift "
+      "dependence).",
+      py::arg("ia_model"), py::arg("ia_redshift_evolution"));
+
+  core.def("set_nuisance_ia", [](const array_3pcf& A1,
+      const array_3pcf& A2, const array_3pcf& B_TA) {
+    rank_3pcf(A1, 1, "A1");
+    rank_3pcf(A2, 1, "A2");
+    rank_3pcf(B_TA, 1, "B_TA");
+    finite_3pcf(A1, "A1");
+    finite_3pcf(A2, "A2");
+    finite_3pcf(B_TA, "B_TA");
+    if (!(A1.size() == A2.size() && A1.size() == B_TA.size())) {
+      spdlog::critical("3pcf interface: IA amplitude sizes disagree");
+      std::exit(1);
+    }
+    threepcf_core_set_nuisance_ia(A1.data(), A2.data(), B_TA.data(),
+        static_cast<int>(A1.size()));
+  }, "Install the IA amplitudes for the active nuisance.IA mode.",
+      py::arg("A1").noconvert(), py::arg("A2").noconvert(),
+      py::arg("B_TA").noconvert());
+
+  core.def("set_nuisance_ia_ct", &threepcf_core_set_nuisance_ia_ct,
+      "Install the velocity-shear amplitude C_t (nuisance.ia[1][2]).",
+      py::arg("ct"));
+
+  core.def("initial_setup", &threepcf_core_initial_setup,
+      "Reset the global structs and the bridge, as initial_setup does "
+      "in full-core builds.");
+
+  // --- translations and the factory --------------------------------------
+  core.def("ia_parameters_from_core", &ia_parameters_from_core_3pcf,
+      "Translate the stored nuisance IA state into the model's "
+      "parameter dictionary (the single conversion site in "
+      "threepcf_core_bridge.c).");
+
+  core.def("model_from_core", &model_from_core_3pcf,
+      "Return the cached PhysicsModel built from the global structs "
+      "and the supplied tier; rebuilds only when the two-tier guard "
+      "reports a change.");
+
+  core.def("model_generation", []() {
+    return threepcf_bridge_generation();
+  }, "Build generation of the cached model; advances on every "
+      "rebuild.");
+}
+
+
+
+// ============================================================================
 // [SECTION] MODULE REGISTRATION
 // ============================================================================
 
@@ -796,6 +1211,12 @@ void bind_threepcf(
       "epsilons.",
       py::arg("triplets"), py::arg("pair"), py::arg("pair_zero"),
       py::arg("radial_weights"));
+
+  // The core-struct bridge registers last: its factory returns the
+  // PhysicsModel owner type that bind_threepcf_physics registers at
+  // import, and pybind only needs that class registered before the
+  // first call, not before this def.
+  bind_threepcf_core_bridge(module);
 }
 
 }

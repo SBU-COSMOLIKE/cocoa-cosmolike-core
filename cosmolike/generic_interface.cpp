@@ -422,6 +422,21 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 // declared here because initial_setup calls it before they appear.
 static void reset_boost_baselines(void);
 
+// Reset hook of the three-point core bridge
+// (cosmolike/3pcf/threepcf_core_bridge.c): it frees the bridge's
+// cached-model state and supplied copies, which live outside the
+// structs exactly like the gg cross-pair list cleared below. The
+// reference is weak because only builds that compile the 3PCF module
+// carry the bridge; in every other build the symbol stays unresolved,
+// the pointer compares equal to NULL and initial_setup skips the
+// call, leaving those builds bitwise unchanged.
+#if defined(__APPLE__)
+extern "C" void reset_threepcf_core_bridge(void)
+    __attribute__((weak_import));
+#else
+extern "C" void reset_threepcf_core_bridge(void) __attribute__((weak));
+#endif
+
 // ---------------------------------------------------------------------------
 // Reset every Cosmolike global struct to a defined startup state.
 //
@@ -506,6 +521,12 @@ void initial_setup()
   // never called set_IA_PS / set_bias_PS would read the previous
   // model's Python tables as its own
   reset_FPT_from_python();
+  // the three-point core bridge keeps a cached-model snapshot and
+  // supplied copies outside the structs; builds without the 3PCF
+  // module leave this weak reference unresolved (NULL) and skip it
+  if (reset_threepcf_core_bridge != NULL) {
+    reset_threepcf_core_bridge();
+  }
 
   like.adopt_limber[LIMBER_GG] = 0;
   like.adopt_limber[LIMBER_GS] = 1;
