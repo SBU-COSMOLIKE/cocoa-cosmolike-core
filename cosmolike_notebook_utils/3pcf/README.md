@@ -11,6 +11,7 @@
 7. [Style, errors, and reproducible figure files](#style)
 8. [Relationship to Rafael's figures and original code](#sources)
 9. [Reading Fisher accuracy diagnostics](#fisher-accuracy)
+10. [Derivative shapes and parameter degeneracy](#derivative-shapes)
 
 <a name="loading"></a>
 
@@ -434,3 +435,53 @@ reads those distinctions from saved results; the
 [accuracy guide](../../../../../projects/des_3pcf/ACCURACY.md)
 explains the estimator and its assumptions. None of these plotters imports
 a compiled physical model or estimates an unmeasured FoM.
+
+<a name="derivative-shapes"></a>
+
+## 10. Derivative shapes and parameter degeneracy
+
+A derivative gives the pattern of changes across the data vector when one
+parameter moves. Proportional patterns can imitate each other. The
+[derivative module](derivative_templates.py) fits one response with another
+and draws the part that the fit cannot reproduce. Load it explicitly:
+
+```python
+derivative_plots = importlib.import_module(
+    "cosmolike_notebook_utils.3pcf.derivative_templates"
+)
+```
+
+`compare_templates` receives two responses
+$`a_i=\Delta_p\partial\mu_i/\partial p`$ and
+$`b_i=\Delta_q\partial\mu_i/\partial q`$, the full covariance, and a boolean
+selection of the two-point rows. The intervals $`\Delta_p,\Delta_q`$ are
+explicit physical parameter scales; the function assigns no priors. It
+returns $`a_i/\sqrt{C_{ii}}`$ and $`b_i/\sqrt{C_{ii}}`$ for plotting.
+This normalization keeps individual angles and source labels attached to
+their measurements. It does not divide by a possibly vanishing mean or
+make correlated measurements independent.
+
+One coefficient minimizes $`(a-cb)^{\mathsf T}C^{-1}(a-cb)`$ using the xi
+selection; another uses every joint row. Applying the first coefficient
+to the aperture rows without refitting tests whether the same parameter
+exchange imitates the third-order measurement. The returned squared norms
+include the cross-covariance, and separate the xi and conditional Map3
+contributions. The plotted residuals stay in individual row-error units;
+their sum of squares is generally not that joint norm.
+
+`plot_derivative_templates` receives per-panel angles, two normalized
+derivative curves and the residuals from the two fits. It draws derivatives
+above residuals, shares a linear vertical range within each row and uses
+logarithmic angular axes. `show=None` returns the figure and axes. The
+project wrapper selects source bins; it does not refit coefficients on the
+displayed subset. The
+[IA notebook](../../../../../projects/des_3pcf/EXAMPLE_FISHER_IA.ipynb)
+illustrates NLA alignment versus fluctuation amplitude and TATT alignment
+versus torquing, following the scaled-response construction in the
+[FoG note](../../../../../projects/lssty1xdesi/notes/fog_parameter_degeneracy_study/fog_parameter_degeneracy_study.tex).
+
+The signed overlap of the two derivatives measures their relative shape
+in the covariance metric. Its magnitude can increase even when added
+measurements reduce parameter errors: absolute information can grow too.
+This two-parameter fit fixes other parameters. A forecast marginalizing
+cosmology, calibration and other IA parameters answers a different question.

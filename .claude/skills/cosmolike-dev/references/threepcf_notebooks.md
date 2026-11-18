@@ -479,3 +479,34 @@ worse than the analytic model. Removing product bias in expectation does
 not guarantee improvement for one small simulation sample. Keep held-out
 validation independent of both covariance estimation and model tuning;
 do not replace inconvenient draws or repair their eigenvalues.
+
+## Show parameter degeneracy through the derivative shapes
+
+The shared `3pcf/derivative_templates.py` consumes supplied arrays only.
+Its project adapter is `interface/cosmolike_des_3pcf_template_wrappers.py`.
+Use saved h/2 columns after the workflow's identity and row checks. These
+postprocessing functions belong outside the physical prediction modules;
+changing a figure must not require rebuilding a cosmological derivative.
+
+Follow the LSST Y1 x DESI FoG note's normalization:
+Delta_p * dmu_i/dp divided by sqrt(C_ii). State the parameter interval;
+do not infer it from a finite-difference step, convert it into a prior,
+divide each curve by its peak, or divide by a zero-crossing mean. Fit
+coefficients with the full covariance. Display the xi-fit residual on
+Map3 without refitting, then compare with the joint-fit residual. The
+source-bin panels are presentation selections; all retained auto- and
+cross-bin rows enter the fits.
+
+The pairwise signed overlap is not the marginalized posterior correlation.
+With two free parameters and no priors, the latter equals minus the
+overlap. With other parameters varied it need not. An increasing absolute
+overlap need not imply worse errors because absolute response information
+also changes. The saved TATT example has A1/A2 overlaps about 0.745 for xi
+and 0.807 jointly; do not claim these local shapes become less degenerate.
+The finite opposite-sign Figure 9 experiment is a separate calculation.
+
+Tests check a proportional xi response with a distinguishable Map3 row,
+the correlated-covariance fit and conditional norm identity, opposite
+signs, observable-unit changes, row permutations and named column scaling.
+Render the supplied NLA and TATT curves with the house style and inspect
+them; template fits do not validate the underlying physical derivatives.
