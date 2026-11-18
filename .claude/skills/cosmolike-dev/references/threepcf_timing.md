@@ -8,20 +8,40 @@ other teams' edits and commit only the intended paths.
 
 ## Distinguish preparation from the measured calculation
 
-The study starts with LSST Y1, using its existing production interface and
-all 1560 3x2pt entries. Its three thread-count blocks must finish and agree
-before preparation of the DES Y3 three-point workload begins. The latter
-contains 80 aperture entries, twenty source triplets and four filter radii.
-The two workloads have different observables and IA models; compare each
-one's speedup against its own one-thread result.
+The study runs LSST Y1 NLA, LSST Y1 TATT, DES Y3 three-point NLA and DES Y3
+three-point TATT, in that order. LSST uses its existing production interface
+and all 1560 3x2pt entries. Each case's three thread-count blocks must finish
+and agree before the next case begins. Three-point cases contain 80 aperture
+entries, twenty source triplets and four filter radii. The two data vectors
+have different observables; compare each case against its own one-thread
+result. Within each data vector, NLA and TATT share cosmological points and
+numerical grids.
 
 `benchmark_scaling.py preflight` hashes inputs and draws parameter points.
 It performs no CAMB call or physical prediction. `run` prepares eleven
-physical table archives per workload: one separate warmup point and ten
+physical table archives per case: one separate warmup point and ten
 random points. Every thread count reads the same archives outside its
 measured interval. CAMB is excluded from data-vector timings. The separately
 recorded preparation duration includes source processing and file writing,
-so it must not be called a CAMB-only duration.
+so it must not be called a CAMB-only duration. IA does not change these
+matter tables. The helpers allow reuse between NLA and TATT only after
+matching physical preparation inputs and recording the prior archive hash.
+Three-point reuse checks actual k/z/line-of-sight/source arrays as well as
+cosmology, producer source and source-file identity. No timed prediction is
+reused. The optional CLI `--reuse-from` imports verified LSST tables from an
+earlier two-workload run; it does not import its timing measurements.
+
+Follow the LSST separation between the Boltzmann solve range and interpolation
+support. In the project producer, kmax_boltzmann defaults to 5 and extrap_kmax
+is a separate tail endpoint; both use physical 1/Mpc. The output table uses
+h/Mpc, so query CAMB at k*h and convert its Mpc^3 power by h^3. Do not request
+transfer evolution to the output table's endpoint near 1000 h/Mpc. Resolve
+coverage before running CAMB and record both limits. With WantCls=False,
+power_spectra_from_transfer recalculates powers after the sigma8 amplitude
+adjustment without repeating transfer evolution. The project tests compare
+this result against a fresh final-amplitude solve using the opposite unit API.
+Changes to either limit must invalidate the physical provider and outer mean
+cache, and incompatible reference-table provenance must be rejected.
 
 The LSST interval installs cosmology and nuisance arrays through its native
 setters and calls `compute_data_vector_masked`. The three-point interval
@@ -45,6 +65,13 @@ cache hit. Do not change an internal cache identifier or toggle the run
 mode to manufacture a miss. Parameter changes use ordinary setters; angular
 geometry remains reusable. A separate warmup prevents the first allocation
 and lazy table construction from dominating a reported sample.
+
+LSST uses native IA_model 0 for NLA and 1 for TATT, with CFASTPT code 0 and
+redshift evolution 3. Its TATT warmup has nonzero quadratic amplitudes so
+first-use CFASTPT preparation stays outside the measurements. Three-point
+NLA fixes a2, eta2, bta and ct to zero after drawing the same random sequence
+as TATT. This omits physical residual-grid allocation and preparation;
+the declared Legendre and natural-component transform loops remain.
 
 ## Preserve thread ownership and evidence
 
