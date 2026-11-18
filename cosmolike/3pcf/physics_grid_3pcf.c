@@ -988,6 +988,9 @@ void physics_grid_create_many_3pcf(
   grid_require(model && parameters && bins && out && ntriplet > 0,
     "missing batch grid inputs");
   grid_require(settings != NULL, "missing batch grid settings");
+  grid_require((parameters->operator_component == 0
+      && parameters->intrinsic_legs == -1) || settings->signed_baseline,
+    "component grids require signed_baseline=1 for common GGG scaling");
   physics_projection_3pcf** projections = grid_allocate((size_t)ntriplet,
     sizeof(*projections));
   // Pure NLA omits the residual entirely, including any scale table.
@@ -1008,6 +1011,8 @@ void physics_grid_create_many_3pcf(
   gravity_parameters.a2 = 0.0;
   gravity_parameters.bta = 0.0;
   gravity_parameters.ct = 0.0;
+  gravity_parameters.operator_component = 0;
+  gravity_parameters.intrinsic_legs = -1;
   for (int triplet=0; triplet<ntriplet; triplet++) {
     out[triplet] = allocate_grid(settings, has_residual);
     projections[triplet] = physics_projector_create_3pcf(model, parameters,

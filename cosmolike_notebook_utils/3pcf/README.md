@@ -485,3 +485,16 @@ in the covariance metric. Its magnitude can increase even when added
 measurements reduce parameter errors: absolute information can grow too.
 This two-parameter fit fixes other parameters. A forecast marginalizing
 cosmology, calibration and other IA parameters answers a different question.
+
+
+## 11. IA operators and ordered placements
+
+`plot_ia_operator_placement(radius, values, title="", show=None)` takes
+increasing equal-aperture radii in arcminutes and signed moments [5,8,nrow].
+The operator axis is gravity, linear alignment, density weighting, torque,
+velocity shear. The placement axis is GGG, GGI, GIG, IGG, GII, IIG, IGI, III.
+Its left panel divides operator sums by gravity; the right groups only
+higher-order TATT placements, excluding linear alignment and VS. Negative
+values retain their physical sign. Each legend lies outside the data axes
+and has a programmatic clearance check. The calculation lives in the
+project's `ia_components.py`, not in this plotting module.

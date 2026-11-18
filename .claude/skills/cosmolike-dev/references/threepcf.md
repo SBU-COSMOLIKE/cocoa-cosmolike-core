@@ -349,3 +349,25 @@ its maintenance skill also governs shared project and installation changes.
 Preserve applicable source notices; citations do not replace licenses.
 The archive's GPL covariance source is a comparison reference, not an
 authorization to transplant its code into the MIT-licensed core.
+
+
+### Projected IA operator diagnostics
+
+`physics_ia_3pcf` has immutable `operator_component` (0=total, 1=NLA,
+2=density weighting, 3=torque, 4=VS) and `intrinsic_legs` (-1=all;
+bit mask on ordered legs). Defaults preserve the ordinary prediction.
+These fields are checked by batch compatibility. Never omit the -2 C2/3
+piece when isolating torque, or the linear C1 factors on remaining I legs.
+`field_kernel_physics` splits G/I on the original baseline kernel grid;
+residual weights retain their different source-grid definition. Component
+grids require signed_baseline=1 and reset both selectors on the shared
+positive gravity denominator. Sum closure extends through interpolation,
+FFTLog and aperture, and is tested in `test_ia_components.py`.
+
+Project `ia_components.map3_components` returns [5,8,nrow], with gravity
+separate from linear IA; the full total is evaluated independently. The
+notebook is EXAMPLE_IA_COMPONENTS. The new shared array-only plotter is
+`plot_ia_operator_placement`; the earlier `plot_ia_components` remains
+unchanged. Read the core README's operator section before interpreting
+Figures 5–6. The active VS vertex differs from literal manuscript Eqs.62/67;
+retain this qualification until the equations and source convention agree.

@@ -19,12 +19,14 @@ from ..plot_covariances import (
     plot_covariance_components,
     plot_covariance_diagonal,
 )
+from .ia_components import plot_ia_operator_placement
 
 __all__ = [
     "plot_Map3",
     "plot_Gamma",
     "plot_natural_components",
     "plot_ia_components",
+    "plot_ia_operator_placement",
     "plot_code_comparison",
     "plot_parameter_errors",
     "plot_correlation",

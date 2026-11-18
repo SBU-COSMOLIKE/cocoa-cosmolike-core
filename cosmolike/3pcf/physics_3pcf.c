@@ -1091,6 +1091,7 @@ void physics_default_ia_3pcf(physics_ia_3pcf* parameters)
   parameters->zpivot = 0.62;
   parameters->c1rho = 0.0134;
   parameters->power_mode = 1;
+  parameters->intrinsic_legs = -1;
 }
 
 
@@ -1517,6 +1518,10 @@ static void check_ia(const physics_ia_3pcf* parameters)
     && parameters->ct_mode >= 0 && parameters->ct_mode <= 1
     && parameters->suppress_only >= 0 && parameters->suppress_only <= 1,
     "unknown alignment or baryon convention");
+  require_physics(parameters->operator_component >= 0
+    && parameters->operator_component <= 4
+    && parameters->intrinsic_legs >= -1 && parameters->intrinsic_legs <= 7,
+    "operator_component must be 0..4 and intrinsic_legs must be -1..7");
 }
 
 
@@ -1540,6 +1545,19 @@ static physics_ia_coefficients ia_coefficients(
   coefficients.velocity = -2.0*ct/5.0;
   coefficients.quadratic = c2;
   coefficients.density = parameters->bta*c1 - 2.0*c2/3.0;
+  // The EFT density-shaped vertex contains part of the physical tidal
+  // torque. Selecting C2 alone would assign that part to the wrong model.
+  // Every residual keeps the same linear shapes on its remaining I legs.
+  if (parameters->operator_component != 0) {
+    coefficients.velocity = parameters->operator_component == 4
+      ? -2.0*ct/5.0 : 0.0;
+    coefficients.quadratic = parameters->operator_component == 3 ? c2 : 0.0;
+    coefficients.density = parameters->operator_component == 2
+      ? parameters->bta*c1 : 0.0;
+    if (parameters->operator_component == 3) {
+      coefficients.density = -2.0*c2/3.0;
+    }
+  }
   return coefficients;
 }
 
@@ -1730,7 +1748,7 @@ static void ia_prepared(
     - tensor222(vertices, linear, 0, 0, 0, 2)
     - tensor222(vertices, linear, 0, 2, 0, 0)
     - tensor222(vertices, linear, 0, 0, 2, 0));
-  if (!remove_alignment) {
+  if (!remove_alignment && parameters->operator_component <= 1) {
     // Linear shapes have only helicity zero. Their contribution to an
     // all-E correlator is C1 to the number of shapes times B_tree.
     // Adding this once is algebraically equal to its three placements.
@@ -1816,11 +1834,14 @@ void physics_ia_same_shape_3pcf(
 // kernel grid, then splined in chi. The TATT residual uses the pure g and
 // the source-grid W. They represent the same continuum window but have
 // different finite-grid errors in fastnc, which this implementation keeps.
-// This function returns the *physical* kernel chi*(1+z)*(g+C1*W).
-void physics_nla_kernel_3pcf(
+// Each field choice returns its physical kernel with chi*(1+z) included.
+// G and I are splined separately only for a selected placement; the
+// ordinary total keeps its original combined-kernel arithmetic.
+static void field_kernel_physics(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,
   const int bin,
+  const int field, // -1=G+I, 0=G, 1=I, on the same finite kernel grid
   double* out
 )
 {
@@ -1835,6 +1856,11 @@ void physics_nla_kernel_3pcf(
     const size_t index = (size_t)bin*count + node;
     kernel[node] = model->kernel_lens[index]
       + coefficients.c1*model->kernel_shape[index];
+    if (field == 0) {
+      kernel[node] = model->kernel_lens[index];
+    } else if (field == 1) {
+      kernel[node] = coefficients.c1*model->kernel_shape[index];
+    }
   }
   physics_spline spline = make_spline(model->kernel_chi, kernel, count);
   for (int node=0; node<model->nlos; node++) {
@@ -1843,6 +1869,17 @@ void physics_nla_kernel_3pcf(
   }
   destroy_spline(&spline);
   free(kernel);
+}
+
+
+void physics_nla_kernel_3pcf(
+  const physics_model_3pcf* model,
+  const physics_ia_3pcf* parameters,
+  const int bin,
+  double* out
+)
+{
+  field_kernel_physics(model, parameters, bin, -1, out);
 }
 
 
@@ -1868,7 +1905,11 @@ physics_projection_3pcf* physics_projector_create_3pcf(
     sizeof(physics_ia_coefficients));
   double* kernels = allocate_physics((size_t)3*count, sizeof(double));
   for (int leg=0; leg<3; leg++) {
-    physics_nla_kernel_3pcf(model, parameters, bins[leg],
+    const int field = parameters->intrinsic_legs < 0 ? -1
+      : (parameters->intrinsic_legs >> leg)&1;
+    // Spline C1*W as a product. Multiplying a splined W by C1 at the LOS
+    // node would change the established finite-grid baseline convention.
+    field_kernel_physics(model, parameters, bins[leg], field,
       kernels + (size_t)leg*count);
   }
   for (int node=0; node<count; node++) {
@@ -1886,6 +1927,9 @@ physics_projection_3pcf* physics_projector_create_3pcf(
     projection->weights[node] = model->los_dchi[node]
       *kernels[node]*kernels[count + node]*kernels[2*count + node]
       /pow(distance, 4);
+    if (parameters->operator_component >= 2) {
+      projection->weights[node] = 0.0;
+    }
     const double measure = model->los_dchi[node]
       *pow(1.0 + redshift, 3)/distance;
     const double residual[7] = {
@@ -1898,8 +1942,13 @@ physics_projection_3pcf* physics_projector_create_3pcf(
       shape[0]*shape[1]*shape[2]
     };
     for (int term=0; term<7; term++) {
+      const int placement[7] = {4, 2, 1, 6, 3, 5, 7};
       projection->weights[(size_t)(term + 1)*count + node]
         = measure*residual[term];
+      if (parameters->intrinsic_legs >= 0
+          && parameters->intrinsic_legs != placement[term]) {
+        projection->weights[(size_t)(term + 1)*count + node] = 0.0;
+      }
     }
   }
   free(kernels);
@@ -2012,7 +2061,9 @@ static int same_ia_parameters(
     && first->zpivot == second->zpivot && first->c1rho == second->c1rho
     && first->fb == second->fb && first->power_mode == second->power_mode
     && first->ct_mode == second->ct_mode
-    && first->suppress_only == second->suppress_only;
+    && first->suppress_only == second->suppress_only
+    && first->operator_component == second->operator_component
+    && first->intrinsic_legs == second->intrinsic_legs;
 }
 
 

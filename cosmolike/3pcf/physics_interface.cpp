@@ -192,6 +192,10 @@ static physics_ia_3pcf parameters_physics(const py::dict& values)
       parameters.ct_mode = py::cast<int>(item.second);
     } else if (key == "suppress_only") {
       parameters.suppress_only = py::cast<int>(item.second);
+    } else if (key == "operator_component") {
+      parameters.operator_component = py::cast<int>(item.second);
+    } else if (key == "intrinsic_legs") {
+      parameters.intrinsic_legs = py::cast<int>(item.second);
     } else {
       require_physics_interface(false, "unknown IA dictionary key");
     }

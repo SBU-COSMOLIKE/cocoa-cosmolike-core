@@ -57,6 +57,14 @@ typedef struct {
   int power_mode; // 0: linear D^2; 1: nonlinear(z=0) D^2; 2: nonlinear(z)
   int ct_mode; // 0: physical Ct=C1*ct (fastnc); 1: physical Ct=ct
   int suppress_only; // cap the baryon transfer at one before scaling fb
+  // Diagnostics select physical operators before projection. Zero keeps
+  // the complete prediction; 1=NLA, 2=density weighting, 3=tidal torque,
+  // 4=velocity shear. NLA includes GGG until a field placement is selected.
+  int operator_component;
+  // -1 keeps all placements. Bits 0,1,2 select I on the corresponding
+  // ordered leg; unset bits select G. Thus 4=GGI and 3=IIG. This selector
+  // affects projection only, not the nineteen unprojected IA entries.
+  int intrinsic_legs;
 } physics_ia_3pcf;
 
 typedef struct physics_model_3pcf physics_model_3pcf;

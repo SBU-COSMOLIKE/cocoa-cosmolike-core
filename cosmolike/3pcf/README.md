@@ -210,6 +210,59 @@ BiHalofit baryon-response option changes a specified matter bispectrum;
 it does not by itself define a two-point feedback spectrum or modify the
 halo profiles used in the covariance.
 
+### Separating operators and galaxy placements
+
+A diagnostic can ask either which intrinsic galaxies contribute or which
+physical shape response produces their correlation. The two selectors in
+an IA dictionary answer these questions before integration. The default
+`operator_component=0` retains the complete calculation; `1` retains the
+nonlinear-alignment baseline, `2` density weighting, `3` tidal torque and
+`4` velocity shear. The baseline includes gravity until a placement is
+selected. `intrinsic_legs=-1` retains all placements. Otherwise bits 0, 1
+and 2 select intrinsic shapes on the corresponding ordered source legs:
+
+| Placement | GGG | GGI | GIG | IGG | GII | IIG | IGI | III |
+|---|---|---|---|---|---|---|---|---|
+| `intrinsic_legs` | 0 | 4 | 2 | 1 | 6 | 3 | 5 | 7 |
+
+For example, `operator_component=3, intrinsic_legs=4` selects tidal torque
+with the intrinsic shape on leg 3. These selectors work through both C++
+adapters, direct projection, prepared grids, multipoles and aperture
+transforms. The leg selector applies to projection; the unprojected IA
+method continues to return its nineteen explicitly ordered entries.
+
+The tensor basis coefficient of the density-shaped vertex is
+$`C_{1\delta}-2C_2/3`$, where $`C_{1\delta}=b_{\rm TA}C_1`$. A torque-only
+calculation must therefore retain both the quadratic coefficient $`C_2`$
+and the density-shaped coefficient $`-2C_2/3`$. A density-weighting
+calculation retains only $`C_{1\delta}`$. Every residual keeps its factors
+of $`C_1`$ on the other intrinsic legs. This gives a physical operator split
+without subtracting nearly equal total predictions.
+
+Prepared component grids require `signed_baseline=1`. They interpolate
+signed components divided by one common positive GGG scale; individually
+logging signed components is undefined and would also break additive
+closure. The baseline's G and I kernels are separately splined on the
+same original kernel grid. The residual keeps its distinct source-grid
+weights. Projectors own their selected weights and coefficients, so a
+component call cannot alter a previously constructed total grid.
+
+The project's [operator notebook](../../../../../projects/des_3pcf/EXAMPLE_IA_COMPONENTS.ipynb)
+returns `[5,8,nrow]` signed moments: gravity, linear alignment, density
+weighting, torque and velocity shear by the eight placements above. It
+checks their sum against the ordinary total. Its first plot groups physical
+operators; its second groups higher-order TATT placements, excluding both
+linear alignment and velocity shear. This follows the distinction in
+[Gomes et al., Figures 5–6](https://arxiv.org/html/2601.09133v1).
+
+The velocity-shear diagnostic retains the active upstream vertex. In the
+equilateral limit it gives $`B_{\delta\delta E}^{VS}=-3C_t P^2/14`$ and no
+single-B VS term. The literal printed Eqs. 62 and 67 differ. This is an
+unresolved manuscript/code convention issue; the VS curves must not be
+called an independently validated reproduction. The TATT equilateral
+identity $`B_{\delta\delta E}^{res}/P^2=-C_2/6-C_{1\delta}/2`$ is tested
+separately and agrees with the operator calculation.
+
 ## Angular multipoles and the four shear components <a name="transform"></a>
 
 The angular bispectrum still depends on the size and shape of a Fourier
