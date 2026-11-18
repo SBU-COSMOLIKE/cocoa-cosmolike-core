@@ -165,6 +165,16 @@ each posterior comparison. Uniform parameter bounds are not Gaussian prior
 precisions. Report rank failures separately; do not use a pseudoinverse to
 manufacture finite uncertainties for an unconstrained direction.
 
+A declared fixed-dark-energy comparison selects the retained posterior
+Fisher submatrix before inversion, fixing w0=-1 and wa=0 at the saved
+fiducial. Invert all retained parameters before selecting Omega_m and S8;
+otherwise other nuisance parameters would also be fixed. Count the saved
+prior once. This array calculation changes the local parameter experiment,
+not the physical fiducial, estimator, scale cuts or posterior likelihood.
+The supplied joint Nautilus examples do not by themselves provide a
+two-point versus joint posterior comparison; that needs two separately
+recorded selections and sampling checks with common priors.
+
 A controlled two-source IA example teaches sign and power-prescription
 responses without claiming DES amplitudes. The full survey forecast is a
 separate, explicit calculation. A small teaching calculation does not validate
@@ -384,3 +394,16 @@ stored. The PME notebook uses controlled Gaussian vectors with a known true
 covariance to teach these requirements; it does not manufacture DES mock
 catalogues or claim a calibrated survey correction. Report nonpositive
 precision estimates without eigenvalue repair or a pseudoinverse.
+
+An estimator-family string such as `finite_sas`, even with exact row labels,
+does not identify its triangle boundaries, weights, masks or calibration.
+The simulation-file loader checks only its declared fields. Require an
+analyst's matching measurement/input manifest before interpreting a real
+survey correction. Do not imply that the controlled notebook supplies a
+converged finite-SAS TATT covariance or independent survey realizations.
+
+State the outcome of the saved draw even when the noisy correction is
+worse than the analytic model. Removing product bias in expectation does
+not guarantee improvement for one small simulation sample. Keep held-out
+validation independent of both covariance estimation and model tuning;
+do not replace inconvenient draws or repair their eigenvalues.
