@@ -599,27 +599,25 @@ double C_gg_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Galaxy-clustering C_l with non-Limber low multipoles, as a
-// diagnostic: starts from C_gg_tomo_limber_cpp (same cube layout,
-// diagonal only) and overwrites every requested l < limits.LMAX_NOLIMBER
-// with the non-Limber C_cl_tomo value (Limber-convergence early-exit
-// tolerance 0.01) read at the integer multipole (int)(l + 1e-13) - the
-// requested low multipoles are expected to be integer-valued.
+// Galaxy-clustering C_l with the non-Limber correction, at any
+// multipoles: one C_gg_tomo_ells call, the call of the Fourier data
+// vector (generic_interface.hpp), so at the data-vector band centers the
+// values equal its gg block (before the mask) bit for bit.
 //
-// This wrapper is not the Fourier data-vector route. That route
-// (generic_interface.hpp) dispatches through C_gg_tomo_ells, which
-// selects the low-rank and cross-pair paths and disables the early exit
-// (tolerance 0). The caps differ too: this wrapper and the ordinary
-// FKEM routes stop their non-Limber corrections at
-// limits.LMAX_NOLIMBER, while the low-rank route uses its own cap,
-// lowrank_DD_GG_lmax. A cap decides where the non-Limber correction
-// stops; the tolerance decides whether an evaluation may stop earlier.
-// The values here are C_l point values at single multipoles - this
+// At a multipole l, integer or not, the result is the exact Limber value
+// at l plus the non-Limber correction interpolated linearly between the
+// two integers around l. Below the active engine's cap every requested
+// multipole gets its correction, with no early exit (tolerance 0); from
+// cap - 1 on, and below l = 1, the value is Limber. The engine follows the
+// likelihood's settings: FKEM with the cap limits.LMAX_NOLIMBER, the
+// low-rank engine with its own cap lowrank_DD_GG_lmax, and the FKEM twin
+// that also computes the cross pairs when those are installed. The
+// multipoles need not be sorted. The values are C_l point values - the
 // wrapper does not average over a band.
 //
 // Parameters:
-//   l - multipole values; an empty array aborts (spdlog::critical +
-//       exit)
+//   l - multipole values (need not be integers); an empty array aborts
+//       (spdlog::critical + exit)
 //
 // Returns:
 //   arma::Cube (nell, clustering_nbin, clustering_nbin): rows =
@@ -630,29 +628,27 @@ arma::Cube<double> C_gg_tomo_cpp(
   )
 {
   if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_gg_tomo_cpp", 
+    spdlog::critical("{}: l array size = {}",
+                     "C_gg_tomo_cpp",
                      l.n_elem);
     exit(1);
   }
-  arma::Cube<double> result = C_gg_tomo_limber_cpp(l);
-  arma::uvec idxs = arma::find(l < limits.LMAX_NOLIMBER);
-  if (idxs.n_elem > 0) {
-    const double tolerance = 0.01;
-
-    double** Cl = (double**) malloc2d(redshift.clustering_nbin, 
-                                      limits.LMAX_NOLIMBER + 1);
-
-    C_cl_tomo((double* const* const) Cl, tolerance);
-
-    for (int nz = 0; nz < redshift.clustering_nbin; nz++) {
-      for (int i = 0; i < static_cast<int>(idxs.n_elem); i++) {
-        result(idxs(i), nz, nz) = Cl[nz][static_cast<int>(l(idxs(i)) + 1e-13)];
-      }
+  arma::Cube<double> result(l.n_elem,
+                            redshift.clustering_nbin,
+                            redshift.clustering_nbin,
+                            arma::fill::zeros);
+  const int nell = static_cast<int>(l.n_elem);
+  // one spectrum per lens bin (the gg autos): clustering_Npowerspectra
+  // = clustering_nbin, so row nz of tmp is the auto pair (nz, nz)
+  const int NSIZE = tomo.clustering_Npowerspectra;
+  double** tmp = (double**) malloc2d(NSIZE, nell);
+  C_gg_tomo_ells(l.memptr(), nell, NSIZE, tmp);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      result(i, nz, nz) = tmp[nz][i];
     }
-
-    free((void*) Cl);
   }
+  free(tmp);
   return result;
 }
 
