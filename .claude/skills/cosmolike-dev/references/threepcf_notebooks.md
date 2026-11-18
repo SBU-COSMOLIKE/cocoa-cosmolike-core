@@ -49,6 +49,13 @@ instruction. This changes a declared numerical-library setting; do not replace
 Python methods or entries in `sys.modules`. Child comparison processes receive
 the full thread environment before any imports.
 
+Keep fixed model selectors as integers when a likelihood merges a sampled
+point with its reference dictionary. Converting every field to float can
+leave the first cached prediction working while a later IA displacement
+fails at the native integer read. Test full parameter dictionaries, changed
+continuous amplitudes and restored starting values; a repeated reference
+call alone does not exercise the native input conversion.
+
 ## Plot supplied quantities and name their meanings
 
 The folder name `3pcf` begins with a digit. Import it explicitly with
@@ -223,6 +230,15 @@ no physical evaluations. Score every baseline column from those saved arrays,
 rank its measured contribution, and evaluate a few selected columns at each
 candidate setting. A shared center plus four displaced vectors per selected
 column gives the reduced evaluation count.
+
+For step studies, reuse those saved vectors as explicit arrays. The h and
+h/2 stencils already contain zero and +/-h/2, +/-h, +/-2h. New +/-h/4
+points complete h/4; optional new +/-4h points complete 2h. Two selected
+columns need four or eight new means. Do not fabricate entries in a model's
+internal cache. Check identical shared-node bits and input identities before
+work, then retain the new stencils and verify dependencies before saving.
+Normalize a plotted noise ratio to the same selected columns and reference
+spacing, rather than to a different all-parameter score.
 
 The estimate assumes approximately independent evaluation jitter. Smooth
 fourth derivatives can contaminate it; odd coherent errors and correlated
