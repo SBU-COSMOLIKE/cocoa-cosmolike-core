@@ -35,7 +35,7 @@
 //    power-law tilt: dividing f by ell1^(nu1-1/2) ell2^(nu2-1/2)
 //    leaves a function that decays toward both ends of the grid, which
 //    the FFT can treat as periodic without a large jump at the seam.
-//    The tables bias1 and bias2 below hold these per-node factors.
+//    The two axis rows of the bias table below hold these factors.
 // 2. Expand in Fourier modes on the log grid. On a uniform grid in
 //    ln(ell) the tilted function equals a finite sum of Fourier modes,
 //    and each mode is a pure power law ell^(nu-1/2+i*eta), with eta
@@ -95,12 +95,12 @@ struct fftlog_workspace_3pcf {
   double* real; // [worker,padded,padded], real FFT scratch
   fftw_complex* forward; // [worker,padded,padded/2+1], forward modes
   fftw_complex* scratch; // inverse coefficients, same shape, overwritten
-  double* bias1; // [n], ell^(1/2-nu1): divides the first-axis tilt out
-  double* bias2; // [n], ell^(1/2-nu2): the same for the second axis
-  double* output1; // [n], theta^(1/2-nu1): restores the first-axis tilt
-  double* output2; // [n], theta^(1/2-nu2): the same for the second axis
-  fftw_complex* kernel1; // [order,padded], all signed row frequencies
-  fftw_complex* kernel2; // [order,padded/2+1], nonnegative frequencies
+  double* bias; // [2,n] axis-major ell^(1/2-nu): divides both tilts out
+  double* output; // [2,n] axis-major theta^(1/2-nu): restores the tilts
+  fftw_complex* kernel; // axis 0: [order,padded], all signed row
+                        // frequencies; axis 1, following at offset
+                        // (max_order+1)*padded: [order,padded/2+1],
+                        // nonnegative frequencies
   fftw_plan forward_plan; // one real-to-complex recipe for all workers
   fftw_plan inverse_plan; // one complex-to-real recipe for all workers
   size_t selected_count; // kept output cells; 0 keeps the whole grid
@@ -444,7 +444,8 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   if (!((size_t)workers <= SIZE_MAX/sizeof(double)/work->real_stride
         && (size_t)workers <= SIZE_MAX/sizeof(fftw_complex)
             /work->complex_stride
-        && (size_t)(max_order+1) <= SIZE_MAX/sizeof(fftw_complex)/nfft)) {
+        && (size_t)(max_order+1)
+            <= SIZE_MAX/sizeof(fftw_complex)/(nfft+nfrequency))) {
     log_fatal("fftlog_3pcf: worker or Mellin table size overflow");
     exit(1);
   }
@@ -457,44 +458,43 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       sizeof(fftw_complex)*work->complex_stride*workers);
   work->scratch = fftw_malloc(
       sizeof(fftw_complex)*work->complex_stride*workers);
-  work->bias1 = fftw_malloc(sizeof(double)*n);
-  work->bias2 = fftw_malloc(sizeof(double)*n);
-  work->output1 = fftw_malloc(sizeof(double)*n);
-  work->output2 = fftw_malloc(sizeof(double)*n);
-  work->kernel1 = fftw_malloc(
-      sizeof(fftw_complex)*((size_t)(max_order+1)*nfft));
-  work->kernel2 = fftw_malloc(
-      sizeof(fftw_complex)*((size_t)(max_order+1)*nfrequency));
+  work->bias = fftw_malloc(sizeof(double)*2*n);
+  work->output = fftw_malloc(sizeof(double)*2*n);
+  work->kernel = fftw_malloc(
+      sizeof(fftw_complex)*((size_t)(max_order+1)*(nfft+nfrequency)));
   if (!(work->input && work->real && work->forward && work->scratch
-        && work->bias1 && work->bias2 && work->output1 && work->output2
-        && work->kernel1 && work->kernel2)) {
+        && work->bias && work->output && work->kernel)) {
     log_fatal("fftlog_3pcf: allocation failed");
     exit(1);
   }
 
   // --- 3. BIAS TABLES ---
-  // bias1 and bias2 divide the power-law tilt out of the input (file
-  // head, step 1); output1 and output2 restore the matching powers
-  // theta^(1/2-nu) on the output radii. Output node index points at
+  // The bias rows divide the power-law tilt out of the input (file
+  // head, step 1) and the output rows restore the matching powers
+  // theta^(1/2-nu) on the output radii; axis 0 lives at offset 0 and
+  // axis 1 at offset n of each table. Output node index points at
   // the reflected Fourier grid: node i carries theta = xy/ell[n-1-i].
   for (int index=0; index<n; index++) {
-    work->bias1[index] = pow(ell[index], 0.5-nu1);
-    work->bias2[index] = pow(ell[index], 0.5-nu2);
+    work->bias[index] = pow(ell[index], 0.5-nu1);
+    work->bias[n+index] = pow(ell[index], 0.5-nu2);
     const double theta = xy/ell[n-1-index];
-    work->output1[index] = pow(theta, 0.5-nu1);
-    work->output2[index] = pow(theta, 0.5-nu2);
+    work->output[index] = pow(theta, 0.5-nu1);
+    work->output[n+index] = pow(theta, 0.5-nu2);
   }
 
   // --- 4. KERNEL TABLES ---
   // Tabulate the analytic Bessel integral of every Fourier mode, for
-  // every order up to max_order. kernel1 covers the first axis, whose
-  // rows carry all signed frequencies; kernel2 covers the second
-  // axis, which the r2c layout keeps at nonnegative frequencies only.
+  // every order up to max_order. The kernel table's axis 0 block
+  // covers the first axis, whose rows carry all signed frequencies;
+  // the axis 1 block, at offset axis1 inside the same table, covers
+  // the second axis, which the r2c layout keeps at nonnegative
+  // frequencies only.
   // frequency_step is the spacing of the discrete logarithmic
   // frequencies, 2*pi over the periodic length nfft*step, and origin
   // is the phase anchor log(ell_min*theta_min) of the padded grid.
   const double origin = log(xy)-(nfft-1)*step;
   const double frequency_step = 2.0*acos(-1.0)/(nfft*step);
+  const size_t axis1 = (size_t)(max_order+1)*nfft;
   for (int order=0; order<=max_order; order++) {
     for (int index=0; index<work->padded; index++) {
       // Rows above padded/2 hold negative frequencies; the Nyquist row
@@ -506,7 +506,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       const double eta = frequency*frequency_step;
       const size_t target = (size_t)order*nfft+index;
       if (order < 2) {
-        work->kernel1[target] = taper
+        work->kernel[target] = taper
             *kernel_fftlog_3pcf(order, nu1, eta, origin, dlnt);
       } else {
         // The recurrence Gamma(a+1) = a*Gamma(a), applied once in the
@@ -519,8 +519,8 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
         // the order and ride along unchanged from the order-2 seed,
         // so each parity needs only one direct GSL evaluation.
         const double complex exponent = nu1+I*eta;
-        work->kernel1[target] =
-            work->kernel1[(size_t)(order-2)*nfft+index]
+        work->kernel[target] =
+            work->kernel[(size_t)(order-2)*nfft+index]
             *(order-2.5+exponent)/(order+0.5-exponent);
       }
     }
@@ -528,21 +528,21 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       const double taper = taper_fftlog_3pcf(
           (int)index, work->padded, window, window_width);
       const double eta = index*frequency_step;
-      const size_t target = (size_t)order*nfrequency+index;
+      const size_t target = axis1+(size_t)order*nfrequency+index;
       if (nu1 == nu2) {
         // Equal biases make the two axes' kernels identical, so the
         // nonnegative frequencies copy the first axis's finished
-        // values. The storage stays separate and flat regardless.
-        work->kernel2[target] = work->kernel1[(size_t)order*nfft+index];
+        // values. The two axis blocks stay flat inside one table.
+        work->kernel[target] = work->kernel[(size_t)order*nfft+index];
       } else if (order < 2) {
-        work->kernel2[target] = taper
+        work->kernel[target] = taper
             *kernel_fftlog_3pcf(order, nu2, eta, origin, dlnt);
       } else {
         // The same order-advancing recurrence as above, with the
         // second axis's bias in the exponent.
         const double complex exponent = nu2+I*eta;
-        work->kernel2[target] =
-            work->kernel2[(size_t)(order-2)*nfrequency+index]
+        work->kernel[target] =
+            work->kernel[axis1+(size_t)(order-2)*nfrequency+index]
             *(order-2.5+exponent)/(order+0.5-exponent);
       }
     }
@@ -582,12 +582,9 @@ void fftlog_destroy_3pcf(
   fftw_free(work->real);
   fftw_free(work->forward);
   fftw_free(work->scratch);
-  fftw_free(work->bias1);
-  fftw_free(work->bias2);
-  fftw_free(work->output1);
-  fftw_free(work->output2);
-  fftw_free(work->kernel1);
-  fftw_free(work->kernel2);
+  fftw_free(work->bias);
+  fftw_free(work->output);
+  fftw_free(work->kernel);
   fftw_free(work->selected_offsets);
   fftw_free(work->selected_first);
   fftw_free(work->selected_second);
@@ -645,8 +642,9 @@ void fftlog_select_3pcf(
       work->selected_offsets[cell] =
           (size_t)(indices[first]+work->padding)*work->padded
           +indices[second]+work->padding;
-      work->selected_first[cell] = work->output1[indices[first]];
-      work->selected_second[cell] = work->output2[indices[second]];
+      work->selected_first[cell] = work->output[indices[first]];
+      work->selected_second[cell] =
+          work->output[work->n+indices[second]];
     }
   }
 }
@@ -704,14 +702,14 @@ void fftlog_forward_3pcf(
   // Scalar meaning of one iteration, for row first and the column
   // pair second and second+1:
   //   real[first+padding][second+padding] =
-  //       input[first][second]*bias1[first]*bias2[second];
+  //       input[first][second]*bias[first]*bias[n+second];
   // and the same at second+1. The tilt division multiplies in because
   // the tables already hold the reciprocal powers ell^(1/2-nu). The
   // two column neighbors occupy the two SIMD lanes; the lanes never
   // interact, so vectorizing changes no arithmetic.
   for (int first=0; first<work->n; first++) {
     // Broadcast this row's factor ell1^(1/2-nu1) into both lanes.
-    const v2d first_bias = simde_mm_set1_pd(work->bias1[first]);
+    const v2d first_bias = simde_mm_set1_pd(work->bias[first]);
     // n is even - fftlog_create_3pcf enforces it - so column pairs
     // cover every row exactly and no scalar remainder is needed.
     for (int second=0; second<work->n; second+=2) {
@@ -724,7 +722,8 @@ void fftlog_forward_3pcf(
       // Multiply both cells by the shared row factor.
       const v2d first_product = simde_mm_mul_pd(values, first_bias);
       // Load the two column factors ell2^(1/2-nu2).
-      const v2d second_bias = simde_mm_loadu_pd(work->bias2+second);
+      const v2d second_bias =
+          simde_mm_loadu_pd(work->bias+work->n+second);
       // Finish and store, walking the nested call inside out: mul
       // multiplies the row-weighted pair by the column factors, and
       // storeu writes lane 0 at target and lane 1 at target+1 inside
@@ -777,16 +776,17 @@ const double* fftlog_inverse_3pcf(
     exit(1);
   }
   const size_t nfrequency = (size_t)work->padded/2+1;
+  const size_t axis1 = (size_t)(work->max_order+1)*work->padded;
   const fftw_complex* forward =
       work->forward+(size_t)worker*work->complex_stride;
   fftw_complex* scratch =
       work->scratch+(size_t)worker*work->complex_stride;
   double* real = work->real+(size_t)worker*work->real_stride;
   // Scalar meaning for each coefficient c = forward[index] and the
-  // combined kernel k = kernel1(row frequency)*kernel2(column
-  // frequency):
+  // combined kernel k = (axis 0 kernel at the row frequency)*(axis 1
+  // kernel at the column frequency):
   //   scratch[index] = conj(c*k);
-  // Rows carry the signed first-axis frequencies, so kernel1 reads at
+  // Rows carry the signed first-axis frequencies, so axis 0 reads at
   // the row index directly; columns hold the nonnegative second-axis
   // frequencies of the r2c layout. The SIMD lanes hold the real part
   // (lane 0) and imaginary part (lane 1) of one complex value - the
@@ -794,12 +794,12 @@ const double* fftlog_inverse_3pcf(
   // product from (a+ib)(p+iq) = (ap-bq) + i(bp+aq), then negates the
   // imaginary lane to conjugate.
   for (int first=0; first<work->padded; first++) {
-    const double complex kernel1 =
-        work->kernel1[(size_t)order1*work->padded+first];
+    const double complex row_kernel =
+        work->kernel[(size_t)order1*work->padded+first];
     for (size_t second=0; second<nfrequency; second++) {
       const size_t index = (size_t)first*nfrequency+second;
-      const double complex factor = kernel1
-          *work->kernel2[(size_t)order2*nfrequency+second];
+      const double complex factor = row_kernel
+          *work->kernel[axis1+(size_t)order2*nfrequency+second];
 
       // Load c: lane 0 takes its real part, lane 1 its imaginary part.
       const v2d coefficient = simde_mm_loadu_pd((const double*)(forward+index));
@@ -891,7 +891,7 @@ const double* fftlog_inverse_3pcf(
     // Broadcast the normalization into both lanes.
     const v2d factor = simde_mm_set1_pd(normalization);
     // Broadcast this row's factor theta1^(1/2-nu1).
-    const v2d first_factor = simde_mm_set1_pd(work->output1[first]);
+    const v2d first_factor = simde_mm_set1_pd(work->output[first]);
     for (int second=0; second<work->n; second+=2) {
       const size_t source =
           (size_t)(first+work->padding)*work->padded+second+work->padding;
@@ -903,7 +903,8 @@ const double* fftlog_inverse_3pcf(
       // Multiply both cells by the shared row factor.
       const v2d first_product = simde_mm_mul_pd(normalized, first_factor);
       // Load the two column factors theta2^(1/2-nu2).
-      const v2d second_factor = simde_mm_loadu_pd(work->output2+second);
+      const v2d second_factor =
+          simde_mm_loadu_pd(work->output+work->n+second);
       // Finish and store, inside out again: mul applies the column
       // factors, and storeu writes the pair into the compact [n,n]
       // output at (first, second) and (first, second+1).
