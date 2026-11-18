@@ -302,6 +302,12 @@ void reset_Ntable_struct(void)
   Ntable.halo_ia_na = 51;    // halo IA a nodes over the source range
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.NL_Nchi_boost = 1.0; // init_nonlimber_accuracy_boost
+  // the early-exit tolerances of the non-Limber real-space C_l
+  // (init_nonlimber_tolerance; the reasons for the two values are in
+  // w_gg_tomo and w_gammat_tomo of cosmo2D.c)
+  Ntable.NL_tol_gg = 0.002;
+  Ntable.NL_tol_gs = 0.01;
+  Ntable.accuracy_boost = 1.0; // init_accuracy_boost
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
   Ntable.dCX_dlnk_nlnk[NODES_DENSE] = 256;

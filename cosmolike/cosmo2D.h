@@ -102,6 +102,13 @@ void set_nonlinear_kaiser_GG(const int flag);
 
 int get_use_nonlinear_kaiser_GG(void);
 
+// the early-exit tolerances w_gg_tomo and w_gammat_tomo use: the settings
+// Ntable.NL_tol_gg/gs of init_nonlimber_tolerance, divided by
+// 1 + 2 (AB - 1) when the global accuracy boost AB > 1
+double nonlimber_tolerance_gg(void);
+
+double nonlimber_tolerance_gs(void);
+
 // gg cross pairs for thin-bin surveys (the cross-pair section at the
 // end of cosmo2D.c): the measured pair list, each pair one spectrum of
 // the data vector's appended gg-cross block; npairs = 0 (the default)

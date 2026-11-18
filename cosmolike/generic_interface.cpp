@@ -412,6 +412,10 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 //   nonlinear_kaiser -> init_nonlinear_kaiser_gg
 //                                              -> use_nonlinear_kaiser_GG
 //                       -> the RSD rows of the non-Limber gg engines
+//   nonlimber_tolerance_gg, nonlimber_tolerance_gs
+//                    -> init_nonlimber_tolerance
+//                                              -> Ntable.NL_tol_gg/gs
+//                       -> the early exit of w_gg_tomo and w_gammat_tomo
 // ---------------------------------------------------------------------------
 
 // Clears the accuracy-boost baselines (defined next to them, below);
@@ -1128,6 +1132,80 @@ void init_lmax_nonlimber(const int lmax)
 }
 
 // ---------------------------------------------------------------------------
+// Set the early-exit tolerances of the non-Limber real-space C_l:
+// Ntable.NL_tol_gg for w(theta) (w_gg_tomo: C_cl_tomo and
+// C_cl_tomo_lowrank) and Ntable.NL_tol_gs for gamma_t (w_gammat_tomo:
+// C_gs_tomo). After each block of 16 multipoles, a lens bin (gg) or a
+// lens-source pair (gs) whose C_l at the block's last multipole agrees
+// with the Limber C_l within the tolerance takes the Limber values from
+// the next multipole up to the non-Limber cap. structs.c sets the
+// defaults, 0.002 (gg) and 0.01 (gs); the likelihood yaml keys are
+// nonlimber_tolerance_gg and nonlimber_tolerance_gs.
+//
+// The global accuracy boost AB of init_accuracy_boost refines these
+// settings too: above AB = 1 the C_l use tolerance/(1 + 2 (AB - 1)), a
+// third at AB = 2 and a fifth at AB = 3 (cosmo2D.c nonlimber_tolerance_gg
+// and _gs; get_nonlimber_tolerance returns the values in use). A setting
+// of 0 stays 0 at every boost, and AB = 1 uses the settings unchanged.
+//
+// Why settable: the switch multipole is an integer that moves with the
+// parameters, so a finite-difference derivative whose stencil points
+// straddle a switch sees a step in the model, which a Fisher matrix
+// reads as information. A tolerance of 0 removes the switch: every
+// multipole below the cap is non-Limber. The Fourier-space entries
+// (C_gg_tomo_ells, C_gs_tomo_ells) never take the early exit, so these
+// values do not reach them.
+//
+// Cache invalidation:
+// nothing is bumped here. w_gg_tomo and w_gammat_tomo key their cached
+// C_l and real-space vectors on the tolerance values themselves, so
+// changing a tolerance and changing it back gives the original vector
+// bit for bit, and the tables of every other probe stay valid.
+//
+// Validation: both tolerances finite and >= 0, else critical() + exit(1).
+//
+// Parameters:
+//   gg_tol - early-exit tolerance of the non-Limber w(theta) C_l (>= 0)
+//   gs_tol - early-exit tolerance of the non-Limber gamma_t C_l (>= 0)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_nonlimber_tolerance(const double gg_tol, const double gs_tol)
+{
+  static constexpr std::string_view fname = "init_nonlimber_tolerance"sv;
+  debug("{}: {}", fname, errbegins);
+  if (!std::isfinite(gg_tol) || gg_tol < 0.0) {
+    critical("{}: invalid gg_tol = {} (finite and >= 0; 0 = no early "
+             "exit)", fname, gg_tol);
+    exit(1);
+  }
+  if (!std::isfinite(gs_tol) || gs_tol < 0.0) {
+    critical("{}: invalid gs_tol = {} (finite and >= 0; 0 = no early "
+             "exit)", fname, gs_tol);
+    exit(1);
+  }
+  Ntable.NL_tol_gg = gg_tol;
+  Ntable.NL_tol_gs = gs_tol;
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// Return the early-exit tolerances the real-space non-Limber C_l use now:
+// the settings of init_nonlimber_tolerance after the accuracy-boost
+// division (cosmo2D.c nonlimber_tolerance_gg and _gs, the same functions
+// w_gg_tomo and w_gammat_tomo call).
+//
+// Returns:
+//   (gg, gs): the effective tolerances of w(theta) and gamma_t
+// ---------------------------------------------------------------------------
+std::tuple<double, double> get_nonlimber_tolerance()
+{
+  return std::make_tuple(nonlimber_tolerance_gg(), nonlimber_tolerance_gs());
+}
+
+// ---------------------------------------------------------------------------
 // Choose the galaxy-galaxy lensing C_l^gs computation, writing
 // like.adopt_limber[LIMBER_GS]: 1 = Limber at every multipole (the default); 0 =
 // the non-Limber C_gs_tomo below limits.LMAX_NOLIMBER, in gamma_t
@@ -1395,9 +1473,11 @@ void init_nonlinear_kaiser_gg(const int flag)
 // value.
 //
 // Also writes Ntable.FPTboost (int(boost - 1) for boost > 1, else 0;
-// enlarges the FAST-PT grids in pt_cfastpt.c) and
+// enlarges the FAST-PT grids in pt_cfastpt.c),
 // Ntable.high_def_integration = integration_accuracy (selects larger
-// fixed-order quadrature tables downstream).
+// fixed-order quadrature tables downstream) and Ntable.accuracy_boost =
+// boost (above 1 it divides the non-Limber early-exit tolerances by
+// 1 + 2 (boost - 1); see init_nonlimber_tolerance).
 //
 // Cache invalidation:
 // bumps Ntable.random so all tables keyed on it rebuild.
@@ -1454,6 +1534,11 @@ void init_accuracy_boost(
   }
   nl_accuracy_boost = accuracy_boost;
   set_nl_nchi();
+  // the same boost in the shared struct, where cosmo2D.c reads it: above 1
+  // it divides the non-Limber early-exit tolerances (nonlimber_tolerance_gg
+  // and _gs there); the Ntable.random bump at the end rebuilds the
+  // real-space caches that hold C_l of the old tolerance
+  Ntable.accuracy_boost = accuracy_boost;
   debug("{}: NL_Nchi = {}", fname, Ntable.NL_Nchi);
 
   if (0 == boost_base[4]) boost_base[4] = Ntable.nz_fine_sampling_factor;

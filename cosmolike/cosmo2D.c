@@ -366,6 +366,35 @@ int get_use_nonlinear_kaiser_GG(void)
   return use_nonlinear_kaiser_GG;
 }
 
+// ---------------------------------------------------------------------------
+// The early-exit tolerances the real-space non-Limber C_l use: the settings
+// of init_nonlimber_tolerance (Ntable.NL_tol_gg for w_gg_tomo,
+// Ntable.NL_tol_gs for w_gammat_tomo), divided by 1 + 2 (AB - 1) when the
+// global accuracy boost AB = Ntable.accuracy_boost of init_accuracy_boost
+// exceeds 1: AB = 2 gives a third, AB = 3 a fifth. A higher boost then
+// also shrinks the switching step the early exit leaves in the model. At
+// AB <= 1 the setting is used unchanged, and a setting of 0 (no early
+// exit) stays 0 at every boost. Both callers key their caches on the
+// value returned here; init_accuracy_boost also bumps Ntable.random.
+// ---------------------------------------------------------------------------
+static double nonlimber_tolerance_boosted(const double tolerance)
+{
+  if (Ntable.accuracy_boost > 1.0) {
+    return tolerance/(1.0 + 2.0*(Ntable.accuracy_boost - 1.0));
+  }
+  return tolerance;
+}
+
+double nonlimber_tolerance_gg(void)
+{
+  return nonlimber_tolerance_boosted(Ntable.NL_tol_gg);
+}
+
+double nonlimber_tolerance_gs(void)
+{
+  return nonlimber_tolerance_boosted(Ntable.NL_tol_gs);
+}
+
 // The Limber limit of the nonlinear Kaiser loop parts at one node: equal
 // times, so every growth ordering of get_FPT_kaiser's spectra is D^4,
 //
@@ -1551,10 +1580,12 @@ double xi_pm_tomo(
 //
 // Cache invalidation:
 // recomputes when cosmology, photo-z (shear or clustering),
-// IA, redshift distributions, Ntable, galaxy bias parameters, or the limber
-// flag change. The flag is part of the cache key so that one process can
-// switch between the two paths (the projects'
-// tests/data_vector/test_nonlimber_ggl.py do).
+// IA, redshift distributions, Ntable, galaxy bias parameters, the limber
+// flag or the early-exit tolerance nonlimber_tolerance_gs() change. The
+// flag and the tolerance are part of the cache key so that one process
+// can switch between the two paths and between tolerances (the
+// projects' tests/data_vector/test_nonlimber_ggl.py and
+// test_nonlimber_tolerance.py do).
 //
 // Parameters:
 //   nt     - angular bin index (0..Ntable.Ntheta-1)
@@ -1579,6 +1610,9 @@ double w_gammat_tomo(
   static double* lnell = NULL;
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static int cache_limber = -1; // limber flag the cached w_vec was built with
+  static double cache_tol = -1.0; // early-exit tolerance the cached w_vec
+                                  // was built with (-1 = none yet; a valid
+                                  // tolerance is >= 0)
 
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
@@ -1722,6 +1756,9 @@ double w_gammat_tomo(
       fdiff2(cache[6], Ntable.random) ||
       fdiff2(cache[7], nuisance.random_galaxy_bias) ||
       cache_limber != limber ||
+      // the early-exit tolerance by value: setting it and setting it
+      // back must rebuild w_vec both times (init_nonlimber_tolerance)
+      cache_tol != nonlimber_tolerance_gs() ||
       cache[8] != (uint64_t) NSIZE ||
       // the (lens, source) pair behind each spectrum index: a new
       // pair list of the same length moves every entry
@@ -1747,7 +1784,15 @@ double w_gammat_tomo(
       }
     }
     else {
-      const double tolerance = 0.01;
+      // Switch-to-Limber tolerance of the non-Limber gs path
+      // (nonlimber_tolerance_gs(): 0.01 by default, divided above
+      // accuracy boost 1; init_nonlimber_tolerance).
+      // A pair whose C_l agrees with Limber within it at the last
+      // multipole of a block of 16 takes the Limber values from there.
+      // The switch multipole is an integer that moves with the
+      // parameters, so a finite-difference derivative can see a step;
+      // 0 disables the switch (every pair is non-Limber up to the cap).
+      const double tolerance = nonlimber_tolerance_gs();
       C_gs_tomo(Cl, tolerance);
       #pragma omp parallel for schedule(static)
       for (int nz = 0; nz < NSIZE; nz++) { // LIMBER PART
@@ -1766,6 +1811,7 @@ double w_gammat_tomo(
     cache[8] = (uint64_t) NSIZE;
     cache[9] = tomo.random_ggl;
     cache_limber = limber;
+    cache_tol = nonlimber_tolerance_gs();
   }
   // ---------------------------------------------------------------------------
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
@@ -1824,11 +1870,12 @@ double w_gammat_tomo(
 // recomputes when cosmology, clustering photo-z,
 // clustering redshift distribution, Ntable, galaxy bias, the source
 // n(z) (with magnification it sets the lens range), the limber
-// flag, the low-rank DD settings (flag, nrank, lmax) or the nonlinear
-// Kaiser flag change. The
-// flags are part of the cache key so that one process can switch
-// between the paths and get each bitwise back (the projects'
-// tests/data_vector/test_nonlimber_gg.py do).
+// flag, the low-rank DD settings (flag, nrank, lmax), the nonlinear
+// Kaiser flag or the early-exit tolerance nonlimber_tolerance_gg()
+// change. The flags and the tolerance are part of the cache key so that
+// one process can switch between the paths and get each bitwise back
+// (the projects' tests/data_vector/test_nonlimber_gg.py and
+// test_nonlimber_tolerance.py do).
 //
 // Parameters:
 //   nt     - angular bin index (0..Ntable.Ntheta-1)
@@ -1856,6 +1903,9 @@ double w_gg_tomo(
                                 // w_vec was built with, packed flag/nrank/
                                 // lmax (see below); the all-ones sentinel
                                 // never equals a packed value
+  static double cache_tol = -1.0; // early-exit tolerance the cached w_vec
+                                  // was built with (-1 = none yet; a valid
+                                  // tolerance is >= 0)
 
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
@@ -2006,6 +2056,9 @@ double w_gg_tomo(
       fdiff2(cache[5], redshift.random_shear) ||
       cache_limber != limber ||
       cache_ggdd != ggdd ||
+      // the early-exit tolerance by value: setting it and setting it
+      // back must rebuild w_vec both times (init_nonlimber_tolerance)
+      cache_tol != nonlimber_tolerance_gg() ||
       cache[6] != (uint64_t) NSIZE)
   {
     const int lmin = 1;
@@ -2023,18 +2076,27 @@ double w_gg_tomo(
       }
     }
     else {
-      // Switch-to-Limber tolerance of the non-Limber gg path. The
-      // per-bin early exit of C_cl_tomo hands the multipoles above its
-      // switch point l_s to the Limber table while the exact C_l still
-      // differs from Limber by up to the tolerance. That difference is
-      // real beyond-Limber and RSD power (it scales as the extended-
-      // Limber correction (chi0/sigma_chi)^2/(l + 0.5)^2 of each lens
-      // kernel), so the tolerance bounds a physical modeling step at
-      // l_s, not a numerical one: at 0.01 the step reaches 0.25-0.96%
-      // of C_l at l_s = 32-80 (lsst_y1) and l_s = 32-112 (des_y3).
-      // 0.002 keeps the step at the size of the residual the split
-      // itself leaves at l = 149, at roughly twice the FFTLog cost.
-      const double tolerance = 0.002;
+      // Switch-to-Limber tolerance of the non-Limber gg path
+      // (nonlimber_tolerance_gg(): 0.002 by default, divided above
+      // accuracy boost 1; init_nonlimber_tolerance).
+      // The per-bin early exit of C_cl_tomo hands the multipoles above
+      // its switch point l_s to the Limber table while the exact C_l
+      // still differs from Limber by up to the tolerance. That
+      // difference is real beyond-Limber and RSD power (it scales as
+      // the extended-Limber correction (chi0/sigma_chi)^2/(l + 0.5)^2
+      // of each lens kernel), so the tolerance bounds a physical
+      // modeling step at l_s, not a numerical one: at 0.01 the step
+      // reaches 0.25-0.96% of C_l at l_s = 32-80 (lsst_y1) and
+      // l_s = 32-112 (des_y3). The default 0.002 keeps the step at the
+      // size of the residual the split itself leaves at l = 149, at
+      // roughly twice the FFTLog cost of 0.01.
+      //
+      // l_s is a multiple of 16 that moves with the parameters, so a
+      // finite-difference derivative whose stencil points straddle a
+      // switch sees a step in the model. A tolerance of 0 disables the
+      // switch: every bin is non-Limber up to the cap, which the Fisher
+      // evaluations use.
+      const double tolerance = nonlimber_tolerance_gg();
       if (1 == use_lowrank_DD_GG) {
         // the low-rank DD path, with its own cap: the
         // non-Limber C_l run up to lowrank_DD_GG_lmax, the Limber fill
@@ -2066,6 +2128,7 @@ double w_gg_tomo(
     cache[6] = (uint64_t) NSIZE;
     cache_limber = limber;
     cache_ggdd = ggdd;
+    cache_tol = nonlimber_tolerance_gg();
   }
 
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
@@ -10022,7 +10085,9 @@ static inline void nl_kaiser_rows(
 //
 // Parameters:
 //   Cl  - output array Cl[nbins][LMAX_NOLIMBER]: non-Limber C_l per lens bin
-//   tol - convergence tolerance for switching to Limber (w_gg_tomo: 0.002)
+//   tol - convergence tolerance for switching to Limber (w_gg_tomo passes
+//         nonlimber_tolerance_gg(), 0.002 by default); tol <= 0 disables
+//         the exit
 //
 // Returns:
 //   nothing; the result is written into Cl
@@ -10751,7 +10816,8 @@ void C_gg_tomo_ells(
 // Parameters:
 //   Cl  - output [ggl_Npowerspectra][>= LMAX_NOLIMBER], indexed Cl[nz][l];
 //         pair nz is (ZL(nz), ZS(nz)); Cl[nz][0] = Cl[nz][1] = 0 (spin 2)
-//   tol - early-exit tolerance (w_gammat_tomo passes 0.01); tol <= 0
+//   tol - early-exit tolerance (w_gammat_tomo passes
+//         nonlimber_tolerance_gs(), 0.01 by default); tol <= 0
 //         disables the exit, so every pair runs through LMAX_NOLIMBER - 1
 //         (the reference path for debugging)
 //

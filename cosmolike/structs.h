@@ -109,6 +109,13 @@ typedef struct
   int NL_Nchi;         // Cosmo2D - NL = NonLimber
   double NL_Nchi_boost; // NL_Nchi multiplier on top of the accuracy boost
                         // (init_nonlimber_accuracy_boost; 1 = none)
+  double NL_tol_gg;     // early-exit tolerance of the non-Limber w(theta)
+                        // C_l (w_gg_tomo; init_nonlimber_tolerance;
+                        // 0 = no early exit), before the boost division
+  double NL_tol_gs;     // the same for the gamma_t C_l (w_gammat_tomo)
+  double accuracy_boost; // the global boost of the last init_accuracy_boost
+                         // call (1 = none); above 1 it divides the two
+                         // tolerances above (cosmo2D.c nonlimber_tolerance_*)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // THETA RANGE ON REAL SPACE CORRELATION FUNCTIONS

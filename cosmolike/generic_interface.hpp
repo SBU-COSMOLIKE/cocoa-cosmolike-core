@@ -13,6 +13,7 @@
 #include <cmath> 
 #include <string_view>
 #include <optional>
+#include <tuple>
 using namespace std::literals; // enables "sv" literal
 
 // SPDLOG
@@ -695,6 +696,18 @@ void init_nonlimber_accuracy_boost(
 void init_lmax_nonlimber(
     const int lmax
   );
+
+// early-exit tolerances of the non-Limber real-space C_l: Ntable.NL_tol_gg
+// (w_gg_tomo) and Ntable.NL_tol_gs (w_gammat_tomo); defaults 0.002 and
+// 0.01, 0 = no early exit, negative or nonfinite refused; above accuracy
+// boost 1 the C_l use them divided by 1 + 2 (boost - 1)
+void init_nonlimber_tolerance(
+    const double gg_tol,
+    const double gs_tol
+  );
+
+// the effective (gg, gs) tolerances in use, after the boost division
+std::tuple<double, double> get_nonlimber_tolerance();
 
 void init_adopt_limber_gs(
     const int adopt_limber_gs
