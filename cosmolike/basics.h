@@ -756,8 +756,14 @@ void hankel_kernel_FT_3D(
 // Returns the smallest m >= n whose prime factorization contains only
 // 2, 3, 5 and 7, the radices with fast dedicated FFTW kernels; the
 // comment above next_fft_size_scan in basics.c tells the full story.
-// A caller that also needs an even length retries from m + 1 when m
-// comes back odd.
+// A caller that also needs an even length must retry from m + 1 until
+// the result comes back even. One retry is not always enough:
+// consecutive admissible sizes can share parity (after the request
+// 242 come 243 = 3^5 and 245 = 5 * 7^2, both odd, before the even
+// 250), so the retry belongs in a loop. Terminates the program when n
+// is below 1 - the scan would otherwise hang - or when no admissible
+// length is representable as a long, rather than returning an
+// unusable 0.
 // ---------------------------------------------------------------------------
 long next_fft_size(
     const long n        // minimum acceptable transform size

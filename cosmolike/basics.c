@@ -1959,7 +1959,9 @@ void hankel_kernel_FT_3D(
 // reference results were computed with. The one-dimensional FFTLog
 // convolutions of the Limber and cluster pipelines admit 7 to the
 // radix set, and impose any evenness requirement at the call site by
-// retrying from the next integer when the result lands odd. The
+// retrying from the next integer until the result lands even; one
+// retry is not always enough, because consecutive admissible lengths
+// can share parity (243 = 3^5 and 245 = 5 * 7^2 are neighbors). The
 // two-dimensional FFTLog of the three-point transform stays with 2, 3
 // and 5 and asks for an even length here, because its frequency
 // bookkeeping gives the Nyquist frequency - the highest frequency a
@@ -1991,9 +1993,26 @@ static long next_fft_size_scan(const long start, const long step,
   return 0;
 }
 
+// A request below 1 is rejected: the scan's candidate would reach 0,
+// which the repeated division by 2 maps back to 0, so the radix test
+// used to spin forever on a zero or negative request. Exhaustion - no
+// admissible length between the request and the end of the long range
+// - aborts as well, instead of handing the caller an unusable 0.
+// Both checks change behavior only for requests that previously hung
+// or received that 0.
 long next_fft_size(const long n)
 {
-  return next_fft_size_scan(n, 1, LONG_MAX, 1);
+  if (n < 1) {
+    log_fatal("next_fft_size: invalid minimum FFT length %ld", n);
+    exit(1);
+  }
+  const long found = next_fft_size_scan(n, 1, LONG_MAX, 1);
+  if (found == 0) {
+    log_fatal("next_fft_size: no representable FFT length at or above %ld",
+              n);
+    exit(1);
+  }
+  return found;
 }
 
 int next_even_fft_size(const int minimum)

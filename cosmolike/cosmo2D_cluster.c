@@ -63,6 +63,7 @@
 // cosmo2D.h): fftw_complex is then the native complex type, as in
 // cosmo2D.c, whose FFTLog functions the non-Limber spectra call
 #include <complex.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -2436,7 +2437,7 @@ static double** legendre_kernel_cluster(const int spin)
 // next_fft_size (basics.c) rounds the FFTLog grid length below up to
 // the next number whose only prime factors are 2, 3, 5 and 7, the
 // sizes FFTW transforms fastest; the call site retries from the next
-// integer when the result lands odd.
+// integer, as often as needed, until the result lands even.
 
 
 // ---------------------------------------------------------------------------
@@ -2753,10 +2754,24 @@ static void C_cluster_nonlimber_core(
     N[s][1] = nchi;
     long raw = 2*N[s][0] + N[s][1];
     if (raw % 2) raw++;
-    N[s][2] = (int) next_fft_size(raw);
-    if (N[s][2] % 2) {
-      N[s][2] = (int) next_fft_size(N[s][2] + 1);
+    long nfft = next_fft_size(raw);
+    // A single retry cannot guarantee evenness: consecutive admissible
+    // sizes can share parity (the even request 242 meets 243 = 3^5 and
+    // then 245 = 5 * 7^2, both odd, before the even 250), so keep
+    // retrying until the scan lands on an even size. A power of two
+    // always ends the loop; if the scan runs out of admissible sizes
+    // first, next_fft_size itself aborts. The selected length must
+    // also fit the int slot N[s][2], so reject a size beyond INT_MAX
+    // instead of truncating it in the cast.
+    while (nfft % 2) {
+      nfft = next_fft_size(nfft + 1);
     }
+    if (nfft > INT_MAX) {
+      log_fatal("C_cluster_nonlimber_core: even FFT length %ld exceeds "
+                "INT_MAX", nfft);
+      exit(1);
+    }
+    N[s][2] = (int) nfft;
     if (N[s][2] > Nmax) {
       Nmax = N[s][2];
     }
