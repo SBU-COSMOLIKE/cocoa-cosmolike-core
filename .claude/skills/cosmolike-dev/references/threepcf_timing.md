@@ -93,14 +93,33 @@ parameter dependence and machine variation, not a confidence interval.
 ## Keep the timing source policy separate from scientific inputs
 
 The supplied Y3 nz_source BIN1 contains twelve negative samples, with an
-integrated magnitude about 0.041% of the signed normalization. The user
-authorized clipping those samples to zero and renormalizing for timing
-only. `configs/des_y3_tatt_scaling.yaml` declares that policy. The helper
+integrated magnitude about 0.041% of the signed normalization.
+`configs/des_y3_tatt_scaling.yaml` declares explicit timing clipping and
+renormalization. The helper
 records raw file hashes, negative area, normalization and source shifts.
 Its physical and line-of-sight grids extend to 3.1 for positive shifts.
 
-Do not change the original FITS data, the strict generic source reader or
-forecast configurations to implement this exception. The clipping is not
-an accepted source-calibration choice for a scientific result. Likewise,
+Preserve the original FITS data and strict generic source reader. The user
+also authorized an explicitly labeled demonstration forecast with recorded
+clipping and normalization; that authorization does not need to be requested
+again. Give the demonstration its own derived source file and processing
+record, and use that same file for the two- and three-point means. Clipping
+is not an established source-calibration choice for a scientific result. Likewise,
 the chosen finite-triangle geometry and starting grids have not established
 survey-level accuracy merely because the timing run completes.
+
+## Separate covariance performance from covariance convergence
+
+`tests/studies/covariance_scaling.py` in the project supplies an independent
+offline workload. Its physical case includes all internal C preparation and
+the six implemented term families; Python model construction and CAMB are
+excluded. It uses gravity-only full-aperture rows, a large-area limit for
+short modes, and declared test area/noise. It is not matched to the finite-SAS
+TATT mean. Even a much shorter covariance runtime cannot be interpreted as
+the cost of that matched survey covariance. Record the quadrature counts,
+integration bounds and term-by-term refinement before comparing costs.
+
+The Gaussian-only case is distinct: it times supplied-spectrum pair transforms
+and all fifteen finite-window Wick contractions. The large-area physical
+branch has six surviving Gaussian contractions. Do not combine those timing
+records under one unnamed Gaussian workload.

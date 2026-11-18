@@ -105,6 +105,10 @@ typedef struct {
   double second_y[3];
   double dot[3];
   double sine_squared[3];
+  // Existing IA vertex parentheses, independent of power and redshift.
+  double ia_quadratic_shape[3];
+  double ia_density_zero_shape[3];
+  double ia_density_two_shape[3];
   double minimum_ratio;
   double flattened_ratio;
 } physics_triangle_geometry;
@@ -1186,7 +1190,10 @@ static double closing_cosine_physics(
 }
 
 
-static physics_triangle_geometry triangle_geometry(const double* sides)
+static physics_triangle_geometry triangle_geometry(
+  const double* sides,
+  const int with_ia // prepare IA shapes only when an IA reader will use them
+)
 {
   physics_triangle_geometry geometry;
   const double minimum = fmin(sides[0], fmin(sides[1], sides[2]));
@@ -1255,6 +1262,28 @@ static physics_triangle_geometry triangle_geometry(const double* sides)
         = 1.0 - geometry.dot[cyclic]*geometry.dot[cyclic];
     }
     geometry.gravity[cyclic] = f2_physics(first, second, third);
+    geometry.ia_quadratic_shape[cyclic] = 0.0;
+    geometry.ia_density_zero_shape[cyclic] = 0.0;
+    geometry.ia_density_two_shape[cyclic] = 0.0;
+    if (with_ia) {
+      // Preserve each original parenthesized expression, including its
+      // operation order. Its IA coefficient is still multiplied later.
+      // Baseline-only geometry avoids this unused IA preparation.
+      const double first_x = geometry.first_x[cyclic];
+      const double first_y = geometry.first_y[cyclic];
+      const double second_x = geometry.second_x[cyclic];
+      const double second_y = geometry.second_y[cyclic];
+      const double dot = geometry.dot[cyclic];
+      geometry.ia_quadratic_shape[cyclic]
+        = 0.25*(first_x*first_x - first_y*first_y
+        + second_x*second_x - second_y*second_y)
+        + 0.5*dot*first_x*second_x;
+      geometry.ia_density_zero_shape[cyclic]
+        = 2.0*first_x*first_x - first_y*first_y
+        + 2.0*second_x*second_x - second_y*second_y;
+      geometry.ia_density_two_shape[cyclic]
+        = first_y*first_y + second_y*second_y;
+    }
   }
   return geometry;
 }
@@ -1363,7 +1392,7 @@ static double matter_prepared(
   physics_triangle_geometry local_geometry;
   const physics_triangle_geometry* geometry = prepared_geometry;
   if (geometry == NULL) {
-    local_geometry = triangle_geometry(sides);
+    local_geometry = triangle_geometry(sides, 0);
     geometry = &local_geometry;
   }
   const physics_power_row row = prepared ? *prepared
@@ -1498,12 +1527,9 @@ static void ia_vertices(
     const double dot = geometry->dot[cyclic];
     const double pair_power = power[cyclic]*power[next];
     const double quadratic = coefficients->quadratic
-      *(0.25*(first_x*first_x - first_y*first_y
-      + second_x*second_x - second_y*second_y)
-      + 0.5*dot*first_x*second_x);
+      *geometry->ia_quadratic_shape[cyclic];
     const double density = 0.25*coefficients->density
-      *(2.0*first_x*first_x - first_y*first_y
-      + 2.0*second_x*second_x - second_y*second_y);
+      *geometry->ia_density_zero_shape[cyclic];
     const double velocity = coefficients->velocity*5.0/7.0
       *geometry->sine_squared[cyclic];
     vertices[cyclic][0] = 2.0*root_two_thirds*pair_power
@@ -1516,7 +1542,7 @@ static void ia_vertices(
     vertices[cyclic][2] = 2.0*pair_power
       *(0.5*coefficients->quadratic*dot*first_y*second_y
       + 0.25*coefficients->density
-      *(first_y*first_y + second_y*second_y));
+      *geometry->ia_density_two_shape[cyclic]);
     tree[cyclic] = 0.0;
   }
 }
@@ -1623,7 +1649,7 @@ static void ia_prepared(
   physics_triangle_geometry local_geometry;
   const physics_triangle_geometry* geometry = prepared_geometry;
   if (geometry == NULL) {
-    local_geometry = triangle_geometry(sides);
+    local_geometry = triangle_geometry(sides, 1);
     geometry = &local_geometry;
   }
   ia_vertices(geometry, power, coefficients, vertices, tree, e_only);
@@ -1718,7 +1744,7 @@ void physics_ia_same_shape_3pcf(
     "invalid common-shape IA buffers");
   check_ia(parameters);
   triangle_physics(sides[0], sides[1], sides[2]);
-  const physics_triangle_geometry geometry = triangle_geometry(sides);
+  const physics_triangle_geometry geometry = triangle_geometry(sides, 1);
   for (int point=0; point<npoint; point++) {
     const double* triangle = sides + (size_t)point*3;
     triangle_physics(triangle[0], triangle[1], triangle[2]);
@@ -1862,7 +1888,8 @@ double physics_projected_3pcf(
   const physics_model_3pcf* model = projection->model;
   const int count = model->nlos;
   const double angular_sides[3] = {ell1, ell2, ell3};
-  const physics_triangle_geometry geometry = triangle_geometry(angular_sides);
+  const physics_triangle_geometry geometry = triangle_geometry(angular_sides,
+    component != 1);
   double baseline = 0.0;
   double residual = 0.0;
   for (int node=0; node<count; node++) {
@@ -1907,7 +1934,8 @@ double physics_projected_puv_extension_3pcf(
   const physics_model_3pcf* model = projection->model;
   const int count = model->nlos;
   const double angular_sides[3] = {ell1, ell2, ell3};
-  const physics_triangle_geometry geometry = triangle_geometry(angular_sides);
+  const physics_triangle_geometry geometry = triangle_geometry(angular_sides,
+    1);
   double sum = 0.0;
   for (int node=0; node<count; node++) {
     const double distance = model->los_chi[node];
@@ -2080,7 +2108,8 @@ void physics_projected_batch_3pcf(
   const physics_model_3pcf* model = first->model;
   const int count = model->nlos;
   const double angular_sides[3] = {ell1, ell2, ell3};
-  const physics_triangle_geometry geometry = triangle_geometry(angular_sides);
+  const physics_triangle_geometry geometry = triangle_geometry(angular_sides,
+    component != 1);
   for (int node=0; node<count; node++) {
     double intrinsic[19] = {0.0};
     const double baseline = projected_node_physics(first, angular_sides,
@@ -2162,7 +2191,8 @@ void physics_projection_batch_evaluate_3pcf(
   const physics_projection_3pcf* first = batch->first;
   const int count = first->model->nlos;
   const double angular_sides[3] = {ell1, ell2, ell3};
-  const physics_triangle_geometry geometry = triangle_geometry(angular_sides);
+  const physics_triangle_geometry geometry = triangle_geometry(angular_sides,
+    component != 1);
   for (int node=0; node<count; node++) {
     double intrinsic[19] = {0.0};
     const double baseline = projected_node_physics(first, angular_sides,

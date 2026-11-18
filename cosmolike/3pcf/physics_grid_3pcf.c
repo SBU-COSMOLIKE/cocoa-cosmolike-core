@@ -542,6 +542,23 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
   grid_require(per_chart <= SIZE_MAX/4, "multipole charts are too large");
   grid->multipoles = grid_allocate(4*per_chart, sizeof(double));
   double* weights = source_legendre_weights(grid);
+  // Pair adjacent L orders in the lane order used below. The mu sequence
+  // and every coefficient remain unchanged; only their storage differs.
+  // Keep the original rows for the odd-L tail, including lmax=0.
+  const int npair = (lmax + 1)/2;
+  double* paired_weights = NULL;
+  if (npair > 0) {
+    paired_weights = grid_allocate(grid_product(npair, count, 2),
+      sizeof(double));
+    for (int pair=0; pair<npair; pair++) {
+      for (int node=0; node<count; node++) {
+        const size_t target = ((size_t)pair*count + node)*2;
+        paired_weights[target] = weights[(size_t)(2*pair)*count + node];
+        paired_weights[target + 1]
+          = weights[(size_t)(2*pair + 1)*count + node];
+      }
+    }
+  }
   size_t worker_stride;
   double* scratch = worker_storage((size_t)2*count, &worker_stride);
   #pragma omp parallel if(!omp_in_parallel())
@@ -594,11 +611,12 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
             for (; order + 1<=lmax; order += 2) {
               // Independent neighboring L sums start at zero.
               grid_v2d sum = simde_mm_setzero_pd();
+              const double* restrict pair_weights
+                = paired_weights + (size_t)order*count;
               for (int node=0; node<count; node++) {
                 // High lane is L+1, low lane is L.
-                const grid_v2d weight = simde_mm_set_pd(
-                  weights[(size_t)(order + 1)*count + node],
-                  weights[(size_t)order*count + node]);
+                const grid_v2d weight = simde_mm_loadu_pd(pair_weights
+                  + (size_t)node*2);
                 // Both orders see the same sampled projected B.
                 const grid_v2d value = simde_mm_set1_pd(values[node]);
                 // Scalar form: sum_L += weight[L,node]*B[node].
@@ -633,6 +651,7 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
     }
   }
   free(scratch);
+  free(paired_weights);
   free(weights);
 }
 
@@ -838,6 +857,24 @@ void physics_grid_create_many_3pcf(
   physics_projection_batch_3pcf* batch = physics_projection_batch_create_3pcf(
     ntriplet, projections);
   const physics_grid_3pcf* first = out[0];
+  // Every cell on one axis uses the same exponential. Prepare those
+  // exact values once; retain all subsequent triangle-side operations.
+  // These arrays belong to this call and remain read-only for workers.
+  double* radii = grid_allocate((size_t)first->nr, sizeof(double));
+  double* ratios = grid_allocate((size_t)first->nu, sizeof(double));
+  for (int index=0; index<first->nr; index++) {
+    radii[index] = exp(first->log_r[index]);
+  }
+  for (int index=0; index<first->nu; index++) {
+    ratios[index] = exp(first->log_u[index]);
+  }
+  double* perimeters = NULL;
+  if (has_residual) {
+    perimeters = grid_allocate((size_t)first->np, sizeof(double));
+    for (int index=0; index<first->np; index++) {
+      perimeters[index] = exp(first->log_p[index]);
+    }
+  }
   const size_t nbaseline = grid_product(first->nr, first->nu, first->nv);
   const size_t nresidual = has_residual
     ? grid_product(first->np, first->npu, first->npu) : 0;
@@ -855,8 +892,8 @@ void physics_grid_create_many_3pcf(
       const int iv = index%(size_t)first->nv;
       const int iu = (index/(size_t)first->nv)%(size_t)first->nu;
       const int ir = index/((size_t)first->nv*first->nu);
-      const double radius = exp(first->log_r[ir]);
-      const double ratio = exp(first->log_u[iu]);
+      const double radius = radii[ir];
+      const double ratio = ratios[iu];
       physics_projection_batch_evaluate_3pcf(batch,
         radius*(1.0 + ratio*first->v[iv]), radius, radius*ratio, 1, 0,
         values);
@@ -871,7 +908,7 @@ void physics_grid_create_many_3pcf(
       const int iv = index%(size_t)first->npu;
       const int iu = (index/(size_t)first->npu)%(size_t)first->npu;
       const int ip = index/((size_t)first->npu*first->npu);
-      const double perimeter = exp(first->log_p[ip]);
+      const double perimeter = perimeters[ip];
       const double side1 = perimeter*first->pu[iu];
       const double side2 = perimeter*first->pu[iv];
       const double side3 = perimeter*(1.0 - first->pu[iu] - first->pu[iv]);
@@ -884,6 +921,9 @@ void physics_grid_create_many_3pcf(
     }
   }
   free(scratch);
+  free(radii);
+  free(ratios);
+  free(perimeters);
   physics_projection_batch_destroy_3pcf(batch);
   for (int triplet=0; triplet<ntriplet; triplet++) {
     physics_projector_destroy_3pcf(projections[triplet]);

@@ -716,6 +716,24 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
     return;
   }
 
+  // S_ab|c is read only when a and b are the two unpaired legs of a
+  // requested cubic estimator: its mean, BB covariance and P*B covariance
+  // all use these same three choices. Retain their exact ordered field
+  // pairs. The third source c still spans all source bins, including
+  // those appearing only in quadratic rows of the joint covariance.
+  int* bspec_pair_needed = covariance_allocate_3pcf(field_pairs, sizeof(int));
+  for (int row=0; row<in->nrow; row++) {
+    if (in->row_kind[row] != 1) {
+      continue;
+    }
+    const int* fields = in->row_fields + (size_t)row*3;
+    for (int p=0; p<3; p++) {
+      const int a = fields[(p + 1)%3];
+      const int b = fields[(p + 2)%3];
+      bspec_pair_needed[(size_t)a*nf + b] = 1;
+    }
+  }
+
   int nworker = 1;
   #ifdef _OPENMP
   nworker = omp_get_max_threads();
@@ -768,6 +786,9 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int a=0; a<nf; a++) {
     for (int b=0; b<nf; b++) {
+      if (!bspec_pair_needed[(size_t)a*nf + b]) {
+        continue;
+      }
       const int sa = in->field_source[a];
       const int sb = in->field_source[b];
       for (int c=0; c<ns; c++) {
@@ -834,7 +855,9 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
       }
       // Finite-window BB reads B_ab|c(r). Its large-area expression
       // contracts S_ab|c(ell) directly, so no real-space B table enters.
-      if (!in->large_area) {
+      // Its first two fields use the same ordered cubic-pair list as S.
+      // The K tables above remain available for all Gaussian/P*T pairs.
+      if (!in->large_area && bspec_pair_needed[pair]) {
         for (int c=0; c<nf; c++) {
           const int sc = in->field_source[c];
           for (int r=0; r<nr; r++) {
@@ -851,6 +874,7 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
       }
     }
   }
+  free(bspec_pair_needed);
 }
 
 void covariance_xi_from_power_3pcf(
