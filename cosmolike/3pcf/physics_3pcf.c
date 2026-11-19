@@ -442,50 +442,46 @@ static void destroy_spline(physics_spline* spline)
 
 
 // ---------------------------------------------------------------------------
-// make_natural_uniform_spline: rebuild the second derivatives with
+// make_natural_uniform_spline: prepare the second derivatives with
 // natural boundaries, M[0] = M[n-1] = 0, for a uniformly spaced grid.
 //
 // The production coefficient tables live on uniform anchors, and
-// fastnc fits them with a natural cubic spline, so this helper
-// reproduces that choice. make_spline supplies the copied nodes and
-// endpoint slopes; this routine then overwrites the second
-// derivatives. With uniform spacing h the interior continuity
-// equations reduce to
-//
-//   M[i-1] + 4 M[i] + M[i+1] = 6 (y[i+1] - 2 y[i] + y[i-1])/h^2,
-//
-// a tridiagonal system with the constant stencil (1, 4, 1); the 6 and
-// the 4 below are exactly these stencil numbers, and inverse_square
-// is 1/h^2. The first loop runs the Thomas forward elimination:
-// 4 - 1/diagonal[i-1] is the pivot after eliminating the subdiagonal
-// 1, and the right-hand side subtracts the matching multiple of the
-// previous row. The second loop back-substitutes; the upper entry is
-// 1, so it subtracts the next solution value directly.
+// fastnc fits them with a natural cubic spline. The shared solver in
+// basics.c supplies c = S''/2, whereas read_spline uses S''. Multiplying
+// its coefficients by two keeps that reader's convention. There is no
+// need to construct an irregular spline before this uniform solve.
 static physics_spline make_natural_uniform_spline(
-  const double* x,
-  const double* y,
-  const int count
+  const double* x, // uniform coordinates [count]
+  const double* y, // finite function samples [count]
+  const int count // number of nodes, at least two
 )
 {
-  physics_spline result = make_spline(x, y, count);
-  double* diagonal = calloc1d(count);
-  const double inverse_square = pow((count - 1)/(x[count - 1] - x[0]), 2);
-
-  result.second[0] = 0.0;
-  result.second[count - 1] = 0.0;
-  for (int index=1; index<count - 1; index++) {
-    diagonal[index] = 4.0 - (index == 1 ? 0.0 : 1.0/diagonal[index - 1]);
-    result.second[index] = 6.0*(y[index + 1] - 2.0*y[index] + y[index - 1])
-      *inverse_square - (index == 1 ? 0.0
-      : result.second[index - 1]/diagonal[index - 1]);
+  increasing_physics(x, count, 0);
+  const double spacing = (x[count - 1] - x[0])/(count - 1);
+  for (int index=0; index<count; index++) {
+    if (!isfinite(y[index])) { log_fatal(
+      "physics_3pcf: nonfinite uniform spline sample"); exit(1); }
+    const double expected = x[0] + spacing*index;
+    const double tolerance = 64.0*DBL_EPSILON
+      *fmax(1.0, fmax(fabs(x[0]), fabs(x[count - 1])));
+    if (fabs(x[index] - expected) > tolerance) { log_fatal(
+      "physics_3pcf: natural spline coordinates must be uniform"); exit(1); }
   }
 
-  for (int index=count - 2; index>=1; index--) {
-    result.second[index] = (result.second[index] - result.second[index + 1])
-      /diagonal[index];
+  physics_spline result = {0};
+  result.n = count;
+  result.x = calloc1d(count);
+  result.y = calloc1d(count);
+  result.second = calloc1d(count);
+  memcpy(result.x, x, (size_t)count*sizeof(double));
+  memcpy(result.y, y, (size_t)count*sizeof(double));
+  result.slope_low = (y[1] - y[0])/(x[1] - x[0]);
+  result.slope_high = (y[count - 1] - y[count - 2])
+    /(x[count - 1] - x[count - 2]);
+  spline_coeffs_uniform(result.y, count, spacing, result.second);
+  for (int index=0; index<count; index++) {
+    result.second[index] *= 2.0;
   }
-
-  free(diagonal);
   return result;
 }
 
