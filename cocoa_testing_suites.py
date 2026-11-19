@@ -2115,15 +2115,19 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
     too large. The Fourier entries C_gg_tomo_ells and C_gs_tomo_ells
     never take the exit.
 
-    The noise of one evaluation along a parameter is measured with
+    A five-point fourth-difference diagnostic is computed with
     cosmolike_notebook_utils.fisher.get_stencil_noise: the fourth
     difference of the data vector at the five points p0 + k eps,
     k = -2..2, whitened by the masked inverse covariance,
     sigma = sqrt(Delta4 m^T C^-1 Delta4 m/70), in sqrt(chi^2) units.
     A smooth model gives sigma ~ eps^4 m''''; a step between two stencil
-    points gives sigma of the order of the step's whitened size. The
-    columns are w0 and wa (w0 + wa fixed = w0pwa in the frozen point, so
-    w0 moves w and w0pwa together) and the linear bias of the highest
+    points gives sigma of the order of the step's whitened size. Calling
+    sigma independent per-evaluation noise requires an additional model
+    for the numerical errors; the statistic also contains smooth fourth-
+    order curvature. The engine comparison below holds the galaxy-shear
+    cap fixed, but does not separate these contributions. The columns are
+    w0 and wa (Cobaya names w = w0 and w0pwa = w0 + wa, so varying w0
+    at fixed wa moves both names together) and the bias of the highest
     lens bin, with the notebooks' step h = 0.025 (absolute for wa = 0).
     The data vector is the frozen example's masked vector at the frozen
     accuracy settings; CAMB's settings are those of the frozen
@@ -2152,14 +2156,15 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
          column stays below noise_bound;
       5. the FKEM hand-off at the fixed cap, tolerance 0: the noise at
          lmax_nonlimber = 150 and 200; at 150 it is at most
-         (1 + handoff_margin) times the 200 value (a step at the
-         hand-off would raise the noise at the lower cap, where the
-         FKEM-Limber difference is largest) and below noise_bound. It
+         (1 + handoff_margin) times the 200 value and below noise_bound.
+         This empirical one-sided bound can flag a hand-off contribution;
+         passing it does not exclude one. It
          also prints |C_l^FKEM/C_l^Limber - 1| at l = lmax - 1 per lens
          bin and the whitened change of the fiducial vector between the
          caps 150 and 200;
       6. the low-rank (SVD) engine, tolerance 0, at its caps 150 and
-         200, next to FKEM: svd_rule "not_larger" asserts
+         200, next to FKEM with the same galaxy-shear cap in each pair:
+         svd_rule "not_larger" asserts
          sigma_SVD <= (1 + svd_margin) sigma_FKEM at each cap, "bound"
          asserts sigma_SVD < noise_bound;
       7. a negative or nonfinite tolerance stops the process with a
@@ -2362,7 +2367,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             Arguments:
               engine    = "FKEM" (cap = lmax) or "SVD" (the low-rank
                           engine with its own cap = lmax).
-              lmax      = the engine's non-Limber cap.
+              lmax      = the engine's non-Limber cap and the shared
+                          FKEM cap used by galaxy shear in both cases.
               tolerance = the pair (gg_tol, gs_tol), e.g.
                           NONLIMBER_TOL_CORE_DEFAULTS or (0.0, 0.0).
 
@@ -2394,10 +2400,13 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                     cls.ci.init_lowrank_nonlimber_gg(
                         flag=0, nrank=production["lowrank_rank"],
                         lmax=production["lowrank_lmax"])
-                    cls.ci.init_lmax_nonlimber(lmax=lmax)
                 else:
                     cls.ci.init_lowrank_nonlimber_gg(
                         flag=1, nrank=NONLIMBER_TOL_SVD_RANK, lmax=lmax)
+                # SVD replaces only gg. Give gs the same FKEM cap in
+                # both runs so its contribution to the fourth difference
+                # cannot change when the gg engine is compared.
+                cls.ci.init_lmax_nonlimber(lmax=lmax)
                 sigma = {}
                 for index, column in enumerate(columns):
                     result = get_stencil_noise(
@@ -2652,10 +2661,10 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             for column in columns:
                 at_low = records[low]["sigma"][column]
                 at_high = records[high]["sigma"][column]
-                # One-sided: a step at the hand-off would add noise at the
-                # low cap, where |C_FKEM/C_Limber - 1| is largest. Noise
-                # that grows with the cap comes from the added non-Limber
-                # multipoles themselves; the table above records it.
+                # A larger low-cap fourth difference can flag a hand-off
+                # contribution. This empirical one-sided bound does not
+                # exclude one: smooth curvature and the added non-Limber
+                # multipoles also contribute to the high-cap statistic.
                 if handoff_margin is not None:
                     self.assertLessEqual(
                         at_low,
@@ -2663,8 +2672,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                         + NONLIMBER_TOL_NOISE_FLOOR,
                         f"{column}: sigma = {at_low:.3e} at cap {low} "
                         f"exceeds (1 + {handoff_margin}) times its "
-                        f"{at_high:.3e} at cap {high}: the hand-off adds "
-                        "noise")
+                        f"{at_high:.3e} at cap {high}: the low-cap fourth "
+                        "difference exceeds the regression bound")
                 if noise_bound is not None:
                     self.assertLess(
                         at_low, noise_bound,
