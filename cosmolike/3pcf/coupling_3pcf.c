@@ -8,6 +8,7 @@
 #include <omp.h>
 #endif
 #include "coupling_3pcf.h"
+#include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 
 // Angular-coupling convention: fastnc by Sunao Sugiyama, MIT, revision
@@ -210,7 +211,14 @@ void legendre_coupling_3pcf(
     exit(1);
   }
 
-  double* coefficients = calloc(stride*stride, sizeof(double));
+  // calloc1d takes an int element count, so the table must also fit
+  // an int.
+  if (stride*stride > (size_t)INT_MAX) {
+    log_fatal("legendre_coupling_3pcf: size overflow");
+    exit(1);
+  }
+
+  double* coefficients = calloc1d((int)(stride*stride));
   if (coefficients == NULL) {
     log_fatal("legendre_coupling_3pcf: allocation failed");
     exit(1);

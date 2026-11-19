@@ -1450,7 +1450,7 @@ static physics_grid_3pcf* allocate_grid(
     exit(1);
   }
 
-  physics_grid_3pcf* grid = calloc(1, sizeof(*grid));
+  physics_grid_3pcf* grid = calloc1d_generic(1, sizeof(*grid));
   if (grid == NULL) {
     log_fatal("physics_grid_3pcf: grid allocation failed");
     exit(1);
@@ -1765,8 +1765,8 @@ void physics_grid_create_many_3pcf(
     exit(1);
   }
 
-  physics_projection_3pcf** projections = calloc((size_t)ntriplet,
-    sizeof(*projections));
+  physics_projection_3pcf** projections = calloc1d_generic(
+    (size_t)ntriplet, sizeof(*projections));
   if (projections == NULL) {
     log_fatal("physics_grid_3pcf: grid allocation failed");
     exit(1);
@@ -1780,7 +1780,7 @@ void physics_grid_create_many_3pcf(
 
   physics_projection_3pcf** gravity_projections = NULL;
   if (needs_gravity) {
-    gravity_projections = calloc((size_t)ntriplet,
+    gravity_projections = calloc1d_generic((size_t)ntriplet,
       sizeof(*gravity_projections));
     if (gravity_projections == NULL) {
       log_fatal("physics_grid_3pcf: grid allocation failed");
@@ -2187,7 +2187,7 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
     }
   }
 
-  physics_grid_query_3pcf* query = calloc(1, sizeof(*query));
+  physics_grid_query_3pcf* query = calloc1d_generic(1, sizeof(*query));
   if (query == NULL) {
     log_fatal("physics_grid_3pcf: grid allocation failed");
     exit(1);
@@ -2211,7 +2211,7 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
 
   query->charts = malloc1d_int((int)npoint);
   memset(query->charts, 0, sizeof(int)*npoint);
-  query->cells = calloc(npoint, sizeof(size_t));
+  query->cells = calloc1d_generic(npoint, sizeof(size_t));
   if (query->cells == NULL) {
     log_fatal("physics_grid_3pcf: grid allocation failed");
     exit(1);

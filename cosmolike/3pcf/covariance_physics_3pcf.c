@@ -2033,7 +2033,7 @@ static void covariance_halo_terms_3pcf(
     }
 
     const size_t capacity = covariance_product_3pcf(ncubic, 3);
-    row_entity = calloc(
+    row_entity = calloc1d_generic(
       covariance_product_3pcf(no, 3), sizeof(size_t));
     if (row_entity == NULL) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
@@ -2041,7 +2041,7 @@ static void covariance_halo_terms_3pcf(
     }
     entity_field = malloc1d_int((int)capacity);
     memset(entity_field, 0, sizeof(int)*capacity);
-    entity_radius_pair = calloc(capacity, sizeof(size_t));
+    entity_radius_pair = calloc1d_generic(capacity, sizeof(size_t));
     if (entity_radius_pair == NULL) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
       exit(1);
@@ -2070,7 +2070,7 @@ static void covariance_halo_terms_3pcf(
       }
     }
 
-    contraction_index = calloc(
+    contraction_index = calloc1d_generic(
       covariance_product_3pcf(nentity, nentity), sizeof(size_t));
     if (contraction_index == NULL) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
@@ -2102,12 +2102,12 @@ static void covariance_halo_terms_3pcf(
       }
     }
 
-    contraction_left = calloc(ncontraction, sizeof(size_t));
+    contraction_left = calloc1d_generic(ncontraction, sizeof(size_t));
     if (contraction_left == NULL) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
       exit(1);
     }
-    contraction_right = calloc(ncontraction, sizeof(size_t));
+    contraction_right = calloc1d_generic(ncontraction, sizeof(size_t));
     if (contraction_right == NULL) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
       exit(1);

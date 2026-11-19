@@ -609,6 +609,62 @@ void* calloc1d(
 }
 
 // ---------------------------------------------------------------------------
+// Allocate a 1D array of nx elements of any type, each size bytes, as a
+// single 64-byte-aligned contiguous block.
+//
+// As in malloc1d, the total allocation is padded to a 64-byte boundary
+// and the memory is left uninitialized. An element count whose byte
+// size overflows size_t aborts instead of wrapping around.
+//
+// The caller is responsible for freeing the returned pointer.
+// ---------------------------------------------------------------------------
+void* malloc1d_generic(
+    const size_t nx,   // number of elements to allocate
+    const size_t size  // size of one element in bytes, e.g. sizeof(*p)
+  )
+{
+  const size_t align = 64;
+  if (size > 0 && nx > (SIZE_MAX - align)/size) {
+    log_fatal("array size overflow (malloc1d_generic)"); exit(EXIT_FAILURE);
+  }
+  size_t nxp = nx * size;
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  void* vec = NULL;
+  if (posix_memalign(&vec, align, nxp) != 0) {
+    log_fatal("array allocation failed (malloc1d_generic)");
+    exit(EXIT_FAILURE);
+  }
+  return vec;
+}
+
+// ---------------------------------------------------------------------------
+// Allocate a 1D array of nx elements of any type, each size bytes, as a
+// single 64-byte-aligned contiguous block, zero-initialized.
+//
+// As in calloc1d, the size is not rounded up: exactly nx*size bytes,
+// all set to zero before returning. An element count whose byte size
+// overflows size_t aborts instead of wrapping around.
+//
+// The caller is responsible for freeing the returned pointer.
+// ---------------------------------------------------------------------------
+void* calloc1d_generic(
+    const size_t nx,   // number of elements to allocate
+    const size_t size  // size of one element in bytes, e.g. sizeof(*p)
+  )
+{
+  if (size > 0 && nx > SIZE_MAX/size) {
+    log_fatal("array size overflow (calloc1d_generic)"); exit(EXIT_FAILURE);
+  }
+  void* vec = NULL;
+  if (posix_memalign(&vec, 64, nx * size) != 0) {
+    log_fatal("array allocation failed (calloc1d_generic)");
+    exit(EXIT_FAILURE);
+  }
+  memset(vec, 0, nx * size);
+  return vec;
+}
+
+// ---------------------------------------------------------------------------
 // Allocate a 2D array of fftw_complex as a single 64-byte-aligned
 // contiguous block with pointer indirection for convenient multi-index
 // access (result[i][j]).

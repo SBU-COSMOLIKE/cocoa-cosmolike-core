@@ -401,6 +401,39 @@ void* calloc1d(
     const int nx   // number of double elements to allocate
   );
 
+// ---------------------------------------------------------------------------
+// Allocate a 1D array of nx elements of any type, each size bytes, as a
+// single 64-byte-aligned contiguous block. Use it for element types the
+// typed allocators above do not cover - size_t tables, pointer tables,
+// structs - so they share the same alignment and failure handling.
+//
+// As in malloc1d, the total allocation is padded to a 64-byte boundary
+// and the memory is left uninitialized. An element count whose byte
+// size overflows size_t aborts instead of wrapping around.
+//
+// The caller is responsible for freeing the returned pointer.
+// ---------------------------------------------------------------------------
+void* malloc1d_generic(
+    const size_t nx,   // number of elements to allocate
+    const size_t size  // size of one element in bytes, e.g. sizeof(*p)
+  );
+
+// ---------------------------------------------------------------------------
+// Allocate a 1D array of nx elements of any type, each size bytes, as a
+// single 64-byte-aligned contiguous block, zero-initialized: the calloc
+// semantics of calloc1d for an arbitrary element type.
+//
+// As in calloc1d, the size is not rounded up: exactly nx*size bytes,
+// all set to zero before returning. An element count whose byte size
+// overflows size_t aborts instead of wrapping around.
+//
+// The caller is responsible for freeing the returned pointer.
+// ---------------------------------------------------------------------------
+void* calloc1d_generic(
+    const size_t nx,   // number of elements to allocate
+    const size_t size  // size of one element in bytes, e.g. sizeof(*p)
+  );
+
 static inline int fdiff2(const uint64_t a, const uint64_t b)
 {
   return (a == b) ? 0 : 1;

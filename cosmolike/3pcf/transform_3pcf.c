@@ -239,7 +239,7 @@ transform_plan_3pcf* transform_create_3pcf(
   // triangle stage never needs more workers than triangles. The
   // coupling table spans the 2*nell-1 leg-index differences explained
   // at stage 4. Every product is overflow-checked before use.
-  transform_plan_3pcf* plan = calloc(1, sizeof(*plan));
+  transform_plan_3pcf* plan = calloc1d_generic(1, sizeof(*plan));
   if (plan == NULL) {
     log_fatal("transform_3pcf: allocation failed");
     exit(1);
