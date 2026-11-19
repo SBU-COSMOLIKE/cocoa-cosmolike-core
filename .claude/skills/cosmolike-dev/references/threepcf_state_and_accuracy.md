@@ -78,10 +78,11 @@ low-z and coarse high-z segments into one grid. Production shares the
 natural-cubic solver and direct piece lookup; the explicit source comparison
 retains its upstream interpolation. The project test
 `data_vector/test_piecewise_physics.py` checks joins, refinement and matching
-Python/C BiHalofit preparation. The natural cubic has zero second
-derivative at the two outer endpoints, with continuous value, first
-and second derivatives at interior segment joins. A spacing change is
-not a new spline boundary. Changing only C leaves the Python producer
+Python/C BiHalofit preparation. Each uniform piece has its own natural
+cubic, with zero second derivative at both ends. Neighboring pieces share
+the value at their common node; their first derivatives need not match.
+Thus a spacing change is a spline boundary and needs an explicit join
+and refinement check. Changing only C leaves the Python producer
 inconsistent.
 
 ### Copied shared variance inputs
