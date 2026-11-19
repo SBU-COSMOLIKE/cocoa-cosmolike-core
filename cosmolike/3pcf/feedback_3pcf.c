@@ -359,10 +359,6 @@ feedback_3pcf* feedback_create_3pcf(
   const double* axes[4] = {input->z, input->logk, input->logu, input->v};
 
   feedback_3pcf* response = calloc1d_generic(1, sizeof(*response));
-  if (!(NULL != response)) {
-    log_fatal("feedback_3pcf: response owner allocation failed");
-    exit(1);
-  }
   response->clamp = input->clamp;
 
   prepare_axes(counts, axes, input->boost, response->count,

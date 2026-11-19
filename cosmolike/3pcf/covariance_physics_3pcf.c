@@ -2087,17 +2087,9 @@ static void covariance_halo_terms_3pcf(
     const size_t capacity = covariance_product_3pcf(ncubic, 3);
     row_entity = calloc1d_generic(
       covariance_product_3pcf(no, 3), sizeof(size_t));
-    if (NULL == row_entity) {
-      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
-      exit(1);
-    }
     entity_field = malloc1d_int((int)capacity);
     memset(entity_field, 0, sizeof(int)*capacity);
     entity_radius_pair = calloc1d_generic(capacity, sizeof(size_t));
-    if (NULL == entity_radius_pair) {
-      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
-      exit(1);
-    }
 
     for (int row=0; row<no; row++) {
       if (1 != in->row_kind[row]) {
@@ -2124,10 +2116,6 @@ static void covariance_halo_terms_3pcf(
 
     contraction_index = calloc1d_generic(
       covariance_product_3pcf(nentity, nentity), sizeof(size_t));
-    if (NULL == contraction_index) {
-      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
-      exit(1);
-    }
     // Keep entity pairs ordered: the finite-window P table multiplies
     // its fields in a fixed order, and exchanging them could round
     // differently. In contraction_index a zero marks an unused pair,
@@ -2155,15 +2143,7 @@ static void covariance_halo_terms_3pcf(
     }
 
     contraction_left = calloc1d_generic(ncontraction, sizeof(size_t));
-    if (NULL == contraction_left) {
-      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
-      exit(1);
-    }
     contraction_right = calloc1d_generic(ncontraction, sizeof(size_t));
-    if (NULL == contraction_right) {
-      log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
-      exit(1);
-    }
     pt_contraction = calloc1d((int)ncontraction);
 
     size_t next = 0;

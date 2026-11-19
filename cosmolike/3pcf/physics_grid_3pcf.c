@@ -1451,10 +1451,6 @@ static physics_grid_3pcf* allocate_grid(
   }
 
   physics_grid_3pcf* grid = calloc1d_generic(1, sizeof(*grid));
-  if (NULL == grid) {
-    log_fatal("physics_grid_3pcf: grid allocation failed");
-    exit(1);
-  }
 
   grid->settings = *settings;
   grid->has_residual = has_residual;
@@ -1767,10 +1763,6 @@ void physics_grid_create_many_3pcf(
 
   physics_projection_3pcf** projections = calloc1d_generic(
     (size_t)ntriplet, sizeof(*projections));
-  if (NULL == projections) {
-    log_fatal("physics_grid_3pcf: grid allocation failed");
-    exit(1);
-  }
 
   // Pure NLA omits the residual entirely, including any scale table.
   const int has_residual = 0.0 != parameters->a2
@@ -1782,10 +1774,6 @@ void physics_grid_create_many_3pcf(
   if (needs_gravity) {
     gravity_projections = calloc1d_generic((size_t)ntriplet,
       sizeof(*gravity_projections));
-    if (NULL == gravity_projections) {
-      log_fatal("physics_grid_3pcf: grid allocation failed");
-      exit(1);
-    }
   }
 
   // Only the intrinsic-shape coefficients change for the denominator;
@@ -2188,10 +2176,6 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
   }
 
   physics_grid_query_3pcf* query = calloc1d_generic(1, sizeof(*query));
-  if (NULL == query) {
-    log_fatal("physics_grid_3pcf: grid allocation failed");
-    exit(1);
-  }
 
   query->nell = nell;
   query->ell = calloc1d(nell);
@@ -2212,10 +2196,6 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
   query->charts = malloc1d_int((int)npoint);
   memset(query->charts, 0, sizeof(int)*npoint);
   query->cells = calloc1d_generic(npoint, sizeof(size_t));
-  if (NULL == query->cells) {
-    log_fatal("physics_grid_3pcf: grid allocation failed");
-    exit(1);
-  }
   query->fractions = calloc1d((int)(4*npoint));
   int* charts = query->charts;
   size_t* cells = query->cells;

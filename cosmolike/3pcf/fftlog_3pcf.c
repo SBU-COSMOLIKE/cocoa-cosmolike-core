@@ -361,10 +361,6 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   // the slices of different workers never share a cache line. The
   // overflow checks run before any multiplication that could wrap.
   fftlog_workspace_3pcf* work = calloc1d_generic(1, sizeof(*work));
-  if (!(NULL != work)) {
-    log_fatal("fftlog_3pcf: workspace allocation failed");
-    exit(1);
-  }
 
   work->n = n;
   work->padded = n+2*padding;

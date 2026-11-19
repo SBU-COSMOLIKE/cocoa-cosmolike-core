@@ -219,10 +219,6 @@ void legendre_coupling_3pcf(
   }
 
   double* coefficients = calloc1d((int)(stride*stride));
-  if (NULL == coefficients) {
-    log_fatal("legendre_coupling_3pcf: allocation failed");
-    exit(1);
-  }
 
   coefficients[0] = 1.0;
 
