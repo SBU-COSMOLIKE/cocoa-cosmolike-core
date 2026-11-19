@@ -1,4 +1,5 @@
 #include <limits.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -118,10 +119,10 @@ void filtered_pair_3pcf(
     exit(1);
   }
 
-  // 1/(2*pi) written to 20 digits, more than double precision holds,
-  // so the compiler stores the nearest double to the exact flat-sky
-  // measure factor in dell*ell/(2*pi).
-  const double inverse_two_pi = 0.15915494309189533577;
+  // The flat-sky measure factor 1/(2*pi) in dell*ell/(2*pi). Halving
+  // M_1_PI, the nearest double to 1/pi, is exact and gives the nearest
+  // double to 1/(2*pi).
+  const double inverse_two_pi = 0.5*M_1_PI;
 
   if ((size_t)nell > (size_t)INT_MAX/(size_t)nr) {
     log_fatal("filtered_pair_3pcf: Bessel table size overflow");

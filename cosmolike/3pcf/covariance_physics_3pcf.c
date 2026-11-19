@@ -71,12 +71,10 @@
 // their input order, so results do not depend on the thread count.
 // ---------------------------------------------------------------------------
 
-// Pi to double precision.
-#define COV_PI 3.141592653589793238462643383279502884
-// 1/(2*pi). The planar Fourier measure d^2ell/(2*pi)^2 splits into
+// The planar Fourier measure d^2ell/(2*pi)^2 splits into
 // ell dell/(2*pi) times dphi/(2*pi); each split factor below carries one
-// COV_I2PI.
-#define COV_I2PI 0.159154943091895335768883763372514362
+// (0.5*M_1_PI) = 1/(2*pi). Halving M_1_PI, the nearest double to 1/pi,
+// is exact and gives the nearest double to 1/(2*pi).
 
 // A v2d packs two doubles into one 128-bit register (SSE2 through SIMDe,
 // so the same source also builds on NEON).
@@ -410,7 +408,7 @@ void covariance_halos_3pcf(
     for (int im=0; im<nm; im++) {
       const size_t index = (size_t)iz*nm + im;
       const double mass = input->mass[im];
-      const double radius = cbrt(3.0*mass/(4.0*COV_PI*rho));
+      const double radius = cbrt(3.0*mass/(4.0*M_PI*rho));
       double variance = 0.0;
       double slope = 0.0;
 
@@ -419,7 +417,7 @@ void covariance_halos_3pcf(
         double derivative;
         covariance_tophat_3pcf(input->k[ik]*radius, &window, &derivative);
         const double measure = input->dk[ik]*input->k[ik]*input->k[ik]
-          *power[(size_t)iz*input->nk + ik]/(2.0*COV_PI*COV_PI);
+          *power[(size_t)iz*input->nk + ik]/(2.0*M_PI*M_PI);
         variance += measure*window*window;
         slope += measure*window*derivative*(2.0/3.0);
       }
@@ -448,7 +446,7 @@ void covariance_halos_3pcf(
       const double apeak = input->st_a*peak;
       // Sheth-Tormen multiplicity (arXiv:astro-ph/9901122):
       //   f(nu) = A sqrt(2 a nu^2/pi) [1 + (a nu^2)^-p] exp(-a nu^2/2).
-      const double multiplicity = input->st_norm*sqrt(2.0*apeak/COV_PI)
+      const double multiplicity = input->st_norm*sqrt(2.0*apeak/M_PI)
         *(1.0 + pow(apeak, -input->st_p))*exp(-0.5*apeak);
       // Duffy concentration c = A (M/M_pivot)^B (1+z)^C with the
       // explicit input coefficients (see the function header).
@@ -579,7 +577,7 @@ static inline double covariance_window_3pcf(
 )
 {
   if (1 == in->center_window) {
-    const double radius = sqrt(in->area/COV_PI);
+    const double radius = sqrt(in->area/M_PI);
     if (fourier) {
       const double x = value*radius;
       const double amplitude = 0.0 == x ? 1.0
@@ -590,7 +588,7 @@ static inline double covariance_window_3pcf(
     if (x >= 1.0) {
       return 0.0;
     }
-    return (2.0/COV_PI)*(acos(x) - x*sqrt(1.0 - x*x))/in->area;
+    return (2.0/M_PI)*(acos(x) - x*sqrt(1.0 - x*x))/in->area;
   }
 
   const double side = sqrt(in->area);
@@ -609,7 +607,7 @@ static inline double covariance_window_3pcf(
       factor = fmax(0.0, 1.0 - fabs(x)/side)
         *fmax(0.0, 1.0 - fabs(y)/side)/in->area;
     }
-    sum += in->dphi[angle]*COV_I2PI*factor;
+    sum += in->dphi[angle]*(0.5*M_1_PI)*factor;
   }
 
   return sum;
@@ -642,7 +640,7 @@ static inline double covariance_closure_3pcf(
   double phi // relative angle between the two vectors, radians
 )
 {
-  if (q == p && COV_PI == phi) {
+  if (q == p && M_PI == phi) {
     return 0.0;
   }
   return hypot(q + p*cos(phi), p*sin(phi));
@@ -934,7 +932,7 @@ static void covariance_prepare_3pcf(
   // contiguous nodes; duplicating this small matrix is cheaper than a
   // strided read in either direction.
   for (int r=0; r<nr; r++) {
-    work->radial_volume[r] = 2.0*COV_PI*in->radius[r]*in->dr[r];
+    work->radial_volume[r] = 2.0*M_PI*in->radius[r]*in->dr[r];
     if (work->has_cubic || !in->large_area) {
       for (int l=0; l<nl; l++) {
         const double value = gsl_sf_bessel_J0(in->ell[l]*in->radius[r]);
@@ -965,7 +963,7 @@ static void covariance_prepare_3pcf(
     if (1 != in->row_kind[row]) {
       for (int l=0; l<nl; l++) {
         double unused;
-        covariance_quadratic_3pcf(in, row, in->ell[l], in->ell[l], COV_PI,
+        covariance_quadratic_3pcf(in, row, in->ell[l], in->ell[l], M_PI,
           work->quadratic_zero + (size_t)row*nl + l, &unused);
       }
     }
@@ -1021,11 +1019,11 @@ static void covariance_prepare_3pcf(
   for (int r=0; r<nr; r++) {
     const double window = in->large_area ? 1.0/in->area
       : covariance_window_3pcf(in, in->radius[r], 0);
-    work->radial_measure[r] = 2.0*COV_PI*in->radius[r]*in->dr[r]*window;
+    work->radial_measure[r] = 2.0*M_PI*in->radius[r]*in->dr[r]*window;
   }
 
   for (int l=0; l<nl; l++) {
-    work->fourier_measure[l] = in->ell[l]*in->dell[l]*COV_I2PI;
+    work->fourier_measure[l] = in->ell[l]*in->dell[l]*(0.5*M_1_PI);
   }
 
   for (int q=0; q<in->nwindow; q++) {
@@ -1219,7 +1217,7 @@ static void covariance_prepare_3pcf(
               *covariance_dot_3pcf(in->nphi, in->dphi, bvalues,
                 work->closure_filters + (size_t)a*ng + g);
             value += 0.5*(ab + ba)*in->ell[p]*in->dell[p]
-              *COV_I2PI*COV_I2PI;
+              *(0.5*M_1_PI)*(0.5*M_1_PI);
           }
           work->bspec[covariance_bspec_3pcf(work, a, b, c, q)] = value;
         }
@@ -1389,7 +1387,7 @@ void covariance_xi_from_power_3pcf(
         kernel += theta_weight[index]
           *gsl_sf_bessel_Jn(order, ell[l]*theta[index]);
       }
-      kernels[(size_t)k*nell + l] = ell[l]*dell[l]*COV_I2PI*kernel;
+      kernels[(size_t)k*nell + l] = ell[l]*dell[l]*(0.5*M_1_PI)*kernel;
     }
   }
 
@@ -1671,7 +1669,7 @@ static void covariance_profile_plan_3pcf_prepare(
           const double phase = 2 == in->row_kind[row]
             ? 2.0*(phm - php) : 2.0*(phm + php) - 4.0*in->phi[a];
           plan->endpoint_weight[index] = in->theta_weight[ti]
-            *in->dphi[a]*COV_I2PI*cos(phase);
+            *in->dphi[a]*(0.5*M_1_PI)*cos(phase);
         }
       }
     }
@@ -2189,7 +2187,7 @@ static void covariance_halo_terms_3pcf(
   double* window_measure = calloc1d(nw);
 
   for (int q=0; q<nw; q++) {
-    window_measure[q] = in->window_ell[q]*in->window_dell[q]*COV_I2PI
+    window_measure[q] = in->window_ell[q]*in->window_dell[q]*(0.5*M_1_PI)
       *work->window_fourier[q];
   }
 
@@ -2227,7 +2225,7 @@ static void covariance_halo_terms_3pcf(
       const double amplitude = mass/(rho*chi*chi);
       // M200m radius: M = (4 pi/3)*200*rho_m*r200^3, so the 800 in the
       // denominator is 4*200.
-      const double r200 = cbrt(3.0*mass/(800.0*COV_PI*rho));
+      const double r200 = cbrt(3.0*mass/(800.0*M_PI*rho));
       // Expected halo count per steradian: dnu = chi^2 dchi dM dn/dM.
       // number carries dM dn/dM; measure supplies the chi^2 dchi part.
       const double number = in->dmass[im]*work->abundance[node];
@@ -2700,7 +2698,7 @@ static double covariance_gaussian_two_3pcf(
       }
 
       value += work->fourier_measure[q]*work->fourier_measure[p]
-        *COV_I2PI*angle_sum;
+        *(0.5*M_1_PI)*angle_sum;
     }
   }
 
@@ -2717,9 +2715,9 @@ static double covariance_gaussian_two_3pcf(
     const double low = fmax(lo_i, lo_j);
     const double high = fmin(hi_i, hi_j);
     if (high > low) {
-      const double area_i = COV_PI*(hi_i - lo_i)*(hi_i + lo_i);
-      const double area_j = COV_PI*(hi_j - lo_j)*(hi_j + lo_j);
-      const double overlap = COV_PI*(high - low)*(high + low);
+      const double area_i = M_PI*(hi_i - lo_i)*(hi_i + lo_i);
+      const double area_j = M_PI*(hi_j - lo_j)*(hi_j + lo_j);
+      const double overlap = M_PI*(high - low)*(high + low);
       const double noise = in->noise[(size_t)a*work->ns + c]
           *in->noise[(size_t)b*work->ns + d]
         + in->noise[(size_t)a*work->ns + d]
@@ -2839,7 +2837,7 @@ static double covariance_pb_3pcf(
       }
 
       value += work->fourier_measure[q]*work->fourier_measure[p]
-        *COV_I2PI*angle_sum;
+        *(0.5*M_1_PI)*angle_sum;
     }
   }
   return value;

@@ -1198,10 +1198,10 @@ static void prepare_multipole_grid(
               continue;
             }
           }
-          // The literal is pi/2 to double precision: chart 1 holds the
-          // mirrored opening angle PSI = pi/2 - small_angle.
+          // Chart 1 holds the mirrored opening angle
+          // PSI = pi/2 - small_angle.
           const double psi = 0 == chart ? small
-            : 1.57079632679489661923 - small;
+            : M_PI_2 - small;
           const double first = magnitude*cos(psi);
           const double second = magnitude*sin(psi);
 
@@ -1413,7 +1413,7 @@ static physics_grid_3pcf* allocate_grid(
         && settings->psi_scale >= 0.0
         && isfinite(settings->psi_scale)
         && (0.0 == settings->psi_scale
-            || isfinite(0.78539816339744830962/settings->psi_scale))
+            || isfinite(M_PI_4/settings->psi_scale))
         && settings->shape_stretch > 0.0
         && isfinite(settings->shape_stretch)
         && tanh(settings->shape_stretch) < 1.0
@@ -1517,10 +1517,10 @@ static physics_grid_3pcf* allocate_grid(
   grid->log_ell = linear_axis(log(magnitude_min), log(magnitude_max),
     settings->nell);
 
-  // The upper literal is pi/4 to double precision, the fold point of
-  // the opening-angle chart; 1e-3 radians is the fastnc join between
-  // the logarithmic and linear blocks.
-  double* psi = loglinear_axis(psi_min, 1.0e-3, 0.78539816339744830962,
+  // The upper bound pi/4 is the fold point of the opening-angle
+  // chart; 1e-3 radians is the fastnc join between the logarithmic and
+  // linear blocks.
+  double* psi = loglinear_axis(psi_min, 1.0e-3, M_PI_4,
     settings->npsi_log, settings->npsi_linear, &grid->npsi);
   grid->log_psi = calloc1d(grid->npsi);
   for (int index=0; index<grid->npsi; index++) {
@@ -1532,9 +1532,9 @@ static physics_grid_3pcf* allocate_grid(
     free(grid->log_psi);
     grid->npsi = settings->npsi;
     const double scale = settings->psi_scale;
-    // pi/4 to double precision again: the production chart spans the
-    // same physical angles as the reference axis above.
-    const double maximum = 0.78539816339744830962;
+    // pi/4 again: the production chart spans the same physical angles
+    // as the reference axis above.
+    const double maximum = M_PI_4;
     grid->psi_coordinate = linear_axis(
       psi_grid_coordinate(psi_min, scale),
       psi_grid_coordinate(maximum, scale), grid->npsi);

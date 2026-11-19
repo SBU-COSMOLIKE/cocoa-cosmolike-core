@@ -355,7 +355,7 @@ void aperture_weights_3pcf(
   double* weights_imag          // output [nfilter,4,ntriangle]
 )
 {
-  const double two_pi = 6.283185307179586476925286766559;
+  const double two_pi = 2.0*M_PI;
   const size_t ntriangle = (size_t)nd2*(size_t)nd3*(size_t)nphi;
 
   // bin_factor carries the constant part of the bin measure and the
