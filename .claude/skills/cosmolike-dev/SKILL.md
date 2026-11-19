@@ -14,6 +14,50 @@ description: >-
 
 # CosmoLike Development
 
+## Required Cocoa likelihood pattern
+
+The user explicitly requires the LSST Y1 implementation and coding style,
+not a new interpretation of its architecture. Before editing a likelihood,
+read `projects/lsst_y1/likelihood/_cosmolike_prototype_base.py` in the Cocoa
+checkout and the corresponding probe subclass. Follow their class methods
+and call order directly. Developers already know this pattern; changing it
+makes the code harder to maintain even when the new code computes the same
+quantity.
+
+- Put native initialization calls directly in the base class `initialize`.
+  Do not extract `init_two_point`, `check_two_point`, `two_point_spectra`,
+  adapters, dispatchers or equivalent helper layers.
+- Follow `get_requirements`, `set_cosmo_related`, `set_source_related`,
+  `get_datavector`, `internal_get_datavector`, `compute_logp` and `logp`
+  where those operations are needed. Do not add empty methods just to make
+  the names match. The provider and native calls must actually follow the
+  established sequence.
+- Numerical controls and their validation belong in the C++ initialization
+  functions, following `generic_interface.cpp`. The native interface owns
+  the data, covariance and mask singleton and the joint chi-squared.
+  Do not implement a parallel Python covariance/likelihood-state framework.
+- Use explicit assignments and named native arguments. Do not introduce
+  field-name registries such as `ARRAY_NAMES`, `SCALAR_NAMES` or optional
+  field schemas to generate calls. Put each named argument on its own line.
+- Keep necessary theory-input checks short and inside the likelihood class;
+  do not create input/bispectrum container classes or validation modules.
+- Production YAMLs and notebooks use CosmoLike's IA normalization and pivot
+  directly: `c1rho = 0.01389` and `zpivot = 0.62`. A conversion from an
+  upstream convention belongs only to the explicit code-comparison notebook.
+- Repeated code is acceptable. Do not move an unwanted abstraction to
+  another file and call that consistency. Implement the established pattern.
+
+**Do not overengineer.** Follow the existing implementation in CosmoLike and
+the other Cocoa projects. Do not add abstractions, wrappers or protective
+layers when straightforward code already serves the purpose. Repeating clear
+code is acceptable. A new generic framework, attribute-sealing mechanism or
+notebook protection system is not an improvement merely because it can be
+written. Keep the existing numerical validation and cache-invalidation checks;
+do not surround them with a second Python framework. Before adding a helper,
+identify the concrete calculation it serves and inspect the corresponding
+existing implementation. Documentation should explain that calculation, not
+teach a new programming model invented for one project.
+
 CosmoLike development connects physical equations to accurate, efficient
 numerical calculations. Establish the model, units and approximations before
 changing an algorithm. Explain why the discretization, interpolation and
@@ -131,6 +175,13 @@ to the portable 25-file design study in `references/threepcf_study/`.
 Both the mean and its covariance numerical work belong in
 `cosmolike/3pcf/`. Archived proposals are not completed features; retain
 separate DES Y3 and Y6 reproduction and forecast configurations.
+Project integration must follow the existing LSST Y1 and DES Y3 layout and
+calling conventions. Keep survey likelihoods in `likelihood/`, generated
+products in ignored `chains/`, and project-specific scripts in `scripts/`.
+Reusable Python belongs in `cosmolike_3pcf/` and plotting in
+`cosmolike_notebook_utils/`. Do not introduce a separate project framework;
+straightforward repeated code is acceptable. Inspect the matching existing
+example before writing a launcher, YAML or notebook workflow.
 For numerical controls, cache invalidation or notebook reuse, also read
 `references/threepcf_state_and_accuracy.md`: it maps allocation sizes,
 refill values and reset behavior onto the model/plan owners, documents the
