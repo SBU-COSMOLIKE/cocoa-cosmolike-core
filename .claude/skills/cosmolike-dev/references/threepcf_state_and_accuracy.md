@@ -155,6 +155,45 @@ marginalized Fisher comparisons at fixed physical inputs. Evolving P(k,z)
 and factorized P(k,0)D(z)^2 must be tested as separate physical choices;
 component agreement alone cannot authorize changing that prescription.
 
+### Project consumers of shared variances
+
+The DES 3PCF provider selects the optional route with
+`physics.variance_source: shared`; `local` remains the reference default
+until full joint acceptance. Its SharedVariance owner saves unboosted core
+counts, installs supplied power serially and retains immutable snapshots.
+The key includes physical table bytes, output axes, density convention,
+growth selection and all resolved counts. A returned snapshot is independent
+of later core replacements, including replacements by another provider.
+
+`variance_growth: factorized` supplies P(k,0)D(z)^2. `evolving` requires
+full P(k,z). Neither shared choice rescales P to the separate sigma8 scalar.
+The exact neutrino density comes from the Boltzmann metadata. Global and
+individual variance boosts refine mass, scale factor, Gaussian radius and
+inverse tables from the saved baseline; fixed quadrature boosts do not
+change analytic FFTLog smoothing. The Python BiHalofit producer hashes the
+four fit arrays and uses the same natural-piece boundaries as C.
+
+The provider's `covariance_model` obtains the model and halo snapshot from
+the same physical point. Halo output uses the exact covariance mass/LOS
+nodes and its existing density constant 2.77536627e11 times Omega_m, in
+(Msun/h)/(Mpc/h)^3. Copy both axes with the values. Sheth-Tormen and Duffy
+parameters remain covariance inputs. The CLI saves separate fit and halo
+variance records. A declared single_fluid_effective_growth approximation
+cannot silently use evolving halo variances.
+
+The optional Cobaya BiHalofitTheory accepts the same source/growth selectors
+and a variance_accuracy mapping. Its background still comes from provider
+density fractions, and its D remains sigma8(z)/sigma8(0). Evolving fit
+variances do not automatically change the perturbative tree and IA growth
+prescriptions. The shared path requires the project's compiled interface;
+the local Python reference remains independently usable.
+
+The provider, equation, Cobaya and CLI component checks passed 123 strict
+and 123 UBSan tests. They cover local/shared variance with internal/supplied
+bispectra, ownership, A/B/A restoration, explicit growth and saved covariance
+metadata. These checks establish interfaces and state behavior, not survey
+acceptance. The full NLA/TATT shared-variance Fisher checks remain separate.
+
 ### Supplied baseline state
 
 `physics_input_3pcf.baseline == NULL` selects the ordinary internal fit.
