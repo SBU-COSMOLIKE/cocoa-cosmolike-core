@@ -59,29 +59,33 @@ typedef struct physics_grid_query_3pcf physics_grid_query_3pcf;
 
 // Fill the settings with the fastnc reference resolution, so a default
 // grid reproduces the pinned source's sampling.
-void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings);
+void physics_grid_defaults_3pcf(
+  physics_grid_settings_3pcf* settings // the structure to fill completely
+);
 
 // Create one prepared grid for a single ordered source triplet.
 physics_grid_3pcf* physics_grid_create_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
+  const physics_model_3pcf* model, // immutable physical model, borrowed
+  const physics_ia_3pcf* parameters, // IA coefficients of this triplet
   const int* bins, // [3], ordered source legs
-  const physics_grid_settings_3pcf* settings
+  const physics_grid_settings_3pcf* settings // interpolation settings
 );
 
 // Create one grid per ordered source triplet, sharing every expensive
 // line-of-sight evaluation across the batch.
 void physics_grid_create_many_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  int ntriplet,
+  const physics_model_3pcf* model, // immutable physical model, borrowed
+  const physics_ia_3pcf* parameters, // IA coefficients shared by every triplet
+  int ntriplet, // number of ordered source triplets
   const int* bins, // [ntriplet,3], ordered source legs
-  const physics_grid_settings_3pcf* settings,
+  const physics_grid_settings_3pcf* settings, // shared by every grid
   physics_grid_3pcf** out // caller owns ntriplet returned objects
 );
 
 // Release a grid and every array it owns; NULL is allowed.
-void physics_grid_destroy_3pcf(physics_grid_3pcf* grid);
+void physics_grid_destroy_3pcf(
+  physics_grid_3pcf* grid // owned grid; NULL is allowed
+);
 
 // Interpolate the projected E-mode bispectrum at one triangle of
 // Fourier multipoles; callers multiply any pixel window afterwards.
@@ -112,9 +116,9 @@ void physics_grid_aperture_full_3pcf(
 // b_L at every ordered (ell1,ell2) pair, read from the prepared table;
 // physics_multipoles_3pcf in physics_3pcf.h declares the convention.
 void physics_grid_multipoles_3pcf(
-  const physics_grid_3pcf* grid,
-  int nell,
-  const double* ell,
+  const physics_grid_3pcf* grid, // prepared b_L grid
+  int nell, // requested Fourier values on each ordered leg
+  const double* ell, // [nell], positive multipoles
   int component, // total=0, NLA baseline=1, residual IA=2
   double* out // [lmax+1,nell,nell], same convention as direct multipoles
 );
@@ -160,10 +164,10 @@ void physics_grid_query_destroy_3pcf(
 // Expose the actual interpolation coordinates for diagnostics and records.
 // axis: 0=log_r,1=log_u,2=v,3=log_p,4=pu,5=log_ELL,6=log_small_PSI,7=mu.
 void physics_grid_axis_3pcf(
-  const physics_grid_3pcf* grid,
-  int axis,
-  int* count,
-  const double** values
+  const physics_grid_3pcf* grid, // prepared grid
+  int axis, // 0..7, in the order listed above
+  int* count, // out: node count of that axis
+  const double** values // out: borrowed pointer to the axis nodes
 );
 
 #ifdef __cplusplus

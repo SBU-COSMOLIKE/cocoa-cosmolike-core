@@ -80,12 +80,12 @@ void transform_aperture_3pcf(
 // grid with different interpolation axes rebuilds the geometry. No
 // cosmological value survives inside the plan between calls.
 void transform_aperture_grid_3pcf(
-  transform_plan_3pcf* plan,
-  const physics_grid_3pcf* grid,
-  int nfilter,
-  const double* weights_real,
-  const double* weights_imag,
-  double* output
+  transform_plan_3pcf* plan, // one caller owns its mutable scratch
+  const physics_grid_3pcf* grid, // immutable physical table for this call
+  int nfilter, // number of aperture filters in the weights
+  const double* weights_real, // [filter,4,triangle], TreeCorr order
+  const double* weights_imag, // matching imaginary weights
+  double* output // [nfilter], real aperture third moments
 );
 
 #ifdef __cplusplus

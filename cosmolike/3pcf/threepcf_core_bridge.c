@@ -47,8 +47,11 @@ static uint64_t bridge_draw(void)
 // genuine sub-tolerance parameter step, and the cached model would
 // silently keep the previous physics. NaN never reaches this loop:
 // every setter scans its input first and aborts on NaN.
-static int bridge_differs(const double* stored, const double* incoming,
-                          const int n)
+static int bridge_differs(
+  const double* stored, // [n] values the bridge holds
+  const double* incoming, // [n] values a setter received
+  const int n // entry count
+)
 {
   for (int i=0; i<n; i++) {
     if (stored[i] != incoming[i]) {
@@ -59,8 +62,11 @@ static int bridge_differs(const double* stored, const double* incoming,
 }
 
 // Abort on any NaN before a comparison or copy touches the values.
-static void bridge_require_finite(const double* values, const int n,
-                                  const char* name)
+static void bridge_require_finite(
+  const double* values, // [n] caller values
+  const int n, // entry count
+  const char* name // array name for the error message
+)
 {
   for (int i=0; i<n; i++) {
     if (isnan(values[i])) {
@@ -72,7 +78,10 @@ static void bridge_require_finite(const double* values, const int n,
 
 // Owned copy of a caller array; the bridge frees it on replacement
 // and on reset. malloc1d (basics.c) aborts on allocation failure.
-static double* bridge_copy(const double* values, const int n)
+static double* bridge_copy(
+  const double* values, // [n] caller values
+  const int n // entry count
+)
 {
   double* copy = (double*) malloc1d(n);
   memcpy(copy, values, sizeof(double)*(size_t) n);
@@ -165,8 +174,12 @@ static void supplied_clear(void)
 // replacement and one nonce redraw only when something changed.
 // ---------------------------------------------------------------------------
 
-void threepcf_bridge_set_scalars(const double ns, const double sigma8,
-                                 const double w0, const double wa)
+void threepcf_bridge_set_scalars(
+  const double ns, // primordial spectral index
+  const double sigma8, // linear fluctuation amplitude at z = 0
+  const double w0, // dark-energy equation of state today
+  const double wa // its evolution in w(a) = w0 + wa (1 - a)
+)
 {
   const double values[4] = {ns, sigma8, w0, wa};
   bridge_require_finite(values, 4, "scalars (ns, sigma8, w0, wa)");
@@ -186,7 +199,10 @@ void threepcf_bridge_set_scalars(const double ns, const double sigma8,
   }
 }
 
-void threepcf_bridge_set_los(const double* z, const int n)
+void threepcf_bridge_set_los(
+  const double* z, // node redshifts [n]
+  const int n // node count
+)
 {
   if (z == NULL
       || n < 2) {
@@ -203,10 +219,12 @@ void threepcf_bridge_set_los(const double* z, const int n)
   }
 }
 
-void threepcf_bridge_set_resolution(const int kernel_nz,
-                                    const int source_readers,
-                                    const int table_boost,
-                                    const int fit_nz)
+void threepcf_bridge_set_resolution(
+  const int kernel_nz, // internal lensing-kernel redshift resolution
+  const int source_readers, // 1 keeps cubic source reads for comparisons
+  const int table_boost, // dense-grid refinement factor; zero means eight
+  const int fit_nz // uniform BiHalofit anchor count; zero means 33
+)
 {
   // The model validates each knob's range itself (physics_3pcf.h);
   // the bridge only keeps the values and tracks changes.
@@ -222,9 +240,12 @@ void threepcf_bridge_set_resolution(const int kernel_nz,
   }
 }
 
-void threepcf_bridge_set_sources(const double* source_z,
-                                 const double* sources,
-                                 const int nbin, const int nsource)
+void threepcf_bridge_set_sources(
+  const double* source_z, // source redshifts [nsource], increasing
+  const double* sources, // densities per unit z [nbin, nsource]
+  const int nbin, // tomographic source bins
+  const int nsource // source redshift nodes
+)
 {
   if (source_z == NULL && sources == NULL && nbin == 0 && nsource == 0) {
     // clear the override; the struct-read path takes over
@@ -262,7 +283,10 @@ void threepcf_bridge_set_sources(const double* source_z,
   }
 }
 
-void threepcf_bridge_set_pixel_window(const double* window, const int n)
+void threepcf_bridge_set_pixel_window(
+  const double* window, // W(ell) samples [n], or NULL
+  const int n // sample count, or zero
+)
 {
   if (window == NULL && n == 0) {
     if (supplied.nwindow != 0) {
@@ -288,14 +312,21 @@ void threepcf_bridge_set_pixel_window(const double* window, const int n)
   }
 }
 
-void threepcf_bridge_set_feedback(const double* z, const int nz,
-                                  const double* logk, const int nk,
-                                  const double* logu, const int nu,
-                                  const double* v, const int nv,
-                                  const double* log_power,
-                                  const double* log_bispectrum,
-                                  const int boost, const int clamp,
-                                  const double amplitude)
+void threepcf_bridge_set_feedback(
+  const double* z, // redshift nodes [nz]
+  const int nz, // redshift count
+  const double* logk, // log(k/[h/Mpc]) nodes [nk]
+  const int nk, // wave-number count
+  const double* logu, // log(u) nodes [nu]
+  const int nu, // side-ratio count
+  const double* v, // v nodes [nv]
+  const int nv, // shape-coordinate count
+  const double* log_power, // ln R_P [nz, nk]
+  const double* log_bispectrum, // ln R_B [nz, nk, nu, nv]
+  const int boost, // dense intervals per loaded interval
+  const int clamp, // 0 refuses out-of-domain; 1 clamps
+  const double amplitude // shared log-response amplitude
+)
 {
   if (z == NULL && logk == NULL && logu == NULL && v == NULL &&
       nz == 0 && nk == 0 && nu == 0 && nv == 0) {
@@ -374,9 +405,11 @@ void threepcf_bridge_set_feedback(const double* z, const int nz,
   }
 }
 
-void threepcf_bridge_set_prescriptions(const int power_mode,
-                                       const int ct_mode,
-                                       const int suppress_only)
+void threepcf_bridge_set_prescriptions(
+  const int power_mode, // 0 linear D^2; 1 nonlinear(z=0) D^2; 2 full table
+  const int ct_mode, // 0 physical Ct = C1*ct (fastnc); 1 Ct = ct
+  const int suppress_only // cap the baryon transfer at one before scaling
+)
 {
   if (power_mode < 0
       || power_mode > 2
@@ -431,7 +464,9 @@ void threepcf_bridge_set_prescriptions(const int power_mode,
 // amplitudes defined by the same Gomes et al. (arXiv:2601.09133)
 // convention in both codes, and no two-point path reads C_t at all.
 // ---------------------------------------------------------------------------
-void threepcf_bridge_ia_from_core(physics_ia_3pcf* parameters)
+void threepcf_bridge_ia_from_core(
+  physics_ia_3pcf* parameters // receives the translated parameters
+)
 {
   if (parameters == NULL) {
     log_fatal("threepcf bridge: missing IA parameter output");
@@ -551,8 +586,10 @@ static struct {
 } guard;
 
 // Gather the current counts (allocation tier) and keys (refill tier).
-static void guard_current(int counts[BRIDGE_NCOUNT],
-                          uint64_t keys[BRIDGE_NKEY])
+static void guard_current(
+  int counts[BRIDGE_NCOUNT], // out: allocation-tier counts
+  uint64_t keys[BRIDGE_NKEY] // out: refill-tier cache keys and the nonce
+)
 {
   counts[0] = cosmology.lnP_nk;
   counts[1] = cosmology.lnP_nz;
@@ -595,8 +632,12 @@ static void guard_current(int counts[BRIDGE_NCOUNT],
 // chi_all's clamped bracket (dy = 1 and dy ~ 2). hoverh0 is the
 // reciprocal of this same derivative, which is why the model's
 // dz/dchi row is defined as its inverse.
-static double bridge_dzdchi_node(const double* z, const double* c,
-                                 const int nz, const int i)
+static double bridge_dzdchi_node(
+  const double* z, // [nz] redshift nodes of the chi table
+  const double* c, // [nz] comoving distance chi at those nodes
+  const int nz, // node count of the chi table
+  const int i // node at which dz/dchi is evaluated
+)
 {
   int j = (i < nz - 2) ? i : nz - 2;    // piecewise_index clamp
   const int jc = (j > nz - 3) ? nz - 3 : j; // chi_all's j+2 clamp
@@ -933,10 +974,12 @@ void reset_threepcf_core_bridge(void)
 // In a full-core build the original installers run instead and these
 // stay unused.
 
-void threepcf_core_set_cosmological_parameters(const double omega_matter,
-                                               const double omega_baryon,
-                                               const double hubble,
-                                               const double omega_nu_h2)
+void threepcf_core_set_cosmological_parameters(
+  const double omega_matter, // Omega_m today
+  const double omega_baryon, // Omega_b today
+  const double hubble, // H0 (km/s/Mpc)
+  const double omega_nu_h2 // omega_nu h^2 of the massive neutrinos
+)
 {
   // the negated comparisons also reject NaN
   if (!(hubble > 0.0)) {
@@ -975,8 +1018,11 @@ void threepcf_core_set_cosmological_parameters(const double omega_matter,
   }
 }
 
-void threepcf_core_set_distances(const double* z, const double* chi,
-                                 const int n)
+void threepcf_core_set_distances(
+  const double* z, // redshift grid [n], at least five nodes
+  const double* chi, // comoving distance at z in Mpc/h [n]
+  const int n // node count
+)
 {
   if (z == NULL
       || chi == NULL
@@ -1020,8 +1066,11 @@ void threepcf_core_set_distances(const double* z, const double* chi,
   }
 }
 
-void threepcf_core_set_growth(const double* z, const double* G,
-                              const int n)
+void threepcf_core_set_growth(
+  const double* z, // redshift grid [n], at least five nodes
+  const double* G, // growth G at z, D = G * a [n]
+  const int n // node count
+)
 {
   if (z == NULL
       || G == NULL
@@ -1073,9 +1122,14 @@ void threepcf_core_set_growth(const double* z, const double* G,
 // nonlinear tables use one layout (structs.h), so one routine fills
 // either destination. is_linear selects the struct fields and the
 // linear-only duty of dropping the P_cb companion table.
-static void bridge_install_power(const double* log10k, const int nk,
-                                 const double* z, const int nz,
-                                 const double* lnP, const int is_linear)
+static void bridge_install_power(
+  const double* log10k, // log10 k grid [nk], k in h/Mpc
+  const int nk, // wave-number count
+  const double* z, // redshift grid [nz]
+  const int nz, // redshift count
+  const double* lnP, // flattened ln P [nk*nz]
+  const int is_linear // 1 fills the linear table; 0 the nonlinear one
+)
 {
   if (log10k == NULL
       || z == NULL
@@ -1201,25 +1255,31 @@ static void bridge_install_power(const double* log10k, const int nk,
   cosmology.random = bridge_draw();
 }
 
-void threepcf_core_set_linear_power_spectrum(const double* log10k,
-                                             const int nk,
-                                             const double* z,
-                                             const int nz,
-                                             const double* lnP)
+void threepcf_core_set_linear_power_spectrum(
+  const double* log10k, // log10 k grid [nk], k in h/Mpc, uniform
+  const int nk, // wave-number count
+  const double* z, // redshift grid [nz]
+  const int nz, // redshift count
+  const double* lnP // flattened ln P [nk*nz]
+)
 {
   bridge_install_power(log10k, nk, z, nz, lnP, 1);
 }
 
-void threepcf_core_set_non_linear_power_spectrum(const double* log10k,
-                                                 const int nk,
-                                                 const double* z,
-                                                 const int nz,
-                                                 const double* lnP)
+void threepcf_core_set_non_linear_power_spectrum(
+  const double* log10k, // log10 k grid [nk], k in h/Mpc, uniform
+  const int nk, // wave-number count
+  const double* z, // redshift grid [nz]
+  const int nz, // redshift count
+  const double* lnP // flattened ln P [nk*nz]
+)
 {
   bridge_install_power(log10k, nk, z, nz, lnP, 0);
 }
 
-void threepcf_core_set_source_sample_size(const int ntomo)
+void threepcf_core_set_source_sample_size(
+  const int ntomo // number of source tomographic bins
+)
 {
   if (!(ntomo > 0)
       || ntomo > MAX_SIZE_ARRAYS) {
@@ -1237,8 +1297,11 @@ void threepcf_core_set_source_sample_size(const int ntomo)
 // in generic_interface.cpp.
 static int bridge_stored_shear_nbin = 0;
 
-void threepcf_core_set_source_sample(const double* table,
-                                     const int nzbins, const int ntomo)
+void threepcf_core_set_source_sample(
+  const double* table, // row-major n(z) table [nzbins][ntomo+1]
+  const int nzbins, // redshift rows
+  const int ntomo // source bins; must equal redshift.shear_nbin
+)
 {
   const int Ntomo = redshift.shear_nbin;
   if (!(Ntomo > 0)
@@ -1341,8 +1404,10 @@ void threepcf_core_set_source_sample(const double* table,
   redshift.random_shear = bridge_draw();
 }
 
-void threepcf_core_set_nuisance_shear_photoz(const double* shifts,
-                                             const int n)
+void threepcf_core_set_nuisance_shear_photoz(
+  const double* shifts, // per-bin shifts [n]
+  const int n // must equal redshift.shear_nbin
+)
 {
   if (0 == redshift.shear_nbin) {
     log_fatal("threepcf bridge: declare the source tomography before "
@@ -1371,8 +1436,10 @@ void threepcf_core_set_nuisance_shear_photoz(const double* shifts,
   }
 }
 
-void threepcf_core_init_ia(const int ia_model,
-                           const int ia_redshift_evolution)
+void threepcf_core_init_ia(
+  const int ia_model, // 0 = IA_MODEL_NLA, 1 = IA_MODEL_TATT
+  const int ia_redshift_evolution // NO_IA .. IA_REDSHIFT_EVOLUTION (IA.h)
+)
 {
   // every IA consumer keys on nuisance.random_ia: redraw it when the
   // model registry changes, as init_IA_fastpt does
@@ -1402,8 +1469,12 @@ void threepcf_core_init_ia(const int ia_model,
   nuisance.IA_code = 0; // CFASTPT; no python FAST-PT path here
 }
 
-void threepcf_core_set_nuisance_ia(const double* A1, const double* A2,
-                                   const double* BTA, const int n)
+void threepcf_core_set_nuisance_ia(
+  const double* A1, // tidal-alignment amplitudes [n]
+  const double* A2, // tidal-torque amplitudes [n]
+  const double* BTA, // density-weighting amplitudes [n]
+  const int n // entries supplied; at least shear_nbin
+)
 {
   if (0 == redshift.shear_nbin) {
     log_fatal("threepcf bridge: declare the source tomography before "
@@ -1473,7 +1544,9 @@ void threepcf_core_set_nuisance_ia(const double* A1, const double* A2,
   }
 }
 
-void threepcf_core_set_nuisance_ia_ct(const double ct)
+void threepcf_core_set_nuisance_ia_ct(
+  const double ct // velocity-shear alignment amplitude
+)
 {
   if (isnan(ct)) {
     log_fatal("threepcf bridge: C_t is NaN");

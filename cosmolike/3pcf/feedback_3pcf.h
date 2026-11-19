@@ -43,10 +43,14 @@ typedef struct feedback_3pcf feedback_3pcf;
 // Build the immutable response object from one loaded input pair. A
 // NULL input returns NULL, which the query functions accept whenever
 // the amplitude is zero.
-feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input);
+feedback_3pcf* feedback_create_3pcf(
+  const feedback_input_3pcf* input // borrowed loaded tables; NULL returns NULL
+);
 
 // Release a response object; a NULL response does nothing.
-void feedback_destroy_3pcf(feedback_3pcf* response);
+void feedback_destroy_3pcf(
+  feedback_3pcf* response // owned response object; NULL does nothing
+);
 
 // Multiplicative hydro-to-DMO power ratio exp(A ln R_P), which the
 // caller applies to its DMO power spectrum.

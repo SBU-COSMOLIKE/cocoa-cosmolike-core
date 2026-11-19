@@ -54,7 +54,10 @@ struct feedback_3pcf {
 //   counts     - node count per axis [dimensions], each positive
 //   dimensions - number of axes to multiply (2 or 4 in this file)
 // Returns: the product of the counts, as a flat element count.
-static size_t table_size(const int* counts, const int dimensions)
+static size_t table_size(
+  const int* counts, // node count per axis [dimensions], each positive
+  const int dimensions // number of axes to multiply (2 or 4 here)
+)
 {
   size_t size = 1;
 
@@ -99,11 +102,11 @@ static size_t table_size(const int* counts, const int dimensions)
 // frees; boost = 1 returns a finiteness-checked copy of the source.
 // ---------------------------------------------------------------------------
 static double* dense_table(
-  const double* source,
-  const int* counts,
-  const double* const* axes,
-  const int dimensions,
-  const int boost
+  const double* source, // loaded ln R table, flat, last axis contiguous
+  const int* counts, // loaded node count per axis [dimensions]
+  const double* const* axes, // loaded coordinates of each axis [dimensions]
+  const int dimensions, // 2 for the power response, 4 for bispectrum
+  const int boost // dense intervals per loaded interval, >= 1
 )
 {
   int current[4];
@@ -216,7 +219,9 @@ static double* dense_table(
 // without feedback tables passes the NULL straight through; queries
 // on a NULL response then require amplitude zero.
 // ---------------------------------------------------------------------------
-feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
+feedback_3pcf* feedback_create_3pcf(
+  const feedback_input_3pcf* input // borrowed loaded tables; NULL returns NULL
+)
 {
   if (input == NULL) {
     return NULL;
@@ -320,7 +325,9 @@ feedback_3pcf* feedback_create_3pcf(const feedback_input_3pcf* input)
 // Release the dense tables and the response object itself. A NULL
 // response does nothing, matching the NULL that feedback_create_3pcf
 // returns for a caller without feedback tables.
-void feedback_destroy_3pcf(feedback_3pcf* response)
+void feedback_destroy_3pcf(
+  feedback_3pcf* response // owned response object; NULL does nothing
+)
 {
   if (response != NULL) {
     free(response->power);
@@ -350,10 +357,10 @@ void feedback_destroy_3pcf(feedback_3pcf* response)
 // stops.
 // ---------------------------------------------------------------------------
 static double read_response(
-  const feedback_3pcf* response,
-  const double* coordinates,
-  const int dimensions,
-  const double amplitude
+  const feedback_3pcf* response, // prepared tables; needed if amplitude != 0
+  const double* coordinates, // query point, one value per axis [dimensions]
+  const int dimensions, // 2 selects the power table, 4 the bispectrum
+  const double amplitude // feedback amplitude A; A = 0 returns exactly 1
 )
 {
   if (!(isfinite(amplitude))) {
@@ -450,10 +457,10 @@ static double read_response(
 // that the caller applies to its DMO power spectrum.
 // ---------------------------------------------------------------------------
 double feedback_power_3pcf(
-  const feedback_3pcf* response,
-  const double k,
-  const double z,
-  const double amplitude
+  const feedback_3pcf* response, // prepared tables; NULL only when A = 0
+  const double k, // comoving wavenumber in h/Mpc
+  const double z, // redshift
+  const double amplitude // feedback amplitude A; 0 returns 1
 )
 {
   const double coordinates[2] = {z, log(k)};
@@ -480,10 +487,10 @@ double feedback_power_3pcf(
 // exp(A ln R_B) that the caller applies to its DMO bispectrum.
 // ---------------------------------------------------------------------------
 double feedback_bispectrum_3pcf(
-  const feedback_3pcf* response,
-  const double* sides,
-  const double z,
-  const double amplitude
+  const feedback_3pcf* response, // prepared tables; NULL only when A = 0
+  const double* sides, // triangle wavenumbers in h/Mpc [3]
+  const double z, // redshift
+  const double amplitude // feedback amplitude A; 0 returns 1
 )
 {
   // Amplitude zero needs no tables and no triangle sorting: the

@@ -94,7 +94,10 @@ typedef simde__m128d v2d;
 // this helper first, so no allocation can silently truncate its count,
 // and the flattened offsets inside the worker loops stay inside their
 // allocations.
-static size_t covariance_product_3pcf(size_t first, size_t second)
+static size_t covariance_product_3pcf(
+  size_t first, // first array extent
+  size_t second // second array extent; must be positive
+)
 {
   if (!(second > 0
         && first <= (size_t)INT_MAX/second)) {
@@ -128,7 +131,10 @@ static size_t covariance_product_3pcf(size_t first, size_t second)
 //   first   - [count] first integrand factor
 //   second  - [count] second integrand factor
 static inline double covariance_dot_3pcf(
-  int count, const double* weights, const double* first, const double* second
+  int count, // number of quadrature nodes
+  const double* weights, // [count] integration weights
+  const double* first, // [count] first integrand factor
+  const double* second // [count] second integrand factor
 )
 {
   double sum = 0.0;
@@ -191,7 +197,10 @@ static inline double covariance_dot_3pcf(
 // Parameters:
 //   ell    - angular multipole
 //   radius - aperture radius R in radians; 0 marks an unfiltered leg
-static inline double covariance_filter_3pcf(double ell, double radius)
+static inline double covariance_filter_3pcf(
+  double ell, // angular multipole
+  double radius // aperture radius R in radians; 0: unfiltered leg
+)
 {
   if (radius == 0.0) {
     return 1.0;
@@ -225,7 +234,9 @@ static inline double covariance_filter_3pcf(double ell, double radius)
 //   window     - out: W(x)
 //   derivative - out: dW/dln x = dW/dln R at fixed k
 static inline void covariance_tophat_3pcf(
-  double x, double* window, double* derivative
+  double x, // dimensionless argument kR
+  double* window, // out: W(x)
+  double* derivative // out: dW/dln x = dW/dln R at fixed k
 )
 {
   const double square = x*x;
@@ -266,7 +277,9 @@ static inline void covariance_tophat_3pcf(
 //   r200          - comoving truncation radius, Mpc/h
 //   concentration - NFW concentration c = r200/r_s
 static inline double covariance_nfw_3pcf(
-  double k, double r200, double concentration
+  double k, // comoving wavenumber, h/Mpc
+  double r200, // comoving truncation radius, Mpc/h
+  double concentration // NFW concentration c = r200/r_s
 )
 {
   const double c = concentration;
@@ -330,17 +343,17 @@ static inline double covariance_nfw_3pcf(
 // Parameters and units: see the declaration in covariance_physics_3pcf.h.
 // ---------------------------------------------------------------------------
 void covariance_halos_3pcf(
-  const physics_model_3pcf* model,
-  const covariance_input_3pcf* input,
-  int nz,
-  const double* z,
-  int nk_profile,
-  const double* k_profile,
-  double* sigma2,
-  double* dndm,
-  double* bias,
-  double* concentration,
-  double* profile
+  const physics_model_3pcf* model, // linear power and cosmology
+  const covariance_input_3pcf* input, // k/dk, M/dM and the halo prescription
+  int nz, // redshift count
+  const double* z, // redshifts [nz]
+  int nk_profile, // profile wavenumber count
+  const double* k_profile, // [nk_profile], nonnegative h/Mpc
+  double* sigma2, // variance [nz,nmass]
+  double* dndm, // abundance [(Mpc/h)^-3 (Msun/h)^-1]
+  double* bias, // dimensionless linear halo bias
+  double* concentration, // M200m concentration [nz,nmass]
+  double* profile // normalized u [nz,nmass,nk_profile]
 )
 {
   // 2.77536627e11 is the critical density rho_crit/h^2 in units of
@@ -560,7 +573,9 @@ typedef struct {
 //   value   - center separation r, or Fourier magnitude q
 //   fourier - 0 returns the pair density; 1 returns G(q)
 static inline double covariance_window_3pcf(
-  const covariance_input_3pcf* in, double value, int fourier
+  const covariance_input_3pcf* in, // window shape, area and phi quadrature
+  double value, // center separation r, or Fourier magnitude q
+  int fourier // 0 returns the pair density; 1 returns G(q)
 )
 {
   if (in->center_window == 1) {
@@ -604,7 +619,10 @@ static inline double covariance_window_3pcf(
 // Flattened index of the Fourier triangle (q, p, phi) in the [nl,nl,nphi]
 // geometry tables: the angle runs fastest, then the second magnitude p.
 static inline size_t covariance_geometry_3pcf(
-  const covariance_input_3pcf* in, int q, int p, int angle
+  const covariance_input_3pcf* in, // supplies the nell and nphi extents
+  int q, // first Fourier-magnitude node, in [0,nell)
+  int p, // second Fourier-magnitude node, in [0,nell)
+  int angle // relative-angle node, in [0,nphi)
 )
 {
   return ((size_t)q*in->nell + p)*in->nphi + angle;
@@ -618,7 +636,11 @@ static inline size_t covariance_geometry_3pcf(
 // first and returns an exact zero. Only that one exact input maps to
 // zero; no neighborhood of nearly degenerate physical triangles is
 // removed.
-static inline double covariance_closure_3pcf(double q, double p, double phi)
+static inline double covariance_closure_3pcf(
+  double q, // first Fourier magnitude
+  double p, // second Fourier magnitude
+  double phi // relative angle between the two vectors, radians
+)
 {
   if (q == p && phi == COV_PI) {
     return 0.0;
@@ -630,7 +652,11 @@ static inline double covariance_closure_3pcf(double q, double p, double phi)
 // Flattened index of S_ab|c(q) in the [nf,nf,ns,nl] bspec table: fields
 // a and b carry the attached filters, source is the separated leg c.
 static inline size_t covariance_bspec_3pcf(
-  const covariance_work_3pcf* work, int a, int b, int source, int ell
+  const covariance_work_3pcf* work, // supplies the nfield, ns and nell extents
+  int a, // field label of the first attached filter
+  int b, // field label of the second attached filter
+  int source, // source bin of the separated leg c
+  int ell // Fourier-magnitude node q, in [0,nell)
 )
 {
   const covariance_input_3pcf* in = work->in;
@@ -641,7 +667,11 @@ static inline size_t covariance_bspec_3pcf(
 // Flattened index of B_ab|c(r) in the [nf,nf,nf,nr] breal table; here
 // the separated leg c is a field, because its filter is attached too.
 static inline size_t covariance_breal_3pcf(
-  const covariance_input_3pcf* in, int a, int b, int c, int radius
+  const covariance_input_3pcf* in, // supplies the nfield and nr extents
+  int a, // field label of the first attached filter
+  int b, // field label of the second attached filter
+  int c, // field label of the separated leg
+  int radius // center-separation node r, in [0,nr)
 )
 {
   return (((size_t)a*in->nfield + b)*in->nfield + c)*in->nr + radius;
@@ -655,7 +685,11 @@ static inline size_t covariance_breal_3pcf(
 // alone, because the pure-lensing field model produces no B-mode
 // signal.
 static inline double covariance_power_value_3pcf(
-  const covariance_work_3pcf* work, int a, int b, int ell, int mode
+  const covariance_work_3pcf* work, // prepared Limber spectra and shape noise
+  int a, // first source bin
+  int b, // second source bin
+  int ell, // Fourier node, in [0,nell)
+  int mode // 0 E-mode spectrum plus noise; 1 B-mode (noise)
 )
 {
   const size_t pair = (size_t)a*work->ns + b;
@@ -694,8 +728,13 @@ static inline double covariance_power_value_3pcf(
 //   ee    - out: kernel for equal-parity (EE or BB) spectra
 //   eb    - out: kernel for mixed E*B spectra
 static inline void covariance_quadratic_3pcf(
-  const covariance_input_3pcf* in, int row, double p, double q,
-  double angle, double* ee, double* eb
+  const covariance_input_3pcf* in, // rows, field radii and separation bins
+  int row, // the quadratic row (Map^2 or xi)
+  double p, // Fourier magnitude of the row's first leg
+  double q, // Fourier magnitude of the row's second leg
+  double angle, // relative angle phi between the two vectors
+  double* ee, // out: kernel for equal-parity (EE or BB) spectra
+  double* eb // out: kernel for mixed E*B spectra
 )
 {
   const int kind = in->row_kind[row];
@@ -777,7 +816,9 @@ static int covariance_quadratic_equal_3pcf(
 // attached. Each projected spectrum and bispectrum gets its own full
 // Limber integral: the product terms never share a line-of-sight
 // distance between their two factors.
-static void covariance_prepare_3pcf(covariance_work_3pcf* work)
+static void covariance_prepare_3pcf(
+  covariance_work_3pcf* work // holds the input; receives every table
+)
 {
   const covariance_input_3pcf* in = work->in;
   const double* lens;
@@ -1285,17 +1326,17 @@ static void covariance_prepare_3pcf(covariance_work_3pcf* work)
 // covariance_physics_3pcf.h.
 // ---------------------------------------------------------------------------
 void covariance_xi_from_power_3pcf(
-  int nrow,
-  int nell,
-  int ntheta,
-  const double* ell,
-  const double* dell,
-  const double* theta,
-  const double* theta_weight,
-  const double* spectra_e,
-  const double* spectra_b,
-  const int* sign,
-  double* out
+  int nrow, // number of xi rows
+  int nell, // Fourier quadrature nodes
+  int ntheta, // separation samples per row
+  const double* ell, // multipoles [nell]
+  const double* dell, // dell weights [nell]
+  const double* theta, // radians [nrow,ntheta]
+  const double* theta_weight, // normalized weights [nrow,ntheta]
+  const double* spectra_e, // E angular spectra [nrow,nell]
+  const double* spectra_b, // B angular spectra [nrow,nell]
+  const int* sign, // +1 or -1 [nrow]
+  double* out // bin-averaged xi [nrow]
 )
 {
   // Rows for different source pairs often share identical separation
@@ -1420,7 +1461,11 @@ void covariance_xi_from_power_3pcf(
 // transforms. Profile products therefore depend on radius pairs alone,
 // and the unordered pair (a, b) is stored once. This identity holds for
 // the scalar lensing halo model implemented here.
-static inline size_t covariance_radius_pair_3pcf(int n, int a, int b)
+static inline size_t covariance_radius_pair_3pcf(
+  int n, // number of aperture radii
+  int a, // first radius index, in [0,n)
+  int b // second radius index, in [0,n); order is irrelevant
+)
 {
   const int low = a < b ? a : b;
   const int high = a < b ? b : a;
@@ -1827,7 +1872,8 @@ static void covariance_profile_release_3pcf(
 //   work  - prepared workspace; the halo tables are allocated here
 //   terms - output [6, nrow, nrow]; slabs 2, 4 and 5 are accumulated
 static void covariance_halo_terms_3pcf(
-  covariance_work_3pcf* work, double* terms
+  covariance_work_3pcf* work, // prepared workspace; halo tables allocated here
+  double* terms // out [6,nrow,nrow]; adds to slabs 2, 4 and 5
 )
 {
   const covariance_input_3pcf* in = work->in;
@@ -2529,7 +2575,9 @@ static void covariance_halo_terms_3pcf(
 //   work - prepared kernels, spectra and window tables
 //   i, j - the two quadratic rows (j >= i in the caller's triangle)
 static double covariance_gaussian_two_3pcf(
-  const covariance_work_3pcf* work, int i, int j
+  const covariance_work_3pcf* work, // prepared kernels, spectra and windows
+  int i, // first quadratic row
+  int j // second quadratic row, j >= i
 )
 {
   const covariance_input_3pcf* in = work->in;
@@ -2701,7 +2749,9 @@ static double covariance_gaussian_two_3pcf(
 //   quadratic - the Map^2 or xi row
 //   cubic     - the Map^3 row
 static double covariance_pb_3pcf(
-  const covariance_work_3pcf* work, int quadratic, int cubic
+  const covariance_work_3pcf* work, // prepared kernels, spectra, S and B tables
+  int quadratic, // the Map^2 or xi row
+  int cubic // the Map^3 row
 )
 {
   const covariance_input_3pcf* in = work->in;
@@ -2824,8 +2874,11 @@ static double covariance_pb_3pcf(
 //   gaussian - out: Gaussian term of the cell
 //   bb       - out: BB term of the cell
 static void covariance_cubic_disconnected_3pcf(
-  const covariance_work_3pcf* work, int i, int j,
-  double* gaussian, double* bb
+  const covariance_work_3pcf* work, // prepared K and B tables
+  int i, // first cubic row
+  int j, // second cubic row, j >= i
+  double* gaussian, // out: Gaussian term of the cell
+  double* bb // out: BB term of the cell
 )
 {
   const covariance_input_3pcf* in = work->in;
@@ -2911,7 +2964,9 @@ static void covariance_cubic_disconnected_3pcf(
 
 // Free every workspace table. Pointers an option never allocated are
 // still NULL from the initial memset, and free(NULL) does nothing.
-static void covariance_release_3pcf(covariance_work_3pcf* work)
+static void covariance_release_3pcf(
+  covariance_work_3pcf* work // workspace whose tables are freed
+)
 {
   free(work->lens);
   free(work->triples);
@@ -2953,10 +3008,10 @@ static void covariance_release_3pcf(covariance_work_3pcf* work)
 // so a caller learns which physical assumption failed rather than
 // receiving a silently wrong matrix.
 void covariance_physical_3pcf(
-  const physics_model_3pcf* model,
-  const covariance_input_3pcf* input,
-  double* mean,
-  double* terms
+  const physics_model_3pcf* model, // immutable matter/source model
+  const covariance_input_3pcf* input, // physical and numerical definitions
+  double* mean, // output [nrow]
+  double* terms // output [6,nrow,nrow]
 )
 {
   int pixel_count;

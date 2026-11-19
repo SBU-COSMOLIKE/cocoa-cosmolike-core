@@ -156,7 +156,10 @@ struct physics_grid_query_3pcf {
 // Allocate all worker storage before entering a parallel region. Each
 // slice includes one cache-line gap, so adjacent workers cannot write
 // the same line even when calloc's starting address is not 64-byte aligned.
-static double* worker_storage(const size_t count, size_t* stride)
+static double* worker_storage(
+  const size_t count, // doubles each worker needs
+  size_t* stride // out: padded per-worker slice length
+)
 {
   if (!(count <= SIZE_MAX - 15)) {
     log_fatal("physics_grid_3pcf: worker stride overflows");
@@ -177,7 +180,11 @@ static double* worker_storage(const size_t count, size_t* stride)
 
 // Multiply three positive dimensions into a size_t element count,
 // aborting on overflow before any allocation can use the product.
-static size_t grid_product(const int first, const int second, const int third)
+static size_t grid_product(
+  const int first, // first dimension, positive
+  const int second, // second dimension, positive
+  const int third // third dimension, positive
+)
 {
   if (!(first > 0
         && second > 0
@@ -218,7 +225,9 @@ static size_t grid_product(const int first, const int second, const int third)
 // Returns:
 //   Nothing; every member receives a value.
 // ---------------------------------------------------------------------------
-void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings)
+void physics_grid_defaults_3pcf(
+  physics_grid_settings_3pcf* settings // the structure to fill completely
+)
 {
   if (!(settings != NULL)) {
     log_fatal("physics_grid_3pcf: missing grid settings");
@@ -255,7 +264,10 @@ void physics_grid_defaults_3pcf(physics_grid_settings_3pcf* settings)
 
 // Count the nodes of a dense axis that places boost subintervals inside
 // each coarse interval, checking that the arithmetic fits in an int.
-static int dense_grid_count(const int count, const int boost)
+static int dense_grid_count(
+  const int count, // coarse node count, at least 2
+  const int boost // dense subintervals per coarse interval, >= 1
+)
 {
   if (!(count >= 2
         && boost >= 1
@@ -369,8 +381,11 @@ static void upsample_uniform_row(
 // owns its line and scratch. A boost of one leaves that axis unchanged,
 // so the routine never interpolates across component or L labels when
 // it prepares the b_L arrays.
-static double* upsample_uniform_grid(double* input, int* dimensions,
-  const int* boosts)
+static double* upsample_uniform_grid(
+  double* input, // owned [d0,d1,d2] table; freed and replaced
+  int* dimensions, // [3] counts per axis; updated to dense counts
+  const int* boosts // [3] subintervals per coarse interval per axis
+)
 {
   for (int axis=0; axis<3; axis++) {
     const int boost = boosts[axis];
@@ -467,8 +482,11 @@ static double* upsample_uniform_grid(double* input, int* dimensions,
 // binary search on irregular physical ratios. A larger stretch resolves
 // smaller edge ratios at the price of more nodes for the same central
 // resolution.
-static double shape_to_coordinate(const double ratio, const double minimum,
-  const double stretch)
+static double shape_to_coordinate(
+  const double ratio, // side/perimeter ratio, in [minimum,0.5]
+  const double minimum, // smallest ratio on the shape axis
+  const double stretch // tanh stretch; larger crowds nodes at the edges
+)
 {
   // Pin the exact endpoints: evaluating the inverse hyperbolic tangent
   // at an argument that tanh roundoff pushed past one would amplify
@@ -483,8 +501,11 @@ static double shape_to_coordinate(const double ratio, const double minimum,
 
 // Invert the bounded-tanh chart: map a coordinate in [-1,1] back to the
 // physical side/perimeter ratio in [minimum, 0.5].
-static double coordinate_to_shape(const double coordinate, const double minimum,
-  const double stretch)
+static double coordinate_to_shape(
+  const double coordinate, // chart coordinate, in [-1,1]
+  const double minimum, // smallest ratio on the shape axis
+  const double stretch // tanh stretch of the chart
+)
 {
   if (coordinate <= -1.0) return minimum;
   if (coordinate >= 1.0) return 0.5;
@@ -495,8 +516,11 @@ static double coordinate_to_shape(const double coordinate, const double minimum,
 
 // Build a uniformly spaced axis and pin both endpoints to their exact
 // requested values, so interval arithmetic never lands outside them.
-static double* linear_axis(const double lower, const double upper,
-  const int count)
+static double* linear_axis(
+  const double lower, // first node, exact
+  const double upper, // last node, exact; above lower
+  const int count // number of nodes, at least 2
+)
 {
   if (!(count >= 2
         && isfinite(lower)
@@ -525,7 +549,10 @@ static double* linear_axis(const double lower, const double upper,
 // 1/PSI + 1/scale stays positive. A zero scale keeps the original
 // log(PSI) expression, including its floating-point rounding and the
 // reference arrays built from it.
-static double psi_grid_coordinate(const double psi, const double scale)
+static double psi_grid_coordinate(
+  const double psi, // opening angle PSI, radians, positive
+  const double scale // zero keeps log(PSI); positive adds PSI/scale
+)
 {
   const double logarithm = log(psi);
   return scale > 0.0 ? logarithm + psi/scale : logarithm;
@@ -541,8 +568,13 @@ static double psi_grid_coordinate(const double psi, const double scale)
 // root to the last bit without any convergence tolerance that could
 // change the sampled nodes; no root search survives into a production
 // reader. The endpoints keep the exact bits the caller passed.
-static double* physical_psi_axis(const double* coordinates, const int count,
-  const double lower, const double upper, const double scale)
+static double* physical_psi_axis(
+  const double* coordinates, // [count] uniform interpolation coordinates
+  const int count, // number of nodes
+  const double lower, // physical log(PSI) at the first node
+  const double upper, // physical log(PSI) at the last node
+  const double scale // chart scale; zero copies the coordinates
+)
 {
   double* logarithms = calloc1d(count);
 
@@ -591,8 +623,14 @@ static double* physical_psi_axis(const double* coordinates, const int count,
 // requested domain starts above the join, the axis skips the
 // logarithmic block entirely; keeping it would produce duplicate or
 // decreasing nodes at that boundary.
-static double* loglinear_axis(const double lower, const double join,
-  const double upper, const int nlog, const int nlinear, int* count)
+static double* loglinear_axis(
+  const double lower, // first node, positive
+  const double join, // where the log block hands over to the linear one
+  const double upper, // last node, above lower
+  const int nlog, // logarithmic nodes below the join
+  const int nlinear, // linear nodes from the join (or lower), >= 2
+  int* count // out: total node count
+)
 {
   if (!(lower > 0.0
         && upper > lower
@@ -636,8 +674,12 @@ static double* loglinear_axis(const double lower, const double join,
 // transform cannot abort an evaluation at the very edge of the domain.
 // The tolerance exists for that snap alone; a query clearly outside the
 // support still aborts below.
-static double corrected_coordinate(const double coordinate,
-  const double lower, const double upper, const int reference_mode)
+static double corrected_coordinate(
+  const double coordinate, // query coordinate on one table axis
+  const double lower, // first node of that axis
+  const double upper, // last node of that axis
+  const int reference_mode // nonzero: fastnc edge tolerance; 0: 64 epsilons
+)
 {
   // The reference branch reproduces fastnc's edge_correction, which
   // calls numpy.isclose(x, bound, atol, rtol) with its local variables
@@ -949,7 +991,9 @@ double physics_grid_projected_3pcf(
 //   Owned [lmax+1,nmu] weights; the caller frees them. Contracting
 //   row L with samples B(mu[node]) yields b_L.
 // ---------------------------------------------------------------------------
-static double* source_legendre_weights(const physics_grid_3pcf* grid)
+static double* source_legendre_weights(
+  const physics_grid_3pcf* grid // carries the mu axis and the cutoff lmax
+)
 {
   const int lmax = grid->settings.lmax;
   const int count = grid->nmu;
@@ -1031,9 +1075,14 @@ static double* source_legendre_weights(const physics_grid_3pcf* grid)
 
 // Flatten the b_L storage index [component,chart,L,scale,angle]; the
 // struct declaration of physics_grid_3pcf documents each axis.
-static size_t multipole_grid_index(const physics_grid_3pcf* grid,
-  const int component, const int chart, const int order,
-  const int scale, const int angle)
+static size_t multipole_grid_index(
+  const physics_grid_3pcf* grid, // supplies lmax, nell and npsi
+  const int component, // total=0, NLA baseline=1, residual IA=2
+  const int chart, // ordered-leg chart, 0 or 1
+  const int order, // Legendre degree L, in [0,lmax]
+  const int scale, // ELL node, in [0,nell)
+  const int angle // PSI node, in [0,npsi)
+)
 {
   return ((((size_t)component*2 + chart)*(grid->settings.lmax + 1) + order)
     *grid->nell + scale)*grid->npsi + angle;
@@ -1066,7 +1115,9 @@ static size_t multipole_grid_index(const physics_grid_3pcf* grid,
 // Returns:
 //   Nothing; grid->multipoles holds [component,chart,L,nell,npsi].
 // ---------------------------------------------------------------------------
-static void prepare_multipole_grid(physics_grid_3pcf* grid)
+static void prepare_multipole_grid(
+  physics_grid_3pcf* grid // coarse axes; receives grid->multipoles
+)
 {
   const int count = grid->nmu;
   const int lmax = grid->settings.lmax;
@@ -1346,8 +1397,8 @@ static void prepare_multipole_grid(physics_grid_3pcf* grid)
 //   An owned grid with every axis built and every table zeroed.
 // ---------------------------------------------------------------------------
 static physics_grid_3pcf* allocate_grid(
-  const physics_grid_settings_3pcf* settings,
-  const int has_residual
+  const physics_grid_settings_3pcf* settings, // validated, copied into the grid
+  const int has_residual // nonzero allocates the PUV residual storage
 )
 {
   if (!(settings != NULL)) {
@@ -1542,7 +1593,9 @@ static physics_grid_3pcf* allocate_grid(
 // axis arrays at the dense counts, and prepare the b_L multipole table.
 // After this step every reader uses arithmetic cell indices and linear
 // interpolation only.
-static void finish_grid(physics_grid_3pcf* grid)
+static void finish_grid(
+  physics_grid_3pcf* grid // grid with filled coarse tables, completed here
+)
 {
   const physics_grid_settings_3pcf* settings = &grid->settings;
 
@@ -1684,12 +1737,12 @@ static void finish_grid(physics_grid_3pcf* grid)
 //   Nothing; the caller owns the ntriplet grids in out.
 // ---------------------------------------------------------------------------
 void physics_grid_create_many_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int ntriplet,
-  const int* bins,
-  const physics_grid_settings_3pcf* settings,
-  physics_grid_3pcf** out
+  const physics_model_3pcf* model, // immutable physical model, borrowed
+  const physics_ia_3pcf* parameters, // IA coefficients shared by every triplet
+  const int ntriplet, // number of ordered source triplets
+  const int* bins, // [ntriplet,3], ordered source legs
+  const physics_grid_settings_3pcf* settings, // shared by every grid
+  physics_grid_3pcf** out // [ntriplet], receives one owned grid each
 )
 {
   if (!(model
@@ -1974,10 +2027,10 @@ void physics_grid_create_many_3pcf(
 
 // Create a single grid through the batched path with ntriplet = 1.
 physics_grid_3pcf* physics_grid_create_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int* bins,
-  const physics_grid_settings_3pcf* settings
+  const physics_model_3pcf* model, // immutable physical model, borrowed
+  const physics_ia_3pcf* parameters, // IA coefficients of this triplet
+  const int* bins, // [3], ordered source legs
+  const physics_grid_settings_3pcf* settings // interpolation settings
 )
 {
   physics_grid_3pcf* grid;
@@ -1995,10 +2048,10 @@ physics_grid_3pcf* physics_grid_create_3pcf(
 // read the total projected B and apply the pixel window at all three
 // sides, exactly as the direct reference provider does.
 static double grid_aperture_reader(
-  const void* context,
-  const double ell1,
-  const double ell2,
-  const double ell3
+  const void* context, // the prepared physics_grid_3pcf
+  const double ell1, // first triangle side, Fourier multipole
+  const double ell2, // second triangle side
+  const double ell3 // closing third side
 )
 {
   const physics_grid_3pcf* grid = context;
@@ -2015,16 +2068,16 @@ static double grid_aperture_reader(
 
 
 void physics_grid_aperture_full_3pcf(
-  const physics_grid_3pcf* grid,
-  const int nell,
-  const double* ell,
-  const double* dell,
-  const int nphi,
-  const double* phi,
-  const double* dphi,
-  const int nfilter,
-  const double* filters,
-  double* out
+  const physics_grid_3pcf* grid, // prepared tables replacing direct B
+  const int nell, // quadrature nodes on each Fourier leg
+  const double* ell, // [nell], increasing leg-magnitude nodes
+  const double* dell, // [nell], leg-magnitude quadrature weights
+  const int nphi, // quadrature nodes in the angle between the legs
+  const double* phi, // [nphi], angles between the two legs, radians
+  const double* dphi, // [nphi], angular quadrature weights
+  const int nfilter, // number of aperture filter triples
+  const double* filters, // [nfilter,3], radii for the ordered legs
+  double* out // [nfilter], one aperture value per filter triple
 )
 {
   // The direct reference uses this same Fourier quadrature; only the
@@ -2034,7 +2087,9 @@ void physics_grid_aperture_full_3pcf(
 }
 
 
-void physics_grid_destroy_3pcf(physics_grid_3pcf* grid)
+void physics_grid_destroy_3pcf(
+  physics_grid_3pcf* grid // owned grid; NULL is allowed
+)
 {
   if (grid == NULL) {
     return;
@@ -2456,8 +2511,13 @@ void physics_grid_query_destroy_3pcf(
 // A repeated caller owns one query object instead and reuses it across
 // physical grids; evaluate runs the same exact matching check either
 // way.
-void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
-  const int nell, const double* ell, const int component, double* out)
+void physics_grid_multipoles_3pcf(
+  const physics_grid_3pcf* grid, // prepared b_L grid
+  const int nell, // requested Fourier values on each ordered leg
+  const double* ell, // [nell], positive multipoles
+  const int component, // total=0, NLA baseline=1, residual IA=2
+  double* out // [lmax+1,nell,nell], as direct multipoles
+)
 {
   if (!(out
         && component >= 0
@@ -2473,8 +2533,12 @@ void physics_grid_multipoles_3pcf(const physics_grid_3pcf* grid,
 }
 
 
-void physics_grid_axis_3pcf(const physics_grid_3pcf* grid,
-  const int axis, int* count, const double** values)
+void physics_grid_axis_3pcf(
+  const physics_grid_3pcf* grid, // prepared grid
+  const int axis, // 0..7, in the order the header lists
+  int* count, // out: node count of that axis
+  const double** values // out: borrowed pointer to the axis nodes
+)
 {
   if (!(grid
         && axis >= 0
