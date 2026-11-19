@@ -168,6 +168,11 @@ static void supplied_clear(void)
   supplied.suppress_only = 0;
 }
 
+// The bin count the stored table was saved with; a table saved with
+// another count is reloaded without an entry-by-entry comparison, as
+// in generic_interface.cpp.
+static int bridge_stored_shear_nbin = 0;
+
 // ---------------------------------------------------------------------------
 // Supplied-tier setters. Shared discipline (threepcf_core_bridge.h):
 // NaN scan first, exact comparison against the stored copy, owned
@@ -508,6 +513,9 @@ void threepcf_bridge_ia_from_core(
   // entries differ cannot be represented; refuse instead of silently
   // collapsing it to bin 0. Under IA_REDSHIFT_EVOLUTION the setter
   // writes slot 0 only, so untouched slots hold their reset zeros.
+  // threepcf_core_init_ia zeroes the rows on every mode change, so
+  // its own route never leaves such a table; the check stays for
+  // installers that do not reset (the full core's init_IA).
   for (int i=1; i<redshift.shear_nbin; i++) {
     if (0.0 != nuisance.ia[2][i]
         && nuisance.ia[2][i] != nuisance.ia[2][0]) {
@@ -777,6 +785,18 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   // shift exactly zero (threepcf_core_bridge.h explains why shifted
   // sources are supplied, never recomputed here).
   if (0 == supplied.nbin) {
+    // The table has one row per bin plus the z row, allocated for the
+    // bin count of its installation. set_source_sample_size changes
+    // shear_nbin without touching the table, so a new count must wait
+    // for a matching reinstall; indexing row shear_nbin before that
+    // would read outside the allocation.
+    if (bridge_stored_shear_nbin != redshift.shear_nbin) {
+      log_fatal("threepcf bridge: the source table was installed for %d "
+                "bins but %d are declared; install the matching source "
+                "sample first", bridge_stored_shear_nbin,
+                redshift.shear_nbin);
+      exit(1);
+    }
     if (NULL == redshift.shear_zdist_table
         || redshift.shear_nbin < 1) {
       log_fatal("threepcf bridge: no supplied sources and no source "
@@ -876,6 +896,15 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
     scratch.input.source_z = supplied.source_z;
   }
   else {
+    // the same row-count requirement as the source selection above:
+    // only a table installed for shear_nbin bins has shear_nbin rows
+    if (bridge_stored_shear_nbin != redshift.shear_nbin) {
+      log_fatal("threepcf bridge: the source table was installed for %d "
+                "bins but %d are declared; install the matching source "
+                "sample first", bridge_stored_shear_nbin,
+                redshift.shear_nbin);
+      exit(1);
+    }
     // Repack the padded malloc2d rows of the struct table into the
     // flat row-major block the model reads; nsource = 0 reuses the
     // background grid and keeps the model's exact preparation
@@ -1292,11 +1321,6 @@ void threepcf_core_set_source_sample_size(
   redshift.shear_nbin = ntomo;
 }
 
-// The bin count the stored table was saved with; a table saved with
-// another count is reloaded without an entry-by-entry comparison, as
-// in generic_interface.cpp.
-static int bridge_stored_shear_nbin = 0;
-
 void threepcf_core_set_source_sample(
   const double* table, // row-major n(z) table [nzbins][ntomo+1]
   const int nzbins, // redshift rows
@@ -1446,6 +1470,21 @@ void threepcf_core_init_ia(
   if (nuisance.IA_MODEL != ia_model ||
       nuisance.IA != ia_redshift_evolution) {
     nuisance.random_ia = bridge_draw();
+    // The meaning of the ia[][] rows depends on the redshift mode
+    // (structs.h): under IA_REDSHIFT_BINNING, ia[1][2] is the A2
+    // amplitude of bin 2, while under IA_REDSHIFT_EVOLUTION it is the
+    // velocity-shear amplitude C_t. A value left by the old mode would
+    // be read with the new meaning. The rule is therefore: a mode
+    // change resets every IA amplitude to zero, and the caller
+    // installs them again under the new mode. A change of IA_MODEL
+    // alone keeps the amplitudes, since their meaning stays the same.
+    if (nuisance.IA != ia_redshift_evolution) {
+      for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
+        nuisance.ia[0][i] = 0.0;
+        nuisance.ia[1][i] = 0.0;
+        nuisance.ia[2][i] = 0.0;
+      }
+    }
   }
   if (0 == ia_model
       || 1 == ia_model) {
@@ -1470,10 +1509,14 @@ void threepcf_core_init_ia(
 }
 
 void threepcf_core_set_nuisance_ia(
-  const double* A1, // tidal-alignment amplitudes [n]
-  const double* A2, // tidal-torque amplitudes [n]
-  const double* BTA, // density-weighting amplitudes [n]
-  const int n // entries supplied; at least shear_nbin
+  const double* A1, // tidal alignment [n]: binned, one per source bin;
+                    // power law, [0] amplitude and [1] z exponent
+  const double* A2, // tidal torque [n]: binned, one per source bin;
+                    // power law, [0] amplitude and [1] z exponent
+  const double* BTA, // density weighting [n]: binned, one per source
+                     // bin; power law, entry [0] only is read
+  const int n // length of every array: at least shear_nbin in both
+              // modes, and at least 2 under the power law
 )
 {
   if (0 == redshift.shear_nbin) {
@@ -1548,6 +1591,16 @@ void threepcf_core_set_nuisance_ia_ct(
   const double ct // velocity-shear alignment amplitude
 )
 {
+  // ia[1][2] is C_t only under IA_REDSHIFT_EVOLUTION; in any other
+  // mode the slot means something else, so a write here would
+  // silently change that other parameter
+  if (IA_REDSHIFT_EVOLUTION != nuisance.IA) {
+    log_fatal("threepcf bridge: C_t needs nuisance.IA = "
+              "IA_REDSHIFT_EVOLUTION (got IA = %d); under "
+              "IA_REDSHIFT_BINNING the slot ia[1][2] holds the bin-2 A2 "
+              "amplitude", nuisance.IA);
+    exit(1);
+  }
   if (isnan(ct)) {
     log_fatal("threepcf bridge: C_t is NaN");
     exit(1);

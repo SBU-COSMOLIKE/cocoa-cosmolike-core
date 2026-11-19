@@ -4616,13 +4616,16 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
 // The value is meaningful under IA_REDSHIFT_EVOLUTION only: under
 // IA_REDSHIFT_BINNING, ia[1][i] holds the per-bin tidal-torque
 // amplitude A2 of shear bin i, so ia[1][2] is already taken. The setter
-// stores the value either way and leaves mode policing to the caller.
+// therefore refuses every mode other than IA_REDSHIFT_EVOLUTION, so a
+// C_t value can never overwrite a bin-2 A2 amplitude. Only the
+// three-point routines call this setter.
 //
 // Cache invalidation:
 // bumps nuisance.random_ia when the stored value changed (fdiff);
 // unchanged input leaves the key alone.
 //
-// Validation: no NaN input, else critical() + exit(1).
+// Validation: nuisance.IA == IA_REDSHIFT_EVOLUTION and no NaN input,
+// else critical() + exit(1).
 //
 // Parameters:
 //   CT - C_t, the velocity-shear alignment amplitude (dimensionless)
@@ -4634,6 +4637,12 @@ void set_nuisance_IA_ct(const double CT)
 {
   static constexpr std::string_view fname = "set_nuisance_IA_ct"sv;
   debug("{}: {}", fname, errbegins);
+  if (nuisance.IA != IA_REDSHIFT_EVOLUTION) [[unlikely]] {
+    critical("{}: C_t needs nuisance.IA = IA_REDSHIFT_EVOLUTION (got {}); "
+             "under IA_REDSHIFT_BINNING the slot ia[1][2] holds the bin-2 "
+             "A2 amplitude", fname, nuisance.IA);
+    exit(1);
+  }
   if (std::isnan(CT)) [[unlikely]] {
     critical(errnance2, fname, 0, errnance); exit(1);
   }

@@ -273,6 +273,15 @@ void threepcf_core_set_source_sample_size(
 // set_source_sample equivalent. table is row-major [nzbins][ntomo+1]:
 // column 0 holds the redshift axis, column k+1 holds n(z) of bin k,
 // exactly the file layout read_nz_sample loads.
+//
+// This installer owns redshift.shear_zdist_table: it allocates the
+// table with ntomo + 1 rows and records the bin count it installed.
+// The model refresh refuses to read the table while that count
+// differs from redshift.shear_nbin, so a set_source_sample_size call
+// must be followed by a matching set_source_sample before the next
+// model. The recorded count describes only tables this installer
+// wrote; a future full-core route that fills the table elsewhere must
+// bring its own allocation metadata.
 void threepcf_core_set_source_sample(
   const double* table, // row-major n(z) table [nzbins][ntomo+1]
   int nzbins,          // redshift rows
@@ -286,7 +295,10 @@ void threepcf_core_set_nuisance_shear_photoz(
 );
 
 // init_IA equivalent (IA_code fixed at 0): the IA model registry
-// flags nuisance.IA_MODEL and nuisance.IA.
+// flags nuisance.IA_MODEL and nuisance.IA. The ia[][] rows change
+// meaning with nuisance.IA, so a change of the redshift mode resets
+// every IA amplitude to zero; install them again afterwards. A change
+// of IA_MODEL alone keeps them.
 void threepcf_core_init_ia(
   int ia_model,             // 0 = IA_MODEL_NLA, 1 = IA_MODEL_TATT
   int ia_redshift_evolution // NO_IA .. IA_REDSHIFT_EVOLUTION (IA.h)
@@ -295,14 +307,20 @@ void threepcf_core_init_ia(
 // set_nuisance_IA equivalent: amplitudes for the active nuisance.IA
 // mode (structs.h documents the ia[][] registry rows).
 void threepcf_core_set_nuisance_ia(
-  const double* A1,  // tidal-alignment amplitudes [n]
-  const double* A2,  // tidal-torque amplitudes [n]
-  const double* BTA, // density-weighting amplitudes [n]
-  int n              // entries supplied; at least shear_nbin
+  const double* A1,  // tidal alignment [n]: binned, one per source
+                     // bin; power law, [0] amplitude, [1] z exponent
+  const double* A2,  // tidal torque [n]: binned, one per source bin;
+                     // power law, [0] amplitude, [1] z exponent
+  const double* BTA, // density weighting [n]: binned, one per source
+                     // bin; power law, entry [0] only is read
+  int n              // length of every array: at least shear_nbin in
+                     // both modes, and at least 2 under the power law
 );
 
 // set_nuisance_IA_ct equivalent: the velocity-shear amplitude C_t in
-// nuisance.ia[1][2] (meaningful under IA_REDSHIFT_EVOLUTION only).
+// nuisance.ia[1][2]. Refused (log_fatal, exit) unless nuisance.IA =
+// IA_REDSHIFT_EVOLUTION: in binned mode that slot is the A2 amplitude
+// of source bin 2.
 void threepcf_core_set_nuisance_ia_ct(
   double ct // velocity-shear alignment amplitude
 );
