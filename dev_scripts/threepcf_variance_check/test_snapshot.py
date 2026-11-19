@@ -6,7 +6,6 @@ oracle and controlled arrays. They establish neither survey convergence
 nor equivalence of factorized growth and an evolving linear spectrum.
 """
 
-import ctypes
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +19,6 @@ from scipy.special import gamma
 import cosmolike_des_3pcf_interface as compiled
 from covariance.test_physical_covariance import covariance_arguments
 from covariance.test_physical_covariance import make_covariance_model
-from test_fit_input import accuracy_helper
 
 
 def install_power(amplitude=30.0, reset=True, slope=-2.2):
@@ -95,7 +93,7 @@ def test_power_law_oracle(spectral_slope):
 
 
 @pytest.mark.parametrize("spectrum", ["ordinary", "high_tail", "low_tail", "both_tails"])
-def test_curved_spectrum_quadrature(spectrum, accuracy_helper):
+def test_curved_spectrum_quadrature(spectrum):
     """Compare a turnover spectrum with direct smoothing integrals.
 
     The reference integrates the supplied log-linear reconstruction, with
@@ -126,11 +124,11 @@ def test_curved_spectrum_quadrature(spectrum, accuracy_helper):
         # nearly saturated variance makes the inverse radius sensitive
         # to scale-factor sampling. Test the existing nested refinement
         # rather than relaxing the independent accuracy requirement.
-        helper = ctypes.CDLL(name=str(accuracy_helper))
-        helper.refine_gaussian_tables.argtypes = []
-        helper.refine_gaussian_tables.restype = None
-        helper.refine_gaussian_tables()
-        helper.refine_gaussian_tables()
+        sampling = core.variance_sampling()
+        for name in ("gaussian_radius_nodes", "gaussian_scale_factor_nodes",
+                     "gaussian_inverse_nodes"):
+            sampling[name] = 4 * (sampling[name] - 1) + 1
+        core.set_variance_sampling(**sampling)
         actual = request_snapshot(core=core, z=z, mass=mass)
     log_wave = np.log(wave)
     log_power = np.log(linear)
@@ -244,6 +242,42 @@ def test_power_slope_derivative_at_bias_boundary(step):
     actual = (measured[1] - measured[0]) / (2.0 * step)
     expected = (exact[1] - exact[0]) / (2.0 * step)
     np.testing.assert_allclose(actual, expected, rtol=1.0e-3)
+
+
+@pytest.mark.parametrize("setting", [
+    "mass_nodes", "scale_factor_nodes", "gaussian_radius_nodes",
+    "gaussian_scale_factor_nodes", "gaussian_inverse_nodes",
+])
+def test_sampling_replacement_and_restoration(setting):
+    """Each shared-table count refills its values and restores them exactly."""
+    core = install_power()
+    log10k = np.linspace(start=-5.0, stop=3.0, num=257)
+    wave = 10.0**log10k
+    z = np.linspace(start=0.0, stop=40.0, num=4001)
+    linear = 2.0e4 * wave / (1.0 + (wave / 0.15)**2)**1.8
+    power = linear[:, None] / (1.0 + z[None, :])**2
+    core.set_linear_power_spectrum(log10k=log10k, z=z, lnP=np.log(power).ravel())
+    query = np.array(object=[0.0, 0.37, 0.89])
+    mass = np.array(object=[1.3e11, 2.7e12, 4.1e14])
+    baseline = core.variance_sampling()
+    first = request_snapshot(core=core, z=query, mass=mass)
+    core.set_variance_sampling(**baseline)
+    repeat = request_snapshot(core=core, z=query, mass=mass)
+    refined = dict(baseline)
+    refined[setting] = 2 * (baseline[setting] - 1) + 1
+    core.set_variance_sampling(**refined)
+    assert core.variance_sampling() == refined
+    changed = request_snapshot(core=core, z=query, mass=mass)
+    core.set_variance_sampling(**baseline)
+    restored = request_snapshot(core=core, z=query, mass=mass)
+    differences = []
+    for name in ("rnl", "neff", "sigma8", "halo_sigma2", "halo_dlnsigma_dlnm"):
+        np.testing.assert_array_equal(repeat[name], first[name])
+        np.testing.assert_array_equal(restored[name], first[name])
+        differences.append(not np.array_equal(changed[name], first[name]))
+    assert any(differences)
+    core.initial_setup()
+    assert core.variance_sampling() == baseline
 
 
 def test_halo_only_and_fit_only():

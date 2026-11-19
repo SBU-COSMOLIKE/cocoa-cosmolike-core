@@ -21,8 +21,9 @@ Its pre-existing bridge additions remain separately owned in Git.
 
 For the subprocess checks, `PYTHONPATH` must include the selected extension,
 the project's `tests/` and `tests/data_vector/`, and this directory.
-`test_fit_input.py` also requires `VARIANCE_CORE_SOURCE` pointing to that
-build's core headers, plus matching `CONDA_PREFIX` and `C_COMPILER` values.
+The public `core.variance_sampling` and `core.set_variance_sampling`
+bindings exercise accuracy changes directly; current tests no longer
+compile the external C helper used in the earlier build records.
 Each refusal test prints a marker immediately before the intended request;
 an import or setup error cannot establish a successful validation refusal.
 
@@ -93,3 +94,18 @@ The final strict command includes the strengthened refusal marker check.
 Logs are in `/private/tmp/threepcf_consolidation_20261119/`, named
 `final_strict_combined.log`, `full_debug_combined.log`,
 `final_debug_variance.log` and `final_debug_live_original.log`.
+
+## Shared sampling controls
+
+The standalone interface exposes exact counts for top-hat mass and scale
+factor, plus Gaussian radius, scale factor and inverse tables. A dictionary
+copied after `initial_setup` supplies the baseline. Reinstalling unchanged
+counts preserves caches. Changing any count invalidates shared tables and
+previously supplied bridge fit arrays, while returned immutable models and
+snapshots remain usable. The setter validates all counts before mutation.
+
+All five counts passed individual A/B/A restoration and stale-fit refusal
+checks. The resulting suite passed 63 tests in strict mode and 63 under
+UBSan. Logs are `sampling_strict_tests.log` and `sampling_debug_tests.log`
+under the same private validation directory. These controls expose existing
+Ntable sampling; they add no smoothing prescription or integration rule.

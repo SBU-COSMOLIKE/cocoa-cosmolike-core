@@ -989,6 +989,38 @@ static void bind_threepcf_core_bridge(
       "mass-to-radius convention; zero uses core rho_m. include_fit=False "
       "skips Gaussian preparation. Halo slopes are d ln sigma/d ln M.");
 
+  core.def("variance_sampling", []() {
+    const auto sampling = threepcf_core_variance_sampling();
+    py::dict result;
+    result["mass_nodes"] = sampling.mass_nodes;
+    result["scale_factor_nodes"] = sampling.scale_factor_nodes;
+    result["gaussian_radius_nodes"] = sampling.gaussian_radius_nodes;
+    result["gaussian_scale_factor_nodes"] =
+        sampling.gaussian_scale_factor_nodes;
+    result["gaussian_inverse_nodes"] = sampling.gaussian_inverse_nodes;
+    return result;
+  }, "Copy the five current shared variance table counts after initial_setup.");
+
+  core.def("set_variance_sampling", [](
+    const int mass_nodes, // top-hat ln(M) sampling
+    const int scale_factor_nodes, // top-hat a sampling
+    const int gaussian_radius_nodes, // Gaussian ln(R) sampling
+    const int gaussian_scale_factor_nodes, // Gaussian a sampling
+    const int gaussian_inverse_nodes // Gaussian inverse-table sampling
+  ) {
+    const threepcf_variance_sampling sampling = {
+      mass_nodes, scale_factor_nodes, gaussian_radius_nodes,
+      gaussian_scale_factor_nodes, gaussian_inverse_nodes
+    };
+    threepcf_core_set_variance_sampling(&sampling);
+  }, "Install complete shared variance counts; unchanged counts retain caches. "
+     "Derive refinements from a saved baseline, not the previous result.",
+      py::arg("mass_nodes").noconvert(),
+      py::arg("scale_factor_nodes").noconvert(),
+      py::arg("gaussian_radius_nodes").noconvert(),
+      py::arg("gaussian_scale_factor_nodes").noconvert(),
+      py::arg("gaussian_inverse_nodes").noconvert());
+
   // --- supplied tier -----------------------------------------------------
   core.def("set_variance", &bridge_variance_3pcf,
       py::arg("variance") = py::dict(),

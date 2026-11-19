@@ -224,6 +224,23 @@ const physics_input_3pcf* threepcf_bridge_refresh(void);
 // rebuilds without comparing pointers.
 uint64_t threepcf_bridge_generation(void);
 
+// Counts of the shared tables, independent of the requested output anchors.
+// A caller can copy these baseline counts, refine selected intervals and
+// install all five together. Reinstalling the same counts is a cache hit.
+typedef struct {
+  int mass_nodes; // top-hat ln(M) nodes over the ordinary halo mass range
+  int scale_factor_nodes; // top-hat scale-factor rows, Ntable.N_a
+  int gaussian_radius_nodes; // Gaussian ln(R) nodes
+  int gaussian_scale_factor_nodes; // Gaussian scale-factor rows
+  int gaussian_inverse_nodes; // ln(R) as a function of ln(sigma_G^2)
+} threepcf_variance_sampling;
+
+threepcf_variance_sampling threepcf_core_variance_sampling(void);
+
+void threepcf_core_set_variance_sampling(
+  const threepcf_variance_sampling* sampling // complete desired node counts
+);
+
 // Copy variance quantities from the installed total-matter power table.
 // This serial preparation may fill the shared cosmo3D caches. The output
 // buffers belong to the caller; later cosmology changes cannot alter them.

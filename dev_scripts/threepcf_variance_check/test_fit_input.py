@@ -5,10 +5,7 @@ establish selection and ownership, not the accuracy of the shared FFTLog fit.
 The companion test_snapshot.py compares that engine with separate integrals.
 """
 
-import ctypes
-import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 
@@ -130,40 +127,12 @@ def test_bridge_variance_reuse_replace_clear_reset():
                                   y=legacy_values)
 
 
-@pytest.fixture(scope="module")
-def accuracy_helper(tmp_path_factory):
-    """Build a C caller so the compiler determines the public Ntable layout."""
-    directory = tmp_path_factory.mktemp(basename="variance_accuracy_state")
-    source = directory / "caller.c"
-    library = directory / "caller.so"
-    source.write_text(
-        '#include "cosmolike/structs.h"\n'
-        'void change_variance_accuracy(void) {\n'
-        '  Ntable.sigma_gauss_nr *= 2;\n'
-        '  Ntable.random += 1;\n'
-        '}\n'
-        'void refine_gaussian_tables(void) {\n'
-        '  Ntable.sigma_gauss_nr = 2*(Ntable.sigma_gauss_nr-1)+1;\n'
-        '  Ntable.sigma_gauss_na = 2*(Ntable.sigma_gauss_na-1)+1;\n'
-        '  Ntable.sigma_gauss_ninv = 2*(Ntable.sigma_gauss_ninv-1)+1;\n'
-        '  Ntable.random += 1;\n'
-        '}\n')
-    core = Path(os.environ["VARIANCE_CORE_SOURCE"])
-    prefix = Path(os.environ["CONDA_PREFIX"])
-    command = shlex.split(s=os.environ.get("C_COMPILER", "cc"))
-    command += ["-std=c99", "-O0", "-fPIC"]
-    if sys.platform == "darwin":
-        command += ["-dynamiclib", "-undefined", "dynamic_lookup"]
-    else:
-        command += ["-shared"]
-    command += ["-I", str(core), "-I", str(prefix / "include"), str(source),
-                compiled.__file__, "-o", str(library)]
-    subprocess.run(args=command, check=True, capture_output=True, text=True)
-    return library
-
-
-@pytest.mark.parametrize("change", ["power", "cosmology", "accuracy"])
-def test_bridge_refuses_stale_fit_and_accepts_resupply(change, accuracy_helper):
+@pytest.mark.parametrize("change", [
+    "power", "cosmology", "mass_nodes", "scale_factor_nodes",
+    "gaussian_radius_nodes", "gaussian_scale_factor_nodes",
+    "gaussian_inverse_nodes",
+])
+def test_bridge_refuses_stale_fit_and_accepts_resupply(change):
     """State changes refuse stale arrays; explicit resupply renews validity."""
     setup = (
         "from test_fit_input import *\n"
@@ -188,10 +157,9 @@ def test_bridge_refuses_stale_fit_and_accepts_resupply(change, accuracy_helper):
         )
     else:
         mutation = (
-            f"helper = ctypes.CDLL(name={str(accuracy_helper)!r})\n"
-            "helper.change_variance_accuracy.argtypes = []\n"
-            "helper.change_variance_accuracy.restype = None\n"
-            "helper.change_variance_accuracy()\n"
+            "sampling = core.variance_sampling()\n"
+            f"sampling[{change!r}] *= 2\n"
+            "core.set_variance_sampling(**sampling)\n"
         )
     failed = subprocess.run(
         args=[sys.executable, "-c", setup + mutation + "core.model_from_core()"],

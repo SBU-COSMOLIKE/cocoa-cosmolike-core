@@ -152,6 +152,58 @@ static uint64_t bridge_draw(void)
   return counter;
 }
 
+// These are the same Ntable counts used by the ordinary core's accuracy
+// initializer. The standalone adapter exposes exact counts so a notebook
+// can refine one interpolation axis without multiplying a previous boost.
+// Read a baseline after initial_setup, derive counts from that saved value,
+// and install them before requesting a copied variance snapshot.
+threepcf_variance_sampling threepcf_core_variance_sampling(void)
+{
+  const threepcf_variance_sampling sampling = {
+    Ntable.N_M[NODES_DENSE], Ntable.N_a, Ntable.sigma_gauss_nr,
+    Ntable.sigma_gauss_na, Ntable.sigma_gauss_ninv
+  };
+  return sampling;
+}
+
+void threepcf_core_set_variance_sampling(
+  const threepcf_variance_sampling* sampling // complete desired node counts
+)
+{
+#ifdef _OPENMP
+  if (0 != omp_in_parallel()) { log_fatal(
+    "variance sampling must be set outside OpenMP regions"); exit(1); }
+#endif
+  if (NULL == sampling) { log_fatal(
+    "variance sampling requires all five node counts"); exit(1); }
+  if (2 > sampling->mass_nodes
+      || 2 > sampling->scale_factor_nodes
+      || 2 > sampling->gaussian_radius_nodes
+      || 2 > sampling->gaussian_scale_factor_nodes
+      || 2 > sampling->gaussian_inverse_nodes) { log_fatal(
+    "variance sampling counts must each be at least two; received "
+    "%d, %d, %d, %d, %d", sampling->mass_nodes,
+    sampling->scale_factor_nodes, sampling->gaussian_radius_nodes,
+    sampling->gaussian_scale_factor_nodes,
+    sampling->gaussian_inverse_nodes); exit(1); }
+  if (Ntable.N_M[NODES_DENSE] == sampling->mass_nodes
+      && Ntable.N_a == sampling->scale_factor_nodes
+      && Ntable.sigma_gauss_nr == sampling->gaussian_radius_nodes
+      && Ntable.sigma_gauss_na == sampling->gaussian_scale_factor_nodes
+      && Ntable.sigma_gauss_ninv == sampling->gaussian_inverse_nodes) {
+    return;
+  }
+  // Validate every count before mutating any field. Changing this key
+  // invalidates shared tables and refuses previously supplied bridge
+  // snapshots; immutable model owners already returned remain valid.
+  Ntable.N_M[NODES_DENSE] = sampling->mass_nodes;
+  Ntable.N_a = sampling->scale_factor_nodes;
+  Ntable.sigma_gauss_nr = sampling->gaussian_radius_nodes;
+  Ntable.sigma_gauss_na = sampling->gaussian_scale_factor_nodes;
+  Ntable.sigma_gauss_ninv = sampling->gaussian_inverse_nodes;
+  Ntable.random = bridge_draw();
+}
+
 // Exact element-wise difference test for the supplied tier. The
 // supplied setters compare exact values on purpose: a rounded tolerance
 // (the fdiff of basics.h) could leave the nonce unchanged after a

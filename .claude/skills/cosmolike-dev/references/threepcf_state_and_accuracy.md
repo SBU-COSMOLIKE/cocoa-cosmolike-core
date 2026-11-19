@@ -108,6 +108,18 @@ allocation key. Retained immutable model owners survive replacement/reset.
 Both ordinary and standalone `initial_setup` call `reset_variance_tables`,
 which frees both shared FFTLog workspaces and their plans serially.
 
+`core.variance_sampling()` returns the five shared table counts.
+`core.set_variance_sampling(**counts)` validates the complete replacement
+before mutation, retains caches for identical counts, and changes
+`Ntable.random` otherwise. The top-hat scale-factor count is `Ntable.N_a`;
+the other counts are dense top-hat mass and Gaussian radius, scale factor
+and inverse-table sampling. Derive refinements from a saved unboosted
+baseline rather than the previous boosted values. These are preparation
+controls, independent of the output redshifts passed to `variance_snapshot`.
+The public setter replaces the external C helper previously needed by
+the accuracy-invalidation tests. All five controls have A/B/A and stale-fit
+checks; the sampling stage passes 63 strict and 63 UBSan checks.
+
 These inputs are an optional integration step, not an accepted replacement
 of the local variance prescription. The shared FFTLog endpoint correction
 passes five power-law slopes, curved spectra and smaller derivative steps;
