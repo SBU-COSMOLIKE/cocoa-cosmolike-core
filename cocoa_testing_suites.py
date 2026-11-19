@@ -2095,7 +2095,8 @@ def _cube_diagonal_at_one_ell(cube):
 def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                               expected_defaults, change_bound=None,
                               noise_bound=None, handoff_margin=None,
-                              svd_rule=None, svd_margin=None):
+                              svd_rule=None, svd_margin=None,
+                              expected_lmax_nonlimber=None):
     """Build the class of the non-Limber early-exit and hand-off checks.
 
     The non-Limber real-space C_l (w_gg_tomo for w(theta), w_gammat_tomo
@@ -2202,6 +2203,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                        sigma at cap 200), or None.
       svd_rule       = "not_larger", "bound" or None (record only).
       svd_margin     = relative margin of the "not_larger" rule.
+      expected_lmax_nonlimber = optional production FKEM cap checked
+                       against the resolved likelihood configuration.
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -2469,6 +2472,12 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                 expected_defaults,
                 "the likelihood applied other production tolerances than "
                 "the ones this project's test file expects")
+            if expected_lmax_nonlimber is not None:
+                self.assertEqual(
+                    self.production["lmax_nonlimber"],
+                    expected_lmax_nonlimber,
+                    "the likelihood applied a different FKEM cap from "
+                    "the one this project's test file expects")
             core = NONLIMBER_TOL_CORE_DEFAULTS
             try:
                 self._fiducial_vector()
