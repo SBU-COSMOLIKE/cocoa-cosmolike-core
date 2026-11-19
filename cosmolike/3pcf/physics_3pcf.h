@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-// Interface of the three-point (3PCF) physics model: fitted matter
+// Interface of the three-point (3PCF) physics model: supplied matter
 // and intrinsic alignment (IA) bispectra and their flat-sky Limber
 // projection along the line of sight (LOS).
 //
@@ -25,25 +25,14 @@ extern "C" {
 // creation and owns its interpolation data afterwards, so the caller
 // may free the inputs once physics_create_3pcf returns.
 //
-// Background matter fraction. Internal BiHalofit accepts an exact provider
-// omega_m_z table, optionally on omega_m_redshift. Otherwise it assumes
-// pressureless matter and computes Omega_m0*(1+z)^3/E(z)^2 using the supplied
-// dz_dchi: E(z)=(2997.92458 Mpc/h)*dz_dchi. This uses the supplied expansion
-// history, not w0/wa. Exact massive-neutrino fractions must be supplied.
-// BiHalofit and halo covariance read the same owned fraction table.
+// The provider supplies Omega_m(z) for the halo collapse correction.
+// Pressureless matter permits Omega_m0*(1+z)^3/[H(z)/H0]^2 in the
+// provider; exact massive-neutrino fractions must include their actual
+// density evolution. C never reconstructs a separate CPL background.
+// Flat lensing geometry remains the provider's responsibility.
 //
-// Geometry. The lensing efficiency uses the flat-space source ratio,
-// so the internal-fit route requires |omega_m + omega_de - 1| <= 1e-8; the
-// tolerance absorbs floating-point rounding of the density scalars
-// and does not admit a curved-lensing model. The supplied-B route requires
-// the caller to provide a consistent flat background; it does not infer
-// dark-energy parameters or density closure from those arrays.
-//
-// Required internal-fit quantities copied from a total-matter variance
-// engine. z is a piecewise-uniform grid; rnl is the Gaussian nonlinear radius
-// in Mpc/h, neff its effective spectral index, and sigma8 the top-hat rms
-// at R = 8 Mpc/h. The constructor always trusts the supplied power
-// amplitude and never renormalizes it to the legacy scalar sigma8.
+// Smoothing snapshots below are retained as an adapter data type. They
+// belong to the theory producer, not to this projection model.
 typedef struct {
   int nz; // anchor count
   const double* z; // piecewise-uniform redshift nodes [nz]
@@ -80,7 +69,7 @@ typedef struct {
   double sigma8;   // legacy interface scalar; never rescales supplied power
   int source_readers; // 1 keeps cubic source reads for comparisons
   int table_boost; // dense-grid refinement factor; zero means eight
-  int fit_nz; // uniform BiHalofit anchor count; zero means 33
+  int fit_nz; // retained ABI field; fit sampling belongs to the provider
   // Optional independent source coordinates. A NULL source_z with
   // nsource = 0 reuses the background z grid and keeps its exact
   // preparation arithmetic. Source resolution never changes the
@@ -90,15 +79,15 @@ typedef struct {
   const feedback_input_3pcf* feedback; // optional paired response; copied
   int nwindow; // zero disables the angular pixel window
   const double* window; // W(ell) at integers 0..nwindow-1; copied
-  // Optional supplied baseline. NULL preserves the internal BiHalofit route.
-  // With a supplied baseline, omega_de/w0/wa/ns are unused; background
-  // geometry is the caller's responsibility and remains flat in projection.
+  // Required theory-supplied matter B. The provider owns BiHalofit or any
+  // replacement prescription. omega_de/w0/wa/ns are retained ABI fields,
+  // unused here; the supplied flat background owns the expansion history.
   const baseline_input_3pcf* baseline; // copied absolute matter B table
-  const double* omega_m_z; // optional exact fraction; required with baseline
+  const double* omega_m_z; // required exact matter fraction for halo covariance
   int nomega; // zero reuses nz; otherwise independent matter-fraction nodes
   const double* omega_m_redshift; // optional piecewise-uniform axis [nomega]
-  // Required for internal BiHalofit; unused by a supplied absolute B table.
-  const physics_variance_input_3pcf* variance; // copied fit anchors
+  // Retained ABI field; smoothing quantities belong to the theory producer.
+  const physics_variance_input_3pcf* variance; // unused by this model
 } physics_input_3pcf;
 
 // TATT (tidal alignment and tidal torquing) parameters in the
@@ -178,8 +167,8 @@ double physics_feedback_bispectrum_3pcf(
   double amplitude
 );
 
-// component: 0 = the selected full matter B (internal fit or supplied),
-// 1 = tree level from P_linear, 2 = one-halo fit, 3 = three-halo fit.
+// component: 0 = supplied full matter B, 1 = tree level from P_linear.
+// Legacy components 2/3 are refused; C owns no matter-fit decomposition.
 // A supplied full B cannot define the fitted pieces 2/3, so those requests
 // stop explicitly. The covariance's independent halo integrals do not
 // request those fitted pieces. Optional fb still multiplies the selected B;

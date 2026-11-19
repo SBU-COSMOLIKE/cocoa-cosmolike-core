@@ -934,40 +934,6 @@ static py::dict bridge_variance_snapshot_3pcf(
 
 // Only fit fields belong to the model constructor. A full variance_snapshot
 // also contains halo rows; select these four named arrays explicitly.
-static void bridge_variance_3pcf(
-  const py::dict& variance // z, rnl, neff, sigma8; empty clears
-)
-{
-  if (variance.empty()) {
-    threepcf_bridge_set_variance(NULL);
-    return;
-  }
-  if (4 != variance.size()) {
-    throw py::value_error("variance requires exactly z, rnl, neff, sigma8");
-  }
-  const char* names[4] = {"z", "rnl", "neff", "sigma8"};
-  std::vector<array_3pcf> arrays;
-  for (const char* name : names) {
-    if (!variance.contains(name)
-        || !array_3pcf::check_(variance[name])) {
-      throw py::value_error("variance requires contiguous float64 arrays");
-    }
-    arrays.push_back(py::reinterpret_borrow<array_3pcf>(variance[name]));
-    bridge_vector_3pcf(arrays.back(), name);
-    if (arrays[0].size() != arrays.back().size()) {
-      throw py::value_error("variance array lengths disagree");
-    }
-  }
-  physics_variance_input_3pcf input = {};
-  input.nz = static_cast<int>(arrays[0].size());
-  input.z = arrays[0].data();
-  input.rnl = arrays[1].data();
-  input.neff = arrays[2].data();
-  input.sigma8 = arrays[3].data();
-  threepcf_bridge_set_variance(&input);
-}
-
-// Register every bridge entry point on the "core" submodule.
 static void bind_threepcf_core_bridge(
   py::module_& module // Python module receiving the bindings
 )
@@ -1018,27 +984,6 @@ static void bind_threepcf_core_bridge(
       py::arg("gaussian_inverse_nodes").noconvert());
 
   // --- supplied tier -----------------------------------------------------
-  core.def("set_matter_fraction", [](const py::object& values) {
-    if (values.is_none()) {
-      threepcf_bridge_set_matter_fraction(NULL, 0);
-      return;
-    }
-    if (!array_3pcf::check_(values)) { throw py::value_error(
-      "Omega_m(z) must be a contiguous float64 array"); }
-    const auto fraction = py::reinterpret_borrow<array_3pcf>(values);
-    const double* data = bridge_vector_3pcf(fraction, "Omega_m(z)");
-    threepcf_bridge_set_matter_fraction(data,
-      static_cast<int>(fraction.size()));
-  }, py::arg("omega_m_z") = py::none(),
-    "Copy exact Omega_m(z) on the core background grid for internal fits. "
-    "Resupply after cosmology/power changes; None selects pressureless H(z).");
-
-  core.def("set_variance", &bridge_variance_3pcf,
-      py::arg("variance") = py::dict(),
-      "Copy z, rnl, neff and sigma8 fit arrays for the installed core state. "
-      "Empty clears. Resupply after changing power, cosmology or accuracy. "
-      "The selected path trusts the supplied power amplitude.");
-
   core.def("set_scalars", &threepcf_bridge_set_scalars,
       "Supply ns, sigma8, w0 and wa; these scalars stay supplied "
       "until a later stage retires them into the structs.",

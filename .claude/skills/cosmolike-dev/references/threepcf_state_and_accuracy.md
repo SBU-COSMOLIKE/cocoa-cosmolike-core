@@ -97,38 +97,30 @@ consumer's mass-to-radius convention; the shared query mass is multiplied
 by core_rho/reference_rho. The returned slope is d ln sigma/d ln M, so the
 covariance multiplies it by 2 sigma² where d sigma²/d ln M is required.
 
-The model `variance` dictionary contains exactly z/rnl/neff/sigma8 and is
-required for internal BiHalofit. A supplied absolute B needs no fit arrays.
-C never rescales linear P to the legacy scalar sigma8 argument.
-Supplied fit anchors must cover the model's full redshift
-domain. Covariance snapshots require exact requested mass/redshift axes and
-the prescribed density. Their caller must establish that they belong to
-the same physical power state; matching dimensions alone is insufficient.
+The theory producer consumes z/rnl/neff/sigma8 snapshots and supplies the
+complete B table to the C projection model. C no longer fits BiHalofit or
+normalizes P to a legacy sigma8 scalar. Covariance snapshots still require
+exact requested mass/redshift axes and the prescribed density, with the
+caller establishing their physical power state. Dimensions alone do not
+prove consistency. The retired bridge `set_variance` and standalone
+`set_matter_fraction` overrides are removed: use `variance_snapshot` for
+theory inputs and `set_baseline_bispectrum` for B with its background.
 
 Supplying fit anchors does not change their interpolation convention:
 production uses natural-cubic preparation, while `source_readers: true`
-retains the upstream not-a-knot comparison. C and the independent Python
-BiHalofit producer must select the same convention. The companion project's
+retains the upstream not-a-knot comparison. The Python BiHalofit producer owns that convention. The companion project's
 `ReferenceVariance` prepares the older finite-integral fit and its scalar
 power multiplier in Python. Its provider applies that multiplier only to
 the three-point reference, leaving the ordinary two-point power unchanged.
 Copied fit arrays and recorded normalization belong to the same input state.
-The native no-array fit path has been removed. The project reference
-adapter prepares explicit arrays; frozen pre-removal native outputs keep
-the comparison independent. The core-struct bridge copies shared variance
-results when no explicit fit was installed. It uses the installed full
-P(k,z), with uniform `fit_nz` anchors covering the background. Its scratch
-arrays are released on rebuild/reset, and immutable models own copies.
-Cosmology and Ntable changes invalidate that assembly. For a factorized
-P(k,0)D(z)^2 fit, callers must install explicit matching arrays; the bridge
-does not silently replace the installed power or change perturbative IA
-growth. The covariance's separate halo quadrature is outside this retirement.
+The native fit has been removed. The project reference adapter prepares
+an explicit B table; frozen pre-removal C results keep the equation
+comparison independent. `core.variance_snapshot` remains the shared service
+used by the theory producer and halo covariance. No variance snapshot is
+built implicitly by the mean-model bridge. The caller chooses evolving
+P(k,z) or factorized P(k,0)D(z)^2 before requesting the snapshot; the latter
+is not an exact massive-neutrino growth treatment.
 
-`core.set_variance` copies its arrays and stamps both `cosmology.random`
-and `Ntable.random`. A later bridge read refuses stale supplied variances
-before considering a model cache hit. Resupply or explicitly clear after
-power, cosmology or accuracy changes. The anchor count belongs to the
-allocation key. Retained immutable model owners survive replacement/reset.
 Both ordinary and standalone `initial_setup` call `reset_variance_tables`,
 which frees both shared FFTLog workspaces and their plans serially.
 
@@ -272,7 +264,7 @@ acceptance. The full NLA/TATT shared-variance Fisher checks remain separate.
 
 ### Supplied baseline state
 
-`physics_input_3pcf.baseline == NULL` selects the ordinary internal fit.
+`physics_input_3pcf.baseline == NULL` is an input error; there is no internal fit.
 An active baseline owns a positive absolute B table and requires the
 background `omega_m_z` array. Replacing the physical model replaces all
 these arrays; a prepared projection grid owns its projected values and
@@ -612,25 +604,19 @@ Gauss-Legendre nodes and weights before starting workers. Its independent
 NumPy quadrature test covers NLA and TATT at 8, 33 and 128 nodes. The private
 Legendre-root solver is not part of the physics module.
 
-Internal BiHalofit does not reconstruct a CPL background. It either copies
-`omega_m_z` or derives the pressureless fraction
-`Omega_m0*(1+z)^3 / E(z)^2` from `E=2997.92458*dz_dchi`, in h/Mpc units.
-The bridge's Jacobian comes from the same distance interpolation as core
-`hoverh0`. BiHalofit's d_n and the optional halo collapse correction share
-this owned fraction table. The pressureless rule is not an exact treatment
-of massive-neutrino energy density: production CAMB inputs supply its exact
-CDM+baryon+massive-neutrino fraction. Explicit fractions can also use an
-independent piecewise-uniform `omega_m_redshift` axis in direct internal-fit
-constructors; both arrays are copied and must span [0,zmax].
+The provider supplies the matter fraction with its B table. Pressureless
+matter permits Omega_m0*(1+z)^3/E(z)^2 from the provider H(z); massive
+neutrinos require their actual density evolution. CAMB preparation records
+CDM+baryon+massive-neutrino fractions. C copies them for halo covariance;
+it never reconstructs CPL or fits B. Direct constructors permit a separate
+piecewise-uniform `omega_m_redshift` axis spanning [0,zmax].
 
-`core.set_matter_fraction` sets an internal-fit override on the installed
-background z grid. Its bytes and cosmology installation key determine
-reuse; power/cosmology changes require resupply or clearing. Reset releases
-the override, while retained model owners remain valid. An internal bridge
-fit with Omega_nu>0 refuses the pressureless default. Supplied absolute-B
-models retain their separately supplied background fraction. The original
-CPL relation exists only in the project Python reference adapter for
-identified upstream comparisons and frozen legacy checks.
+The bridge stores B and Omega_m(z) together and stamps them with the
+installed cosmology key. A changed power/cosmology state requires resupply;
+a missing or stale B is refused before cached-model reuse. An exact resend
+at unchanged state reuses the model. Clearing B leaves the bridge incomplete,
+while previously returned model owners retain their copies. The standalone
+fraction/fit overrides were retired with the internal C matter fit.
 
 
 ## Source-comparison spline separation

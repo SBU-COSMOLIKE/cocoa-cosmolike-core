@@ -277,9 +277,6 @@ static struct {
   int nsource;        // supplied source nodes
   double* source_z;   // owned source redshifts [nsource]
   double* sources;    // owned densities [nbin*nsource], row-major
-  int nomega; // exact matter-fraction samples on the core background z
-  double* omega_m_z; // owned; NULL selects the pressureless H(z) relation
-  uint64_t omega_key; // cosmology state when the exact fraction was supplied
   int nwindow;        // pixel-window samples; zero = no window
   double* window;     // owned W(ell) samples [nwindow]
   struct {
@@ -298,16 +295,13 @@ static struct {
     double* log_bispectrum;
   } feedback;
   struct {
-    baseline_input_3pcf input; // owned arrays; nz=0 means internal fit
+    baseline_input_3pcf input; // required owned B; nz=0 means not installed
     int nz; // number of supplied background matter fractions
     double* omega_m_z; // matter fraction on the core background z
     double sigma8; // legacy scalar retained in the supplied-state key
+    uint64_t cosmology_key; // power/background state supplied with this B
+    int stale; // a changed legacy cosmological scalar requires resupply
   } baseline;
-  struct {
-    physics_variance_input_3pcf input; // owned fit arrays; nz=0 disables
-    uint64_t cosmology_key; // installed power and background state
-    uint64_t table_key; // shared variance accuracy settings
-  } variance;
   int power_mode;     // physics_ia_3pcf.power_mode
   int ct_mode;        // physics_ia_3pcf.ct_mode
   int suppress_only;  // physics_ia_3pcf.suppress_only
@@ -336,14 +330,6 @@ static void baseline_clear_bridge(void)
 
 // Fit snapshots are copied, so retained model owners never read this
 // mutable bridge storage after their constructor returns.
-static void variance_clear_bridge(void)
-{
-  free((void*)supplied.variance.input.z);
-  free((void*)supplied.variance.input.rnl);
-  free((void*)supplied.variance.input.neff);
-  free((void*)supplied.variance.input.sigma8);
-  memset(&supplied.variance, 0, sizeof(supplied.variance));
-}
 
 // Free every owned supplied-tier array and restore the defaults the
 // initializer above states. free(NULL) is a no-op, so a fresh bridge
@@ -351,8 +337,6 @@ static void variance_clear_bridge(void)
 static void supplied_clear(void)
 {
   baseline_clear_bridge();
-  variance_clear_bridge();
-  free(supplied.omega_m_z);
   free(supplied.los);
   free(supplied.source_z);
   free(supplied.sources);
@@ -368,9 +352,6 @@ static void supplied_clear(void)
   supplied.source_readers = 0;
   supplied.table_boost = 8;
   supplied.fit_nz = 33;
-  supplied.nomega = 0;
-  supplied.omega_m_z = NULL;
-  supplied.omega_key = 0;
   supplied.power_mode = 1;
   supplied.ct_mode = 0;
   supplied.suppress_only = 0;
@@ -409,6 +390,7 @@ void threepcf_bridge_set_scalars(
     supplied.w0 = w0;
     supplied.wa = wa;
     supplied.have_scalars = 1;
+    supplied.baseline.stale = 1;
     supplied.nonce = bridge_draw();
   }
 }
@@ -431,41 +413,6 @@ void threepcf_bridge_set_los(
     free(supplied.los);
     supplied.los = replacement;
     supplied.nlos = n;
-    supplied.nonce = bridge_draw();
-  }
-}
-
-// An exact provider fraction is independent of the bispectrum choice.
-// Copy before releasing old storage: a native caller may supply an owned view.
-void threepcf_bridge_set_matter_fraction(
-  const double* values, // Omega_m(z) on the installed background nodes
-  const int count // zero and NULL clear the exact provider override
-)
-{
-  if (NULL == values && 0 == count) {
-    if (NULL != supplied.omega_m_z) {
-      free(supplied.omega_m_z);
-      supplied.omega_m_z = NULL;
-      supplied.nomega = 0;
-      supplied.omega_key = 0;
-      supplied.nonce = bridge_draw();
-    }
-    return;
-  }
-  if (NULL == values || 4 > count) { log_fatal(
-    "threepcf bridge: matter fraction needs at least four values"); exit(1); }
-  for (int node=0; node<count; node++) {
-    if (!isfinite(values[node]) || 0.0 >= values[node]) { log_fatal(
-      "threepcf bridge: Omega_m(z) must be finite and positive"); exit(1); }
-  }
-  if (count != supplied.nomega
-      || supplied.omega_key != cosmology.random
-      || memcmp(values, supplied.omega_m_z, (size_t)count*sizeof(double))) {
-    double* copy = bridge_copy(values, count);
-    free(supplied.omega_m_z);
-    supplied.omega_m_z = copy;
-    supplied.nomega = count;
-    supplied.omega_key = cosmology.random;
     supplied.nonce = bridge_draw();
   }
 }
@@ -692,66 +639,6 @@ void threepcf_bridge_set_feedback(
 // Install a snapshot belonging to the current global power state. Repeating
 // values in a new state renews validity but never changes an existing owner.
 // Copy all four arrays before releasing old storage; the input may alias it.
-void threepcf_bridge_set_variance(
-  const physics_variance_input_3pcf* input // copied anchors; NULL clears
-)
-{
-  if (omp_in_parallel()) {
-    log_fatal("threepcf bridge: variance installation must be serial");
-    exit(1);
-  }
-  if (NULL == input) {
-    if (0 != supplied.variance.input.nz) {
-      variance_clear_bridge();
-      supplied.nonce = bridge_draw();
-    }
-    return;
-  }
-  if (4 > input->nz
-      || NULL == input->z
-      || NULL == input->rnl
-      || NULL == input->neff
-      || NULL == input->sigma8) {
-    log_fatal("threepcf bridge: variance needs four arrays and at least "
-      "four anchors");
-    exit(1);
-  }
-  for (int i=0; input->nz > i; i++) {
-    if (!isfinite(input->z[i])
-        || !isfinite(input->rnl[i])
-        || !isfinite(input->neff[i])
-        || !isfinite(input->sigma8[i])
-        || 0.0 > input->z[i]
-        || 0.0 >= input->rnl[i]
-        || 0.0 >= input->sigma8[i]) {
-      log_fatal("threepcf bridge: invalid variance anchor at %d", i);
-      exit(1);
-    }
-    if (0 < i
-        && input->z[i-1] >= input->z[i]) {
-      log_fatal("threepcf bridge: variance redshifts must increase");
-      exit(1);
-    }
-  }
-  const physics_variance_input_3pcf* old = &supplied.variance.input;
-  if (old->nz != input->nz
-      || bridge_differs(old->z, input->z, input->nz)
-      || bridge_differs(old->rnl, input->rnl, input->nz)
-      || bridge_differs(old->neff, input->neff, input->nz)
-      || bridge_differs(old->sigma8, input->sigma8, input->nz)) {
-    physics_variance_input_3pcf replacement = *input;
-    replacement.z = bridge_copy(input->z, input->nz);
-    replacement.rnl = bridge_copy(input->rnl, input->nz);
-    replacement.neff = bridge_copy(input->neff, input->nz);
-    replacement.sigma8 = bridge_copy(input->sigma8, input->nz);
-    variance_clear_bridge();
-    supplied.variance.input = replacement;
-    supplied.nonce = bridge_draw();
-  }
-  supplied.variance.cosmology_key = cosmology.random;
-  supplied.variance.table_key = Ntable.random;
-}
-
 // Install immutable B input without deriving a cosmological background.
 // Validation precedes replacement; every scalar, size and array participates
 // in the exact-change test, so resending identical tables preserves reuse.
@@ -822,6 +709,8 @@ void threepcf_bridge_set_baseline_bispectrum(
     supplied.baseline.sigma8 = sigma8;
     supplied.nonce = bridge_draw();
   }
+  supplied.baseline.cosmology_key = cosmology.random;
+  supplied.baseline.stale = 0;
 }
 
 void threepcf_bridge_set_prescriptions(
@@ -978,11 +867,6 @@ static struct {
   double* dzdchi;   // dz/dchi [nz], h/Mpc
   double* growth;   // growth factor D [nz], D(0) = 1
   double* sources;  // struct-read source repack [nbin*nz], or NULL
-  double* fit_z; // uniform smoothing redshifts [fit.nz]
-  double* fit_rnl; // shared nonlinear radii [fit.nz], Mpc/h
-  double* fit_neff; // shared effective indices [fit.nz]
-  double* fit_sigma8; // shared rms amplitudes [fit.nz]
-  physics_variance_input_3pcf fit; // copied shared quantities
   physics_input_3pcf input;     // the assembled model input
   feedback_input_3pcf feedback; // pointed to by input.feedback
 } scratch;
@@ -997,10 +881,6 @@ static void scratch_clear(void)
   free(scratch.dzdchi);
   free(scratch.growth);
   free(scratch.sources);
-  free(scratch.fit_z);
-  free(scratch.fit_rnl);
-  free(scratch.fit_neff);
-  free(scratch.fit_sigma8);
   memset(&scratch, 0, sizeof(scratch));
 }
 
@@ -1048,7 +928,7 @@ static void guard_current(
   counts[22] = supplied.baseline.input.nu;
   counts[23] = supplied.baseline.input.nv;
   counts[24] = supplied.baseline.nz;
-  counts[25] = supplied.variance.input.nz;
+  counts[25] = 0; // reserved former fit-input allocation slot
   keys[0] = cosmology.random;
   keys[1] = redshift.random_shear;
   keys[2] = nuisance.random_photoz_shear;
@@ -1095,24 +975,17 @@ uint64_t threepcf_bridge_generation(void)
 
 const physics_input_3pcf* threepcf_bridge_refresh(void)
 {
-  // A changed spectrum or accuracy invalidates copied fit quantities even
-  // when their dimensions match. Callers must resupply or clear them.
-  if (0 < supplied.variance.input.nz) {
-    if (supplied.variance.cosmology_key != cosmology.random
-        || supplied.variance.table_key != Ntable.random) {
-      log_fatal("threepcf bridge: supplied variance is stale; resupply "
-        "or clear it after power, cosmology or accuracy changes");
-      exit(1);
-    }
-  }
-  if (0 == supplied.baseline.input.nz && 0 < supplied.nomega
-      && supplied.omega_key != cosmology.random) { log_fatal(
-    "threepcf bridge: supplied Omega_m(z) is stale; resupply or clear "
-    "it after changing cosmology or power"); exit(1); }
-  if (0 == supplied.baseline.input.nz && 0 == supplied.nomega
-      && 0.0 < cosmology.Omega_nu) { log_fatal(
-    "threepcf bridge: massive neutrinos require provider Omega_m(z); "
-    "call set_matter_fraction after installing the cosmology"); exit(1); }
+  // A new power/background state needs a matching theory B. Shape or
+  // source changes can reuse it; a cosmology update cannot silently retain
+  // the old matter prescription. Resending an identical table certifies it
+  // against the new state without forcing an unnecessary table allocation.
+  if (0 == supplied.baseline.input.nz) { log_fatal(
+    "threepcf bridge: install a theory-supplied matter bispectrum before "
+    "building the model"); exit(1); }
+  if (supplied.baseline.stale
+      || supplied.baseline.cosmology_key != cosmology.random) { log_fatal(
+    "threepcf bridge: supplied matter bispectrum is stale; resupply it "
+    "after changing power or cosmology"); exit(1); }
   int counts[BRIDGE_NCOUNT];
   uint64_t keys[BRIDGE_NKEY];
   guard_current(counts, keys);
@@ -1150,11 +1023,6 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   if (!(cosmology.Omega_m > 0.0)) {
     log_fatal("threepcf bridge: cosmology.Omega_m = %e; install the "
               "cosmological parameters first", cosmology.Omega_m);
-    exit(1);
-  }
-  if (!supplied.have_scalars && 0 == supplied.baseline.input.nz) {
-    log_fatal("threepcf bridge: set the supplied scalars (ns, sigma8, "
-              "w0, wa) before building the three-point model");
     exit(1);
   }
   if (0 == supplied.nlos) {
@@ -1378,55 +1246,13 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   scratch.input.source_readers = supplied.source_readers;
   scratch.input.table_boost = supplied.table_boost;
   scratch.input.fit_nz = supplied.fit_nz;
-  if (0 < supplied.variance.input.nz) {
-    scratch.input.variance = &supplied.variance.input;
-  } else if (0 == supplied.baseline.input.nz) {
-    // The bridge already owns a complete core power state. Copy its shared
-    // smoothing results before constructing the immutable model. The usual
-    // cosmology/Ntable guard above invalidates this assembly; these buffers
-    // survive until the next assembly or reset. No local integral runs here.
-    const int count = 0 < supplied.fit_nz ? supplied.fit_nz : 33;
-    scratch.fit_z = calloc1d(count);
-    scratch.fit_rnl = calloc1d(count);
-    scratch.fit_neff = calloc1d(count);
-    scratch.fit_sigma8 = calloc1d(count);
-    for (int index=0; index<count; index++) {
-      scratch.fit_z[index] = scratch.z[nz - 1]*index/(count - 1);
-    }
-    threepcf_core_variance_snapshot(count, scratch.fit_z, 0, NULL,
-      0.0, 1, scratch.fit_rnl, scratch.fit_neff, scratch.fit_sigma8,
-      NULL, NULL);
-    scratch.fit.nz = count;
-    scratch.fit.z = scratch.fit_z;
-    scratch.fit.rnl = scratch.fit_rnl;
-    scratch.fit.neff = scratch.fit_neff;
-    scratch.fit.sigma8 = scratch.fit_sigma8;
-    scratch.input.variance = &scratch.fit;
-  }
-
   scratch.input.omega_m = cosmology.Omega_m;
-  if (0 < supplied.nomega && 0 == supplied.baseline.input.nz) {
-    if (nz != supplied.nomega) { log_fatal(
-      "threepcf bridge: Omega_m(z) count differs from background z");
-      exit(1); }
-    scratch.input.omega_m_z = supplied.omega_m_z;
-  }
-  if (0 < supplied.baseline.input.nz) {
-    if (!(nz == supplied.baseline.nz)) { log_fatal(
-      "threepcf bridge: Omega_m(z) count differs from the core "
-      "background"); exit(1); }
-    scratch.input.baseline = &supplied.baseline.input;
-    scratch.input.omega_m_z = supplied.baseline.omega_m_z;
-    scratch.input.sigma8 = supplied.baseline.sigma8;
-  } else {
-    // the core keeps flat background models (set_cosmological_parameters
-    // writes Omega_v = 1 - Omega_m), and the model checks flatness
-    scratch.input.omega_de = 1.0 - cosmology.Omega_m;
-    scratch.input.w0 = supplied.w0;
-    scratch.input.wa = supplied.wa;
-    scratch.input.ns = supplied.ns;
-    scratch.input.sigma8 = supplied.sigma8;
-  }
+  if (nz != supplied.baseline.nz) { log_fatal(
+    "threepcf bridge: Omega_m(z) count differs from the core "
+    "background"); exit(1); }
+  scratch.input.baseline = &supplied.baseline.input;
+  scratch.input.omega_m_z = supplied.baseline.omega_m_z;
+  scratch.input.sigma8 = supplied.baseline.sigma8;
 
   if (supplied.nwindow > 0) {
     scratch.input.nwindow = supplied.nwindow;

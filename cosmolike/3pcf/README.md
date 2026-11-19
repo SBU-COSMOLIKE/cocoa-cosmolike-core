@@ -56,7 +56,7 @@ physical quantities before introducing their storage and interfaces.
 
 | Implemented calculation | Input | Result |
 |---|---|---|
-| BiHalofit and intrinsic-shape bispectra | Physical tables, triangle sides and IA coefficients | Matter fit and 19 active TATT/velocity-shear components |
+| Supplied matter and intrinsic-shape bispectra | Theory B, physical tables, triangle sides and IA coefficients | Matter-table reads and 19 active TATT/velocity-shear components |
 | Radial projection and angular multipoles | Physical model and an ordered source-bin triplet | Projected E bispectrum and its Legendre coefficients |
 | Natural-component transform | Legendre coefficients and fixed geometry | Four complex shear correlations, using two-dimensional FFTLog |
 | Full-filter aperture mean | Projected bispectrum, three filters and fixed Fourier quadrature | Third moment for the unrestricted circular-filter estimator |
@@ -111,9 +111,9 @@ B_m(k_1,k_2,k_3;z).
 The Dirac delta enforces translation invariance: the three wavevectors
 must close into a triangle. Their lengths $`k_1,k_2,k_3`$ therefore obey
 the triangle inequalities. A larger $`k`$ means a smaller spatial scale.
-By default, BiHalofit supplies a calibrated nonlinear fit to this
-bispectrum. A theory provider can instead pass the full matter bispectrum
-directly, through an [optional supplied table](#supplied-bispectrum). A
+The theory provider always supplies the full matter bispectrum through
+a [required table](#supplied-bispectrum). The project theory block implements
+BiHalofit; the C projection library does not contain a second matter fit. A
 separate tree-level result supplies the lowest-order gravitational
 perturbation-theory reference. Both the fit and the tree-level result are
 physical approximations, and increasing a numerical resolution does not
@@ -136,19 +136,12 @@ number density needed for shape noise is a separate survey input.
 
 ### Projecting along the line of sight
 
-The model uses spatially flat lensing geometry. The internal-fit route
-checks this by requiring $`|\Omega_m+\Omega_{\rm de}-1|\leq10^{-8}`$,
-where $`\Omega_m`$ and $`\Omega_{\rm de}`$ are the present matter and
-dark-energy density fractions. The bound only absorbs scalar rounding,
-and the code never changes either value. Passing a distance table from a
-curved cosmology would not restore consistency, because the lensing
-kernel still forms its distance ratios with the flat-geometry rule. The
-project CAMB producer explicitly requests flat geometry. The
-supplied-bispectrum route reads its background from the caller's arrays
-and does not reconstruct scalars such as $`\Omega_{\rm de}`$ from them,
-so it cannot check that the density fractions sum to one. The caller
-must therefore establish the same flat geometry before building those
-arrays.
+The model uses spatially flat lensing geometry. The provider must establish
+flat geometry before supplying distances, power and bispectra. The project
+CAMB producer explicitly requests it. A curved-cosmology distance table
+cannot make this projector consistent with curvature: the lensing kernel
+still uses the flat-space distance ratio. C reads the supplied background
+arrays and does not infer density fractions or curvature from them.
 
 Convergence $`\kappa`$ is the scalar lensing field obtained by weighting
 matter fluctuations along the line of sight. Its angular variations also
@@ -839,7 +832,7 @@ finite-sample tests are separate from the C covariance integral.
 
 | File | Responsibility |
 |---|---|
-| [physics_3pcf.c](physics_3pcf.c), [header](physics_3pcf.h) | Owned physical tables, the matter bispectrum (internal fit or supplied table), TATT/velocity shear, projection and full-filter aperture mean |
+| [physics_3pcf.c](physics_3pcf.c), [header](physics_3pcf.h) | Owned physical tables, the required supplied matter bispectrum, TATT/velocity shear, projection and full-filter aperture mean |
 | [physics_reference_3pcf.c](physics_reference_3pcf.c), [header](physics_reference_3pcf.h) | Not-a-knot coefficients and interval search for explicit upstream comparisons; production uses the shared uniform-grid solver |
 | [physics_grid_3pcf.c](physics_grid_3pcf.c), [header](physics_grid_3pcf.h) | Shared source-triplet preparation, uniform triangle/multipole tables and SIMD linear reads |
 | [feedback_3pcf.c](feedback_3pcf.c), [response header](feedback_3pcf.h), [baseline header](baseline_3pcf.h) | Baryonic response ratios (Section 12) and the supplied absolute bispectrum (Section 13); each table keeps its own owner, and both reuse the same uniform preparation and reads |
@@ -1228,25 +1221,19 @@ table. `omega_m` keeps its usual role of setting the lensing and
 intrinsic-alignment amplitudes. The legacy scalar `sigma8` argument remains
 accepted but does not normalize the supplied power.
 
-The ordinary `PhysicsModel` constructors require an explicit `variance`
-dictionary containing `z`, `rnl`, `neff`, and `sigma8`. Here `sigma8` is an
-array of rms amplitudes at the anchor redshifts, distinct from the legacy
-scalar argument. The nonlinear radius `rnl` satisfies Gaussian variance
-equal to one; `neff` is the corresponding effective spectral index. All
-three arrays must describe the supplied linear spectrum. C copies them
-and interpolates them; it neither repeats the smoothing integral nor
-changes the power amplitude. An absolute supplied B table needs no fit
-arrays because it bypasses BiHalofit.
+Every constructor now requires a supplied `baseline` and `omega_m_z`.
+The ordinary `PhysicsModel` spelling retains legacy scalar and variance
+keywords for migration, but those fields cannot activate a local fit or
+renormalize power. Prefer `PhysicsModelWithBispectrum`, which makes the
+required physical inputs explicit. Missing B raises an error.
 
-The core-struct bridge prepares these arrays with the shared variance
-engine when no explicit fit has been installed. It smooths the installed
-full linear P(k,z), without rescaling it to a scalar sigma8. This does not
-replace the factorized growth approximation used by perturbative IA.
-Callers requiring the factorized fit convention must explicitly supply
-fit arrays prepared from P(k,0)D(z)^2. The project provider does this for
-its `factorized` setting. Original-library comparisons retain their finite
-quadrature and normalization in the independent Python reference, and
-pass its prepared arrays and normalized spectrum to the same C constructor.
+The shared core still provides smoothing snapshots for the theory block
+and halo covariance. Nonlinear radius, effective slope and rms amplitude
+belong to that theory preparation. The Python BiHalofit producer consumes
+them, evaluates the fit and sends the complete B table to C. This keeps
+one owner for the matter prescription while retaining the shared variance
+engine. Perturbative TATT still needs linear/nonlinear power and its F2
+vertices; those calculations remain in C.
 
 The `baseline` dictionary contains `z`, `logk`, `logu`, `v`,
 `log_bispectrum`, `boost`, and `clamp`. The coordinates follow the
@@ -1392,38 +1379,26 @@ choice from precision-matrix expansion.
 
 ## Matter fraction and expansion history
 
-BiHalofit uses the redshift-dependent matter fraction in its coefficient
-`d_n`; the halo covariance can use it in the collapse-threshold correction.
-These are separate from the present-day `omega_m` prefactors in lensing and
-intrinsic alignment. Both consumers read the same immutable fraction table.
+The theory block uses the redshift-dependent matter fraction in BiHalofit's
+coefficient `d_n`. C uses the supplied fraction for the halo covariance's
+collapse-threshold correction. These are separate from `omega_m` today,
+which sets lensing and intrinsic-alignment prefactors.
 
 For pressureless matter, mass conservation gives
 `Omega_m(z) = Omega_m0 * (1+z)^3 / E(z)^2`, where `E = H(z)/H0`.
-The direct constructor obtains `E` from the supplied `dz_dchi`, multiplying
-by `2997.92458 Mpc/h`. The core bridge supplies the Jacobian of the installed
-distance table, the same expansion history used by `hoverh0`. No separate
-CPL expansion model is evaluated inside the three-point fit. Errors in the
-expansion rate enter this fraction twice at first order, with the opposite
-sign, so distance/Jacobian sampling remains an accuracy control.
+A provider can reconstruct this from its own H(z) table; in the h units
+used here, `E = 2997.92458 * dz_dchi`. Massive neutrinos require their
+actual density evolution. CAMB supplies the sum of its baryon, CDM and
+massive-neutrino fractions. C copies this table without reconstructing a
+second background model.
 
-The optional `omega_m_z` input overrides that pressureless relation. It is
-required for the exact total fraction when massive neutrinos do not scale
-as pressureless matter. CAMB preparation records the sum of its CDM, baryon
-and massive-neutrino fractions. By default these samples live on the
-background `z` grid. Direct internal-fit constructors also accept
-`omega_m_redshift`, a separate piecewise-uniform axis covering the entire
-background interval. This permits an upstream comparison to retain its
-original coefficient anchors without changing the power or distance grids.
-All samples and coordinates are copied; later input mutation cannot alter
-an existing model.
-
-For the core bridge, `core.set_matter_fraction(omega_m_z=values)` copies an
-exact table on the installed background nodes. Resupply it after cosmology
-or power changes; a stale table is refused. Identical resends reuse the
-model. Passing `None` clears the override, and reset releases its storage.
-An internal bridge fit with nonzero massive-neutrino density requires this
-override. A supplied absolute bispectrum continues to receive its fraction
-through `set_baseline_bispectrum`.
+Install B and its background together with
+`core.set_baseline_bispectrum(baseline, omega_m_z, sigma8)`. Resupply after
+changing cosmology or power. The bridge refuses a missing or stale B;
+clearing it never selects a fallback fit. Identical resends at unchanged
+state reuse the model. Older model owners retain their copied arrays.
+Direct constructors can use `omega_m_redshift` for an independent fraction
+axis; the bridge uses the installed background z grid.
 
 
 ## Upstream interpolation comparisons

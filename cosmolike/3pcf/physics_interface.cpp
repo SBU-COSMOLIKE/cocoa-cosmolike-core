@@ -513,6 +513,9 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   const py::object& omega_m_redshift = py::none() // optional fraction axis
 )
 {
+  if (baseline.empty()) { throw py::value_error(
+    "A theory-supplied matter bispectrum is required; internal C "
+    "BiHalofit has been removed. Supply baseline and omega_m_z."); }
   shape_physics(k, 1);
   shape_physics(p_linear0, 1);
   shape_physics(z, 1);
@@ -820,7 +823,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const py::object& pixel_window, // optional integer-ell window
   const py::dict& variance, // optional shared fit quantities
   const py::object& omega_m_z, // optional exact matter fraction
-  const py::object& omega_m_redshift // optional fraction axis
+  const py::object& omega_m_redshift, // optional fraction axis
+  const py::dict& baseline // required theory-supplied matter bispectrum
 )
 {
   return model_physics_common(k, p_linear0, z, p_nonlinear, chi, dz_dchi,
@@ -828,7 +832,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
     sources, omega_m, omega_de, w0, wa, ns, sigma8, los_z, kernel_nz,
     source_readers,
     table_boost, fit_nz, source_z, feedback, pixel_window,
-    py::dict(), omega_m_z, variance, omega_m_redshift);
+    baseline, omega_m_z, variance, omega_m_redshift);
 }
 
 
@@ -916,6 +920,9 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
   const py::object& omega_m_redshift = py::none() // optional fraction axis
 )
 {
+  if (baseline.empty()) { throw py::value_error(
+    "A theory-supplied matter bispectrum is required; internal C "
+    "BiHalofit has been removed. Supply baseline and omega_m_z."); }
   const arma::Col<double> wave = copy_column_physics(k);
   const arma::Col<double> linear = copy_column_physics(p_linear0);
   const arma::Col<double> redshift = copy_column_physics(z);
@@ -1066,14 +1073,15 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const py::object& pixel_window, // optional integer-ell window
   const py::dict& variance, // optional shared fit quantities
   const py::object& omega_m_z, // optional exact matter fraction
-  const py::object& omega_m_redshift // optional fraction axis
+  const py::object& omega_m_redshift, // optional fraction axis
+  const py::dict& baseline // required theory-supplied matter bispectrum
 )
 {
   return model_notebook_physics_common(k, p_linear0, z, p_nonlinear, chi,
     dz_dchi,
     growth, sources, omega_m, omega_de, w0, wa, ns, sigma8, los_z, kernel_nz,
     source_readers, table_boost, fit_nz, source_z, feedback, pixel_window,
-    py::dict(), omega_m_z, variance, omega_m_redshift);
+    baseline, omega_m_z, variance, omega_m_redshift);
 }
 
 
@@ -1927,7 +1935,8 @@ void bind_threepcf_physics(
     py::arg("pixel_window") = py::none(),
     py::arg("variance") = py::dict(),
     py::arg("omega_m_z") = py::none(),
-    py::arg("omega_m_redshift") = py::none());
+    py::arg("omega_m_redshift") = py::none(),
+    py::arg("baseline") = py::dict());
 
   module.def("physics_model_notebook", &model_notebook_physics,
     py::arg("k"),
@@ -1954,6 +1963,7 @@ void bind_threepcf_physics(
     py::arg("variance") = py::dict(),
     py::arg("omega_m_z") = py::none(),
     py::arg("omega_m_redshift") = py::none(),
+    py::arg("baseline") = py::dict(),
     "Copy sliced or Fortran-order arrays through the Armadillo adapter.");
 
   module.def("physics_model_production_with_bispectrum",

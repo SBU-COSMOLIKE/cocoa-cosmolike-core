@@ -33,9 +33,9 @@ static int omp_get_thread_num(void) { return 0; }
 //
 // The file works in three stages. The first stage copies the physical
 // input tables and prepares fast interpolation readers. The second
-// stage evaluates two fitted three-dimensional quantities: the
-// BiHalofit matter bispectrum and the TATT (tidal alignment and tidal
-// torquing) alignment bispectra, in fastnc's tensor formulation. The
+// stage reads the theory-supplied matter bispectrum and evaluates the
+// TATT (tidal alignment and tidal torquing) alignment bispectra in
+// fastnc's tensor formulation. The
 // third stage integrates them along the line of sight (LOS): in the
 // flat-sky Limber approximation, the angular bispectrum at multipoles
 // (ell1, ell2, ell3) is a single integral over the comoving distance
@@ -46,8 +46,8 @@ static int omp_get_thread_num(void) { return 0; }
 // Sugiyama's MIT-licensed fastnc package, tatt commit
 // 7b2336ce37a909bed51f07f32a2a4f096e71b6ce (halofit.py,
 // ia_bispectra.py and bispectrum.py); Rafael Gomes wrote parts of the
-// IA code. The matter fit is BiHalofit (Takahashi et al.,
-// arXiv:1911.07886). The TATT and velocity-shear equations follow
+// IA code. The external matter provider may use BiHalofit (Takahashi
+// et al., arXiv:1911.07886). The TATT and velocity-shear equations follow
 // Gomes et al. (arXiv:2601.09133). This port evaluates fastnc's
 // active tensor equations only. The package also ships direct-equation
 // IA helpers that it never calls; their amplitude normalization
@@ -76,9 +76,9 @@ static int omp_get_thread_num(void) { return 0; }
 //
 // The source efficiency is the flat-space ratio (chi_s - chi)/chi_s,
 // with chi_s the comoving distance to the source. The public model
-// therefore requires spatial flatness, |Omega_m + Omega_de - 1| <=
-// 1e-8. That tolerance absorbs floating-point rounding and nothing
-// more: lensing with curved-space distances is not implemented.
+// therefore requires a flat background from its provider. The C reader
+// cannot infer curvature from the arrays; curved-space lensing is not
+// implemented.
 
 
 
@@ -129,37 +129,6 @@ typedef struct {
   double growth;               // growth factor D(z), applied as D^2
 } physics_power_row;
 
-// The redshift-dependent coefficients of the BiHalofit matter fit
-// (Takahashi et al., arXiv:1911.07886). The names follow the paper's
-// subscript-n symbols. With q = k*radius on each triangle leg, the
-// one-halo term multiplies 1/[(a q^alpha + b q^beta)(1 + 1/(c q))]
-// per leg; the three-halo term builds an enhanced power spectrum from
-// f, g, h (its low-k factor) and m, n, mu, nu, p (its high-k
-// addition), adds the d*q cross terms and damps each leg by
-// 1/(1 + e q). The side ratios r1 = k_min/k_max and
-// r2 = (k_mid + k_min - k_max)/k_max describe the triangle shape;
-// matter_prepared applies the shape corrections that need them.
-typedef struct {
-  double radius;      // nonlinear radius 1/k_NL where sigma_G = 1, Mpc/h
-  double loga;        // log10 a_n, one-halo amplitude before shape terms
-  double b;           // b_n, one-halo coefficient of q^beta_n
-  double c;           // c_n, one-halo low-k cutoff coefficient
-  double logalpha;    // log10 alpha_n before its shape term and cap
-  double alpha_shape; // coefficient of the r2^2 shape term in log alpha
-  double logbeta;     // log10 beta_n before its 0.007 r2 shape term
-  double gamma;       // gamma_n, exponent of the r1 term in log a_n
-  double f;           // f_n, numerator of the low-k enhanced-power factor
-  double g;           // g_n, linear-q denominator term of that factor
-  double h;           // h_n, quadratic-q denominator term of that factor
-  double m;           // m_n, first high-k addition coefficient
-  double n;           // n_n, second high-k addition coefficient
-  double mu;          // mu_n, exponent of the m_n q term
-  double nu;          // nu_n, exponent of the n_n q term
-  double p;           // p_n, low-k cutoff of the high-k addition
-  double e;           // e_n, per-leg damping of the three-halo term
-  double d;           // d_n, amplitude of the q3 cross terms
-} physics_bh_coefficients;
-
 // Dimensionless factors of one triangle shape. Rescaling all three
 // sides by a common factor changes the physical k values but none of
 // these numbers, so a projection prepares them once per angular
@@ -183,8 +152,6 @@ typedef struct {
   double ia_quadratic_shape[3];    // tidal-torque vertex shape factor
   double ia_density_zero_shape[3]; // density-weighting shape, helicity 0
   double ia_density_two_shape[3];  // density-weighting shape, helicity 2
-  double minimum_ratio;   // r1 = k_min/k_max, BiHalofit shape ratio
-  double flattened_ratio; // r2 = (k_mid + k_min - k_max)/k_max
 } physics_triangle_geometry;
 
 // The TATT vertex weights at one redshift, already combined into the
@@ -205,7 +172,7 @@ typedef struct {
 // per unit comoving distance. A model without paired feedback tables
 // is dark-matter-only (DMO).
 struct physics_model_3pcf {
-  baseline_3pcf* baseline; // supplied absolute B; NULL uses internal fit
+  baseline_3pcf* baseline; // required supplied absolute matter B
   feedback_3pcf* feedback; // immutable paired matter response, NULL for DMO
   int nwindow;        // integer-ell pixel-window samples; zero disables
   double* window;     // owned integer-ell samples; NULL disables smoothing
@@ -216,7 +183,6 @@ struct physics_model_3pcf {
   int kernel_nz;      // nodes of the uniform lensing-kernel grid
   int source_readers; // 1 keeps cubic reads of the original tables
   int table_boost;    // dense-grid refinement factor of uniform readers
-  int fit_nz;         // BiHalofit coefficient anchors in production
   int npower_z;       // stored nonlinear P(k) rows (grows with the boost)
   int nsource;        // source-distribution redshift nodes
   double zmax;        // largest tabulated redshift
@@ -224,15 +190,11 @@ struct physics_model_3pcf {
   physics_axis power_axis; // direct indexing of the redshift rows
   physics_axis source_axis; // direct indexing of source redshifts
   double omega_m;     // matter density fraction today
-  double ns;          // primordial spectral index
   physics_spline linear;     // log P_linear(z=0) against log k
   physics_spline* nonlinear; // log P_nonlinear against log k [npower_z]
   physics_spline distance;   // comoving distance chi(z), Mpc/h
   physics_spline growth;     // linear growth D(z), D(0) = 1
   physics_spline dz_dchi;    // Jacobian dz/dchi (z), h/Mpc
-  physics_spline radius;     // BiHalofit nonlinear radius 1/k_NL (z)
-  physics_spline neff;       // effective spectral slope n_eff(z)
-  physics_spline sigma8z;    // amplitude sigma8(z)
   physics_spline omega_m_z;  // matter fraction Omega_m(z)
   double* sources;         // source densities per unit z [nbin,nsource]
   double* source_z;        // source-grid redshifts [nsource]
@@ -248,7 +210,6 @@ struct physics_model_3pcf {
   double* los_dchi;     // trapezoid integration weights [nlos]
   double* los_lens;     // W_kappa resampled on LOS nodes [nbin,nlos]
   double* los_shape;    // NLA kernel resampled on LOS nodes [nbin,nlos]
-  physics_bh_coefficients* los_bh; // BiHalofit fit per LOS node [nlos]
   physics_power_row* los_power; // [mode,nlos], fixed redshift brackets
 };
 
@@ -594,7 +555,7 @@ static void uniformize_spline(
 
 // ---------------------------------------------------------------------------
 // prepare_uniform_readers: convert every production table to the
-// dense uniform representation. The background and BiHalofit splines
+// dense uniform representation. The background and power splines
 // refine in place. The nonlinear power needs more care: production
 // interpolates between redshift rows, so this routine also builds a
 // denser uniform redshift axis and fills each new row by splining
@@ -610,11 +571,6 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
   const int boost = model->table_boost;
   uniformize_spline(&model->linear, boost);
   uniformize_spline(&model->growth, boost);
-  if (NULL == model->baseline) {
-    uniformize_spline(&model->radius, boost);
-    uniformize_spline(&model->neff, boost);
-    uniformize_spline(&model->sigma8z, boost);
-  }
   uniformize_spline(&model->omega_m_z, boost);
   for (int redshift=0; redshift<model->npower_z; redshift++) {
     uniformize_spline(model->nonlinear + redshift, boost);
@@ -726,87 +682,6 @@ static double trapezoid(
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// bh_coefficients: the redshift-dependent BiHalofit fit coefficients
-// of Takahashi et al. (arXiv:1911.07886). The paper expresses each
-// coefficient as ten to a polynomial in the effective spectral slope
-// n_eff(z) and in log10 sigma8(z), with one Omega_m(z) term in the
-// cross-term amplitude d_n; this function copies those polynomials
-// digit for digit. The triangle-shape corrections to the one-halo
-// coefficients need the side ratios, so matter_prepared applies them
-// later; loga, logalpha and logbeta therefore stay in log10 form
-// here.
-static physics_bh_coefficients bh_coefficients(
-  const physics_model_3pcf* model,
-  const double z
-)
-{
-  physics_bh_coefficients coefficients;
-  const double spectral = read_spline(&model->neff, z, 0);
-  const double spectral2 = spectral*spectral;
-  const double spectral3 = spectral2*spectral;
-  const double amplitude = log10(read_spline(&model->sigma8z, z, 0));
-  const double amplitude2 = amplitude*amplitude;
-  const double amplitude3 = amplitude2*amplitude;
-  const double matter = read_spline(&model->omega_m_z, z, 0);
-  coefficients.radius = read_spline(&model->radius, z, 0);
-
-  coefficients.loga = -2.167 - 2.944*amplitude - 1.106*amplitude2
-    - 2.865*amplitude3;
-  coefficients.b = pow(10.0, -3.428 - 2.681*amplitude
-    + 1.624*amplitude2 - 0.095*amplitude3);
-  coefficients.c = pow(10.0, 0.159 - 1.107*spectral);
-  coefficients.logalpha = -4.348 - 3.006*spectral - 0.5745*spectral2;
-  coefficients.alpha_shape = pow(10.0, -0.9 + 0.2*spectral);
-  coefficients.logbeta = -1.731 - 2.845*spectral - 1.4995*spectral2
-    - 0.2811*spectral3;
-  coefficients.gamma = pow(10.0, 0.182 + 0.57*spectral);
-  coefficients.f = pow(10.0, -10.533 - 16.838*spectral
-    - 9.3048*spectral2 - 1.8263*spectral3);
-  coefficients.g = pow(10.0, 2.787 + 2.405*spectral + 0.4577*spectral2);
-  coefficients.h = pow(10.0, -1.118 - 0.394*spectral);
-  coefficients.m = pow(10.0, -2.605 - 2.434*amplitude + 5.71*amplitude2);
-  coefficients.n = pow(10.0, -4.468 - 3.08*amplitude + 1.035*amplitude2);
-  coefficients.mu = pow(10.0, 15.312 + 22.977*spectral
-    + 10.9579*spectral2 + 1.6586*spectral3);
-  coefficients.nu = pow(10.0, 1.347 + 1.246*spectral + 0.4525*spectral2);
-  coefficients.p = pow(10.0, 0.071 - 0.433*spectral);
-  coefficients.e = pow(10.0, -0.632 + 0.646*spectral);
-  coefficients.d = pow(10.0, -0.483 + 0.892*amplitude - 0.086*matter);
-
-  return coefficients;
-}
-
-
-// ---------------------------------------------------------------------------
-// prepare_bihalofit: copy the supplied smoothing quantities and prepare
-// their interpolation. The provider owns the nonlinear-radius solve and
-// variance integrals. Anchors cover the full background redshift interval;
-// production uses natural-cubic preparation and uniform dense linear reads.
-// The source-comparison mode retains the supplied cubic anchor convention.
-static void prepare_bihalofit(
-  physics_model_3pcf* model, // model owning the fit tables
-  const physics_variance_input_3pcf* supplied // copied core fit quantities
-)
-{
-  // These copies belong to this model. No later cosmology update can
-  // change them, and no Gaussian variance integral runs in this route.
-  // Production uses the house natural spline. The explicit upstream
-  // comparison retains its not-a-knot convention whether the fit values
-  // were prepared locally or supplied by the independent Python reference.
-  model->radius = model->source_readers
-    ? make_reference_spline(supplied->z, supplied->rnl, supplied->nz)
-    : make_natural_spline(supplied->z, supplied->rnl, supplied->nz);
-  model->neff = model->source_readers
-    ? make_reference_spline(supplied->z, supplied->neff, supplied->nz)
-    : make_natural_spline(supplied->z, supplied->neff, supplied->nz);
-  model->sigma8z = model->source_readers
-    ? make_reference_spline(supplied->z, supplied->sigma8, supplied->nz)
-    : make_natural_spline(supplied->z, supplied->sigma8, supplied->nz);
-
-}
-
-
-
 // ===========================================================================
 // [SECTION] RADIAL KERNELS AND MODEL CONSTRUCTION
 // ===========================================================================
@@ -824,9 +699,8 @@ static void prepare_bihalofit(
 //      kernel, the normalized source density per unit comoving
 //      distance n(z) dz/dchi, stored divided by chi (1 + z) (next
 //      paragraph).
-//   3. los_chi, los_dchi and los_bh: the comoving distance, the
-//      trapezoid weight and the BiHalofit coefficients at every LOS
-//      node.
+//   3. los_chi and los_dchi: the comoving distance and trapezoid
+//      integration weight at every line-of-sight node.
 //   4. los_lens and los_shape: both kernels resampled by cubic
 //      spline onto the LOS nodes, where the projection weights read
 //      them.
@@ -864,15 +738,6 @@ static void prepare_radial(physics_model_3pcf* model)
   model->los_shape = calloc1d((int)((size_t)model->nbin*nlos));
   model->los_chi = calloc1d(nlos);
   model->los_dchi = calloc1d(nlos);
-  if (NULL == model->baseline) {
-    model->los_bh = calloc((size_t)nlos,
-      sizeof(physics_bh_coefficients));
-    if (model->los_bh == NULL) {
-      log_fatal("physics_3pcf: allocation failed");
-      exit(1);
-    }
-  }
-
   // Sample the background once on the uniform kernel grid: redshift,
   // comoving distance and growth at every node.
   for (int node=0; node<nkernel; node++) {
@@ -881,15 +746,10 @@ static void prepare_radial(physics_model_3pcf* model)
     model->kernel_chi[node] = read_spline(&model->distance, redshift, 0);
     model->kernel_growth[node] = read_spline(&model->growth, redshift, 0);
   }
-  // Distances and BiHalofit coefficients at every LOS node;
-  // physics_create_3pcf refreshes los_bh after the uniform readers
-  // replace the splines.
+  // Distances at every line-of-sight node use the supplied background.
   for (int node=0; node<nlos; node++) {
     model->los_chi[node] = read_spline(&model->distance,
       model->los_z[node], 0);
-    if (NULL == model->baseline) {
-      model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
-    }
     if (!(model->los_chi[node] > 0.0)) {
       log_fatal("physics_3pcf: line-of-sight distance must be positive");
       exit(1);
@@ -1022,16 +882,12 @@ static void prepare_radial(physics_model_3pcf* model)
 
 
 // ---------------------------------------------------------------------------
-// physics_create_3pcf: validate the input, copy every table and run
-// the preparation passes in a fixed order. Explicit variance arrays and
-// input power must describe the same spectrum. The BiHalofit background and the
-// radial kernels then build on the coarse cubic splines;
-// prepare_uniform_readers replaces the
-// production tables last. Because that replacement changes
-// interpolation details, the constructor re-evaluates the per-LOS
-// BiHalofit coefficients, power rows and kernel growth samples
-// afterwards, so projected means and covariance queries read
-// identical model values at identical redshifts.
+// physics_create_3pcf: validate and copy the supplied matter bispectrum,
+// power, background and source arrays. The theory provider owns the matter
+// prescription; this model owns the projection and alignment calculations.
+// Prepare radial kernels on cubic tables, then install the dense linear
+// production readers and refresh the power rows and kernel growth samples.
+// Every worker subsequently reads immutable storage owned by this model.
 physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
 {
   if (!(input != NULL)) {
@@ -1072,75 +928,16 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: an independent matter-fraction axis needs "
       "both coordinates and fraction values"); exit(1);
   }
-  // The internal fit requires explicit smoothing quantities. They come
-  // from the shared core or the independent Python reference; there is no
-  // second variance integral or scalar amplitude normalization in this model.
-  if (NULL == input->baseline
-      && NULL == input->variance) { log_fatal(
-    "physics_3pcf: internal BiHalofit requires supplied variance arrays; "
-    "prepare z/rnl/neff/sigma8 from the same linear power"); exit(1); }
-  // Validate provided fit arrays even when an absolute B table bypasses them.
-  if (NULL != input->variance) {
-    const physics_variance_input_3pcf* supplied = input->variance;
-    const double zmax = input->z[input->nz - 1];
-    if (4 > supplied->nz) { log_fatal(
-      "physics_3pcf: supplied variance needs at least four redshifts"); exit(1); }
-    if (NULL == supplied->z
-        || NULL == supplied->rnl
-        || NULL == supplied->neff
-        || NULL == supplied->sigma8) { log_fatal(
-      "physics_3pcf: supplied variance needs radius, slope and rms arrays");
-      exit(1); }
-    increasing_physics(supplied->z, supplied->nz, 0);
-    if (0.0 != supplied->z[0]
-        || zmax > supplied->z[supplied->nz - 1]) { log_fatal(
-      "physics_3pcf: supplied variance must cover [0,zmax]"); exit(1); }
-    physics_axis axis;
-    axis.count = detect_uniform_segments(supplied->z, supplied->nz,
-      1.0e-9, MAX_GRID_SEGMENTS, axis.start, axis.length, axis.lower,
-      axis.inverse, "3pcf variance redshift");
-    for (int index=0; index<supplied->nz; index++) {
-      if (!isfinite(supplied->rnl[index])
-          || 0.0 >= supplied->rnl[index]
-          || !isfinite(supplied->neff[index])
-          || !isfinite(supplied->sigma8[index])
-          || 0.0 >= supplied->sigma8[index]) { log_fatal(
-        "physics_3pcf: supplied variance requires finite slope and "
-        "positive radius and rms"); exit(1); }
-    }
-  }
-  // The supplied route takes its background from arrays. Only Omega_m0
-  // (lensing/IA) is a physical scalar it needs. The legacy sigma8
-  // argument is validated for interface compatibility but never rescales P.
-  // This route never reconstructs a w0-wa background or fits B.
-  if (NULL != input->baseline) {
-    if (!(isfinite(input->omega_m))) { log_fatal(
-      "physics_3pcf: Omega_m0 must be finite"); exit(1); }
-    if (!(0.0 < input->omega_m)) { log_fatal(
-      "physics_3pcf: Omega_m0 must be positive"); exit(1); }
-    if (!(isfinite(input->sigma8))) { log_fatal(
-      "physics_3pcf: sigma8 must be finite"); exit(1); }
-    if (!(0.0 < input->sigma8)) { log_fatal(
-      "physics_3pcf: sigma8 must be positive"); exit(1); }
-    if (!(NULL != input->omega_m_z)) { log_fatal(
-      "physics_3pcf: supplied B requires tabulated Omega_m(z)"); exit(1); }
-
-  } else {
-    if (!(isfinite(input->omega_m) && input->omega_m > 0.0
-          && isfinite(input->omega_de) && input->omega_de >= 0.0
-          && isfinite(input->w0) && isfinite(input->wa)
-          && isfinite(input->ns) && isfinite(input->sigma8)
-          && input->sigma8 > 0.0)) {
-      log_fatal("physics_3pcf: invalid cosmological scalars");
-      exit(1);
-    }
-    const double density_sum = input->omega_m + input->omega_de;
-    if (!(isfinite(density_sum) && fabs(density_sum - 1.0) <= 1.0e-8)) {
-      log_fatal("physics_3pcf: flat geometry requires abs(omega_m + omega_de "
-        "- 1) <= 1e-8");
-      exit(1);
-    }
-  }
+  // The theory provider owns the full matter bispectrum and its
+  // background. Missing B is an input error, never a request to fit it
+  // locally from power. Linear power is still needed by the TATT vertices.
+  if (NULL == input->baseline) { log_fatal(
+    "physics_3pcf: a theory-supplied matter bispectrum is required");
+    exit(1); }
+  if (!isfinite(input->omega_m) || 0.0 >= input->omega_m) { log_fatal(
+    "physics_3pcf: Omega_m0 must be finite and positive"); exit(1); }
+  if (NULL == input->omega_m_z) { log_fatal(
+    "physics_3pcf: supplied B requires tabulated Omega_m(z)"); exit(1); }
 
   if (!(input->source_readers == 0 || input->source_readers == 1)) {
     log_fatal("physics_3pcf: source_readers must be zero or one");
@@ -1199,13 +996,8 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->kernel_nz = input->kernel_nz;
   model->source_readers = input->source_readers;
   model->table_boost = input->table_boost == 0 ? 8 : input->table_boost;
-  model->fit_nz = input->fit_nz == 0 ? 33 : input->fit_nz;
   if (!(model->table_boost >= 1)) {
     log_fatal("physics_3pcf: table_boost must be positive");
-    exit(1);
-  }
-  if (!(model->fit_nz >= 4)) {
-    log_fatal("physics_3pcf: fit_nz must be at least four");
     exit(1);
   }
   model->npower_z = input->nz;
@@ -1222,9 +1014,6 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     1.0e-9, MAX_GRID_SEGMENTS, source_axis->start, source_axis->length,
     source_axis->lower, source_axis->inverse, "3pcf source redshift");
   model->omega_m = input->omega_m;
-  if (NULL == model->baseline) {
-    model->ns = input->ns;
-  }
 
   const int nk = model->nk;
   const int nz = model->nz;
@@ -1250,7 +1039,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->linear = model->source_readers
     ? make_reference_spline(logk, logpower, nk)
     : make_natural_spline(logk, logpower, nk);
-  // Power and copied fit arrays describe the same supplied spectrum.
+  // Power and the supplied bispectrum describe the same cosmology.
   // Model construction never changes that spectrum's amplitude.
 
   model->nonlinear = calloc((size_t)nz, sizeof(physics_spline));
@@ -1370,36 +1159,11 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     model->omega_m_z = model->source_readers
       ? make_reference_spline(axis, input->omega_m_z, count)
       : make_natural_spline(axis, input->omega_m_z, count);
-  } else {
-    // For pressureless matter, rho_m(z)=rho_m0*(1+z)^3. dz/dchi is
-    // H(z)/c in h/Mpc, so multiplying by c/H0=2997.92458 Mpc/h gives
-    // E(z)=H(z)/H0. No dark-energy model is reconstructed here. This
-    // approximation must not replace an exact massive-neutrino fraction.
-    const physics_variance_input_3pcf* fit = input->variance;
-    double* matter = calloc1d(fit->nz);
-    for (int node=0; node<fit->nz; node++) {
-      const double z = fit->z[node];
-      const double expansion = 2997.92458*read_spline(&model->dz_dchi, z, 0);
-      if (!isfinite(expansion) || 0.0 >= expansion) { log_fatal(
-        "physics_3pcf: dz/dchi must imply positive finite H(z)/H0");
-        exit(1); }
-      matter[node] = model->omega_m*pow(1.0 + z, 3.0)
-        /(expansion*expansion);
-      if (!isfinite(matter[node]) || 0.0 >= matter[node]) { log_fatal(
-        "physics_3pcf: dz/dchi implies invalid Omega_m(z)"); exit(1); }
-    }
-    model->omega_m_z = model->source_readers
-      ? make_reference_spline(fit->z, matter, fit->nz)
-      : make_natural_spline(fit->z, matter, fit->nz);
-    free(matter);
-  }
-  if (NULL == model->baseline) {
-    prepare_bihalofit(model, input->variance);
   }
   prepare_radial(model);
   prepare_uniform_readers(model);
 
-  // The per-LOS fit coefficients and the kernel growth samples must
+  // The per-LOS power rows and the kernel growth samples must
   // come from the reader that production will use, so projected means
   // and covariance B queries read identical model values at an
   // identical redshift.
@@ -1411,9 +1175,6 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   }
 
   for (int node=0; node<model->nlos; node++) {
-    if (NULL == model->baseline) {
-      model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
-    }
     for (int mode=0; mode<3; mode++) {
       model->los_power[(size_t)mode*model->nlos + node]
         = prepare_power_row(model, model->los_z[node], mode);
@@ -1450,9 +1211,6 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
   destroy_spline(&model->distance);
   destroy_spline(&model->growth);
   destroy_spline(&model->dz_dchi);
-  destroy_spline(&model->radius);
-  destroy_spline(&model->neff);
-  destroy_spline(&model->sigma8z);
   destroy_spline(&model->omega_m_z);
   free(model->sources);
   free(model->source_z);
@@ -1468,7 +1226,6 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
   free(model->los_dchi);
   free(model->los_lens);
   free(model->los_shape);
-  free(model->los_bh);
   free(model->los_power);
   baseline_destroy_3pcf(model->baseline);
   feedback_destroy_3pcf(model->feedback);
@@ -1788,7 +1545,6 @@ static physics_triangle_geometry triangle_geometry(
 )
 {
   physics_triangle_geometry geometry;
-  const double minimum = fmin(sides[0], fmin(sides[1], sides[2]));
   const double maximum = fmax(sides[0], fmax(sides[1], sides[2]));
 
   // Rescale by a power of two to prevent overflow in side products.
@@ -1826,8 +1582,6 @@ static physics_triangle_geometry triangle_geometry(
       *sqrt(small + gap)*sqrt(large + (middle - small));
   }
 
-  geometry.minimum_ratio = minimum/maximum;
-  geometry.flattened_ratio = (small - gap)/large;
 
   for (int cyclic=0; cyclic<3; cyclic++) {
     const double first = geometry.sides[cyclic];
@@ -1914,8 +1668,8 @@ static physics_triangle_geometry triangle_geometry(
 //
 // and the last piece multiplies the difference P(b) - P(c) directly,
 // rather than two large products that a later subtraction would
-// cancel. The same arrangement serves the enhanced powers in
-// BiHalofit's three-halo term.
+// cancel. The same arrangement serves the tree-level matter
+// diagnostic and the TATT vertices.
 static double tree_sum_physics(
   const physics_triangle_geometry* geometry,
   const double* power
@@ -2039,39 +1793,13 @@ static double baryon_physics(
 
 
 // ---------------------------------------------------------------------------
-// matter_prepared: the BiHalofit matter bispectrum of Takahashi et
-// al. (arXiv:1911.07886), evaluated with coefficients, a power row
-// and a triangle geometry that the caller may have prepared in
-// advance (NULL arguments fall back to local preparation). component
-// selects the returned piece: 0 the full fit, 1 the tree level, 2 the
-// one-halo term, 3 the three-halo term.
-//
-// PHYSICAL DERIVATION & LOGIC FLOW
-//   1. Read the linear power on each leg and scale every side to
-//      q = k*radius = k/k_NL, the wave number in units of the
-//      nonlinear scale.
-//   2. One-halo term, one halo carrying all three legs:
-//        B_1h = prod_i 1/[(a q_i^alpha + b q_i^beta)(1 + 1/(c q_i))].
-//      The local amplitude is a_n with its squeezed-shape correction,
-//      -0.310 r1^gamma_n in log10; alpha is alpha_n with its
-//      flattened-shape r2^2 term; beta is beta_n with its 0.007 r2
-//      term. r1 and r2 are the side ratios stored in the geometry.
-//   3. The fit caps alpha_n at 1 - 2 n_s/3, with n_s the primordial
-//      spectral index: the paper imposes this bound so the one-halo
-//      term stays below the tree level in the low-k limit.
-//   4. Three-halo term, three distinct correlated halos: effective
-//      holds the enhanced power spectrum
-//        P_E = (1 + f q^2)/(1 + g q + h q^2) P_lin
-//            + 1/[(m q^mu + n q^nu)(1 + (p q)^-3)],
-//      which replaces P_lin in the tree-level sum; the cross terms
-//      2 d q_opposite P_E P_E add the paper's halo-model correction
-//      to the F2 weight; and damping multiplies one factor
-//      1/(1 + e q) per leg.
-//   5. The full bispectrum is the sum of the one-halo and three-halo
-//      terms.
+// matter_prepared: read the provider's full matter bispectrum (component
+// zero), or evaluate the tree-level diagnostic (component one). The latter
+// uses the supplied linear power and the perturbative F2 vertex that TATT
+// also needs. A full B table does not define a one-/three-halo split; that
+// decomposition belongs to the theory provider, when its model has one.
 static double matter_prepared(
   const physics_model_3pcf* model,
-  const physics_bh_coefficients* coefficients,
   const double* sides,
   const double z,
   const int component,
@@ -2079,95 +1807,27 @@ static double matter_prepared(
   const physics_triangle_geometry* prepared_geometry
 )
 {
-  // A supplied full B has no defined fitted one-/three-halo split. The
-  // tree diagnostic still comes directly from P_linear and F2. Keeping
-  // these branches before coefficient reads also avoids constructing any
-  // unused nonlinear-radius or variance tables for the supplied route.
-  if (NULL != model->baseline) {
-    if (!(component <= 1)) { log_fatal(
-      "physics_3pcf: supplied full B has no fitted one-/three-halo "
-      "components"); exit(1); }
-    if (0 == component) {
-      return baseline_bispectrum_3pcf(model->baseline, sides, z);
-    }
-    const physics_triangle_geometry geometry = prepared_geometry
-      ? *prepared_geometry : triangle_geometry(sides, 0);
-    const physics_power_row row = prepared ? *prepared
-      : prepare_power_row(model, z, 0);
-    double linear[3];
-    for (int leg=0; leg<3; leg++) {
-      linear[leg] = read_power_row(&row, sides[leg]);
-    }
-    return tree_sum_physics(&geometry, linear);
+  if (!(component <= 1)) { log_fatal(
+    "physics_3pcf: supplied full B has no fitted one-/three-halo "
+    "components"); exit(1); }
+  if (0 == component) {
+    return baseline_bispectrum_3pcf(model->baseline, sides, z);
   }
-
-  physics_triangle_geometry local_geometry;
-  const physics_triangle_geometry* geometry = prepared_geometry;
-  if (geometry == NULL) {
-    local_geometry = triangle_geometry(sides, 0);
-    geometry = &local_geometry;
-  }
-
+  const physics_triangle_geometry geometry = prepared_geometry
+    ? *prepared_geometry : triangle_geometry(sides, 0);
   const physics_power_row row = prepared ? *prepared
     : prepare_power_row(model, z, 0);
-
   double linear[3];
-  double effective[3];
-  double scaled[3];
   for (int leg=0; leg<3; leg++) {
     linear[leg] = read_power_row(&row, sides[leg]);
-    scaled[leg] = sides[leg]*coefficients->radius;
   }
-
-  if (component == 1) {
-    return tree_sum_physics(geometry, linear);
-  }
-
-  const double ratio1 = geometry->minimum_ratio;
-  const double ratio2 = geometry->flattened_ratio;
-  const double amplitude = pow(10.0, coefficients->loga
-    - 0.310*pow(ratio1, coefficients->gamma));
-  const double alpha = fmin(pow(10.0, coefficients->logalpha
-    + coefficients->alpha_shape*ratio2*ratio2), 1.0 - 2.0*model->ns/3.0);
-  const double beta = pow(10.0, coefficients->logbeta + 0.007*ratio2);
-
-  double one_halo = 1.0;
-  double damping = 1.0;
-  for (int leg=0; leg<3; leg++) {
-    const double q = scaled[leg];
-    one_halo /= (amplitude*pow(q, alpha) + coefficients->b*pow(q, beta))
-      *(1.0 + 1.0/(coefficients->c*q));
-    effective[leg] = (1.0 + coefficients->f*q*q)
-      /(1.0 + coefficients->g*q + coefficients->h*q*q)*linear[leg]
-      + 1.0/((coefficients->m*pow(q, coefficients->mu)
-      + coefficients->n*pow(q, coefficients->nu))
-      *(1.0 + pow(coefficients->p*q, -3.0)));
-    damping /= 1.0 + coefficients->e*q;
-  }
-
-  double three_halo = tree_sum_physics(geometry, effective);
-  for (int leg=0; leg<3; leg++) {
-    const int next = (leg + 1)%3;
-    const int opposite = (leg + 2)%3;
-    three_halo += 2.0*coefficients->d*scaled[opposite]
-      *effective[leg]*effective[next];
-  }
-
-  three_halo *= damping;
-
-  if (component == 2) {
-    return one_halo;
-  }
-  if (component == 3) {
-    return three_halo;
-  }
-  return one_halo + three_halo;
+  return tree_sum_physics(&geometry, linear);
 }
 
 
 // ---------------------------------------------------------------------------
 // physics_matter_3pcf: public matter-bispectrum query. It validates
-// the triangle, evaluates the BiHalofit coefficients at z and applies
+// the triangle, reads the supplied B at z and applies
 // the baryon ratio at the requested fb, with the fit's enhancement
 // pieces allowed (suppress_only off).
 double physics_matter_3pcf(
@@ -2189,13 +1849,7 @@ double physics_matter_3pcf(
 
   triangle_physics(k1, k2, k3);
   const double sides[3] = {k1, k2, k3};
-  if (NULL != model->baseline) {
-    return matter_prepared(model, NULL, sides, z, component, NULL, NULL)
-      *baryon_physics(sides, z, fb, 0);
-  }
-  const physics_bh_coefficients coefficients = bh_coefficients(model, z);
-
-  return matter_prepared(model, &coefficients, sides, z, component, NULL, NULL)
+  return matter_prepared(model, sides, z, component, NULL, NULL)
     *baryon_physics(sides, z, fb, 0);
 }
 
@@ -2927,7 +2581,7 @@ double physics_projected_3pcf(
 
     if (component != 2) {
       baseline += projection->weights[node]*matter_prepared(model,
-        model->baseline ? NULL : model->los_bh + node, sides, redshift, 0,
+        sides, redshift, 0,
         model->los_power + node,
         &geometry)
         *baryon_physics(sides, redshift, projection->ia.fb,
@@ -3138,7 +2792,6 @@ static double projected_node_physics(
   double baseline = 0.0;
   if (component != 2) {
     baseline = matter_prepared(model,
-      model->baseline ? NULL : model->los_bh + node,
       sides, redshift, 0, model->los_power + node, geometry)
       *baryon_physics(sides, redshift,
       first->ia.fb, first->ia.suppress_only)
@@ -3634,7 +3287,7 @@ double physics_omega_m_3pcf(const physics_model_3pcf* model)
 
 
 // ---------------------------------------------------------------------------
-// The halo collapse threshold and BiHalofit read the same owned fraction.
+// The halo collapse threshold reads this owned provider fraction.
 // The constructor either copied the provider's values or derived them from
 // the supplied expansion history under the pressureless-matter assumption.
 double physics_omega_m_z_3pcf(

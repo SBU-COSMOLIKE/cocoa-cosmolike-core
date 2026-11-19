@@ -93,14 +93,6 @@ void threepcf_bridge_set_los(
 // Model preparation resolution (physics_3pcf.h documents each knob).
 // The defaults match the Python constructor's: kernel_nz = 101,
 // source_readers = 0, table_boost = 8, fit_nz = 33.
-// Exact provider matter fraction on the core background grid. Required for
-// an internal fit with massive neutrinos; NULL/count=0 restores the
-// pressureless H(z) relation. Resupply after cosmology or power changes.
-void threepcf_bridge_set_matter_fraction(
-  const double* values, // positive finite Omega_m(z) [count]
-  int count // at least four, or zero to clear
-);
-
 void threepcf_bridge_set_resolution(
   int kernel_nz,      // internal lensing-kernel redshift resolution
   int source_readers, // 1 keeps cubic source reads for comparisons
@@ -158,19 +150,10 @@ void threepcf_bridge_set_feedback(
   double amplitude              // shared log-response amplitude
 );
 
-// Optional shared fit quantities. Every array is copied. NULL clears the
-// snapshot and restores preparation from the shared core variance engine.
-// The snapshot is stamped with
-// cosmology.random and Ntable.random; a subsequent model build refuses it
-// after either state changes until this setter runs again or clears it.
-void threepcf_bridge_set_variance(
-  const physics_variance_input_3pcf* input // copied fit anchors; NULL clears
-);
-
 // Install an absolute matter B table and the matter-fraction background
 // on the core nonlinear-power redshift axis. Copies every input. sigma8
 // is a legacy interface value and never rescales P; ns/w0/wa are unused
-// while this table is active. A NULL baseline clears only this override.
+// by the model. A NULL baseline clears B and leaves the bridge incomplete.
 void threepcf_bridge_set_baseline_bispectrum(
   const baseline_input_3pcf* baseline, // supplied absolute B, or NULL
   const double* omega_m_z, // Omega_m(z) on the core background z [nz]
