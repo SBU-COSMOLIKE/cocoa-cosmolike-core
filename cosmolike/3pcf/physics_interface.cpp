@@ -739,7 +739,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
 
   // Retain borrowed production arrays until the immutable C owner has
   // copied them. The dictionary is deliberately small and exact so a
-  // misspelled field cannot silently leave the old normalization active.
+  // misspelled field cannot silently omit a required fit quantity.
   physics_variance_input_3pcf fit = {};
   std::vector<physics_array> fit_arrays;
   if (!variance.empty()) {
@@ -789,7 +789,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const double w0, // equation of state today
   const double wa, // evolution in w(a)=w0+wa(1-a)
   const double ns, // primordial spectral index
-  const double sigma8, // linear-power normalization
+  const double sigma8, // legacy scalar; does not rescale power
   const physics_array& los_z, // line-of-sight nodes
   const int kernel_nz, // radial-kernel sampling
   const bool source_readers, // cubic comparison mode
@@ -820,7 +820,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_with_bispectrum(
   const physics_array& growth, // linear D(z), normalized to one today
   const physics_array& sources, // density [nbin,nsource] per z
   const double omega_m, // matter fraction today for lensing and IA
-  const double sigma8, // existing linear-power normalization
+  const double sigma8, // legacy scalar; does not rescale power
   const py::dict& baseline, // absolute ln B and its four uniform axes
   const py::object& omega_m_z, // matter fraction on background z [nz]
   const physics_array& los_z, // fixed line-of-sight integration nodes
@@ -1021,7 +1021,7 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const double w0, // equation of state today
   const double wa, // evolution in w(a)=w0+wa(1-a)
   const double ns, // primordial spectral index
-  const double sigma8, // linear-power normalization
+  const double sigma8, // legacy scalar; does not rescale power
   const physics_notebook_array& los_z, // line-of-sight nodes
   const int kernel_nz, // radial-kernel sampling
   const bool source_readers, // cubic comparison mode
@@ -1052,7 +1052,7 @@ model_notebook_physics_with_bispectrum(
   const physics_notebook_array& growth, // linear D(z), normalized to one today
   const physics_notebook_array& sources, // density [nbin,nsource] per z
   const double omega_m, // matter fraction today for lensing and IA
-  const double sigma8, // existing linear-power normalization
+  const double sigma8, // legacy scalar; does not rescale power
   const py::dict& baseline, // absolute ln B and its four uniform axes
   const py::object& omega_m_z, // matter fraction on background z [nz]
   const physics_notebook_array& los_z, // fixed line-of-sight integration nodes

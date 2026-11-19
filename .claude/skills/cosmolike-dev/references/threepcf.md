@@ -117,7 +117,7 @@ values or clipping before taking its logarithm.
 The additive `production.PhysicsModelWithBispectrum` and
 `notebook.PhysicsModelWithBispectrum` factories require `baseline` and
 `omega_m_z[nz]` on the physical background z axis. They retain `omega_m`
-for lensing/IA and `sigma8` for the existing P normalization, and omit
+for lensing/IA and the legacy scalar `sigma8` argument (no normalization), and omit
 `omega_de`, `w0`, `wa`, `ns`. The caller establishes flat geometry and a
 consistent cosmology/matter definition across P, B, growth and distances.
 The active route skips every internal-fit coefficient/radius preparation;

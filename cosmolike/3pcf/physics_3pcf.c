@@ -5,8 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <gsl/gsl_errno.h>
-#include <gsl/gsl_sf_gamma.h>
 #include "simde/x86/sse2.h"
 #include "physics_3pcf.h"
 #include "cosmolike/basics.h"
@@ -60,8 +58,8 @@ static int omp_get_thread_num(void) { return 0; }
 // (Mpc/h)^6. Lensing angles and the Fourier multipoles are
 // dimensionless.
 //
-// Ownership. The model copies every input table at creation and
-// normalizes the linear power spectrum to sigma8; after that it reads
+// Ownership. The model copies every input table at creation and preserves
+// the supplied power amplitude; after that it reads
 // nothing from the caller. The production path resamples each copy
 // onto a uniform grid that never changes, so a query finds its cell by
 // index arithmetic and interpolates linearly. The one exception is the
@@ -229,7 +227,6 @@ struct physics_model_3pcf {
   double w0;          // dark-energy equation of state today
   double wa;          // its evolution, w(a) = w0 + wa (1 - a)
   double ns;          // primordial spectral index
-  double sigma8;      // linear fluctuation amplitude at z = 0
   physics_spline linear;     // log P_linear(z=0) against log k
   physics_spline* nonlinear; // log P_nonlinear against log k [npower_z]
   physics_spline distance;   // comoving distance chi(z), Mpc/h
@@ -846,143 +843,6 @@ static double trapezoid(
 
 
 // ---------------------------------------------------------------------------
-// simpson_uniform: composite Simpson integration on a uniform grid.
-// Simpson's rule needs an odd node count, so for an even count the
-// main loop covers the first count - 1 nodes and the final interval
-// gets scipy's closing correction, due to Cartwright: fit a parabola
-// through the last three nodes and integrate it over that one
-// interval, which gives h*(5 f_n/12 + 2 f_(n-1)/3 - f_(n-2)/12).
-static double simpson_uniform(
-  const double* values,
-  const int count,
-  const double spacing
-)
-{
-  const int odd_count = count%2 == 0 ? count - 1 : count;
-  double sum = values[0] + values[odd_count - 1];
-  for (int index=1; index<odd_count - 1; index++) {
-    sum += (index%2 == 1 ? 4.0 : 2.0)*values[index];
-  }
-  sum *= spacing/3.0;
-
-  if (count%2 == 0) {
-    sum += spacing*(5.0*values[count - 1]/12.0
-      + 2.0*values[count - 2]/3.0 - values[count - 3]/12.0);
-  }
-
-  return sum;
-}
-
-
-
-// ===========================================================================
-// [SECTION] BIHALOFIT BACKGROUND QUANTITIES
-// ===========================================================================
-
-// variance_physics: the variance of linear density fluctuations
-// smoothed on a radius, which fixes BiHalofit's background inputs.
-//
-// The dimensionless linear power Delta^2(k) = k^3 P_lin(k)/(2 pi^2)
-// integrates against a squared smoothing window over log k:
-//
-//   sigma^2(R) = int dln k  Delta^2(k) W^2(k R) D^2(z),
-//
-// with D the growth factor. Window 0 is the spherical top hat, used
-// for sigma8(z). Window 1 is the Gaussian exp(-x^2/2), whose square
-// gives the Gaussian variance sigma_G^2(R) that defines BiHalofit's
-// nonlinear radius through sigma_G = 1. Window 2 is x exp(-x^2/2):
-// differentiating e^(-x^2) with respect to ln R brings down -2 x^2,
-// so the effective slope n_eff = -3 - dln sigma_G^2/dln R equals
-// -3 + 2*variance with window 2 at the radius where sigma_G = 1.
-//
-// A uniform Simpson grid covers log k up to log(100): fastnc samples
-// the same 100 h/Mpc upper bound, and the optional analytic tail
-// below accounts for everything above it. The 2000-entry cap bounds
-// the fixed stack buffer; the callers use 1000 nodes for the
-// variances and 2000 for the slope.
-static double variance_physics(
-  const physics_model_3pcf* model,
-  const double radius,
-  const double growth_squared,
-  const double logk_min,
-  const int count,
-  const int window,
-  const int tail
-)
-{
-  double values[2000];
-  if (!(count <= 2000 && count >= 3)) {
-    log_fatal("physics_3pcf: invalid variance grid");
-    exit(1);
-  }
-
-  const double logk_max = log(100.0);
-  const double spacing = (logk_max - logk_min)/(count - 1);
-  const double inverse_two_pi_squared = 0.05066059182116888572;
-
-  for (int index=0; index<count; index++) {
-    const double logk = logk_min + spacing*index;
-    const double k = exp(logk);
-    const double x = k*radius;
-    // The top hat W(x) = 3 (sin x - x cos x)/x^3 loses its leading
-    // digits to cancellation at small x; its Taylor series
-    // 1 - x^2/10 + x^4/280 is exact to double precision below 1e-3.
-    double filter;
-    if (window == 0) {
-      filter = fabs(x) < 1.0e-3
-        ? 1.0 - x*x/10.0 + x*x*x*x/280.0
-        : 3.0*(sin(x) - x*cos(x))/(x*x*x);
-    } else {
-      filter = exp(-0.5*x*x)*(window == 2 ? x : 1.0);
-    }
-    values[index] = read_power(&model->linear, logk)*k*k*k
-      *inverse_two_pi_squared*growth_squared*filter*filter;
-  }
-
-  double sum = simpson_uniform(values, count, spacing);
-
-  if (tail) {
-    // Gaussian tail: account for the integral above k = 100 exactly
-    // enough that the nonlinear-radius solve never feels the cutoff.
-    // Approximate Delta^2(k) beyond the last node as the power law
-    // A k^s, with s the log slope of the final interval. With the
-    // substitution u = (k R)^2 the remaining integral becomes
-    //
-    //   int_{ln 100}^inf dln k  A k^s e^(-(k R)^2)
-    //     = (A/2) R^(-s) Gamma(s/2, (100 R)^2),
-    //
-    // the upper incomplete gamma function that GSL evaluates below;
-    // the growth factor squared multiplies at the end, as in the main
-    // sum. A GSL underflow return only means the tail is zero to
-    // double precision, so it passes the status check.
-    const double logdelta_last = log(read_power(&model->linear, logk_max))
-      + 3.0*logk_max;
-    const double logdelta_previous = log(read_power(&model->linear,
-      logk_max - spacing)) + 3.0*(logk_max - spacing);
-    const double slope = (logdelta_last - logdelta_previous)/spacing;
-    const double lower = 100.0*radius;
-    gsl_sf_result upper_gamma;
-    const int status = gsl_sf_gamma_inc_e(0.5*slope,
-      lower*lower, &upper_gamma);
-    if (!(status == GSL_SUCCESS || status == GSL_EUNDRFLW)) {
-      log_fatal("physics_3pcf: Gaussian variance tail failed");
-      exit(1);
-    }
-    sum += 0.5*exp(logdelta_last - slope*logk_max)
-      *pow(radius, -slope)*upper_gamma.val
-      *inverse_two_pi_squared*growth_squared;
-  }
-
-  if (!(isfinite(sum) && sum > 0.0)) {
-    log_fatal("physics_3pcf: invalid variance");
-    exit(1);
-  }
-
-  return sum;
-}
-
-
-// ---------------------------------------------------------------------------
 // omega_m_physics: the matter density fraction at redshift z for a
 // w0-wa dark-energy background.
 //
@@ -1071,144 +931,37 @@ static physics_bh_coefficients bh_coefficients(
 
 
 // ---------------------------------------------------------------------------
-// prepare_bihalofit: tabulate the BiHalofit background quantities on
-// coefficient anchor redshifts. The fit depends on a nonlinear radius
-// rather than directly on a guessed k_NL, so at each anchor a
-// bisection solves sigma_G(R, z) = 1 on the same 1000-node log-k grid
-// as fastnc, and the slope that gives n_eff uses 2000 nodes. In the
-// source-comparison mode the anchor spacings copy the source, 0.15 in
-// z below 0.5 and 0.3 above it; production places fit_nz uniform
-// anchors instead. A small redshift domain still receives at least
-// four anchors so the cubic fit stays defined.
+// prepare_bihalofit: copy the supplied smoothing quantities and prepare
+// their interpolation. The provider owns the nonlinear-radius solve and
+// variance integrals. Anchors cover the full background redshift interval;
+// production uses natural-cubic preparation and uniform dense linear reads.
+// The source-comparison mode retains the supplied cubic anchor convention.
 static void prepare_bihalofit(
   physics_model_3pcf* model, // model owning the fit tables
   const physics_variance_input_3pcf* supplied // copied core fit quantities
 )
 {
-  const double zmax = model->growth.x[model->nz - 1];
-  if (NULL != supplied) {
-    double* matter = calloc1d(supplied->nz);
-    for (int index=0; index<supplied->nz; index++) {
-      matter[index] = omega_m_physics(model, supplied->z[index]);
-    }
-    // These copies belong to this model. No later cosmology update can
-    // change them, and no Gaussian variance integral runs in this route.
-    // Production uses the house natural spline. The explicit upstream
-    // comparison retains its not-a-knot convention whether the fit values
-    // were prepared locally or supplied by the independent Python reference.
-    model->radius = model->source_readers
-      ? make_spline(supplied->z, supplied->rnl, supplied->nz)
-      : make_natural_spline(supplied->z, supplied->rnl, supplied->nz);
-    model->neff = model->source_readers
-      ? make_spline(supplied->z, supplied->neff, supplied->nz)
-      : make_natural_spline(supplied->z, supplied->neff, supplied->nz);
-    model->sigma8z = model->source_readers
-      ? make_spline(supplied->z, supplied->sigma8, supplied->nz)
-      : make_natural_spline(supplied->z, supplied->sigma8, supplied->nz);
-    model->omega_m_z = model->source_readers
-      ? make_spline(supplied->z, matter, supplied->nz)
-      : make_natural_spline(supplied->z, matter, supplied->nz);
-    free(matter);
-    return;
+  double* matter = calloc1d(supplied->nz);
+  for (int index=0; index<supplied->nz; index++) {
+    matter[index] = omega_m_physics(model, supplied->z[index]);
   }
-  if (!(zmax/0.15 < INT_MAX - 8)) {
-    log_fatal("physics_3pcf: BiHalofit coefficient grid is too large");
-    exit(1);
-  }
-
-  const int capacity = model->source_readers
-    ? (int)ceil(zmax/0.15) + 8 : model->fit_nz;
-  double* redshift = calloc1d(capacity);
-
-  int count = 0;
-  if (model->source_readers) {
-    for (int index=0; 0.15*index < fmin(0.5, zmax); index++) {
-      redshift[count++] = 0.15*index;
-    }
-    if (zmax > 0.5) {
-      for (int index=0; 0.5 + 0.3*index < zmax; index++) {
-        redshift[count++] = 0.5 + 0.3*index;
-      }
-    }
-    redshift[count++] = zmax;
-  } else {
-    count = model->fit_nz;
-    for (int index=0; index<count; index++) {
-      redshift[index] = zmax*index/(count - 1);
-    }
-  }
-  if (count < 4) {
-    count = 4;
-    for (int index=0; index<count; index++) {
-      redshift[index] = zmax*index/(count - 1);
-    }
-  }
-
-  double* radius = calloc1d(count);
-  double* spectral = calloc1d(count);
-  double* sigma8z = calloc1d(count);
-  double* matter = calloc1d(count);
-
-  for (int index=0; index<count; index++) {
-    const double growth = read_spline(&model->growth, redshift[index], 0);
-    const double growth_squared = growth*growth;
-    double lower = 0.01;
-    double upper = 1.0e4;
-
-    double at_lower = variance_physics(model, lower, growth_squared,
-      log(1.0e-4), 1000, 1, 1) - 1.0;
-    for (int retry=0; at_lower < 0.0 && retry<10; retry++) {
-      lower *= 0.5;
-      at_lower = variance_physics(model, lower, growth_squared,
-        log(1.0e-4), 1000, 1, 1) - 1.0;
-    }
-
-    const double at_upper = variance_physics(model, upper, growth_squared,
-      log(1.0e-4), 1000, 1, 1) - 1.0;
-    if (!(at_lower >= 0.0 && at_upper <= 0.0)) {
-      log_fatal("physics_3pcf: nonlinear radius is not bracketed by the "
-        "BiHalofit domain");
-      exit(1);
-    }
-
-    for (int iteration=0; iteration<100; iteration++) {
-      const double middle = 0.5*(lower + upper);
-      const double value = variance_physics(model, middle, growth_squared,
-        log(1.0e-4), 1000, 1, 1) - 1.0;
-      if (value > 0.0) {
-        lower = middle;
-      } else {
-        upper = middle;
-      }
-      if (upper - lower <= 1.0e-5*middle) {
-        break;
-      }
-    }
-
-    radius[index] = 0.5*(lower + upper);
-    spectral[index] = -3.0 + 2.0*variance_physics(model,
-      radius[index], growth_squared, log(1.0e-4), 2000, 2, 0);
-    sigma8z[index] = sqrt(variance_physics(model, 8.0, growth_squared,
-      log(1.0e-4), 1000, 0, 0));
-    matter[index] = omega_m_physics(model, redshift[index]);
-  }
-
-  if (model->source_readers) {
-    model->radius = make_spline(redshift, radius, count);
-    model->neff = make_spline(redshift, spectral, count);
-    model->sigma8z = make_spline(redshift, sigma8z, count);
-    model->omega_m_z = make_spline(redshift, matter, count);
-  } else {
-    model->radius = make_natural_spline(redshift, radius, count);
-    model->neff = make_natural_spline(redshift, spectral, count);
-    model->sigma8z = make_natural_spline(redshift, sigma8z, count);
-    model->omega_m_z = make_natural_spline(redshift, matter, count);
-  }
-
-  free(redshift);
-  free(radius);
-  free(spectral);
-  free(sigma8z);
+  // These copies belong to this model. No later cosmology update can
+  // change them, and no Gaussian variance integral runs in this route.
+  // Production uses the house natural spline. The explicit upstream
+  // comparison retains its not-a-knot convention whether the fit values
+  // were prepared locally or supplied by the independent Python reference.
+  model->radius = model->source_readers
+    ? make_spline(supplied->z, supplied->rnl, supplied->nz)
+    : make_natural_spline(supplied->z, supplied->rnl, supplied->nz);
+  model->neff = model->source_readers
+    ? make_spline(supplied->z, supplied->neff, supplied->nz)
+    : make_natural_spline(supplied->z, supplied->neff, supplied->nz);
+  model->sigma8z = model->source_readers
+    ? make_spline(supplied->z, supplied->sigma8, supplied->nz)
+    : make_natural_spline(supplied->z, supplied->sigma8, supplied->nz);
+  model->omega_m_z = model->source_readers
+    ? make_spline(supplied->z, matter, supplied->nz)
+    : make_natural_spline(supplied->z, matter, supplied->nz);
   free(matter);
 }
 
@@ -1430,9 +1183,8 @@ static void prepare_radial(physics_model_3pcf* model)
 
 // ---------------------------------------------------------------------------
 // physics_create_3pcf: validate the input, copy every table and run
-// the preparation passes in a fixed order. A supplied variance snapshot
-// keeps the input power amplitude; otherwise the constructor normalizes
-// the linear power spectrum to sigma8. The BiHalofit background and the
+// the preparation passes in a fixed order. Explicit variance arrays and
+// input power must describe the same spectrum. The BiHalofit background and the
 // radial kernels then build on the coarse cubic splines;
 // prepare_uniform_readers replaces the
 // production tables last. Because that replacement changes
@@ -1475,14 +1227,21 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: growth must be normalized to one at z=0");
     exit(1);
   }
-  // Validate optional fit arrays even when the absolute matter bispectrum
-  // is supplied. Their presence also selects the upstream power amplitude.
+  // The internal fit requires explicit smoothing quantities. They come
+  // from the shared core or the independent Python reference; there is no
+  // second variance integral or scalar amplitude normalization in this model.
+  if (NULL == input->baseline
+      && NULL == input->variance) { log_fatal(
+    "physics_3pcf: internal BiHalofit requires supplied variance arrays; "
+    "prepare z/rnl/neff/sigma8 from the same linear power"); exit(1); }
+  // Validate provided fit arrays even when an absolute B table bypasses them.
   if (NULL != input->variance) {
     const physics_variance_input_3pcf* supplied = input->variance;
     const double zmax = input->z[input->nz - 1];
     if (4 > supplied->nz) { log_fatal(
       "physics_3pcf: supplied variance needs at least four redshifts"); exit(1); }
-    if (NULL == supplied->rnl
+    if (NULL == supplied->z
+        || NULL == supplied->rnl
         || NULL == supplied->neff
         || NULL == supplied->sigma8) { log_fatal(
       "physics_3pcf: supplied variance needs radius, slope and rms arrays");
@@ -1506,8 +1265,9 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     }
   }
   // The supplied route takes its background from arrays. Only Omega_m0
-  // (lensing/IA) and sigma8 (the existing power normalization) are scalars
-  // it needs. It must never reconstruct a w0-wa background or fit B.
+  // (lensing/IA) is a physical scalar it needs. The legacy sigma8
+  // argument is validated for interface compatibility but never rescales P.
+  // This route never reconstructs a w0-wa background or fits B.
   if (NULL != input->baseline) {
     if (!(isfinite(input->omega_m))) { log_fatal(
       "physics_3pcf: Omega_m0 must be finite"); exit(1); }
@@ -1628,7 +1388,6 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     model->wa = input->wa;
     model->ns = input->ns;
   }
-  model->sigma8 = input->sigma8;
 
   const int nk = model->nk;
   const int nz = model->nz;
@@ -1654,18 +1413,8 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->linear = model->source_readers
     ? make_spline(logk, logpower, nk)
     : make_natural_spline(logk, logpower, nk);
-  // A core variance snapshot was calculated from the supplied power
-  // amplitude. Renormalizing P here would make those tables inconsistent.
-  // Without a snapshot, both production and source-comparison models retain
-  // their explicit scalar normalization until variance adoption is tested.
-  if (NULL == input->variance) {
-    const double variance = variance_physics(model, 8.0, 1.0,
-      log(1.0e-3), 1000, 0, 0);
-    const double log_normalization = log(model->sigma8*model->sigma8/variance);
-    for (int index=0; index<nk; index++) {
-      model->linear.y[index] += log_normalization;
-    }
-  }
+  // Power and copied fit arrays describe the same supplied spectrum.
+  // Model construction never changes that spectrum's amplitude.
 
   model->nonlinear = calloc((size_t)nz, sizeof(physics_spline));
   if (model->nonlinear == NULL) {

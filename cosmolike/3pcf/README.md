@@ -1221,9 +1221,28 @@ the background `z` axis. Neither takes `omega_de`, `w0`, `wa`, or `ns`.
 The provider passes `omega_m_z` because the halo covariance needs the
 background matter fraction and the C code cannot infer it from a B
 table. `omega_m` keeps its usual role of setting the lensing and
-intrinsic-alignment amplitudes, and `sigma8` keeps the existing
-linear-power normalization. The ordinary `PhysicsModel` constructors are
-unchanged: they keep the internal fit and their existing arguments.
+intrinsic-alignment amplitudes. The legacy scalar `sigma8` argument remains
+accepted but does not normalize the supplied power.
+
+The ordinary `PhysicsModel` constructors require an explicit `variance`
+dictionary containing `z`, `rnl`, `neff`, and `sigma8`. Here `sigma8` is an
+array of rms amplitudes at the anchor redshifts, distinct from the legacy
+scalar argument. The nonlinear radius `rnl` satisfies Gaussian variance
+equal to one; `neff` is the corresponding effective spectral index. All
+three arrays must describe the supplied linear spectrum. C copies them
+and interpolates them; it neither repeats the smoothing integral nor
+changes the power amplitude. An absolute supplied B table needs no fit
+arrays because it bypasses BiHalofit.
+
+The core-struct bridge prepares these arrays with the shared variance
+engine when no explicit fit has been installed. It smooths the installed
+full linear P(k,z), without rescaling it to a scalar sigma8. This does not
+replace the factorized growth approximation used by perturbative IA.
+Callers requiring the factorized fit convention must explicitly supply
+fit arrays prepared from P(k,0)D(z)^2. The project provider does this for
+its `factorized` setting. Original-library comparisons retain their finite
+quadrature and normalization in the independent Python reference, and
+pass its prepared arrays and normalized spectrum to the same C constructor.
 
 The `baseline` dictionary contains `z`, `logk`, `logu`, `v`,
 `log_bispectrum`, `boost`, and `clamp`. The coordinates follow the

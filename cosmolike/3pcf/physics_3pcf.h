@@ -32,11 +32,11 @@ extern "C" {
 // the caller to provide a consistent flat background; it does not infer
 // dark-energy parameters or density closure from those arrays.
 //
-// Optional fit quantities copied from the shared total-matter variance
+// Required internal-fit quantities copied from a total-matter variance
 // engine. z is a piecewise-uniform grid; rnl is the Gaussian nonlinear radius
 // in Mpc/h, neff its effective spectral index, and sigma8 the top-hat rms
-// at R = 8 Mpc/h. Supplying this table also trusts the amplitude of the
-// supplied power: the constructor does not renormalize it to scalar sigma8.
+// at R = 8 Mpc/h. The constructor always trusts the supplied power
+// amplitude and never renormalizes it to the legacy scalar sigma8.
 typedef struct {
   int nz; // anchor count
   const double* z; // piecewise-uniform redshift nodes [nz]
@@ -70,7 +70,7 @@ typedef struct {
   double w0;       // dark-energy equation of state today
   double wa;       // its evolution, w(a) = w0 + wa (1 - a)
   double ns;       // primordial spectral index
-  double sigma8;   // linear fluctuation amplitude at z = 0
+  double sigma8;   // legacy interface scalar; never rescales supplied power
   int source_readers; // 1 keeps cubic source reads for comparisons
   int table_boost; // dense-grid refinement factor; zero means eight
   int fit_nz; // uniform BiHalofit anchor count; zero means 33
@@ -88,7 +88,8 @@ typedef struct {
   // geometry is the caller's responsibility and remains flat in projection.
   const baseline_input_3pcf* baseline; // copied absolute matter B table
   const double* omega_m_z; // required with baseline; Omega_m(z) on z [nz]
-  const physics_variance_input_3pcf* variance; // optional copied fit anchors
+  // Required for internal BiHalofit; unused by a supplied absolute B table.
+  const physics_variance_input_3pcf* variance; // copied fit anchors
 } physics_input_3pcf;
 
 // TATT (tidal alignment and tidal torquing) parameters in the

@@ -51,9 +51,11 @@ def capture(*, interface, fixtures, output, threads):
             raise FileNotFoundError(path)
     sys.path.insert(0, str(interface))
     sys.path.insert(0, str(fixtures))
+    sys.path.insert(0, str(fixtures.parents[1] / "python"))
     import numpy as np
     import cosmolike_des_3pcf_interface as compiled
     from test_physics_model import compact_grid_settings, physical_inputs
+    from des3pcf.variance import reference_physics_model
 
     compiled.set_omp_threads(nthreads=threads)
     sides = np.array([[0.03, 0.04, 0.05], [0.2, 0.3, 0.4]])
@@ -70,7 +72,7 @@ def capture(*, interface, fixtures, output, threads):
     for source_readers in (False, True):
         inputs = physical_inputs()
         inputs["source_readers"] = source_readers
-        model = compiled.PhysicsModel(**inputs)
+        model = reference_physics_model(factory=compiled.PhysicsModel, **inputs)
         prefix = f"source{int(source_readers)}"
         for component in range(4):
             results[f"{prefix}_matter{component}"] = model.matter(

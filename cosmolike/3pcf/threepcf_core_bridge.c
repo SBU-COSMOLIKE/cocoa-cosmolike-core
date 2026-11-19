@@ -298,7 +298,7 @@ static struct {
     baseline_input_3pcf input; // owned arrays; nz=0 means internal fit
     int nz; // number of supplied background matter fractions
     double* omega_m_z; // matter fraction on the core background z
-    double sigma8; // supplied-route power normalization
+    double sigma8; // legacy scalar retained in the supplied-state key
   } baseline;
   struct {
     physics_variance_input_3pcf input; // owned fit arrays; nz=0 disables
@@ -936,6 +936,11 @@ static struct {
   double* dzdchi;   // dz/dchi [nz], h/Mpc
   double* growth;   // growth factor D [nz], D(0) = 1
   double* sources;  // struct-read source repack [nbin*nz], or NULL
+  double* fit_z; // uniform smoothing redshifts [fit.nz]
+  double* fit_rnl; // shared nonlinear radii [fit.nz], Mpc/h
+  double* fit_neff; // shared effective indices [fit.nz]
+  double* fit_sigma8; // shared rms amplitudes [fit.nz]
+  physics_variance_input_3pcf fit; // copied shared quantities
   physics_input_3pcf input;     // the assembled model input
   feedback_input_3pcf feedback; // pointed to by input.feedback
 } scratch;
@@ -950,6 +955,10 @@ static void scratch_clear(void)
   free(scratch.dzdchi);
   free(scratch.growth);
   free(scratch.sources);
+  free(scratch.fit_z);
+  free(scratch.fit_rnl);
+  free(scratch.fit_neff);
+  free(scratch.fit_sigma8);
   memset(&scratch, 0, sizeof(scratch));
 }
 
@@ -1321,6 +1330,28 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   scratch.input.fit_nz = supplied.fit_nz;
   if (0 < supplied.variance.input.nz) {
     scratch.input.variance = &supplied.variance.input;
+  } else if (0 == supplied.baseline.input.nz) {
+    // The bridge already owns a complete core power state. Copy its shared
+    // smoothing results before constructing the immutable model. The usual
+    // cosmology/Ntable guard above invalidates this assembly; these buffers
+    // survive until the next assembly or reset. No local integral runs here.
+    const int count = 0 < supplied.fit_nz ? supplied.fit_nz : 33;
+    scratch.fit_z = calloc1d(count);
+    scratch.fit_rnl = calloc1d(count);
+    scratch.fit_neff = calloc1d(count);
+    scratch.fit_sigma8 = calloc1d(count);
+    for (int index=0; index<count; index++) {
+      scratch.fit_z[index] = scratch.z[nz - 1]*index/(count - 1);
+    }
+    threepcf_core_variance_snapshot(count, scratch.fit_z, 0, NULL,
+      0.0, 1, scratch.fit_rnl, scratch.fit_neff, scratch.fit_sigma8,
+      NULL, NULL);
+    scratch.fit.nz = count;
+    scratch.fit.z = scratch.fit_z;
+    scratch.fit.rnl = scratch.fit_rnl;
+    scratch.fit.neff = scratch.fit_neff;
+    scratch.fit.sigma8 = scratch.fit_sigma8;
+    scratch.input.variance = &scratch.fit;
   }
 
   scratch.input.omega_m = cosmology.Omega_m;

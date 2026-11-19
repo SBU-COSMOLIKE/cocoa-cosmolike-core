@@ -644,17 +644,14 @@ static const double* bridge_vector_3pcf(
 // Cache invalidation:
 // threepcf_bridge_refresh decides; reset_threepcf_core_bridge clears
 // its snapshot, so the first factory call after a reset rebuilds.
-// The build runs with the GIL released, on the calling thread,
-// outside any parallel region (physics_create_3pcf's contract).
+// Keep the Python GIL through refresh and copying: setters use that same
+// lock, so no Python thread can replace the shared power or scratch arrays
+// halfway through preparation. C OpenMP workers do not need the GIL.
 // ---------------------------------------------------------------------------
 static std::shared_ptr<physics_owner_3pcf> model_from_core_3pcf()
 {
   static std::shared_ptr<physics_owner_3pcf> cached;
-  const physics_input_3pcf* input = NULL;
-  {
-    py::gil_scoped_release release;
-    input = threepcf_bridge_refresh();
-  }
+  const physics_input_3pcf* input = threepcf_bridge_refresh();
   if (NULL == input && !cached) {
     // the guard snapshot exists but this adapter never built: some
     // other caller consumed a refresh without the owner this factory
@@ -665,7 +662,6 @@ static std::shared_ptr<physics_owner_3pcf> model_from_core_3pcf()
     std::exit(1);
   }
   if (NULL != input) {
-    py::gil_scoped_release release;
     cached = std::make_shared<physics_owner_3pcf>(*input);
   }
   return cached;

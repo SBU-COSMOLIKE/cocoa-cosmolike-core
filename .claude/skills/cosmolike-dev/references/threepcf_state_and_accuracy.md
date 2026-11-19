@@ -17,7 +17,7 @@ Neither failure is tested by constructing every case in a fresh process.
 | State | Allocation dimensions | Values defining contents | Reset/lifetime |
 |---|---|---|---|
 | Physical model | k/z/LOS/kernel counts, source count, coarse/dense fit counts | All physical axes and arrays, cosmology, source-reader convention | Constructor copies input; destructor releases owned arrays |
-| Supplied B baseline | Four coarse/dense axis counts and background Omega_m(z) count | z/logk/logu/v axes, ln B, boost/clamp, supplied Omega_m(z), power normalization | Separate immutable owner; constructor copies and destructor releases arrays |
+| Supplied B baseline | Four coarse/dense axis counts and background Omega_m(z) count | z/logk/logu/v axes, ln B, boost/clamp, supplied Omega_m(z), legacy sigma8 argument | Separate immutable owner; constructor copies and destructor releases arrays |
 | Projection grid | Triangle/multipole axes, L cap, chart choice and dense ratios | Model, ordered bins, every IA/baryon selector, bounds and coordinates | New owner for a changed definition; a kept old grid stays valid |
 | Transform plan | FFT size/padding, radial selection, L/M caps, scratch capacity | ell/phi/selection values, biases, window, phase/projection convention | Constructor prepares serial FFTW plans; destructor releases plans/storage |
 | Standalone double-Bessel plan | Physical and padded grid lengths, maximum Bessel order; one workspace slice | Copied ell, both biases, xy, bin width, padding and taper; latest complete forward input | Explicit owner retains FFTW/Mellin preparation; core reset leaves live owners valid |
@@ -97,9 +97,10 @@ consumer's mass-to-radius convention; the shared query mass is multiplied
 by core_rho/reference_rho. The returned slope is d ln sigma/d ln M, so the
 covariance multiplies it by 2 sigma² where d sigma²/d ln M is required.
 
-The optional model `variance` dictionary contains exactly z/rnl/neff/sigma8.
-Its presence also disables the local rescaling of linear P to the separate
-sigma8 scalar. Supplied fit anchors must cover the model's full redshift
+The model `variance` dictionary contains exactly z/rnl/neff/sigma8 and is
+required for internal BiHalofit. A supplied absolute B needs no fit arrays.
+C never rescales linear P to the legacy scalar sigma8 argument.
+Supplied fit anchors must cover the model's full redshift
 domain. Covariance snapshots require exact requested mass/redshift axes and
 the prescribed density. Their caller must establish that they belong to
 the same physical power state; matching dimensions alone is insufficient.
@@ -112,8 +113,16 @@ BiHalofit producer must select the same convention. The companion project's
 power multiplier in Python. Its provider applies that multiplier only to
 the three-point reference, leaving the ordinary two-point power unchanged.
 Copied fit arrays and recorded normalization belong to the same input state.
-The native no-array compatibility path still computes its original fit;
-do not call the migration complete while that path remains.
+The native no-array fit path has been removed. The project reference
+adapter prepares explicit arrays; frozen pre-removal native outputs keep
+the comparison independent. The core-struct bridge copies shared variance
+results when no explicit fit was installed. It uses the installed full
+P(k,z), with uniform `fit_nz` anchors covering the background. Its scratch
+arrays are released on rebuild/reset, and immutable models own copies.
+Cosmology and Ntable changes invalidate that assembly. For a factorized
+P(k,0)D(z)^2 fit, callers must install explicit matching arrays; the bridge
+does not silently replace the installed power or change perturbative IA
+growth. The covariance's separate halo quadrature is outside this retirement.
 
 `core.set_variance` copies its arrays and stamps both `cosmology.random`
 and `Ntable.random`. A later bridge read refuses stale supplied variances
@@ -581,11 +590,14 @@ native covariance state defect requiring a code change.
 The core bridge uses process-global mutable input, scratch arrays and a
 cached model owner. Calls to `core.set_*`, reset, native refresh and
 `core.model_from_core()` must complete sequentially within the process.
-The model factory releases the Python GIL during preparation; it does not
-protect these shared inputs against another Python thread. Internal OpenMP
-and retained immutable owners do not establish concurrent bridge-entry
-safety. Cache tests cover sequences of completed calls, not overlapping
-setters and model creation.
+The Python model factory retains the GIL across refresh and model copying,
+as the Python setters do. This serializes those Python entries and protects
+shared FFT preparation and scratch storage from replacement mid-build.
+Internal OpenMP workers remain available. Native C callers still have to
+serialize their own entries; the GIL does not protect external C threads.
+The simultaneous Python-build test requires one generation and the same
+owned model from both requests. Existing cache tests also cover sequences
+of completed state changes and exact A/B/A restoration.
 
 Keep comparison contracts distinct: the supplied-baseline setter compares
 array bytes, including signed zero. Older setters using `bridge_differs`
