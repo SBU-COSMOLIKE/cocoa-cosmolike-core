@@ -17,6 +17,7 @@ Neither failure is tested by constructing every case in a fresh process.
 | State | Allocation dimensions | Values defining contents | Reset/lifetime |
 |---|---|---|---|
 | Physical model | k/z/LOS/kernel counts, source count, coarse/dense fit counts | All physical axes and arrays, cosmology, source-reader convention | Constructor copies input; destructor releases owned arrays |
+| Supplied B baseline | Four coarse/dense axis counts and background Omega_m(z) count | z/logk/logu/v axes, ln B, boost/clamp, supplied Omega_m(z), power normalization | Separate immutable owner; constructor copies and destructor releases arrays |
 | Projection grid | Triangle/multipole axes, L cap, chart choice and dense ratios | Model, ordered bins, every IA/baryon selector, bounds and coordinates | New owner for a changed definition; a kept old grid stays valid |
 | Transform plan | FFT size/padding, radial selection, L/M caps, scratch capacity | ell/phi/selection values, biases, window, phase/projection convention | Constructor prepares serial FFTW plans; destructor releases plans/storage |
 | Standalone double-Bessel plan | Physical and padded grid lengths, maximum Bessel order; one workspace slice | Copied ell, both biases, xy, bin width, padding and taper; latest complete forward input | Explicit owner retains FFTW/Mellin preparation; core reset leaves live owners valid |
@@ -65,6 +66,45 @@ be an explicitly processed demonstration file. Preserve its hash and
 processing record. A continuous interior cubic need not join a zero
 extension continuously in its derivative, so endpoint and derivative
 checks remain necessary even when every sampled density is nonnegative.
+
+
+## Supplied baseline and bridge replacement
+
+`physics_input_3pcf.baseline == NULL` selects the ordinary internal fit.
+An active baseline owns a positive absolute B table and requires the
+background `omega_m_z` array. Replacing the physical model replaces all
+these arrays; a prepared projection grid owns its projected values and
+remains valid after the source model is released. The baseline's four
+uniform axes and `boost` define dense allocation sizes. `clamp` is part
+of the model definition, not a numerical fallback after a refused query.
+
+`core.set_baseline_bispectrum` copies input before releasing old storage.
+This order also permits a native caller to resupply the bridge's current
+input view. The bridge compares every table/axis byte, including signed
+zero, every dimension, `boost`, `clamp`, `omega_m_z` and `sigma8`. A
+changed input increments its change counter, which joins the core's
+cosmology/source counters in the model-reuse decision. The allocation key
+also includes all four baseline axis counts and the background count.
+Clearing an absent override changes nothing; clearing an active override
+returns to the independently stored internal-fit scalars. Core reset
+clears the override but cannot invalidate existing immutable model owners.
+
+In the companion project, `physics.bispectrum_source` chooses `internal` or
+`supplied`. `accuracy_boost * bispectrum_boost` refines the four coarse
+interval counts from immutable original axes; the configured dense `boost`
+remains separate. Reapplying accuracy controls must not refine an already
+refined grid. The producer caches its physical-array/control identity
+alongside the immutable result in one tuple, so concurrent Python readers
+cannot associate one input key with another input's table.
+
+Keep A/B/A, repeated-identical-input, clear/reset, resized-array and retained
+owner checks. Baseline replacement must leave tree-level P diagnostics and
+raw IA unchanged when their inputs are unchanged. For covariance routing,
+holding P and the background fixed while multiplying B by two multiplies
+BB by four and PB by two; the other covariance families retain their own
+physical inputs. These identities test dispatch, not a calibration of a
+supplied B model. Refine its coarse axes separately from dense `boost`,
+then assess the final mean using the same fixed survey covariance.
 
 
 ## Signed amplitudes and angular chart controls

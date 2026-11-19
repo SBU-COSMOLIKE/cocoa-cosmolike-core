@@ -144,6 +144,17 @@ void threepcf_bridge_set_feedback(
   double amplitude              // shared log-response amplitude
 );
 
+// Install an absolute matter B table and the matter-fraction background
+// on the core nonlinear-power redshift axis. Copies every input. sigma8
+// retains the existing linear-power normalization; ns/w0/wa are unused
+// while this table is active. A NULL baseline clears only this override.
+void threepcf_bridge_set_baseline_bispectrum(
+  const baseline_input_3pcf* baseline, // supplied absolute B, or NULL
+  const double* omega_m_z, // Omega_m(z) on the core background z [nz]
+  int nz, // background count; zero when clearing
+  double sigma8 // positive linear-power normalization; unused when clearing
+);
+
 // IA prescription selectors of physics_ia_3pcf (physics_3pcf.h
 // documents each integer). Defaults match physics_default_ia_3pcf:
 // power_mode = 1, ct_mode = 0, suppress_only = 0.

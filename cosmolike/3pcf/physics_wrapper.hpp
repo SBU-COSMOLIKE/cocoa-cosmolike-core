@@ -23,6 +23,18 @@ struct physics_feedback_tables_cpp_3pcf {
   int clamp = 0; // 0 refuses out-of-domain queries; 1 holds edge values
 };
 
+// A copied absolute matter B table, distinct from a feedback response.
+// Units, coordinate order and positivity are defined in baseline_3pcf.h.
+struct physics_baseline_table_cpp_3pcf {
+  arma::Col<double> z; // uniform redshifts
+  arma::Col<double> logk; // uniform natural log middle side, h/Mpc
+  arma::Col<double> logu; // uniform natural log smallest/middle
+  arma::Col<double> v; // uniform (largest-middle)/smallest
+  arma::Col<double> log_bispectrum; // ln B [nz,nk,nu,nv], v fastest
+  int boost = 1; // dense intervals per input interval
+  int clamp = 0; // reject out-of-domain queries by default
+};
+
 // Python keeps this owner alive; its deleter releases every immutable C
 // table of the model. A projection or covariance may borrow get() only
 // while the owner lives. Constructing a second model changes no global
@@ -83,7 +95,9 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   int fit_nz, // coefficient anchors; zero selects the default
   const arma::Col<double>& source_z = arma::Col<double>(), // optional axis
   const physics_feedback_tables_cpp_3pcf* feedback = nullptr, // optional
-  const arma::Col<double>* pixel_window = nullptr // W(ell) at integer ell
+  const arma::Col<double>* pixel_window = nullptr, // W(ell) at integer ell
+  const physics_baseline_table_cpp_3pcf* baseline = nullptr, // absolute B
+  const arma::Col<double>* omega_m_z = nullptr // required with baseline
 );
 
 arma::Mat<double> physics_points_cpp_3pcf(

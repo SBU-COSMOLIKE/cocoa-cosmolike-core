@@ -464,7 +464,7 @@ static physics_grid_settings_3pcf settings_physics_grid(const py::dict& values)
 // Returns:
 //   shared owner of the C model; Python keeps it alive
 // ---------------------------------------------------------------------------
-static std::shared_ptr<physics_owner_3pcf> model_physics(
+static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   const physics_array& k,
   const physics_array& p_linear0,
   const physics_array& z,
@@ -486,7 +486,9 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const int fit_nz,
   const py::object& source_z,
   const py::dict& feedback,
-  const py::object& pixel_window
+  const py::object& pixel_window,
+  const py::dict& baseline, // optional absolute B input
+  const py::object& omega_m_z // required background when baseline is active
 )
 {
   shape_physics(k, 1);
@@ -658,8 +660,136 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
     input.window = window.data();
   }
 
+  baseline_input_3pcf supplied = {};
+  std::vector<physics_array> baseline_arrays;
+  physics_array matter_fraction;
+  if (!baseline.empty()) {
+    const char* names[5] = {"z", "logk", "logu", "v", "log_bispectrum"};
+    if (!(7 == baseline.size())) { spdlog::critical(
+      "3pcf: baseline requires five arrays, boost and clamp"); std::exit(1); }
+    if (!(baseline.contains("boost"))) { spdlog::critical(
+      "3pcf: baseline boost is missing"); std::exit(1); }
+    if (!(baseline.contains("clamp"))) { spdlog::critical(
+      "3pcf: baseline clamp is missing"); std::exit(1); }
+    size_t size = 1;
+    for (int axis=0; axis<5; axis++) {
+      if (!(baseline.contains(names[axis]))) { spdlog::critical(
+        "3pcf: baseline array is missing"); std::exit(1); }
+      if (!(physics_array::check_(baseline[names[axis]]))) { spdlog::critical(
+        "3pcf: production baseline arrays must be contiguous float64");
+        std::exit(1); }
+      baseline_arrays.push_back(py::reinterpret_borrow<physics_array>(
+        baseline[names[axis]]));
+      shape_physics(baseline_arrays.back(), 1);
+      finite_physics(baseline_arrays.back());
+      if (axis < 4) {
+        const size_t count = baseline_arrays.back().size();
+        if (!(4 <= count)) { spdlog::critical(
+          "3pcf: B axes need four nodes"); std::exit(1); }
+        if (!(count <= INT_MAX/size)) { spdlog::critical(
+          "3pcf: B dimensions exceed C storage"); std::exit(1); }
+        size *= count;
+      }
+    }
+    if (!(size == static_cast<size_t>(baseline_arrays[4].size()))) {
+      spdlog::critical(
+      "3pcf: B table size disagrees with axes"); std::exit(1); }
+    if (!(physics_array::check_(omega_m_z))) { spdlog::critical(
+      "3pcf: Omega_m(z) must be contiguous float64"); std::exit(1); }
+    matter_fraction = py::reinterpret_borrow<physics_array>(omega_m_z);
+    shape_physics(matter_fraction, 1);
+    finite_physics(matter_fraction);
+    if (!(z.size() == matter_fraction.size())) { spdlog::critical(
+      "3pcf: Omega_m(z) must match background z"); std::exit(1); }
+    supplied.nz = static_cast<int>(baseline_arrays[0].size());
+    supplied.nk = static_cast<int>(baseline_arrays[1].size());
+    supplied.nu = static_cast<int>(baseline_arrays[2].size());
+    supplied.nv = static_cast<int>(baseline_arrays[3].size());
+    supplied.z = baseline_arrays[0].data();
+    supplied.logk = baseline_arrays[1].data();
+    supplied.logu = baseline_arrays[2].data();
+    supplied.v = baseline_arrays[3].data();
+    supplied.log_bispectrum = baseline_arrays[4].data();
+    supplied.boost = py::cast<int>(baseline["boost"]);
+    supplied.clamp = py::cast<int>(baseline["clamp"]);
+    input.baseline = &supplied;
+    input.omega_m_z = matter_fraction.data();
+  }
+
   return std::make_shared<physics_owner_3pcf>(input);
 }
+
+static std::shared_ptr<physics_owner_3pcf> model_physics(
+  const physics_array& k, // wave numbers, h/Mpc
+  const physics_array& p_linear0, // linear P(z=0), (Mpc/h)^3
+  const physics_array& z, // background z, includes zero
+  const physics_array& p_nonlinear, // P [nz,nk], (Mpc/h)^3
+  const physics_array& chi, // distance, Mpc/h
+  const physics_array& dz_dchi, // Jacobian, h/Mpc
+  const physics_array& growth, // D(z), one today
+  const physics_array& sources, // density [nbin,nsource] per z
+  const double omega_m, // matter fraction today
+  const double omega_de, // dark-energy fraction today
+  const double w0, // equation of state today
+  const double wa, // evolution in w(a)=w0+wa(1-a)
+  const double ns, // primordial spectral index
+  const double sigma8, // linear-power normalization
+  const physics_array& los_z, // line-of-sight nodes
+  const int kernel_nz, // radial-kernel sampling
+  const bool source_readers, // cubic comparison mode
+  const int table_boost, // dense-grid refinement
+  const int fit_nz, // internal-fit anchors
+  const py::object& source_z, // optional source z axis
+  const py::dict& feedback, // optional paired responses
+  const py::object& pixel_window // optional integer-ell window
+)
+{
+  return model_physics_common(k, p_linear0, z, p_nonlinear, chi, dz_dchi,
+    growth,
+    sources, omega_m, omega_de, w0, wa, ns, sigma8, los_z, kernel_nz,
+    source_readers,
+    table_boost, fit_nz, source_z, feedback, pixel_window,
+    py::dict(), py::none());
+}
+
+
+static std::shared_ptr<physics_owner_3pcf> model_physics_with_bispectrum(
+  const physics_array& k, // wavenumbers, h/Mpc
+  const physics_array& p_linear0, // linear P at z=0, (Mpc/h)^3
+  const physics_array& z, // background redshift grid, includes zero
+  const physics_array& p_nonlinear, // nonlinear P [nz,nk], (Mpc/h)^3
+  const physics_array& chi, // comoving distance, Mpc/h
+  const physics_array& dz_dchi, // background Jacobian, h/Mpc
+  const physics_array& growth, // linear D(z), normalized to one today
+  const physics_array& sources, // density [nbin,nsource] per z
+  const double omega_m, // matter fraction today for lensing and IA
+  const double sigma8, // existing linear-power normalization
+  const py::dict& baseline, // absolute ln B and its four uniform axes
+  const py::object& omega_m_z, // matter fraction on background z [nz]
+  const physics_array& los_z, // fixed line-of-sight integration nodes
+  const int kernel_nz, // radial-kernel sampling
+  const bool source_readers, // original cubic-reader comparison mode
+  const int table_boost, // dense power/background intervals per input interval
+  const int fit_nz, // legacy fit setting; unused for supplied B
+  const py::object& source_z, // optional independent source redshift axis
+  const py::dict& feedback, // optional independent hydro/DMO ratios
+  const py::object& pixel_window // optional integer-ell angular window
+)
+{
+  // Empty is never a request to reconstruct an internal fit here. The four
+  // unused legacy scalars are zero-initialized fields, not a background.
+  if (baseline.empty()) { throw py::value_error(
+    "supplied B requires a nonempty baseline dictionary"); }
+  if (omega_m_z.is_none()) { throw py::value_error(
+    "supplied B requires Omega_m(z) on the background grid"); }
+  return model_physics_common(k, p_linear0, z, p_nonlinear, chi, dz_dchi,
+    growth,
+    sources, omega_m, 0.0, 0.0, 0.0, 0.0, sigma8, los_z, kernel_nz,
+    source_readers,
+    table_boost, fit_nz, source_z, feedback, pixel_window,
+    baseline, omega_m_z);
+}
+
 
 
 // ---------------------------------------------------------------------------
@@ -669,7 +799,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
 // physics_model_cpp_3pcf in physics_wrapper.cpp. The arguments match
 // model_physics.
 // ---------------------------------------------------------------------------
-static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
+static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
   const physics_notebook_array& k,
   const physics_notebook_array& p_linear0,
   const physics_notebook_array& z,
@@ -691,7 +821,9 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const int fit_nz,
   const py::object& source_z,
   const py::dict& feedback,
-  const py::object& pixel_window
+  const py::object& pixel_window,
+  const py::dict& baseline, // optional absolute B input
+  const py::object& omega_m_z // required background when baseline is active
 )
 {
   const arma::Col<double> wave = copy_column_physics(k);
@@ -750,12 +882,112 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
       py::cast<physics_notebook_array>(pixel_window));
   }
 
+  physics_baseline_table_cpp_3pcf supplied;
+  arma::Col<double> matter_fraction;
+  if (!baseline.empty()) {
+    const char* names[7] = {"z", "logk", "logu", "v", "log_bispectrum",
+      "boost", "clamp"};
+    if (!(7 == baseline.size())) { spdlog::critical(
+      "3pcf: baseline requires five arrays, boost and clamp"); std::exit(1); }
+    for (const char* name : names) {
+      if (!(baseline.contains(name))) { spdlog::critical(
+        "3pcf: missing notebook baseline field"); std::exit(1); }
+    }
+    supplied.z = copy_column_physics(
+      py::cast<physics_notebook_array>(baseline["z"]));
+    supplied.logk = copy_column_physics(
+      py::cast<physics_notebook_array>(baseline["logk"]));
+    supplied.logu = copy_column_physics(
+      py::cast<physics_notebook_array>(baseline["logu"]));
+    supplied.v = copy_column_physics(
+      py::cast<physics_notebook_array>(baseline["v"]));
+    supplied.log_bispectrum = copy_column_physics(
+      py::cast<physics_notebook_array>(baseline["log_bispectrum"]));
+    supplied.boost = py::cast<int>(baseline["boost"]);
+    supplied.clamp = py::cast<int>(baseline["clamp"]);
+    matter_fraction = copy_column_physics(
+      py::cast<physics_notebook_array>(omega_m_z));
+  }
+
   return physics_model_cpp_3pcf(wave, linear, redshift, nonlinear, distance,
     jacobian, normalized_growth, density, omega_m, omega_de, w0, wa, ns,
     sigma8, los, kernel_nz, source_readers, table_boost, fit_nz, source_axis,
     feedback.empty() ? nullptr : &response,
-    pixel_window.is_none() ? nullptr : &window);
+    pixel_window.is_none() ? nullptr : &window,
+    baseline.empty() ? nullptr : &supplied,
+    baseline.empty() ? nullptr : &matter_fraction);
 }
+
+static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
+  const physics_notebook_array& k, // wave numbers, h/Mpc
+  const physics_notebook_array& p_linear0, // linear P(z=0), (Mpc/h)^3
+  const physics_notebook_array& z, // background z, includes zero
+  const physics_notebook_array& p_nonlinear, // P [nz,nk], (Mpc/h)^3
+  const physics_notebook_array& chi, // distance, Mpc/h
+  const physics_notebook_array& dz_dchi, // Jacobian, h/Mpc
+  const physics_notebook_array& growth, // D(z), one today
+  const physics_notebook_array& sources, // density [nbin,nsource] per z
+  const double omega_m, // matter fraction today
+  const double omega_de, // dark-energy fraction today
+  const double w0, // equation of state today
+  const double wa, // evolution in w(a)=w0+wa(1-a)
+  const double ns, // primordial spectral index
+  const double sigma8, // linear-power normalization
+  const physics_notebook_array& los_z, // line-of-sight nodes
+  const int kernel_nz, // radial-kernel sampling
+  const bool source_readers, // cubic comparison mode
+  const int table_boost, // dense-grid refinement
+  const int fit_nz, // internal-fit anchors
+  const py::object& source_z, // optional source z axis
+  const py::dict& feedback, // optional paired responses
+  const py::object& pixel_window // optional integer-ell window
+)
+{
+  return model_notebook_physics_common(k, p_linear0, z, p_nonlinear, chi,
+    dz_dchi,
+    growth, sources, omega_m, omega_de, w0, wa, ns, sigma8, los_z, kernel_nz,
+    source_readers, table_boost, fit_nz, source_z, feedback, pixel_window,
+    py::dict(), py::none());
+}
+
+
+static std::shared_ptr<physics_owner_3pcf>
+model_notebook_physics_with_bispectrum(
+  const physics_notebook_array& k, // wavenumbers, h/Mpc
+  const physics_notebook_array& p_linear0, // linear P at z=0, (Mpc/h)^3
+  const physics_notebook_array& z, // background redshift grid, includes zero
+  const physics_notebook_array& p_nonlinear, // nonlinear P [nz,nk], (Mpc/h)^3
+  const physics_notebook_array& chi, // comoving distance, Mpc/h
+  const physics_notebook_array& dz_dchi, // background Jacobian, h/Mpc
+  const physics_notebook_array& growth, // linear D(z), normalized to one today
+  const physics_notebook_array& sources, // density [nbin,nsource] per z
+  const double omega_m, // matter fraction today for lensing and IA
+  const double sigma8, // existing linear-power normalization
+  const py::dict& baseline, // absolute ln B and its four uniform axes
+  const py::object& omega_m_z, // matter fraction on background z [nz]
+  const physics_notebook_array& los_z, // fixed line-of-sight integration nodes
+  const int kernel_nz, // radial-kernel sampling
+  const bool source_readers, // original cubic-reader comparison mode
+  const int table_boost, // dense power/background intervals per input interval
+  const int fit_nz, // legacy fit setting; unused for supplied B
+  const py::object& source_z, // optional independent source redshift axis
+  const py::dict& feedback, // optional independent hydro/DMO ratios
+  const py::object& pixel_window // optional integer-ell angular window
+)
+{
+  // Empty is never a request to reconstruct an internal fit here. The four
+  // unused legacy scalars are zero-initialized fields, not a background.
+  if (baseline.empty()) { throw py::value_error(
+    "supplied B requires a nonempty baseline dictionary"); }
+  if (omega_m_z.is_none()) { throw py::value_error(
+    "supplied B requires Omega_m(z) on the background grid"); }
+  return model_notebook_physics_common(k, p_linear0, z, p_nonlinear, chi,
+    dz_dchi,
+    growth, sources, omega_m, 0.0, 0.0, 0.0, 0.0, sigma8, los_z, kernel_nz,
+    source_readers, table_boost, fit_nz, source_z, feedback, pixel_window,
+    baseline, omega_m_z);
+}
+
 
 
 // ---------------------------------------------------------------------------
@@ -1495,7 +1727,7 @@ void bind_threepcf_physics(py::module_& module)
   // which owns its data, so Python may discard the inputs afterwards.
   py::class_<physics_owner_3pcf, std::shared_ptr<physics_owner_3pcf>> model(
     module, "PhysicsModel",
-    "Owned BiHalofit/TATT model from k[h/Mpc], P[(Mpc/h)^3], chi[Mpc/h]. "
+    "Owned matter/TATT model from k[h/Mpc], P[(Mpc/h)^3], chi[Mpc/h]. "
     "All physical arrays are copied. Recreate after changing their values.");
 
   model.def(py::init(&model_physics),
@@ -1545,6 +1777,56 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("pixel_window") = py::none(),
     "Copy sliced or Fortran-order arrays through the Armadillo adapter.");
 
+  module.def("physics_model_production_with_bispectrum",
+    &model_physics_with_bispectrum,
+    py::arg("k").noconvert(),
+    py::arg("p_linear0").noconvert(),
+    py::arg("z").noconvert(),
+    py::arg("p_nonlinear").noconvert(),
+    py::arg("chi").noconvert(),
+    py::arg("dz_dchi").noconvert(),
+    py::arg("growth").noconvert(),
+    py::arg("sources").noconvert(),
+    py::arg("omega_m"),
+    py::arg("sigma8"),
+    py::arg("baseline"),
+    py::arg("omega_m_z"),
+    py::arg("los_z").noconvert(),
+    py::arg("kernel_nz") = 101,
+    py::arg("source_readers") = false,
+    py::arg("table_boost") = 8,
+    py::arg("fit_nz") = 33,
+    py::arg("source_z") = py::none(),
+    py::arg("feedback") = py::dict(),
+    py::arg("pixel_window") = py::none(),
+    "Construct from supplied absolute B and Omega_m(z); no internal B fit. "
+    "The caller supplies a flat-geometry background consistent with P and B.");
+
+  module.def("physics_model_notebook_with_bispectrum",
+    &model_notebook_physics_with_bispectrum,
+    py::arg("k"),
+    py::arg("p_linear0"),
+    py::arg("z"),
+    py::arg("p_nonlinear"),
+    py::arg("chi"),
+    py::arg("dz_dchi"),
+    py::arg("growth"),
+    py::arg("sources"),
+    py::arg("omega_m"),
+    py::arg("sigma8"),
+    py::arg("baseline"),
+    py::arg("omega_m_z"),
+    py::arg("los_z"),
+    py::arg("kernel_nz") = 101,
+    py::arg("source_readers") = false,
+    py::arg("table_boost") = 8,
+    py::arg("fit_nz") = 33,
+    py::arg("source_z") = py::none(),
+    py::arg("feedback") = py::dict(),
+    py::arg("pixel_window") = py::none(),
+    "Construct from supplied absolute B and Omega_m(z); no internal B fit. "
+    "The caller supplies a flat-geometry background consistent with P and B.");
+
   // --- 3. POINT AND ANGULAR QUERIES --------------------------------------
   // Direct evaluations of the model: bispectra at physical or angular
   // triangles, Legendre multipoles and full aperture means. The
@@ -1560,8 +1842,9 @@ void bind_threepcf_physics(py::module_& module)
       parameters, 0, component, false);
   }, py::arg("sides").noconvert(), py::arg("redshifts").noconvert(),
     py::arg("component") = 0, py::arg("fb") = 0.0,
-    "B_matter[point]: component 0=BiHalofit, 1=tree level, 2=one-halo "
-    "fit, 3=three-halo fit. These are fitted matter terms, not the "
+    "B_matter[point]: component 0=selected full B, 1=tree level, 2=one-halo "
+    "fit, 3=three-halo fit. Supplied full B rejects components 2 and 3. "
+    "These are fitted matter terms, not the "
     "halo integrals of the covariance module.");
 
   model.def("ia", [](const physics_owner_3pcf& owner,
@@ -1880,6 +2163,20 @@ void bind_threepcf_physics(py::module_& module)
     return result;
   }, py::arg("ell"), py::arg("bins"), py::arg("parameters") = py::dict());
 
+  model.def("background_matter_fraction", [](const physics_owner_3pcf& owner,
+      const physics_array& redshifts) {
+    shape_physics(redshifts, 1);
+    finite_physics(redshifts);
+    physics_array output(redshifts.size());
+    for (py::ssize_t node=0; node<redshifts.size(); node++) {
+      output.mutable_data()[node] = physics_omega_m_z_3pcf(owner.get(),
+        redshifts.data()[node]);
+    }
+    return output;
+  }, py::arg("redshifts").noconvert(),
+    "Omega_m(z) used by halo covariance: supplied table when selected, "
+    "otherwise the legacy w0-wa background. This is a dimensionless fraction.");
+
   model.def("radial", [](const physics_owner_3pcf& owner) {
     int nbin;
     int nlos;
@@ -1920,6 +2217,10 @@ void bind_threepcf_physics(py::module_& module)
   // production.PhysicsModel is the same class as module.PhysicsModel,
   // and notebook.PhysicsModel is the copying factory
   // physics_model_notebook.
+  module.attr("production").attr("PhysicsModelWithBispectrum")
+    = module.attr("physics_model_production_with_bispectrum");
+  module.attr("notebook").attr("PhysicsModelWithBispectrum")
+    = module.attr("physics_model_notebook_with_bispectrum");
   module.attr("production").attr("PhysicsModel") = module.attr("PhysicsModel");
   module.attr("notebook").attr("PhysicsModel")
     = module.attr("physics_model_notebook");

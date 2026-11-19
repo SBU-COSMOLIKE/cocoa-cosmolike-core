@@ -2,6 +2,7 @@
 #define COSMOLIKE_PHYSICS_3PCF_H
 
 #include "feedback_3pcf.h"
+#include "baseline_3pcf.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,9 +20,11 @@ extern "C" {
 // may free the inputs once physics_create_3pcf returns.
 //
 // Geometry. The lensing efficiency uses the flat-space source ratio,
-// so the model requires |omega_m + omega_de - 1| <= 1e-8; the
+// so the internal-fit route requires |omega_m + omega_de - 1| <= 1e-8; the
 // tolerance absorbs floating-point rounding of the density scalars
-// and does not admit a curved-lensing model.
+// and does not admit a curved-lensing model. The supplied-B route requires
+// the caller to provide a consistent flat background; it does not infer
+// dark-energy parameters or density closure from those arrays.
 //
 // LOS nodes are positive, strictly increasing, at least two in
 // number, and must lie inside the tabulated redshift range; they
@@ -61,6 +64,11 @@ typedef struct {
   const feedback_input_3pcf* feedback; // optional paired response; copied
   int nwindow; // zero disables the angular pixel window
   const double* window; // W(ell) at integers 0..nwindow-1; copied
+  // Optional supplied baseline. NULL preserves the internal BiHalofit route.
+  // With a supplied baseline, omega_de/w0/wa/ns are unused; background
+  // geometry is the caller's responsibility and remains flat in projection.
+  const baseline_input_3pcf* baseline; // copied absolute matter B table
+  const double* omega_m_z; // required with baseline; Omega_m(z) on z [nz]
 } physics_input_3pcf;
 
 // TATT (tidal alignment and tidal torquing) parameters in the
@@ -140,9 +148,12 @@ double physics_feedback_bispectrum_3pcf(
   double amplitude
 );
 
-// component: 0 = BiHalofit, 1 = tree level, 2 = one-halo fit,
-// 3 = three-halo fit. These are fitted matter terms, not the halo
-// integrals of the covariance module.
+// component: 0 = the selected full matter B (internal fit or supplied),
+// 1 = tree level from P_linear, 2 = one-halo fit, 3 = three-halo fit.
+// A supplied full B cannot define the fitted pieces 2/3, so those requests
+// stop explicitly. The covariance's independent halo integrals do not
+// request those fitted pieces. Optional fb still multiplies the selected B;
+// leave it zero if the supplied table already contains the same feedback.
 double physics_matter_3pcf(
   const physics_model_3pcf* model,
   double k1,
@@ -157,7 +168,10 @@ double physics_matter_3pcf(
 // order: ddE,dEd,Edd,dEE,EEd,EdE,EEE,ddB,dBd,Bdd,dEB,dBE,EBd,BEd,
 // BdE,EdB,EEB,EBE,BEE. d denotes matter density; E and B are the two
 // intrinsic shape modes. remove_alignment removes C1^p B_tree, with p
-// the number of shape legs, from the seven all-E entries only.
+// the number of shape legs, from the seven all-E entries only. A supplied
+// full matter B does not alter these perturbative IA templates. It enters
+// the projected NLA baseline, while the signed quadratic residuals keep
+// their existing power-spectrum prescription.
 void physics_ia_bispectra_3pcf(
   const physics_model_3pcf* model,
   const physics_ia_3pcf* parameters,

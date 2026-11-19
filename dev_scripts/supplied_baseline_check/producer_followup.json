@@ -1,0 +1,27 @@
+{
+  "input_sha256": {
+    "python/des3pcf/bihalofit.py": "71ba577f0eed7f27e648aff64d879f5165d46c0f78e419ccbefcf01b9788fdfd",
+    "tests/data_vector/test_bihalofit_python.py": "97bc1ad40bfafd045d69d8dc97afba65893b4898965f15bcb0c38e4fd4252b96",
+    "tests/data_vector/test_bihalofit_joint.py": "c921087eae19f167c2c3fd50b27b8a6c553f86f872077d5f8ce5dc5bc1bb38ef",
+    "tests/data_vector/test_bihalofit_squeezed.py": "e9405263853fc15a8cda3d3192171d2b8929d628788e33c961bd3011809be80d",
+    "tests/data_vector/reference_bihalofit/frozen_inputs.npz": "32968985b687e42d7976db4162432140b14a7e7b523b0001256c451ce60d6983",
+    "tests/data_vector/reference_bihalofit/frozen_measurement.npz": "eff7141efed3ef28c2a420a5d60c21a7fc9bcc5e70ece8f97e588c8903293ec1",
+    "tests/data_vector/reference_bihalofit/manifest.json": "3cdbe8593d7ccf67799f22db5612d54460ccc5b691eda2ca3b020670c55673a3"
+  },
+  "runs": [
+    {
+      "mode": "strict",
+      "binary_sha256": "c451e2a1d1538072746fd7caf261bbe36f97bb4c19f8c487d3a7677148f81939",
+      "returncode": 0,
+      "seconds": 3.906748056411743,
+      "output": ".........................................................                [100%]\n57 passed in 3.71s\n"
+    },
+    {
+      "mode": "debug",
+      "binary_sha256": "73bf5b30140f4d1dbf297c710ccf6176907696a757481d0cf1ed22e0be4b68f9",
+      "returncode": 0,
+      "seconds": 6.340712070465088,
+      "output": ".........................................................                [100%]\n57 passed in 6.04s\n"
+    }
+  ]
+}

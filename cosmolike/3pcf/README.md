@@ -12,7 +12,8 @@
 10. [Changing a calculation without restarting Python](#state)
 11. [Accuracy and independent checks](#checks)
 12. [Paired baryonic responses](#paired-feedback)
-13. [Acknowledgements](#credits)
+13. [A supplied matter bispectrum](#supplied-bispectrum)
+14. [Acknowledgements](#credits)
 
 ## What can be calculated? <a name="scope"></a>
 
@@ -107,10 +108,11 @@ B_m(k_1,k_2,k_3;z).
 The Dirac delta enforces translation invariance: the three wavevectors
 must close into a triangle. Their lengths $`k_1,k_2,k_3`$ therefore obey
 the triangle inequalities. A larger $`k`$ means a smaller spatial scale.
-BiHalofit supplies a calibrated nonlinear fit to this bispectrum. A
-separate tree-level result supplies the lowest-order gravitational
-perturbation-theory reference. Increasing a numerical resolution does not
-make either physical approximation exact.
+The default BiHalofit calculation supplies a calibrated nonlinear fit to
+this bispectrum. An [optional supplied table](#supplied-bispectrum) gives
+the full matter bispectrum directly. A separate tree-level result supplies
+the lowest-order gravitational perturbation-theory reference. Increasing a
+numerical resolution does not make either physical approximation exact.
 
 The model accepts $`k`$ in $`h/\mathrm{Mpc}`$, distances in
 $`\mathrm{Mpc}/h`$, power in $`(\mathrm{Mpc}/h)^3`$ and bispectra in
@@ -129,13 +131,15 @@ number density needed for shape noise is a separate survey input.
 
 ### Projecting along the line of sight
 
-The model uses spatially flat lensing geometry. It requires
-$`|\Omega_m+\Omega_{\rm de}-1|\leq10^{-8}`$, where $`\Omega_m`$ and
+The model uses spatially flat lensing geometry. The internal-fit route
+requires $`|\Omega_m+\Omega_{\rm de}-1|\leq10^{-8}`$, where $`\Omega_m`$ and
 $`\Omega_{\rm de}`$ are the present matter and dark-energy density
 fractions; the bound is a scalar-rounding tolerance, and the code does
 not change either value. A curved distance table would not replace the
 flat distance ratios in the lensing kernel. The project CAMB producer
-explicitly requests flat geometry.
+explicitly requests flat geometry. The supplied-bispectrum route takes its
+background from arrays and requires the caller to establish the same flat
+geometry; it does not reconstruct dark-energy scalars or density closure.
 
 Convergence $`\kappa`$ is the scalar lensing field obtained by weighting
 matter fluctuations along the line of sight. Its angular variations also
@@ -826,9 +830,9 @@ finite-sample tests are separate from the C covariance integral.
 
 | File | Responsibility |
 |---|---|
-| [physics_3pcf.c](physics_3pcf.c), [header](physics_3pcf.h) | Owned physical tables, BiHalofit, TATT/velocity shear, projection and full-filter aperture mean |
+| [physics_3pcf.c](physics_3pcf.c), [header](physics_3pcf.h) | Owned physical tables, internal or supplied matter B, TATT/velocity shear, projection and full-filter aperture mean |
 | [physics_grid_3pcf.c](physics_grid_3pcf.c), [header](physics_grid_3pcf.h) | Shared source-triplet preparation, uniform triangle/multipole tables and SIMD linear reads |
-| [feedback_3pcf.c](feedback_3pcf.c), [header](feedback_3pcf.h) | Paired baryonic response tables for matter power and bispectrum (Section 12) |
+| [feedback_3pcf.c](feedback_3pcf.c), [response header](feedback_3pcf.h), [baseline header](baseline_3pcf.h) | Separate response and absolute-B owners sharing uniform table preparation and reads (Sections 12–13) |
 | [coupling_3pcf.c](coupling_3pcf.c), [fftlog_3pcf.c](fftlog_3pcf.c), [transform_3pcf.c](transform_3pcf.c) | Angular coupling, two-Bessel transforms and natural-component reconstruction |
 | [aperture_3pcf.c](aperture_3pcf.c), [header](aperture_3pcf.h) | Finite aperture geometry and contractions |
 | [covariance_3pcf.c](covariance_3pcf.c), [header](covariance_3pcf.h) | Filtered pairs, Gaussian map contractions and response matrices |
@@ -1186,6 +1190,65 @@ The project response guide (`Cocoa/projects/des_3pcf/FEEDBACK.md`)
 defines units, array order, metadata, the executed teaching notebook and
 calibration limits. The covariance does not acquire a feedback response
 from this mean calculation.
+
+## A supplied matter bispectrum <a name="supplied-bispectrum"></a>
+
+A theory provider can supply the absolute matter bispectrum $`B_m`$ while
+C retains the projection and aperture calculations. This table describes
+the same matter field and cosmology as the supplied power and background
+arrays. It differs from the dimensionless feedback ratio
+$`R_B=B_{\rm hydro}/B_{\rm DMO}`$: a baseline value of
+$`10^6(\mathrm{Mpc}/h)^6`$ and a response of $`0.8`$ describe different
+quantities. Applying that response to that baseline gives
+$`8\times10^5(\mathrm{Mpc}/h)^6`$. Supplying B alone does not change P
+or calibrate a response ratio.
+
+Both `production.PhysicsModelWithBispectrum` and
+`notebook.PhysicsModelWithBispectrum` take the ordinary physical arrays,
+`omega_m`, `sigma8`, a `baseline` dictionary, and `omega_m_z` on the
+background `z` axis. They do not take `omega_de`, `w0`, `wa`, or `ns`.
+The provider supplies the background matter fraction because the halo
+covariance uses it; C does not infer it from the B table. `omega_m` still
+sets lensing and intrinsic-alignment amplitudes, and `sigma8` retains the
+existing linear-power normalization. The ordinary `PhysicsModel`
+constructors retain the internal fit and their existing arguments.
+
+The baseline dictionary contains `z`, `logk`, `logu`, `v`,
+`log_bispectrum`, `boost`, and `clamp`. With triangle sides sorted as
+$`a\leq b\leq c`$, the coordinates are $`k=b`$, $`u=a/b`$ and
+$`v=(c-b)/a`$. Each axis is uniform with at least four nodes; `logk` and
+`logu` are natural logarithms. `log_bispectrum` is the logarithm of the
+positive numerical B value in $`(\mathrm{Mpc}/h)^6`$, flattened from
+`[nz,nk,nu,nv]` with `v` varying fastest. Zero or negative B cannot be
+represented by taking an absolute value or clipping it. The provider must
+choose a representation that describes its physical model.
+
+Preparation copies the input, uses the same natural-cubic upsampling as
+the response tables, and leaves uniform arithmetic-index linear reads
+inside the repeated integrals. `boost` refines this dense table; it does
+not recover features missed by the input sampling. `clamp=0` rejects a
+query outside the table. `clamp=1` explicitly holds each boundary value,
+which is a continuation assumption requiring a separate accuracy check.
+
+The full-B query supplies the projected NLA baseline and the covariance
+terms containing B. Tree-level diagnostic component 1 remains calculated
+from linear P. Components 2 and 3 request the internal fit's separate
+one-/three-halo pieces, which a general supplied full B does not determine,
+so those requests are refused. The perturbative IA residuals and the
+covariance's independent halo integrals retain their existing prescriptions.
+The caller must also avoid applying a feedback modifier already included
+in the supplied table.
+
+`core.set_baseline_bispectrum(baseline, omega_m_z, sigma8)` installs owned
+copies for the core bridge. Every axis, table value, background fraction,
+size and preparation control participates in its change checks. Repeating
+identical input reuses the model; changed input constructs another model,
+and an older Python owner keeps its own arrays. Passing `None` clears only
+the supplied baseline; resetting the core clears the stored override.
+The [Python producer guide](https://github.com/SBU-COSMOLIKE/cocoa_des_3pcf/blob/main/BIHALOFIT_PYTHON.md)
+(`Cocoa/projects/des_3pcf/BIHALOFIT_PYTHON.md`) explains the optional
+BiHalofit producer and separates equation agreement, interpolation
+refinement, and covariance-weighted changes of the final observable.
 
 ## Acknowledgements <a name="credits"></a>
 

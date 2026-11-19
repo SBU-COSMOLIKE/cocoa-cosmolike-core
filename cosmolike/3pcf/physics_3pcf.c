@@ -195,6 +195,7 @@ typedef struct {
 // per unit comoving distance. A model without paired feedback tables
 // is dark-matter-only (DMO).
 struct physics_model_3pcf {
+  baseline_3pcf* baseline; // supplied absolute B; NULL uses internal fit
   feedback_3pcf* feedback; // immutable paired matter response, NULL for DMO
   int nwindow;        // integer-ell pixel-window samples; zero disables
   double* window;     // owned integer-ell samples; NULL disables smoothing
@@ -664,9 +665,11 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
   const int boost = model->table_boost;
   uniformize_spline(&model->linear, boost);
   uniformize_spline(&model->growth, boost);
-  uniformize_spline(&model->radius, boost);
-  uniformize_spline(&model->neff, boost);
-  uniformize_spline(&model->sigma8z, boost);
+  if (NULL == model->baseline) {
+    uniformize_spline(&model->radius, boost);
+    uniformize_spline(&model->neff, boost);
+    uniformize_spline(&model->sigma8z, boost);
+  }
   uniformize_spline(&model->omega_m_z, boost);
   for (int redshift=0; redshift<model->npower_z; redshift++) {
     uniformize_spline(model->nonlinear + redshift, boost);
@@ -1168,11 +1171,13 @@ static void prepare_radial(physics_model_3pcf* model)
   model->los_shape = calloc1d((int)((size_t)model->nbin*nlos));
   model->los_chi = calloc1d(nlos);
   model->los_dchi = calloc1d(nlos);
-  model->los_bh = calloc((size_t)nlos,
-    sizeof(physics_bh_coefficients));
-  if (model->los_bh == NULL) {
-    log_fatal("physics_3pcf: allocation failed");
-    exit(1);
+  if (NULL == model->baseline) {
+    model->los_bh = calloc((size_t)nlos,
+      sizeof(physics_bh_coefficients));
+    if (model->los_bh == NULL) {
+      log_fatal("physics_3pcf: allocation failed");
+      exit(1);
+    }
   }
 
   // Sample the background once on the uniform kernel grid: redshift,
@@ -1189,7 +1194,9 @@ static void prepare_radial(physics_model_3pcf* model)
   for (int node=0; node<nlos; node++) {
     model->los_chi[node] = read_spline(&model->distance,
       model->los_z[node], 0);
-    model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
+    if (NULL == model->baseline) {
+      model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
+    }
     if (!(model->los_chi[node] > 0.0)) {
       log_fatal("physics_3pcf: line-of-sight distance must be positive");
       exit(1);
@@ -1360,19 +1367,41 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: growth must be normalized to one at z=0");
     exit(1);
   }
-  if (!(isfinite(input->omega_m) && input->omega_m > 0.0
-        && isfinite(input->omega_de) && input->omega_de >= 0.0
-        && isfinite(input->w0) && isfinite(input->wa)
-        && isfinite(input->ns) && isfinite(input->sigma8)
-        && input->sigma8 > 0.0)) {
-    log_fatal("physics_3pcf: invalid cosmological scalars");
-    exit(1);
-  }
-  const double density_sum = input->omega_m + input->omega_de;
-  if (!(isfinite(density_sum) && fabs(density_sum - 1.0) <= 1.0e-8)) {
-    log_fatal("physics_3pcf: flat geometry requires abs(omega_m + omega_de "
-      "- 1) <= 1e-8");
-    exit(1);
+  // The supplied route takes its background from arrays. Only Omega_m0
+  // (lensing/IA) and sigma8 (the existing power normalization) are scalars
+  // it needs. It must never reconstruct a w0-wa background or fit B.
+  if (NULL != input->baseline) {
+    if (!(isfinite(input->omega_m))) { log_fatal(
+      "physics_3pcf: Omega_m0 must be finite"); exit(1); }
+    if (!(0.0 < input->omega_m)) { log_fatal(
+      "physics_3pcf: Omega_m0 must be positive"); exit(1); }
+    if (!(isfinite(input->sigma8))) { log_fatal(
+      "physics_3pcf: sigma8 must be finite"); exit(1); }
+    if (!(0.0 < input->sigma8)) { log_fatal(
+      "physics_3pcf: sigma8 must be positive"); exit(1); }
+    if (!(NULL != input->omega_m_z)) { log_fatal(
+      "physics_3pcf: supplied B requires tabulated Omega_m(z)"); exit(1); }
+    for (int node=0; node<input->nz; node++) {
+      if (!(isfinite(input->omega_m_z[node]))) { log_fatal(
+        "physics_3pcf: Omega_m(z) must be finite"); exit(1); }
+      if (!(0.0 < input->omega_m_z[node])) { log_fatal(
+        "physics_3pcf: Omega_m(z) must be positive"); exit(1); }
+    }
+  } else {
+    if (!(isfinite(input->omega_m) && input->omega_m > 0.0
+          && isfinite(input->omega_de) && input->omega_de >= 0.0
+          && isfinite(input->w0) && isfinite(input->wa)
+          && isfinite(input->ns) && isfinite(input->sigma8)
+          && input->sigma8 > 0.0)) {
+      log_fatal("physics_3pcf: invalid cosmological scalars");
+      exit(1);
+    }
+    const double density_sum = input->omega_m + input->omega_de;
+    if (!(isfinite(density_sum) && fabs(density_sum - 1.0) <= 1.0e-8)) {
+      log_fatal("physics_3pcf: flat geometry requires abs(omega_m + omega_de "
+        "- 1) <= 1e-8");
+      exit(1);
+    }
   }
 
   if (!(input->source_readers == 0 || input->source_readers == 1)) {
@@ -1423,6 +1452,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     }
   }
 
+  model->baseline = baseline_create_3pcf(input->baseline);
   model->feedback = feedback_create_3pcf(input->feedback);
   model->nk = input->nk;
   model->nz = input->nz;
@@ -1446,10 +1476,12 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->power_z = calloc1d(input->nz);
   memcpy(model->power_z, input->z, (size_t)input->nz*sizeof(double));
   model->omega_m = input->omega_m;
-  model->omega_de = input->omega_de;
-  model->w0 = input->w0;
-  model->wa = input->wa;
-  model->ns = input->ns;
+  if (NULL == model->baseline) {
+    model->omega_de = input->omega_de;
+    model->w0 = input->w0;
+    model->wa = input->wa;
+    model->ns = input->ns;
+  }
   model->sigma8 = input->sigma8;
 
   const int nk = model->nk;
@@ -1559,7 +1591,11 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->los_z = calloc1d(input->nlos);
   memcpy(model->los_z, input->los_z, (size_t)input->nlos*sizeof(double));
 
-  prepare_bihalofit(model);
+  if (NULL == model->baseline) {
+    prepare_bihalofit(model);
+  } else {
+    model->omega_m_z = make_spline(input->z, input->omega_m_z, input->nz);
+  }
   prepare_radial(model);
   prepare_uniform_readers(model);
 
@@ -1575,7 +1611,9 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   }
 
   for (int node=0; node<model->nlos; node++) {
-    model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
+    if (NULL == model->baseline) {
+      model->los_bh[node] = bh_coefficients(model, model->los_z[node]);
+    }
     for (int mode=0; mode<3; mode++) {
       model->los_power[(size_t)mode*model->nlos + node]
         = prepare_power_row(model, model->los_z[node], mode);
@@ -1632,6 +1670,7 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
   free(model->los_shape);
   free(model->los_bh);
   free(model->los_power);
+  baseline_destroy_3pcf(model->baseline);
   feedback_destroy_3pcf(model->feedback);
   free(model->window);
   free(model);
@@ -2242,6 +2281,28 @@ static double matter_prepared(
   const physics_triangle_geometry* prepared_geometry
 )
 {
+  // A supplied full B has no defined fitted one-/three-halo split. The
+  // tree diagnostic still comes directly from P_linear and F2. Keeping
+  // these branches before coefficient reads also avoids constructing any
+  // unused nonlinear-radius or variance tables for the supplied route.
+  if (NULL != model->baseline) {
+    if (!(component <= 1)) { log_fatal(
+      "physics_3pcf: supplied full B has no fitted one-/three-halo "
+      "components"); exit(1); }
+    if (0 == component) {
+      return baseline_bispectrum_3pcf(model->baseline, sides, z);
+    }
+    const physics_triangle_geometry geometry = prepared_geometry
+      ? *prepared_geometry : triangle_geometry(sides, 0);
+    const physics_power_row row = prepared ? *prepared
+      : prepare_power_row(model, z, 0);
+    double linear[3];
+    for (int leg=0; leg<3; leg++) {
+      linear[leg] = read_power_row(&row, sides[leg]);
+    }
+    return tree_sum_physics(&geometry, linear);
+  }
+
   physics_triangle_geometry local_geometry;
   const physics_triangle_geometry* geometry = prepared_geometry;
   if (geometry == NULL) {
@@ -2330,6 +2391,10 @@ double physics_matter_3pcf(
 
   triangle_physics(k1, k2, k3);
   const double sides[3] = {k1, k2, k3};
+  if (NULL != model->baseline) {
+    return matter_prepared(model, NULL, sides, z, component, NULL, NULL)
+      *baryon_physics(sides, z, fb, 0);
+  }
   const physics_bh_coefficients coefficients = bh_coefficients(model, z);
 
   return matter_prepared(model, &coefficients, sides, z, component, NULL, NULL)
@@ -3060,7 +3125,8 @@ double physics_projected_3pcf(
 
     if (component != 2) {
       baseline += projection->weights[node]*matter_prepared(model,
-        model->los_bh + node, sides, redshift, 0, model->los_power + node,
+        model->baseline ? NULL : model->los_bh + node, sides, redshift, 0,
+        model->los_power + node,
         &geometry)
         *baryon_physics(sides, redshift, projection->ia.fb,
         projection->ia.suppress_only)
@@ -3269,7 +3335,8 @@ static double projected_node_physics(
 
   double baseline = 0.0;
   if (component != 2) {
-    baseline = matter_prepared(model, model->los_bh + node,
+    baseline = matter_prepared(model,
+      model->baseline ? NULL : model->los_bh + node,
       sides, redshift, 0, model->los_power + node, geometry)
       *baryon_physics(sides, redshift,
       first->ia.fb, first->ia.suppress_only)
@@ -3818,8 +3885,9 @@ double physics_omega_m_3pcf(const physics_model_3pcf* model)
 
 
 // ---------------------------------------------------------------------------
-// physics_omega_m_z_3pcf: the exact matter fraction Omega_m(z) of the
-// model's w0-wa background (see omega_m_physics for the derivation).
+// Matter fraction used by halo covariance. A supplied baseline takes this
+// from the supplied background array; the legacy route retains its w0-wa
+// formula (omega_m_physics). Neither route infers Omega_m(z) from B.
 double physics_omega_m_z_3pcf(
   const physics_model_3pcf* model,
   const double z
@@ -3830,6 +3898,16 @@ double physics_omega_m_z_3pcf(
     exit(1);
   }
 
+  if (NULL != model->baseline) {
+    if (!(z <= model->zmax)) { log_fatal(
+      "physics_3pcf: Omega_m(z) query exceeds supplied background"); exit(1); }
+    const double value = read_spline(&model->omega_m_z, z, 0);
+    if (!(isfinite(value))) { log_fatal(
+      "physics_3pcf: interpolated Omega_m(z) is nonfinite"); exit(1); }
+    if (!(0.0 < value)) { log_fatal(
+      "physics_3pcf: interpolated Omega_m(z) is not positive"); exit(1); }
+    return value;
+  }
   return omega_m_physics(model, z);
 }
 

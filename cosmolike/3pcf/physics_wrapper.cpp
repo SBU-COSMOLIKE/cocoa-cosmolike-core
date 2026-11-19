@@ -104,7 +104,9 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const int fit_nz,
   const arma::Col<double>& source_z,
   const physics_feedback_tables_cpp_3pcf* feedback,
-  const arma::Col<double>* pixel_window
+  const arma::Col<double>* pixel_window,
+  const physics_baseline_table_cpp_3pcf* baseline,
+  const arma::Col<double>* omega_m_z
 )
 {
   const arma::uword nsource = source_z.n_elem ? source_z.n_elem : z.n_elem;
@@ -241,6 +243,39 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     }
     input.nwindow = static_cast<int>(pixel_window->n_elem);
     input.window = pixel_window->memptr();
+  }
+
+  baseline_input_3pcf supplied = {};
+  if (nullptr != baseline) {
+    if (!(nullptr != omega_m_z)) { spdlog::critical(
+      "3pcf: supplied B needs Omega_m(z)"); std::exit(1); }
+    if (!(z.n_elem == omega_m_z->n_elem)) { spdlog::critical(
+      "3pcf: Omega_m(z) must match background z"); std::exit(1); }
+    const size_t counts[4] = {baseline->z.n_elem, baseline->logk.n_elem,
+      baseline->logu.n_elem, baseline->v.n_elem};
+    size_t size = 1;
+    for (int axis=0; axis<4; axis++) {
+      if (!(4 <= counts[axis])) { spdlog::critical(
+        "3pcf: B axes need four nodes"); std::exit(1); }
+      if (!(counts[axis] <= INT_MAX/size)) { spdlog::critical(
+        "3pcf: B dimensions exceed C storage"); std::exit(1); }
+      size *= counts[axis];
+    }
+    if (!(size == baseline->log_bispectrum.n_elem)) { spdlog::critical(
+      "3pcf: B table size disagrees with axes"); std::exit(1); }
+    supplied.nz = static_cast<int>(counts[0]);
+    supplied.nk = static_cast<int>(counts[1]);
+    supplied.nu = static_cast<int>(counts[2]);
+    supplied.nv = static_cast<int>(counts[3]);
+    supplied.z = baseline->z.memptr();
+    supplied.logk = baseline->logk.memptr();
+    supplied.logu = baseline->logu.memptr();
+    supplied.v = baseline->v.memptr();
+    supplied.log_bispectrum = baseline->log_bispectrum.memptr();
+    supplied.boost = baseline->boost;
+    supplied.clamp = baseline->clamp;
+    input.baseline = &supplied;
+    input.omega_m_z = omega_m_z->memptr();
   }
 
   return std::make_shared<physics_owner_3pcf>(input);

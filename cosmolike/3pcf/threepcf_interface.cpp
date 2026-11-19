@@ -798,6 +798,73 @@ static void bridge_feedback_3pcf(
       py::cast<int>(feedback["clamp"]), amplitude);
 }
 
+// The core bridge owns copies just as the direct model factories do.
+// Clearing this override never changes the stored legacy fit scalars.
+static void bridge_baseline_3pcf(
+  const py::object& baseline, // five arrays plus boost and clamp; None clears
+  const py::object& omega_m_z, // matter fraction on core background z
+  const py::object& sigma8 // required positive normalization when installing
+)
+{
+  if (baseline.is_none()) {
+    threepcf_bridge_set_baseline_bispectrum(NULL, NULL, 0, 0.0);
+    return;
+  }
+  if (!(py::isinstance<py::dict>(baseline))) { throw py::value_error(
+    "baseline must be a dictionary or None"); }
+  if (omega_m_z.is_none()
+      || sigma8.is_none()) { throw py::value_error(
+    "baseline requires omega_m_z and sigma8"); }
+  const auto dictionary = py::cast<py::dict>(baseline);
+  const char* names[5] = {"z", "logk", "logu", "v", "log_bispectrum"};
+  if (!(7 == dictionary.size())) { throw py::value_error(
+    "baseline requires five arrays, boost and clamp"); }
+  if (!(dictionary.contains("boost"))) { throw py::value_error(
+    "baseline boost is missing"); }
+  if (!(dictionary.contains("clamp"))) { throw py::value_error(
+    "baseline clamp is missing"); }
+  std::vector<array_3pcf> arrays;
+  size_t size = 1;
+  for (int axis=0; axis<5; axis++) {
+    if (!(dictionary.contains(names[axis]))) { throw py::value_error(
+      "baseline array is missing"); }
+    if (!(array_3pcf::check_(dictionary[names[axis]]))) { throw py::value_error(
+      "baseline arrays must be contiguous float64 vectors"); }
+    arrays.push_back(py::reinterpret_borrow<array_3pcf>(
+      dictionary[names[axis]]));
+    rank_3pcf(arrays.back(), 1, names[axis]);
+    finite_3pcf(arrays.back(), names[axis]);
+    if (axis < 4) {
+      const size_t count = arrays.back().size();
+      if (!(4 <= count)) { throw py::value_error(
+        "baseline axes need four nodes"); }
+      if (!(count <= INT_MAX/size)) { throw py::value_error(
+        "baseline dimensions exceed C storage"); }
+      size *= count;
+    }
+  }
+  if (!(size == static_cast<size_t>(arrays[4].size()))) { throw py::value_error(
+    "baseline values disagree with axis sizes"); }
+  if (!(array_3pcf::check_(omega_m_z))) { throw py::value_error(
+    "omega_m_z must be a contiguous float64 vector"); }
+  const auto matter_fraction = py::reinterpret_borrow<array_3pcf>(omega_m_z);
+  const double* fractions = bridge_vector_3pcf(matter_fraction, "omega_m_z");
+  baseline_input_3pcf input = {};
+  input.nz = static_cast<int>(arrays[0].size());
+  input.nk = static_cast<int>(arrays[1].size());
+  input.nu = static_cast<int>(arrays[2].size());
+  input.nv = static_cast<int>(arrays[3].size());
+  input.z = arrays[0].data();
+  input.logk = arrays[1].data();
+  input.logu = arrays[2].data();
+  input.v = arrays[3].data();
+  input.log_bispectrum = arrays[4].data();
+  input.boost = py::cast<int>(dictionary["boost"]);
+  input.clamp = py::cast<int>(dictionary["clamp"]);
+  threepcf_bridge_set_baseline_bispectrum(&input, fractions,
+    static_cast<int>(matter_fraction.size()), py::cast<double>(sigma8));
+}
+
 // Register every bridge entry point on the "core" submodule.
 static void bind_threepcf_core_bridge(py::module_& module)
 {
@@ -851,6 +918,13 @@ static void bind_threepcf_core_bridge(py::module_& module)
       "Supply the paired hydro/DMO response tables and the shared "
       "log-response amplitude (empty dict with amplitude 0 clears).",
       py::arg("feedback") = py::dict(), py::arg("amplitude") = 0.0);
+
+  core.def("set_baseline_bispectrum", &bridge_baseline_3pcf,
+      "Supply absolute B, Omega_m(z) on the core background grid, and sigma8. "
+      "None clears only the B override; existing model owners stay valid.",
+      py::arg("baseline") = py::none(),
+      py::arg("omega_m_z") = py::none(),
+      py::arg("sigma8") = py::none());
 
   core.def("set_prescriptions", &threepcf_bridge_set_prescriptions,
       "Supply the IA prescription selectors power_mode, ct_mode and "

@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "feedback_3pcf.h"
+#include "baseline_3pcf.h"
 #include "cosmolike/basics.h"
 #include "log.c/src/log.h"
 
@@ -64,7 +65,7 @@ static size_t table_size(
   for (int axis=0; axis<dimensions; axis++) {
     if (!(counts[axis] > 0
           && size <= (size_t)INT_MAX/(size_t)counts[axis])) {
-      log_fatal("feedback_3pcf: response dimensions overflow the core "
+      log_fatal("3pcf logarithmic table: dimensions overflow the core "
         "allocator count");
       exit(1);
     }
@@ -76,12 +77,12 @@ static size_t table_size(
 
 
 // ---------------------------------------------------------------------------
-// Resample a log-response table onto a grid boost times denser.
+// Resample a logarithmic table onto a grid boost times denser.
 //
 // The query path uses multilinear interpolation, because linear
 // weights are cheap and branch-free inside parallel workers. Linear
 // interpolation on the loaded grid alone would lose the curvature of
-// the response between its nodes. This preparation step recovers that
+// the tabulated function between nodes. This preparation recovers that
 // curvature once, at creation: it runs a natural cubic spline through the
 // loaded nodes and evaluates it on a grid with boost intervals per
 // loaded interval, so the later linear reads follow the cubic shape.
@@ -93,7 +94,7 @@ static size_t table_size(
 // result.
 //
 // Parameters:
-//   source     - loaded ln R table, flat, last axis contiguous
+//   source     - loaded logarithmic table, flat, last axis contiguous
 //   counts     - loaded node count per axis [dimensions]
 //   axes       - loaded coordinate array of each axis [dimensions]
 //   dimensions - 2 for the power response, 4 for the bispectrum
@@ -102,7 +103,7 @@ static size_t table_size(
 // frees; boost = 1 returns a finiteness-checked copy of the source.
 // ---------------------------------------------------------------------------
 static double* dense_table(
-  const double* source, // loaded ln R table, flat, last axis contiguous
+  const double* source, // logarithmic values, flat, last axis contiguous
   const int* counts, // loaded node count per axis [dimensions]
   const double* const* axes, // loaded coordinates of each axis [dimensions]
   const int dimensions, // 2 for the power response, 4 for bispectrum
@@ -116,7 +117,7 @@ static double* dense_table(
 
   for (size_t index=0; index<size; index++) {
     if (!(isfinite(source[index]))) {
-      log_fatal("feedback_3pcf: nonfinite log response");
+      log_fatal("3pcf logarithmic table: nonfinite input value");
       exit(1);
     }
     table[index] = source[index];
@@ -216,7 +217,7 @@ static double* dense_table(
               value = line[q] + del*(b[q] + del*(c[q] + del*d[q])); // Horner
             }
             if (!(isfinite(value))) {
-              log_fatal("feedback_3pcf: nonfinite prepared log response");
+              log_fatal("3pcf logarithmic table: nonfinite prepared value");
               exit(1);
             }
             output[(block*new_count + node)*stride + inner] = value;
@@ -235,6 +236,84 @@ static double* dense_table(
   }
 
   return table;
+}
+
+
+// Validate the uniform coordinates and prepare arithmetic index constants.
+// Both physical baseline tables and response ratios use this grid machinery;
+// their statistical meanings and their owners remain separate.
+static void prepare_axes(
+  const int* counts, // source counts [4]
+  const double* const* axes, // source coordinate vectors [4]
+  const int boost, // dense intervals per original interval
+  int* dense_count, // output dense counts [4]
+  double* lower, // output first coordinates [4]
+  double* upper, // output last coordinates [4]
+  double* inverse // output inverse dense spacings [4]
+)
+{
+  for (int axis=0; axis<4; axis++) {
+    const int count = counts[axis];
+    if (!(count >= 4
+          && axes[axis]
+          && count - 1 <= (INT_MAX - 1)/boost)) {
+      log_fatal("3pcf logarithmic table: each axis needs four nodes and "
+        "representable dense size");
+      exit(1);
+    }
+
+    const double low = axes[axis][0];
+    const double high = axes[axis][count - 1];
+    if (!(isfinite(low)
+          && isfinite(high)
+          && high > low)) {
+      log_fatal("3pcf logarithmic table: coordinates must increase");
+      exit(1);
+    }
+
+    const double step = (high - low)/(count - 1);
+    if (!(isfinite(step)
+          && step > 0.0)) {
+      log_fatal("3pcf logarithmic table: spacing is not representable");
+      exit(1);
+    }
+
+    // Purpose of this uniformity check: the query path converts a
+    // coordinate to a grid index by multiplying with one stored
+    // inverse spacing, and that shortcut is correct only on a uniform
+    // axis. A file written with rounded decimals is uniform only to
+    // roundoff, so the comparison allows a slack of 64 machine
+    // epsilons scaled by the largest axis magnitude: tens of
+    // last-digit rounding errors pass, while a genuinely nonuniform
+    // axis, whose node offsets are comparable to the spacing itself,
+    // still fails clearly.
+    //
+    // An accepted axis is then read as the ideal uniform grid its
+    // endpoints define: the dense preparation never sees the roundoff
+    // offsets of the individual loaded coordinates.
+    for (int node=0; node<count; node++) {
+      const double expected = low + node*step;
+      if (!(isfinite(axes[axis][node])
+            && (0 == node || axes[axis][node] > axes[axis][node - 1])
+            && fabs(axes[axis][node] - expected)
+              <= 64.0*DBL_EPSILON*fmax(1.0, fmax(fabs(low), fabs(high))))) {
+        log_fatal("3pcf logarithmic table: coordinates must be uniform");
+        exit(1);
+      }
+    }
+
+    dense_count[axis] = boost*(count - 1) + 1;
+    lower[axis] = low;
+    upper[axis] = high;
+    inverse[axis] = (dense_count[axis] - 1)/(high - low);
+    if (!(isfinite(inverse[axis])
+          && inverse[axis] > 0.0)) {
+      log_fatal("3pcf logarithmic table: dense inverse spacing is not "
+        "representable");
+      exit(1);
+    }
+  }
+
 }
 
 
@@ -286,67 +365,8 @@ feedback_3pcf* feedback_create_3pcf(
   }
   response->clamp = input->clamp;
 
-  for (int axis=0; axis<4; axis++) {
-    const int count = counts[axis];
-    if (!(count >= 4
-          && axes[axis]
-          && count - 1 <= (INT_MAX - 1)/input->boost)) {
-      log_fatal("feedback_3pcf: each response axis needs four nodes and "
-        "representable dense size");
-      exit(1);
-    }
-
-    const double low = axes[axis][0];
-    const double high = axes[axis][count - 1];
-    if (!(isfinite(low)
-          && isfinite(high)
-          && high > low)) {
-      log_fatal("feedback_3pcf: response coordinates must increase");
-      exit(1);
-    }
-
-    const double step = (high - low)/(count - 1);
-    if (!(isfinite(step)
-          && step > 0.0)) {
-      log_fatal("feedback_3pcf: response spacing is not representable");
-      exit(1);
-    }
-
-    // Purpose of this uniformity check: the query path converts a
-    // coordinate to a grid index by multiplying with one stored
-    // inverse spacing, and that shortcut is correct only on a uniform
-    // axis. A file written with rounded decimals is uniform only to
-    // roundoff, so the comparison allows a slack of 64 machine
-    // epsilons scaled by the largest axis magnitude: tens of
-    // last-digit rounding errors pass, while a genuinely nonuniform
-    // axis, whose node offsets are comparable to the spacing itself,
-    // still fails clearly.
-    //
-    // An accepted axis is then read as the ideal uniform grid its
-    // endpoints define: the dense preparation never sees the roundoff
-    // offsets of the individual loaded coordinates.
-    for (int node=0; node<count; node++) {
-      const double expected = low + node*step;
-      if (!(isfinite(axes[axis][node])
-            && (0 == node || axes[axis][node] > axes[axis][node - 1])
-            && fabs(axes[axis][node] - expected)
-              <= 64.0*DBL_EPSILON*fmax(1.0, fmax(fabs(low), fabs(high))))) {
-        log_fatal("feedback_3pcf: response coordinates must be uniform");
-        exit(1);
-      }
-    }
-
-    response->count[axis] = input->boost*(count - 1) + 1;
-    response->lower[axis] = low;
-    response->upper[axis] = high;
-    response->inverse[axis] = (response->count[axis] - 1)/(high - low);
-    if (!(isfinite(response->inverse[axis])
-          && response->inverse[axis] > 0.0)) {
-      log_fatal("feedback_3pcf: dense response inverse spacing is not "
-        "representable");
-      exit(1);
-    }
-  }
+  prepare_axes(counts, axes, input->boost, response->count,
+    response->lower, response->upper, response->inverse);
 
   if (!(input->z[0] >= 0.0
         && input->logu[input->nu - 1] <= 0.0
@@ -378,6 +398,80 @@ void feedback_destroy_3pcf(
     free(response->bispectrum);
     free(response);
   }
+}
+
+
+// Read one logarithmic value from a prepared uniform table. The corner
+// order is shared by baseline B and paired responses and retains the
+// existing feedback arithmetic exactly.
+static double read_log_table(
+  const int* count, // prepared counts [dimensions]
+  const double* lower, // first coordinates [dimensions]
+  const double* upper, // last coordinates [dimensions]
+  const double* inverse, // inverse spacings [dimensions]
+  const int clamp, // hold boundaries only when explicitly requested
+  const double* table, // flat logarithmic table, last axis contiguous
+  const double* coordinates, // query coordinates [dimensions]
+  const int dimensions // two for power, four for bispectrum
+)
+{
+  int cells[4];
+  double fractions[4];
+
+  for (int axis=0; axis<dimensions; axis++) {
+    const double low = lower[axis];
+    const double high = upper[axis];
+    const double value = coordinates[axis];
+
+    // Purpose of this domain tolerance: a caller often queries exactly
+    // at a table edge, and the coordinate it computed - a log(k), for
+    // example - can land a few rounding errors outside the stored
+    // boundary. With clamp = 0 the check accepts a coordinate within
+    // 64 machine epsilons (scaled by its magnitude) of the boundary
+    // and refuses a query genuinely outside the domain. With
+    // clamp = 1 every finite query passes, and the fmin/fmax below
+    // hold the boundary value.
+    const double tolerance = 64.0*DBL_EPSILON*fmax(1.0, fabs(value));
+    if (!(isfinite(value)
+          && (clamp
+              || (value >= low - tolerance && value <= high + tolerance)))) {
+      log_fatal("3pcf logarithmic table: query exceeds its declared table "
+        "domain");
+      exit(1);
+    }
+
+    const double position = (fmax(low, fmin(high, value)) - low)
+      *inverse[axis];
+    cells[axis] = (int)fmin(count[axis] - 2, floor(position));
+    fractions[axis] = position - cells[axis];
+  }
+
+  double logarithm = 0.0;
+
+  // A 2D cell has four corners and a 4D cell has sixteen. Products of
+  // one-dimensional linear weights sum to one and preserve constant ratios.
+  // Loop overview: multilinear interpolation averages the values at
+  // the 2^dimensions corners of the grid cell around the query point.
+  // The counter corner enumerates those corners through its binary
+  // digits: bit number axis of corner says whether this corner sits
+  // at the lower (0) or upper (1) node of that axis, and the
+  // expression (corner >> axis)&1 extracts that digit. The corner's
+  // flat index accumulates digit by digit in the table's row order,
+  // and its weight is the product of the per-axis linear weights: the
+  // fraction for an upper node, one minus the fraction for a lower
+  // node.
+  for (int corner=0; corner<(1 << dimensions); corner++) {
+    size_t index = 0;
+    double weight = 1.0;
+    for (int axis=0; axis<dimensions; axis++) {
+      const int upper = (corner >> axis)&1;
+      index = index*count[axis] + cells[axis] + upper;
+      weight *= upper ? fractions[axis] : 1.0 - fractions[axis];
+    }
+    logarithm += weight*table[index];
+  }
+
+  return logarithm;
 }
 
 
@@ -419,63 +513,11 @@ static double read_response(
     exit(1);
   }
 
-  int cells[4];
-  double fractions[4];
-
-  for (int axis=0; axis<dimensions; axis++) {
-    const double low = response->lower[axis];
-    const double high = response->upper[axis];
-    const double value = coordinates[axis];
-
-    // Purpose of this domain tolerance: a caller often queries exactly
-    // at a table edge, and the coordinate it computed - a log(k), for
-    // example - can land a few rounding errors outside the stored
-    // boundary. With clamp = 0 the check accepts a coordinate within
-    // 64 machine epsilons (scaled by its magnitude) of the boundary
-    // and refuses a query genuinely outside the domain. With
-    // clamp = 1 every finite query passes, and the fmin/fmax below
-    // hold the boundary value.
-    const double tolerance = 64.0*DBL_EPSILON*fmax(1.0, fabs(value));
-    if (!(isfinite(value)
-          && (response->clamp
-              || (value >= low - tolerance && value <= high + tolerance)))) {
-      log_fatal("feedback_3pcf: feedback query exceeds its declared table "
-        "domain");
-      exit(1);
-    }
-
-    const double position = (fmax(low, fmin(high, value)) - low)
-      *response->inverse[axis];
-    cells[axis] = (int)fmin(response->count[axis] - 2, floor(position));
-    fractions[axis] = position - cells[axis];
-  }
-
   const double* table = 2 == dimensions
     ? response->power : response->bispectrum;
-  double logarithm = 0.0;
-
-  // A 2D cell has four corners and a 4D cell has sixteen. Products of
-  // one-dimensional linear weights sum to one and preserve constant ratios.
-  // Loop overview: multilinear interpolation averages the values at
-  // the 2^dimensions corners of the grid cell around the query point.
-  // The counter corner enumerates those corners through its binary
-  // digits: bit number axis of corner says whether this corner sits
-  // at the lower (0) or upper (1) node of that axis, and the
-  // expression (corner >> axis)&1 extracts that digit. The corner's
-  // flat index accumulates digit by digit in the table's row order,
-  // and its weight is the product of the per-axis linear weights: the
-  // fraction for an upper node, one minus the fraction for a lower
-  // node.
-  for (int corner=0; corner<(1 << dimensions); corner++) {
-    size_t index = 0;
-    double weight = 1.0;
-    for (int axis=0; axis<dimensions; axis++) {
-      const int upper = (corner >> axis)&1;
-      index = index*response->count[axis] + cells[axis] + upper;
-      weight *= upper ? fractions[axis] : 1.0 - fractions[axis];
-    }
-    logarithm += weight*table[index];
-  }
+  const double logarithm = read_log_table(response->count, response->lower,
+    response->upper, response->inverse, response->clamp, table, coordinates,
+    dimensions);
 
   const double result = exp(amplitude*logarithm);
   if (!(isfinite(result)
@@ -562,4 +604,123 @@ double feedback_bispectrum_3pcf(
   const double coordinates[4] = {z, log(middle), log(small/middle),
     v};
   return read_response(response, coordinates, 4, amplitude);
+}
+
+
+// A supplied baseline is B itself, in (Mpc/h)^6, rather than B_hydro/B_DMO.
+// It has no amplitude or power-response partner. The owner copies the input
+// and shares only interpolation machinery with feedback objects above.
+struct baseline_3pcf {
+  int count[4]; // prepared z, log(k), log(u), v counts
+  double lower[4]; // first coordinate on each axis
+  double upper[4]; // last coordinate on each axis
+  double inverse[4]; // inverse dense spacings
+  double* logarithm; // ln B [nz,nk,nu,nv], v varies fastest
+  int clamp; // explicit boundary holding policy
+};
+
+void baseline_validate_3pcf(
+  const baseline_input_3pcf* input // required borrowed table
+)
+{
+  if (!(NULL != input)) { log_fatal("baseline_3pcf: missing table"); exit(1); }
+  if (!(1 <= input->boost)) { log_fatal(
+    "baseline_3pcf: boost must be >=1"); exit(1); }
+  if (!(0 == input->clamp
+        || 1 == input->clamp)) { log_fatal(
+    "baseline_3pcf: clamp must be 0 or 1"); exit(1); }
+  if (!(NULL != input->log_bispectrum)) { log_fatal(
+    "baseline_3pcf: missing ln B table"); exit(1); }
+  const int counts[4] = {input->nz, input->nk, input->nu, input->nv};
+  const double* axes[4] = {input->z, input->logk, input->logu, input->v};
+  int dense_count[4];
+  double lower[4];
+  double upper[4];
+  double inverse[4];
+  prepare_axes(counts, axes, input->boost, dense_count, lower, upper, inverse);
+  if (!(0.0 <= input->z[0])) { log_fatal(
+    "baseline_3pcf: negative redshift axis"); exit(1); }
+  if (!(0.0 >= input->logu[input->nu - 1])) { log_fatal(
+    "baseline_3pcf: log(u) must be <=0"); exit(1); }
+  if (!(0.0 <= input->v[0])) { log_fatal(
+    "baseline_3pcf: v must be >=0"); exit(1); }
+  if (!(1.0 >= input->v[input->nv - 1])) { log_fatal(
+    "baseline_3pcf: v must be <=1"); exit(1); }
+  const size_t size = table_size(counts, 4);
+  (void)table_size(dense_count, 4);
+  for (size_t index=0; index<size; index++) {
+    if (!(isfinite(input->log_bispectrum[index]))) { log_fatal(
+      "baseline_3pcf: ln B contains a nonfinite value"); exit(1); }
+  }
+}
+
+baseline_3pcf* baseline_create_3pcf(
+  const baseline_input_3pcf* input // borrowed table; NULL disables
+)
+{
+  if (NULL == input) {
+    return NULL;
+  }
+  if (!(1 <= input->boost)) { log_fatal(
+    "baseline_3pcf: boost must be >=1"); exit(1); }
+  if (!(0 == input->clamp
+        || 1 == input->clamp)) { log_fatal(
+    "baseline_3pcf: clamp must be 0 or 1"); exit(1); }
+  if (!(NULL != input->log_bispectrum)) { log_fatal(
+    "baseline_3pcf: missing ln B table"); exit(1); }
+  const int counts[4] = {input->nz, input->nk, input->nu, input->nv};
+  const double* axes[4] = {input->z, input->logk, input->logu, input->v};
+  baseline_3pcf* baseline = calloc1d_generic(1, sizeof(*baseline));
+  prepare_axes(counts, axes, input->boost, baseline->count, baseline->lower,
+    baseline->upper, baseline->inverse);
+  if (!(0.0 <= input->z[0])) { log_fatal(
+    "baseline_3pcf: negative redshift axis"); exit(1); }
+  if (!(0.0 >= input->logu[input->nu - 1])) { log_fatal(
+    "baseline_3pcf: log(u) must be <=0"); exit(1); }
+  if (!(0.0 <= input->v[0])) { log_fatal(
+    "baseline_3pcf: v must be >=0"); exit(1); }
+  if (!(1.0 >= input->v[input->nv - 1])) { log_fatal(
+    "baseline_3pcf: v must be <=1"); exit(1); }
+  // Prove the final dense count fits before allocating any intermediate
+  // spline pass. The spline code still checks each intermediate size.
+  (void)table_size(baseline->count, 4);
+  baseline->clamp = input->clamp;
+  baseline->logarithm = dense_table(input->log_bispectrum, counts, axes, 4,
+    input->boost);
+  return baseline;
+}
+
+void baseline_destroy_3pcf(
+  baseline_3pcf* baseline // owned object; NULL does nothing
+)
+{
+  if (NULL != baseline) {
+    free(baseline->logarithm);
+    free(baseline);
+  }
+}
+
+double baseline_bispectrum_3pcf(
+  const baseline_3pcf* baseline, // prepared physical B table
+  const double* sides, // triangle sides [3], h/Mpc, already validated
+  const double z // redshift
+)
+{
+  if (!(NULL != baseline)) { log_fatal(
+    "baseline_3pcf: missing prepared B table"); exit(1); }
+  const double small = fmin(sides[0], fmin(sides[1], sides[2]));
+  const double large = fmax(sides[0], fmax(sides[1], sides[2]));
+  const double middle = fmax(fmin(sides[0], sides[1]),
+    fmin(fmax(sides[0], sides[1]), sides[2]));
+  const double coordinates[4] = {z, log(middle), log(small/middle),
+    fmin(1.0, (large - middle)/small)};
+  const double logarithm = read_log_table(baseline->count, baseline->lower,
+    baseline->upper, baseline->inverse, baseline->clamp, baseline->logarithm,
+    coordinates, 4);
+  const double value = exp(logarithm);
+  if (!(isfinite(value))) { log_fatal(
+    "baseline_3pcf: B overflows floating-point storage"); exit(1); }
+  if (!(0.0 < value)) { log_fatal(
+    "baseline_3pcf: B must remain strictly positive"); exit(1); }
+  return value;
 }

@@ -1,4 +1,5 @@
 #include <math.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,6 +131,12 @@ static struct {
     double* log_power;
     double* log_bispectrum;
   } feedback;
+  struct {
+    baseline_input_3pcf input; // owned arrays; nz=0 means internal fit
+    int nz; // number of supplied background matter fractions
+    double* omega_m_z; // matter fraction on the core background z
+    double sigma8; // supplied-route power normalization
+  } baseline;
   int power_mode;     // physics_ia_3pcf.power_mode
   int ct_mode;        // physics_ia_3pcf.ct_mode
   int suppress_only;  // physics_ia_3pcf.suppress_only
@@ -143,11 +150,25 @@ static struct {
   .suppress_only = 0,
 };
 
+// Reset just the supplied absolute B owner. Existing Python model owners
+// retain their private C copies after this storage is changed or released.
+static void baseline_clear_bridge(void)
+{
+  free((void*)supplied.baseline.input.z);
+  free((void*)supplied.baseline.input.logk);
+  free((void*)supplied.baseline.input.logu);
+  free((void*)supplied.baseline.input.v);
+  free((void*)supplied.baseline.input.log_bispectrum);
+  free(supplied.baseline.omega_m_z);
+  memset(&supplied.baseline, 0, sizeof(supplied.baseline));
+}
+
 // Free every owned supplied-tier array and restore the defaults the
 // initializer above states. free(NULL) is a no-op, so a fresh bridge
 // passes through unchanged.
 static void supplied_clear(void)
 {
+  baseline_clear_bridge();
   free(supplied.los);
   free(supplied.source_z);
   free(supplied.sources);
@@ -410,6 +431,78 @@ void threepcf_bridge_set_feedback(
   }
 }
 
+// Install immutable B input without deriving a cosmological background.
+// Validation precedes replacement; every scalar, size and array participates
+// in the exact-change test, so resending identical tables preserves reuse.
+void threepcf_bridge_set_baseline_bispectrum(
+  const baseline_input_3pcf* baseline, // borrowed absolute B, NULL clears
+  const double* omega_m_z, // matter fraction on background z [nz]
+  const int nz, // background count
+  const double sigma8 // positive power-normalization amplitude
+)
+{
+  if (NULL == baseline) {
+    if (0 != supplied.baseline.input.nz) {
+      baseline_clear_bridge();
+      supplied.nonce = bridge_draw();
+    }
+    return;
+  }
+  baseline_validate_3pcf(baseline);
+  if (!(NULL != omega_m_z)) { log_fatal(
+    "threepcf bridge: supplied B needs Omega_m(z)"); exit(1); }
+  if (!(4 <= nz)) { log_fatal(
+    "threepcf bridge: Omega_m(z) needs at least four samples"); exit(1); }
+  if (!(isfinite(sigma8))) { log_fatal(
+    "threepcf bridge: sigma8 must be finite"); exit(1); }
+  if (!(0.0 < sigma8)) { log_fatal(
+    "threepcf bridge: sigma8 must be positive"); exit(1); }
+  for (int node=0; node<nz; node++) {
+    if (!(isfinite(omega_m_z[node]))) { log_fatal(
+      "threepcf bridge: Omega_m(z) is nonfinite"); exit(1); }
+    if (!(0.0 < omega_m_z[node])) { log_fatal(
+      "threepcf bridge: Omega_m(z) must be positive"); exit(1); }
+  }
+  const baseline_input_3pcf* old = &supplied.baseline.input;
+  const int size = baseline->nz*baseline->nk*baseline->nu*baseline->nv;
+  // Byte comparisons include signed zero in logarithmic arrays. A new
+  // array representation always invalidates this supplied table, even
+  // when its current physical query happens to return the same number.
+  if (old->nz != baseline->nz
+      || old->nk != baseline->nk
+      || old->nu != baseline->nu
+      || old->nv != baseline->nv
+      || old->boost != baseline->boost
+      || old->clamp != baseline->clamp
+      || supplied.baseline.nz != nz
+      || supplied.baseline.sigma8 != sigma8
+      || memcmp(old->z, baseline->z, (size_t)baseline->nz*sizeof(double))
+      || memcmp(old->logk, baseline->logk, (size_t)baseline->nk*sizeof(double))
+      || memcmp(old->logu, baseline->logu, (size_t)baseline->nu*sizeof(double))
+      || memcmp(old->v, baseline->v, (size_t)baseline->nv*sizeof(double))
+      || memcmp(old->log_bispectrum, baseline->log_bispectrum,
+        (size_t)size*sizeof(double))
+      || memcmp(supplied.baseline.omega_m_z, omega_m_z,
+        (size_t)nz*sizeof(double))) {
+    // Copy before releasing old storage: a C caller may resupply a view
+    // of the bridge's current input. Replacement cannot invalidate those
+    // borrowed pointers until every incoming value has been copied.
+    baseline_input_3pcf replacement = *baseline;
+    replacement.z = bridge_copy(baseline->z, baseline->nz);
+    replacement.logk = bridge_copy(baseline->logk, baseline->nk);
+    replacement.logu = bridge_copy(baseline->logu, baseline->nu);
+    replacement.v = bridge_copy(baseline->v, baseline->nv);
+    replacement.log_bispectrum = bridge_copy(baseline->log_bispectrum, size);
+    double* matter_fraction = bridge_copy(omega_m_z, nz);
+    baseline_clear_bridge();
+    supplied.baseline.input = replacement;
+    supplied.baseline.omega_m_z = matter_fraction;
+    supplied.baseline.nz = nz;
+    supplied.baseline.sigma8 = sigma8;
+    supplied.nonce = bridge_draw();
+  }
+}
+
 void threepcf_bridge_set_prescriptions(
   const int power_mode, // 0 linear D^2; 1 nonlinear(z=0) D^2; 2 full table
   const int ct_mode, // 0 physical Ct = C1*ct (fastnc); 1 Ct = ct
@@ -584,7 +677,7 @@ static void scratch_clear(void)
 // stores every count as an int; the refill tier stores the cache keys
 // of the structs the assembly read plus the bridge nonce. A build
 // exists only while have_build is one.
-#define BRIDGE_NCOUNT 20
+#define BRIDGE_NCOUNT 25
 #define BRIDGE_NKEY 6
 static struct {
   int have_build;
@@ -619,6 +712,11 @@ static void guard_current(
   counts[17] = supplied.feedback.nk;
   counts[18] = supplied.feedback.nu;
   counts[19] = supplied.feedback.nv;
+  counts[20] = supplied.baseline.input.nz;
+  counts[21] = supplied.baseline.input.nk;
+  counts[22] = supplied.baseline.input.nu;
+  counts[23] = supplied.baseline.input.nv;
+  counts[24] = supplied.baseline.nz;
   keys[0] = cosmology.random;
   keys[1] = redshift.random_shear;
   keys[2] = nuisance.random_photoz_shear;
@@ -703,7 +801,7 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
               "cosmological parameters first", cosmology.Omega_m);
     exit(1);
   }
-  if (!supplied.have_scalars) {
+  if (!supplied.have_scalars && 0 == supplied.baseline.input.nz) {
     log_fatal("threepcf bridge: set the supplied scalars (ns, sigma8, "
               "w0, wa) before building the three-point model");
     exit(1);
@@ -931,13 +1029,22 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   scratch.input.fit_nz = supplied.fit_nz;
 
   scratch.input.omega_m = cosmology.Omega_m;
-  // the core keeps flat background models (set_cosmological_parameters
-  // writes Omega_v = 1 - Omega_m), and the model checks flatness
-  scratch.input.omega_de = 1.0 - cosmology.Omega_m;
-  scratch.input.w0 = supplied.w0;
-  scratch.input.wa = supplied.wa;
-  scratch.input.ns = supplied.ns;
-  scratch.input.sigma8 = supplied.sigma8;
+  if (0 < supplied.baseline.input.nz) {
+    if (!(nz == supplied.baseline.nz)) { log_fatal(
+      "threepcf bridge: Omega_m(z) count differs from the core "
+      "background"); exit(1); }
+    scratch.input.baseline = &supplied.baseline.input;
+    scratch.input.omega_m_z = supplied.baseline.omega_m_z;
+    scratch.input.sigma8 = supplied.baseline.sigma8;
+  } else {
+    // the core keeps flat background models (set_cosmological_parameters
+    // writes Omega_v = 1 - Omega_m), and the model checks flatness
+    scratch.input.omega_de = 1.0 - cosmology.Omega_m;
+    scratch.input.w0 = supplied.w0;
+    scratch.input.wa = supplied.wa;
+    scratch.input.ns = supplied.ns;
+    scratch.input.sigma8 = supplied.sigma8;
+  }
 
   if (supplied.nwindow > 0) {
     scratch.input.nwindow = supplied.nwindow;

@@ -38,7 +38,8 @@ A matter bispectrum describes correlations among three Fourier modes whose
 wavevectors close into a triangle. Intrinsic alignment adds correlations
 between galaxy shapes and the tidal environment. The C physical model
 accepts power spectra, distances, growth and source-redshift distributions;
-it calculates BiHalofit and the selected TATT/velocity-shear terms, then
+it selects the internal BiHalofit calculation or an explicitly supplied
+full matter bispectrum, calculates the selected TATT/velocity-shear terms, then
 projects them into angular statistics. TATT means tidal alignment and tidal
 torquing. Its quadratic contributions must retain their assigned Fourier
 legs and source labels.
@@ -98,6 +99,46 @@ oriented-template transformation, ideal-aperture null, identical finite
 weights and full-joint-covariance scoring before claiming that omission
 is negligible. Two-B bispectra begin beyond the retained tree order;
 two-point TATT BB power is a different order of correlation.
+
+## Supplied absolute matter bispectrum
+
+`baseline_3pcf.h` defines an optional absolute B table, distinct from the
+paired hydro/DMO ratios in `feedback_3pcf.h`. Both owners share the existing
+uniform natural-cubic preparation and multilinear logarithmic reader in
+`feedback_3pcf.c`. Keep that shared interpolation machinery; do not create a
+dummy power response or an amplitude parameter to represent absolute B.
+For sorted sides a<=b<=c, its axes are z, ln(b/[h/Mpc]), ln(a/b), (c-b)/a;
+flatten ln B in `[nz,nk,nu,nv]` order. B uses `(Mpc/h)^6`, with no coverH0
+conversion. Zero or negative physical B cannot be repaired by absolute
+values or clipping before taking its logarithm.
+
+The additive `production.PhysicsModelWithBispectrum` and
+`notebook.PhysicsModelWithBispectrum` factories require `baseline` and
+`omega_m_z[nz]` on the physical background z axis. They retain `omega_m`
+for lensing/IA and `sigma8` for the existing P normalization, and omit
+`omega_de`, `w0`, `wa`, `ns`. The caller establishes flat geometry and a
+consistent cosmology/matter definition across P, B, growth and distances.
+The active route skips every internal-fit coefficient/radius preparation;
+`physics_omega_m_z_3pcf` reads the supplied background for halo covariance.
+Do not introduce a w0-wa reconstruction in that route.
+
+`matter_prepared` selects supplied full B before any fit-coefficient read.
+Public matter queries, projected NLA and covariance B terms follow that
+selection. Component 1 remains tree level from linear P; components 2/3
+are explicitly refused because a full B table does not specify the fit's
+separate one-/three-halo pieces. Raw perturbative IA and signed residuals
+retain their P prescription. Halo integrals in the covariance are separate
+physical terms and never request diagnostic components 2/3.
+
+The [module guide](../../../../cosmolike/3pcf/README.md#supplied-bispectrum)
+and [project producer guide](https://github.com/SBU-COSMOLIKE/cocoa_des_3pcf/blob/main/BIHALOFIT_PYTHON.md)
+explain the caller contract. `dev_scripts/supplied_baseline_check/` contains
+default-route captures; the project `tests/test_supplied_baseline.py` checks
+analytic values, ownership, bridge invalidation, refusals and independent
+BB/PB scaling. Preserve the pre-edit binary and every reference input before
+source changes. The existing full project suite and original stage-0
+snapshot quantities remain separate gates; a small direct-B comparison is
+not a replacement for final-observable convergence.
 
 ## Numerical strategy required for changes
 
