@@ -1,0 +1,363 @@
+{
+  "reference": "2bc4500a9a55c1c4dcbe26952e0cfd658846fdc5",
+  "core_head": "48da11f9500d4f4bdd827d9b628b1f53f6702320",
+  "compiler": "/opt/homebrew/opt/llvm@22/bin/clang",
+  "blas_threads": 1,
+  "source_hashes": {
+    "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/structs.c": "36a494608a8ef4ff80b09e3aedad2cf06bab8818185a59503400511a9143823b",
+    "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/log.c/src/log.c": "4ffdef3f12955bdd60f91efe493f827ee97c4e99281539beb6d7a579c4a89724",
+    "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/dev_scripts/allocator_zero_check/check_allocators.c": "b5a571628e62b36206c169d36bf508e39faf92f715d72ccac7cc05e1941e3f85",
+    "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/basics.c": "14c81fea83bb3000afaa0620152985351d3f32ca23b9d1e95b252343e17c6cc5",
+    "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/basics.h": "2e1d17d59ee2b322e2c3449d1bfc872b437bb9f4ac605b947d7c3c50ed590242",
+    "/private/tmp/bridge_cache_3pcf_20261119/allocators/reference_basics.c": "66e5992500eb770b849c9a6693a906900b92bc60c450df87a9bc283c0e338982"
+  },
+  "modes": {
+    "strict": {
+      "builds": {
+        "reference": {
+          "command": [
+            "/opt/homebrew/opt/llvm@22/bin/clang",
+            "-std=gnu99",
+            "-fopenmp",
+            "-fno-fast-math",
+            "-fno-associative-math",
+            "-frounding-math",
+            "-ftrapping-math",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/include",
+            "-I/Users/vivianmiranda/miniforge/envs/cocoapy311/include",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/simde",
+            "-O3",
+            "-march=native",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/reference_basics.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/structs.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/log.c/src/log.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/dev_scripts/allocator_zero_check/check_allocators.c",
+            "-L/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-L/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-lgsl",
+            "-lgslcblas",
+            "-lm",
+            "-o",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/strict/reference"
+          ],
+          "executable_sha256": "9afaca35843e4d2a20fb9104933e239800fe704bb92beed3f1e76fa329dd0e6e",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "candidate": {
+          "command": [
+            "/opt/homebrew/opt/llvm@22/bin/clang",
+            "-std=gnu99",
+            "-fopenmp",
+            "-fno-fast-math",
+            "-fno-associative-math",
+            "-frounding-math",
+            "-ftrapping-math",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/include",
+            "-I/Users/vivianmiranda/miniforge/envs/cocoapy311/include",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/simde",
+            "-O3",
+            "-march=native",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/basics.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/structs.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/log.c/src/log.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/dev_scripts/allocator_zero_check/check_allocators.c",
+            "-L/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-L/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-lgsl",
+            "-lgslcblas",
+            "-lm",
+            "-o",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/strict/candidate"
+          ],
+          "executable_sha256": "51af6ce426dcc1d553d79849e5304f7675d913fdb2ef90c38607cacb4bc4ce8e",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "runs": {
+        "reference_positive_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/strict/reference",
+            "--positive"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_positive_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/strict/candidate",
+            "--positive"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_positive_6": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/strict/candidate",
+            "--positive"
+          ],
+          "omp_threads": 6,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_all_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/strict/candidate"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "017ac4016e2b4810b48ce00195ea81d6cdc9b24f1ea5591a2a47b83f1bf06d6b"
+        },
+        "candidate_all_6": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/strict/candidate"
+          ],
+          "omp_threads": 6,
+          "output_sha256": "017ac4016e2b4810b48ce00195ea81d6cdc9b24f1ea5591a2a47b83f1bf06d6b"
+        }
+      },
+      "positive_layout_equal": true,
+      "empty_and_positive_worker_outputs_equal": true
+    },
+    "debug": {
+      "builds": {
+        "reference": {
+          "command": [
+            "/opt/homebrew/opt/llvm@22/bin/clang",
+            "-std=gnu99",
+            "-fopenmp",
+            "-fno-fast-math",
+            "-fno-associative-math",
+            "-frounding-math",
+            "-ftrapping-math",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/include",
+            "-I/Users/vivianmiranda/miniforge/envs/cocoapy311/include",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/simde",
+            "-O0",
+            "-g",
+            "-fsanitize=undefined,float-divide-by-zero",
+            "-fno-sanitize-recover=all",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/reference_basics.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/structs.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/log.c/src/log.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/dev_scripts/allocator_zero_check/check_allocators.c",
+            "-L/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-L/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-lgsl",
+            "-lgslcblas",
+            "-lm",
+            "-o",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/debug/reference"
+          ],
+          "executable_sha256": "e0e564a22b71b7dafbb758c24cbe05c0c1de35c34c1d1e09b728d1a28bab7058",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "candidate": {
+          "command": [
+            "/opt/homebrew/opt/llvm@22/bin/clang",
+            "-std=gnu99",
+            "-fopenmp",
+            "-fno-fast-math",
+            "-fno-associative-math",
+            "-frounding-math",
+            "-ftrapping-math",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/include",
+            "-I/Users/vivianmiranda/miniforge/envs/cocoapy311/include",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/simde",
+            "-O0",
+            "-g",
+            "-fsanitize=undefined,float-divide-by-zero",
+            "-fno-sanitize-recover=all",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/basics.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/structs.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/log.c/src/log.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/dev_scripts/allocator_zero_check/check_allocators.c",
+            "-L/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-L/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-lgsl",
+            "-lgslcblas",
+            "-lm",
+            "-o",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/debug/candidate"
+          ],
+          "executable_sha256": "223755df70d52fe9bb371162b27c8d80a1a47ec6462898f246d4eeb2fc5b675d",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "runs": {
+        "reference_positive_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/debug/reference",
+            "--positive"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_positive_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/debug/candidate",
+            "--positive"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_positive_6": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/debug/candidate",
+            "--positive"
+          ],
+          "omp_threads": 6,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_all_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/debug/candidate"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "017ac4016e2b4810b48ce00195ea81d6cdc9b24f1ea5591a2a47b83f1bf06d6b"
+        },
+        "candidate_all_6": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/debug/candidate"
+          ],
+          "omp_threads": 6,
+          "output_sha256": "017ac4016e2b4810b48ce00195ea81d6cdc9b24f1ea5591a2a47b83f1bf06d6b"
+        }
+      },
+      "positive_layout_equal": true,
+      "empty_and_positive_worker_outputs_equal": true
+    },
+    "address": {
+      "builds": {
+        "reference": {
+          "command": [
+            "/opt/homebrew/opt/llvm@22/bin/clang",
+            "-std=gnu99",
+            "-fopenmp",
+            "-fno-fast-math",
+            "-fno-associative-math",
+            "-frounding-math",
+            "-ftrapping-math",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/include",
+            "-I/Users/vivianmiranda/miniforge/envs/cocoapy311/include",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/simde",
+            "-O1",
+            "-g",
+            "-fsanitize=address,undefined",
+            "-fno-omit-frame-pointer",
+            "-fno-sanitize-recover=all",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/reference_basics.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/structs.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/log.c/src/log.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/dev_scripts/allocator_zero_check/check_allocators.c",
+            "-L/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-L/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-lgsl",
+            "-lgslcblas",
+            "-lm",
+            "-o",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/address/reference"
+          ],
+          "executable_sha256": "f75e98997d61321522f7c73de02620344e66495d97925cea42b2655d35d0ba5b",
+          "log_sha256": "737ffa6429680f575e6841b2225cda19b3a8e559669ecf6704566956851ba068"
+        },
+        "candidate": {
+          "command": [
+            "/opt/homebrew/opt/llvm@22/bin/clang",
+            "-std=gnu99",
+            "-fopenmp",
+            "-fno-fast-math",
+            "-fno-associative-math",
+            "-frounding-math",
+            "-ftrapping-math",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/include",
+            "-I/Users/vivianmiranda/miniforge/envs/cocoapy311/include",
+            "-I/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/simde",
+            "-O1",
+            "-g",
+            "-fsanitize=address,undefined",
+            "-fno-omit-frame-pointer",
+            "-fno-sanitize-recover=all",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/basics.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/structs.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/log.c/src/log.c",
+            "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/dev_scripts/allocator_zero_check/check_allocators.c",
+            "-L/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+            "-L/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-Wl,-rpath,/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+            "-lgsl",
+            "-lgslcblas",
+            "-lm",
+            "-o",
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/address/candidate"
+          ],
+          "executable_sha256": "0dbd6f9dfcab3e8ba478d2b7bce31c72f6c727281957ed57258161b1dbd73398",
+          "log_sha256": "737ffa6429680f575e6841b2225cda19b3a8e559669ecf6704566956851ba068"
+        }
+      },
+      "runs": {
+        "reference_positive_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/address/reference",
+            "--positive"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_positive_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/address/candidate",
+            "--positive"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_positive_6": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/address/candidate",
+            "--positive"
+          ],
+          "omp_threads": 6,
+          "output_sha256": "35ee822bc629d21d11f9735ff4a95048f353695e9b9ae0974accd4175c673cbd"
+        },
+        "candidate_all_1": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/address/candidate"
+          ],
+          "omp_threads": 1,
+          "output_sha256": "017ac4016e2b4810b48ce00195ea81d6cdc9b24f1ea5591a2a47b83f1bf06d6b"
+        },
+        "candidate_all_6": {
+          "command": [
+            "/private/tmp/bridge_cache_3pcf_20261119/allocators/address/candidate"
+          ],
+          "omp_threads": 6,
+          "output_sha256": "017ac4016e2b4810b48ce00195ea81d6cdc9b24f1ea5591a2a47b83f1bf06d6b"
+        }
+      },
+      "positive_layout_equal": true,
+      "empty_and_positive_worker_outputs_equal": true
+    }
+  },
+  "empty_reference_scope": "Empty reference allocations are not required to fail on this platform; POSIX permits either NULL or a freeable pointer for a zero-byte request. Candidate checks require a non-NULL owner."
+}

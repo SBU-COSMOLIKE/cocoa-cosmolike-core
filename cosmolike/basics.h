@@ -204,6 +204,14 @@ double simd_horizontal_sum(
 // One free. free(p) on the returned pointer releases the block, row
 // pointers included. Rows are addresses inside the block, not separate
 // allocations: never free a row, and free each block exactly once.
+//
+// Empty arrays. Counts are nonnegative. A zero outer count requests no
+// rows; a zero inner count keeps the preceding pointer levels but has no
+// data at that dimension. Every successful allocation returns a non-NULL
+// aligned pointer that free accepts. When the total byte count is zero,
+// reserve one 64-byte block without adding logical elements. This avoids
+// the permitted NULL result of a zero-byte posix_memalign call and keeps
+// zero-length covariance contractions safe to initialize and release.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -392,8 +400,9 @@ void*** malloc3d_complex(
 // block, zero-initialized.
 //
 // The block starts on a 64-byte boundary, but unlike malloc1d its size
-// is not rounded up: exactly nx doubles, all set to zero before
-// returning.
+// is not rounded up for positive nx: exactly nx doubles, all set to
+// zero before returning. An empty array reserves one zeroed 64-byte
+// block with no logical elements, following the common contract above.
 //
 // The caller is responsible for freeing the returned pointer.
 // ---------------------------------------------------------------------------

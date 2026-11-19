@@ -332,6 +332,14 @@ gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n)
 // One free. free(p) on the returned pointer releases the block, row
 // pointers included. Rows are addresses inside the block, not separate
 // allocations: never free a row, and free each block exactly once.
+//
+// Empty arrays. Counts are nonnegative. A zero outer count requests no
+// rows; a zero inner count keeps the preceding pointer levels but has no
+// data at that dimension. Every successful allocation returns a non-NULL
+// aligned pointer that free accepts. When the total byte count is zero,
+// reserve one 64-byte block without adding logical elements. This avoids
+// the permitted NULL result of a zero-byte posix_memalign call and keeps
+// zero-length covariance contractions safe to initialize and release.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -370,12 +378,13 @@ void**** malloc4d(
   if (nwp % align != 0) nwp = nwp + (align - nwp % align);
   nwp = nwp / sizeof(double);
 
+  size_t nbytes = nxp * sizeof(double***) +
+                 nxyp * sizeof(double**) +
+                 nxyzp * sizeof(double*) +
+                 nx * ny * nz * nwp * sizeof(double);
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     nxp * sizeof(double***) +
-                     nxyp * sizeof(double**) +
-                     nxyzp * sizeof(double*) +
-                     nx * ny * nz * nwp * sizeof(double)) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("posix_memalign failed in malloc4d");
     exit(EXIT_FAILURE);
   }
@@ -436,11 +445,12 @@ void*** malloc3d(
   if (nzp % align != 0) nzp = nzp + (align - nzp % align);
   nzp = nzp / sizeof(double);
 
+  size_t nbytes = nxp * sizeof(double**) +
+                 nxyp * sizeof(double*) +
+                 nx * ny * nzp * sizeof(double);
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     nxp * sizeof(double**) +
-                     nxyp * sizeof(double*) +
-                     nx * ny * nzp * sizeof(double)) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("posix_memalign failed in malloc3d"); exit(EXIT_FAILURE);
   }
 
@@ -481,10 +491,10 @@ void** malloc2d_int(
   size_t nyp = ny * sizeof(int);
   if (nyp % align != 0) nyp = nyp + (align - nyp % align);
   nyp = nyp / sizeof(int);
+  size_t nbytes = sizeof(int*)*nxp + sizeof(int)*nx*nyp;
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block,
-                     align,
-                     sizeof(int*)*nxp + sizeof(int)*nx*nyp) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("array allocation failed (malloc2d_int)"); exit(EXIT_FAILURE);
   }
   int** tab = (int**) raw_block;
@@ -523,10 +533,10 @@ void** malloc2d(
   if (nyp % align != 0) nyp = nyp + (align - nyp % align);
   nyp = nyp/sizeof(double);
 
+  size_t nbytes = sizeof(double*)*nxp+sizeof(double)*nx*nyp;
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, 
-                     align, 
-                     sizeof(double*)*nxp+sizeof(double)*nx*nyp) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("posix_memalign failed for malloc2d"); exit(EXIT_FAILURE);
   }
 
@@ -555,6 +565,7 @@ void* malloc1d_int(
 {
   const size_t align = 64;
   size_t nxp = nx * sizeof(int);
+  if (0 == nxp) nxp = align;
   if (nxp % align != 0) nxp = nxp + (align - nxp % align);
   void* vec = NULL;
   if (posix_memalign(&vec, align, nxp) != 0) {
@@ -578,6 +589,7 @@ void* malloc1d(
 {
   const size_t align = 64;
   size_t nxp = nx * sizeof(double);
+  if (0 == nxp) nxp = align;
   if (nxp % align != 0) nxp = nxp + (align - nxp % align);
   void* vec = NULL;
   if (posix_memalign(&vec, align, nxp) != 0) {
@@ -591,8 +603,9 @@ void* malloc1d(
 // block, zero-initialized.
 //
 // The block starts on a 64-byte boundary, but unlike malloc1d its size
-// is not rounded up: exactly nx doubles, all set to zero before
-// returning.
+// is not rounded up for positive nx: exactly nx doubles, all set to
+// zero before returning. An empty array reserves one zeroed 64-byte
+// block with no logical elements, following the common contract above.
 //
 // The caller is responsible for freeing the returned pointer.
 // ---------------------------------------------------------------------------
@@ -600,11 +613,13 @@ void* calloc1d(
     const int nx   // number of double elements to allocate
   )
 {
+  size_t nbytes = sizeof(double) * nx;
+  if (0 == nbytes) nbytes = 64;
   void* vec = NULL;
-  if (posix_memalign(&vec, 64, sizeof(double) * nx) != 0) {
+  if (posix_memalign(&vec, 64, nbytes) != 0) {
     log_fatal("array allocation failed (calloc1d)"); exit(EXIT_FAILURE);
   }
-  memset(vec, 0, sizeof(double) * nx);
+  memset(vec, 0, nbytes);
   return vec;
 }
 
@@ -710,10 +725,11 @@ void** malloc2d_fftwc(
   if (nyp % align != 0) nyp = nyp + (align - nyp % align);
   nyp = nyp / sizeof(fftw_complex);
 
+  size_t nbytes = sizeof(fftw_complex*) * nxp +
+                 sizeof(fftw_complex)  * nx * nyp;
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     sizeof(fftw_complex*) * nxp +
-                     sizeof(fftw_complex)  * nx * nyp) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("array allocation failed (malloc2d_fftwc)");
     exit(1);
   }
@@ -753,10 +769,11 @@ void** malloc2d_fftwp(
   if (nxp % align != 0) nxp = nxp + (align - nxp % align);
   nxp = nxp / sizeof(fftw_plan*);
 
+  size_t nbytes = sizeof(fftw_plan*) * nxp +
+                 sizeof(fftw_plan)  * nx * ny;
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     sizeof(fftw_plan*) * nxp +
-                     sizeof(fftw_plan)  * nx * ny) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("array allocation failed (malloc2d_fftwp)");
     exit(1);
   }
@@ -796,10 +813,11 @@ void*** malloc2d_ptr(
   if (nxp % align != 0) nxp = nxp + (align - nxp % align);
   nxp = nxp / sizeof(double**);
 
+  size_t nbytes = sizeof(double**) * nxp +
+                 sizeof(double*)  * nx * ny;
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     sizeof(double**) * nxp +
-                     sizeof(double*)  * nx * ny) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("array allocation failed (malloc2d_ptr)");
     exit(1);
   }
@@ -840,11 +858,12 @@ void**** malloc3d_ptr(
   if (nxyp % align != 0) nxyp = nxyp + (align - nxyp % align);
   nxyp = nxyp / sizeof(double**);
 
+  size_t nbytes = sizeof(double***) * nxp +
+                 sizeof(double**)  * nxyp +
+                 sizeof(double*)   * nx * ny * nz;
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     sizeof(double***) * nxp +
-                     sizeof(double**)  * nxyp +
-                     sizeof(double*)   * nx * ny * nz) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("array allocation failed (malloc3d_ptr)");
     exit(1);
   }
@@ -898,11 +917,12 @@ void*** malloc3d_complex(
   if (nzp % align != 0) nzp = nzp + (align - nzp % align);
   nzp = nzp / sizeof(double complex);
 
+  size_t nbytes = sizeof(double complex**) * nxp +
+                 sizeof(double complex*)  * s2p +
+                 sizeof(double complex)   * nx * ny * nzp;
+  if (0 == nbytes) nbytes = align;
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     sizeof(double complex**) * nxp +
-                     sizeof(double complex*)  * s2p +
-                     sizeof(double complex)   * nx * ny * nzp) != 0) {
+  if (posix_memalign(&raw_block, align, nbytes) != 0) {
     log_fatal("array allocation failed (malloc3d_complex)");
     exit(1);
   }
