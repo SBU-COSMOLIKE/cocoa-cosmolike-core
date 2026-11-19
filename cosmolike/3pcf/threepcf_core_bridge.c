@@ -43,11 +43,12 @@ static uint64_t bridge_draw(void)
 }
 
 // Exact element-wise difference test for the supplied tier. The
-// supplied setters compare bitwise on purpose: a rounded tolerance
+// supplied setters compare exact values on purpose: a rounded tolerance
 // (the fdiff of basics.h) could leave the nonce unchanged after a
 // genuine sub-tolerance parameter step, and the cached model would
 // silently keep the previous physics. NaN never reaches this loop:
-// every setter scans its input first and aborts on NaN.
+// every setter scans its input first and aborts on NaN. Signed zeros
+// compare equal here; this is value comparison, not byte comparison.
 static int bridge_differs(
   const double* stored, // [n] values the bridge holds
   const double* incoming, // [n] values a setter received
@@ -91,14 +92,14 @@ static double* bridge_copy(
 
 // ---------------------------------------------------------------------------
 // Supplied-tier storage. One struct holds every owned copy and scalar
-// the structs do not provide, plus the single bridge nonce. The
+// the structs do not provide, plus the model-input change counter. The
 // resolution and prescription defaults repeat the Python
 // constructor's and physics_default_ia_3pcf's defaults, so a caller
 // who never touches a setter gets the same model the Python route
 // builds with default arguments.
 // ---------------------------------------------------------------------------
 static struct {
-  uint64_t nonce;     // redrawn by every setter whose value changed
+  uint64_t nonce;     // redrawn only when a model input changed
   int have_scalars;   // ns/sigma8/w0/wa installed at least once
   double ns;          // primordial spectral index
   double sigma8;      // linear fluctuation amplitude at z = 0
@@ -197,7 +198,8 @@ static int bridge_stored_shear_nbin = 0;
 // ---------------------------------------------------------------------------
 // Supplied-tier setters. Shared discipline (threepcf_core_bridge.h):
 // NaN scan first, exact comparison against the stored copy, owned
-// replacement and one nonce redraw only when something changed.
+// replacement and one nonce redraw only when a model input changed.
+// Query-only selectors and amplitudes are read afresh by the IA adapter.
 // ---------------------------------------------------------------------------
 
 void threepcf_bridge_set_scalars(
@@ -406,7 +408,6 @@ void threepcf_bridge_set_feedback(
       supplied.feedback.nu != nu || supplied.feedback.nv != nv ||
       supplied.feedback.boost != boost ||
       supplied.feedback.clamp != clamp ||
-      supplied.feedback.amplitude != amplitude ||
       bridge_differs(supplied.feedback.z, z, nz) ||
       bridge_differs(supplied.feedback.logk, logk, nk) ||
       bridge_differs(supplied.feedback.logu, logu, nu) ||
@@ -442,9 +443,11 @@ void threepcf_bridge_set_feedback(
     supplied.feedback.nv = nv;
     supplied.feedback.boost = boost;
     supplied.feedback.clamp = clamp;
-    supplied.feedback.amplitude = amplitude;
     supplied.nonce = bridge_draw();
   }
+  // Amplitude belongs to the query's IA dictionary, not to either
+  // prepared response table. Changing it reuses the immutable model.
+  supplied.feedback.amplitude = amplitude;
 }
 
 // Install immutable B input without deriving a cosmological background.
@@ -539,10 +542,11 @@ void threepcf_bridge_set_prescriptions(
   if (supplied.power_mode != power_mode ||
       supplied.ct_mode != ct_mode ||
       supplied.suppress_only != suppress_only) {
+    // The model prepares every power mode. These selectors choose among
+    // those inputs only when the projection's IA parameters are copied.
     supplied.power_mode = power_mode;
     supplied.ct_mode = ct_mode;
     supplied.suppress_only = suppress_only;
-    supplied.nonce = bridge_draw();
   }
 }
 
@@ -694,7 +698,7 @@ static void scratch_clear(void)
 // of the structs the assembly read plus the bridge nonce. A build
 // exists only while have_build is one.
 #define BRIDGE_NCOUNT 25
-#define BRIDGE_NKEY 6
+#define BRIDGE_NKEY 5
 static struct {
   int have_build;
   int counts[BRIDGE_NCOUNT];
@@ -736,12 +740,13 @@ static void guard_current(
   keys[0] = cosmology.random;
   keys[1] = redshift.random_shear;
   keys[2] = nuisance.random_photoz_shear;
-  keys[3] = nuisance.random_ia;
+  // IA parameters and feedback amplitude are copied into each query.
+  // They change projected values but never the immutable model inputs.
   // Ntable.random rides along for the accuracy-boost knobs that bump
   // it in full-core builds; the bridge's own resolution knobs travel
   // through the nonce instead.
-  keys[4] = Ntable.random;
-  keys[5] = supplied.nonce;
+  keys[3] = Ntable.random;
+  keys[4] = supplied.nonce;
 }
 
 // dz/dchi at a node of the chi table, from the same finite-difference
@@ -834,7 +839,7 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   // The model's background grid is the nonlinear table's z axis, so
   // every background quantity must live on that same grid. Node
   // equality is exact: in a real likelihood all these axes descend
-  // from the same arrays, and a bitwise gate cannot absorb a rounded
+  // from the same arrays, and exact comparison cannot absorb a rounded
   // tolerance.
   const double* zrow = cosmology.lnP[nk]; // z axis of the lnP table
   if (cosmology.chi_nz != nz) {

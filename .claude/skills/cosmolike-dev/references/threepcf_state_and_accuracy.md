@@ -89,6 +89,24 @@ Clearing an absent override changes nothing; clearing an active override
 returns to the independently stored internal-fit scalars. Core reset
 clears the override but cannot invalidate existing immutable model owners.
 
+The bridge's model key excludes `nuisance.random_ia`, IA prescription
+selectors and feedback amplitude. These values enter the freshly copied
+`ia_parameters_from_core()` dictionary, not `physics_input_3pcf`. Changing
+them must preserve both the model owner and its build generation while
+changing the relevant projected result. Never key a projected-result cache
+on model identity alone: include the complete query dictionary, as the
+project's `JointPrediction` does. Old dictionaries and projection grids
+retain their own values. The model already prepares all three power modes.
+
+The source, LOS, pixel-window and feedback setters copy replacement arrays
+before freeing their old storage. A native caller may resubmit a borrowed
+bridge input, including a shorter valid LOS/window prefix or an unchanged
+source axis alongside new densities. Such a call must not read freed input.
+`tests/test_bridge_cache.py` in the project checks these public C calls
+through a compiler-checked helper, alongside IA/amplitude A/B/A reuse and
+continued physical-input invalidation. No hand-written Python struct layout
+is part of that test.
+
 In the companion project, `physics.bispectrum_source` chooses `internal` or
 `supplied`. `accuracy_boost * bispectrum_boost` refines the four coarse
 interval counts from immutable original axes; the configured dense `boost`
@@ -363,3 +381,19 @@ every exposed ST/Duffy scalar, the evolving collapse threshold, the
 BiHalofit baryon parameter, survey area and window shape. All tested
 transitions matched their fresh references bitwise. The audit found no
 native covariance state defect requiring a code change.
+
+### Sequential calls into the core bridge
+
+The core bridge uses process-global mutable input, scratch arrays and a
+cached model owner. Calls to `core.set_*`, reset, native refresh and
+`core.model_from_core()` must complete sequentially within the process.
+The model factory releases the Python GIL during preparation; it does not
+protect these shared inputs against another Python thread. Internal OpenMP
+and retained immutable owners do not establish concurrent bridge-entry
+safety. Cache tests cover sequences of completed calls, not overlapping
+setters and model creation.
+
+Keep comparison contracts distinct: the supplied-baseline setter compares
+array bytes, including signed zero. Older setters using `bridge_differs`
+compare exact numerical values without a tolerance, for which signed zeros
+are equal. Do not describe that older helper as a byte comparison.

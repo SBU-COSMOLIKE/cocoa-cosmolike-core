@@ -16,7 +16,7 @@ extern "C" {
 // physics_create_3pcf consumes. Nothing here changes the model's
 // internals.
 //
-// Two input tiers feed the assembled model:
+// Two input tiers feed the model and the separate IA translation:
 //
 //   struct-read tier - quantities an ordinary Cosmolike likelihood
 //     already installs into the global structs: the nonlinear power
@@ -34,15 +34,15 @@ extern "C" {
 //     baryonic-feedback response, the shifted source densities when
 //     photo-z shifts are active, and the IA prescription selectors.
 //     Each setter below stores an owned copy, compares the incoming
-//     values against the stored ones exactly (bitwise, never through a
-//     rounded tolerance) and redraws the single bridge nonce when
-//     anything changed.
+//     values against the stored ones exactly (without a tolerance)
+//     and redraws the bridge nonce when a model input changed.
+//     Query-only IA choices do not rebuild the model.
 //
 // Cache invalidation:
 // threepcf_bridge_refresh guards the assembled input with two tiers:
 // an allocation tier comparing every table count as integers, and a
 // refill tier comparing cosmology.random, redshift.random_shear,
-// nuisance.random_photoz_shear, nuisance.random_ia, Ntable.random and
+// nuisance.random_photoz_shear, Ntable.random and
 // the bridge nonce against the values snapshotted at the previous
 // assembly. reset_threepcf_core_bridge (called by initial_setup in
 // full-core builds, and by the standalone module's initial_setup
@@ -64,8 +64,11 @@ extern "C" {
 // ---------------------------------------------------------------------------
 // Supplied tier. Each setter validates its input (NaN and size checks
 // abort through log_fatal), stores an owned copy, and redraws the
-// bridge nonce only when a stored value actually changed, so an MCMC
+// model-input nonce only when a model input actually changed, so an MCMC
 // that resends identical arrays never invalidates the cached model.
+// IA amplitudes, feedback amplitude and IA prescription selectors belong
+// to queries. Read ia_parameters_from_core again after changing them;
+// model_from_core deliberately retains its immutable tables and owner.
 // ---------------------------------------------------------------------------
 
 // Background scalars the structs do not hold: the spectral index ns,
@@ -128,6 +131,9 @@ void threepcf_bridge_set_pixel_window(
 // response. amplitude only travels into
 // threepcf_bridge_ia_from_core's output; the model tables themselves
 // stay dark-matter-only, as the module requires.
+// An amplitude-only change retains the stored arrays and model. A table
+// replacement copies all inputs before releasing previous storage, so
+// a borrowed bridge view may be resubmitted with a new boost.
 void threepcf_bridge_set_feedback(
   const double* z,              // redshift nodes [nz]
   int nz,                       // redshift count
@@ -157,7 +163,8 @@ void threepcf_bridge_set_baseline_bispectrum(
 
 // IA prescription selectors of physics_ia_3pcf (physics_3pcf.h
 // documents each integer). Defaults match physics_default_ia_3pcf:
-// power_mode = 1, ct_mode = 0, suppress_only = 0.
+// power_mode = 1, ct_mode = 0, suppress_only = 0. These change queries;
+// the immutable model already prepares inputs for every power mode.
 void threepcf_bridge_set_prescriptions(
   int power_mode,   // 0 linear D^2; 1 nonlinear(z=0) D^2; 2 full table
   int ct_mode,      // 0 physical Ct = C1*ct (fastnc); 1 Ct = ct
@@ -200,6 +207,8 @@ void threepcf_bridge_ia_from_core(
 // build generation. The caller must create the new model from the
 // returned input before calling any bridge function again, and must do
 // so outside parallel regions (physics_create_3pcf's contract).
+// IA/query-only changes return NULL here; translate the current IA state
+// separately even when the model owner and generation stay unchanged.
 const physics_input_3pcf* threepcf_bridge_refresh(void);
 
 // Build generation: starts at zero, advances on every non-NULL

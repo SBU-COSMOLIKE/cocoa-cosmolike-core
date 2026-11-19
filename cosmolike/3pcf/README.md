@@ -1241,10 +1241,25 @@ in the supplied table.
 
 `core.set_baseline_bispectrum(baseline, omega_m_z, sigma8)` installs owned
 copies for the core bridge. Every axis, table value, background fraction,
-size and preparation control participates in its change checks. Repeating
-identical input reuses the model; changed input constructs another model,
+size and preparation control participates in its change checks. The supplied
+baseline compares array bytes, including signed zeros; older bridge setters
+compare exact numerical values without a tolerance. Repeating identical
+input reuses the model; changed input constructs another model,
 and an older Python owner keeps its own arrays. Passing `None` clears only
 the supplied baseline; resetting the core clears the stored override.
+IA amplitudes, their query selectors and the feedback amplitude reuse the
+same model: they do not define its power, background or four-dimensional
+tables. After changing them, read `core.ia_parameters_from_core()` again
+and pass that dictionary into the next projection. A previously prepared
+projection grid retains its old parameters and values. Model generation
+counts only preparation of a new model, not changes to query parameters.
+
+Calls to `core.set_*`, `core.model_from_core()`, native bridge refresh and
+core reset must run sequentially within one process. They share mutable
+bridge input and a cached model owner; model preparation releases Python's
+GIL, so another Python thread could otherwise change those inputs while
+they are being read. Retaining an older immutable owner and using internal
+OpenMP workers do not make concurrent entry to these bridge operations safe.
 The [Python producer guide](https://github.com/SBU-COSMOLIKE/cocoa_des_3pcf/blob/main/BIHALOFIT_PYTHON.md)
 (`Cocoa/projects/des_3pcf/BIHALOFIT_PYTHON.md`) explains the optional
 BiHalofit producer and separates equation agreement, interpolation
