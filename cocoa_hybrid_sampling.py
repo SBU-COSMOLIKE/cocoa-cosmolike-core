@@ -7,6 +7,12 @@ reads its project's evaluate YAML. Its sampler.evaluate.override block is
 the fiducial point: every mode evaluates it first, --check stops there, and
 a minimization starts from it.
 
+Physical-theory Nautilus examples call the same run() with hybrid=False.
+They read EXAMPLE_NAUTILUS<n>.yaml and keep its theory and likelihood
+choices. The hybrid default still enforces use_emulator: 2 and the
+networks' fixed neutrino mass. Both choices use the same Nautilus sampler,
+prior accounting, MPI pool and GetDist output.
+
 The score every mode works with is -2 log posterior: the chi2-like quantity
 -2 (log prior + log likelihood). Smaller is better, and differences in it
 are the units of the chi2 comparisons used across these projects.
@@ -92,7 +98,8 @@ RUNNING
 
 Serial:    python EXAMPLE_EMUL2_MINIMIZE1.py --check
 MPI:       mpirun -n 4 python EXAMPLE_EMUL2_MINIMIZE1.py
-Outputs land in <root>/chains/<outroot>.json plus the mode's own files
+Nautilus records use <root>/chains/<outroot>.yaml; minimization and profile
+records use .json. These accompany the mode's own files
 (.txt table, .<name>.txt profile rows, or Nautilus chain files).
 
 MPI ranks own separate Cobaya models. Only parameter arrays and scalar
@@ -107,6 +114,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import yaml
 
 # Set before importing numerical libraries or Cobaya on every MPI rank, since
 # they read these variables when they load or first initialize. One BLAS thread
@@ -116,6 +124,8 @@ from pathlib import Path
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["BLIS_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["COBAYA_NOMPI"] = "1"
 
@@ -274,13 +284,18 @@ def minimize(start, covariance, steps, pool, rng, fixed=-1):
     return best, -2*best_score
 
 
-def parser_for(mode, project, example):
+def parser_for(mode, project, example, hybrid=True):
     """Use the same public command options in every survey project."""
     parser = argparse.ArgumentParser(description=__doc__)
+    input_name = f"EXAMPLE_EMUL2_EVALUATE{example}.yaml"
+    output_name = f"EXAMPLE_EMUL2_{mode.upper()}{example}"
+    if not hybrid:
+        input_name = f"EXAMPLE_NAUTILUS{example}.yaml"
+        output_name = f"EXAMPLE_NAUTILUS{example}"
     parser.add_argument("--input", type=Path,
-                        default=project/f"EXAMPLE_EMUL2_EVALUATE{example}.yaml")
+                        default=project/input_name)
     parser.add_argument("--root", type=Path, default=project)
-    parser.add_argument("--outroot", default=f"EXAMPLE_EMUL2_{mode.upper()}{example}")
+    parser.add_argument("--outroot", default=output_name)
     parser.add_argument("--check", action="store_true",
                         help="evaluate the YAML fiducial and print parameter order; no sampling")
     parser.add_argument("--seed", type=int, default=42)
@@ -303,7 +318,7 @@ def parser_for(mode, project, example):
     return parser
 
 
-def load_model(filename):
+def load_model(filename, hybrid=True):
     """Load the shared evaluate configuration on CPU without writing its outputs.
 
     Refuses (ValueError) a likelihood without use_emulator: 2, an mnu other
@@ -311,7 +326,9 @@ def load_model(filename):
     sampler.evaluate.override block that misses a sampled parameter.
 
     Arguments:
-        filename = Path of the project's evaluate YAML.
+        filename = Path of the project's Cobaya YAML.
+        hybrid = enforce emulator restrictions when True; False retains
+            the physical theory specified by the YAML without these restrictions.
     Returns:
         (Cobaya model, sampled parameter names in sampled order,
          start point [n_sampled] from sampler.evaluate.override,
@@ -325,21 +342,23 @@ def load_model(filename):
     point = info.get("sampler", {}).get("evaluate", {}).get("override", {})
     info.pop("sampler", None)
     info.pop("output", None)
-    for options in info["likelihood"].values():
-        if options.get("use_emulator") != 2:
-            raise ValueError("hybrid examples require use_emulator: 2 in every likelihood")
-        options["print_datavector"] = False
-    mass = info["params"]["mnu"]
-    if isinstance(mass, dict):
-        mass = mass.get("value")
-    if mass != 0.06:
-        raise ValueError("these hybrid networks require fixed mnu=0.06 eV")
-    if "emulbaosn" in info["theory"]:
-        info["theory"]["emulbaosn"]["extra_args"]["device"] = "cpu"
+    if hybrid:
+        for options in info["likelihood"].values():
+            if options.get("use_emulator") != 2:
+                raise ValueError("hybrid examples require use_emulator: 2 in every likelihood")
+            options["print_datavector"] = False
+        mass = info["params"]["mnu"]
+        if isinstance(mass, dict):
+            mass = mass.get("value")
+        if mass != 0.06:
+            raise ValueError("these hybrid networks require fixed mnu=0.06 eV")
+        if "emulbaosn" in info.get("theory", {}):
+            info["theory"]["emulbaosn"]["extra_args"]["device"] = "cpu"
     model = get_model(info)
     names = list(model.parameterization.sampled_params())
     missing = [name for name in names if name not in point]
     if missing:
+        model.close()
         raise ValueError(f"sampler.evaluate.override must specify {missing}")
     start = np.array([point[name] for name in names], dtype=float)
     fingerprint = hashlib.sha256(filename.read_bytes()).hexdigest()
@@ -397,20 +416,24 @@ def run_nautilus(model, pool, args, prefix, names):
             "effective_samples": float(sampler.n_eff)}
 
 
-def run(mode, project, example=1):
+def run(mode, project, example=1, hybrid=True):
     """Run a serial or MPI example, with one initialized model per process.
 
     Arguments:
         mode = "minimize", "profile" or "nautilus".
         project = project directory, a Path or string.
         example = number in the default input EXAMPLE_EMUL2_EVALUATE<example>.yaml.
+        hybrid = False for physical-theory Nautilus examples, whose default
+            input is EXAMPLE_NAUTILUS<example>.yaml. Other modes use hybrid=True.
     Side effects:
         Parses the command line and sets the module's _MODEL. Except with
-        --check, writes <root>/chains/<outroot>.json and the mode's result
-        files, refusing to start when that JSON or a Nautilus checkpoint exists.
+        --check, writes a YAML Nautilus record (JSON for minimize/profile)
+        and result files. Existing records or chains are never overwritten.
     """
     global _MODEL
-    parser = parser_for(mode=mode, project=Path(project), example=example)
+    if not hybrid and mode != "nautilus":
+        raise ValueError("Physical-theory examples must select mode='nautilus'.")
+    parser = parser_for(mode=mode, project=Path(project), example=example, hybrid=hybrid)
     args = parser.parse_args()
     # getattr gives 1 for an option this mode does not define, so the check passes it.
     for key in ("nstw", "numpts", "factor", "nlive", "maxfeval", "neff", "nnetworks"):
@@ -425,7 +448,7 @@ def run(mode, project, example=1):
     # draws the starting walkers; Nautilus receives the seed directly.
     np.random.seed(args.seed)
     rng = np.random.default_rng(seed=args.seed)
-    _MODEL, names, start, fingerprint = load_model(filename=args.input)
+    _MODEL, names, start, fingerprint = load_model(filename=args.input, hybrid=hybrid)
     # Open MPI, the MPI of the Cocoa environment, exports OMPI_COMM_WORLD_SIZE to
     # every rank. A plain python run lacks it and stays serial: nullcontext then
     # yields pool = None.
@@ -448,8 +471,10 @@ def run(mode, project, example=1):
             _MODEL.close()
             return
         prefix = args.root/"chains"/args.outroot
-        if Path(str(prefix)+".json").exists() or Path(str(prefix)+"_checkpoint.hdf5").exists():
-            raise FileExistsError(f"{prefix} already exists; select a new --outroot")
+        for suffix in (".json", ".yaml", "_checkpoint.hdf5", ".1.txt", ".paramnames"):
+            if Path(str(prefix)+suffix).exists():
+                _MODEL.close()
+                raise FileExistsError(f"{prefix} already exists; select a new --outroot")
         prefix.parent.mkdir(parents=True, exist_ok=True)
         record = {"input": str(args.input.resolve()), "input_sha256": fingerprint,
                   "parameters": names, "mode": mode, "seed": args.seed,
@@ -517,5 +542,8 @@ def run(mode, project, example=1):
                            header=names[fixed]+" minus2_log_posterior "+" ".join(names))
                 record.update({"profile": names[fixed], "grid": grid.tolist(),
                                "minfile": str(args.minfile), "nstw": args.nstw})
-        Path(str(prefix)+".json").write_text(json.dumps(record, indent=2)+"\n")
+        if mode == "nautilus":
+            Path(str(prefix)+".yaml").write_text(yaml.safe_dump(record, sort_keys=False))
+        else:
+            Path(str(prefix)+".json").write_text(json.dumps(record, indent=2)+"\n")
     _MODEL.close()

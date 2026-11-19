@@ -11,6 +11,9 @@
 9. [Preparation, interpolation and parallel work](#preparation)
 10. [Changing a calculation without restarting Python](#state)
 11. [Accuracy and independent checks](#checks)
+    1. [Accuracy controls](#accuracy-controls)
+    2. [Individual stages](#accuracy-stages)
+    3. [Shared smoothing controls](#shared-smoothing)
 12. [Paired baryonic responses](#paired-feedback)
 13. [A supplied matter bispectrum](#supplied-bispectrum)
 14. [Acknowledgements](#credits)
@@ -1162,6 +1165,181 @@ project validation record states what was actually run; planned
 notebooks or unpublished survey inputs must not be counted as completed
 evidence.
 
+## Accuracy controls <a name="accuracy-controls"></a>
+
+### Global multipliers <a name="accuracy-global"></a>
+
+`des3pcf.Accuracy` has two global multiplicative controls. Their defaults are
+both one. `accuracy_boost` increases prepared sampling grids, while
+`integration_accuracy_boost` increases the node counts of fixed quadratures.
+An integration boost does not select an adaptive routine or change a tolerance
+inside an integrand. For a quadrature of baseline size $`N`$, the new size is
+$`\lceil N b\rceil`$. For an interpolation grid with endpoints, it is
+$`\lceil(N-1)b\rceil+1`$. Each individual stage multiplier multiplies its
+applicable global factor.
+
+The line-of-sight calculation uses a fixed trapezoidal integral in comoving
+distance. It subdivides its input redshift nodes interval by interval, and
+the physical model evaluates the distance at every new node. The
+subdivision is the next power of two above
+`accuracy_boost * integration_accuracy_boost * chi_boost`. Thus all old nodes
+and both limits remain present, including for a nonuniform baseline grid.
+The resolver refuses a subdivision above 1024. A boost of three requests
+four subintervals; the resolved node count records that distinction.
+
+The counts passed into the constructor remain the unboosted baseline. Applying
+the same Accuracy object again to that baseline gives identical counts. It
+never multiplies previously boosted values. Returning the controls to one
+restores the baseline without restarting Python. As in the ordinary core's
+accuracy controls, this rule prevents a notebook cell run twice from silently
+doubling its resolution twice.
+
+### Individual stages <a name="accuracy-stages"></a>
+
+| Control | Quantity refined | Global factor |
+|---|---|---|
+| `chi_boost` | LOS intervals, with nested old nodes | Both |
+| `kernel_boost` | Source-window redshift grid | Sampling |
+| `source_boost` | Independent uniform source-density grid, when the configuration declares one | Sampling |
+| `fit_z_boost` | Matter-fit redshift anchors | Sampling |
+| `bispectrum_boost` | Four coarse axes of the required supplied absolute bispectrum | Sampling |
+| `feedback_table_boost` | Paired response dense interpolation ratio | Sampling |
+| `feedback_z_boost` | BACCO response redshift intervals | Sampling |
+| `feedback_k_boost` | BACCO response log-wavenumber intervals | Sampling |
+| `feedback_u_boost` | BACCO response log shortest/middle side-ratio intervals | Sampling |
+| `feedback_v_boost` | BACCO response triangle-opening intervals | Sampling |
+| `power_table_boost` | Physical model's dense interpolation ratio | Sampling |
+| `triangle_boost` | Coarse projected triangle coordinates | Sampling |
+| `multipole_boost` | Coarse projected multipole coordinates | Sampling |
+| `fft_boost` | Minimum FFT length before exact angular alignment | Sampling |
+| `angular_boost` | Bispectrum angular quadrature nodes | Integration |
+| `aperture_ell_boost` | Full-filter mean Fourier quadrature | Integration |
+| `aperture_phi_boost` | Full-filter mean opening-angle quadrature | Integration |
+| `xi_ell_boost` | Xi Fourier quadrature | Integration |
+| `xi_theta_boost` | Xi within-bin angular quadrature | Integration |
+| `covariance_ell_boost` | Short-mode Fourier quadrature | Integration |
+| `covariance_window_boost` | Separate survey-window mode quadrature | Integration |
+| `covariance_phi_boost` | Relative-angle quadrature | Integration |
+| `covariance_radius_boost` | Center and halo offset quadratures | Integration |
+| `covariance_k_boost` | Halo variance wavenumber quadrature | Integration |
+| `covariance_mass_boost` | Halo mass quadrature | Integration |
+| `profile_boost` | Halo-profile input radius intervals | Sampling |
+| `profile_upsample_boost` | Halo-profile dense interpolation ratio | Sampling |
+
+`power_table_boost` changes dense physical-table reads. The supplied
+matter bispectrum is a separate table; `bispectrum_boost` refines its
+coarse axes. `fit_z_boost` belongs to the selected matter-fit producer's
+redshift anchors, not an internal C BiHalofit calculation. For a different
+theory producer, use that producer's own controls rather than assuming a
+matter-fit anchor has the same meaning.
+
+Coarse covariance-profile samples and their dense interpolation ratio
+also refine different approximations. Test them individually before
+increasing all controls together.
+
+For the [supplied BiHalofit route](../../../../../projects/des_3pcf/python/des3pcf/README.md), the coarse baseline
+intervals grow by `accuracy_boost * bispectrum_boost`. Its explicit
+`physics.bispectrum_table.boost` stays fixed. Doubling the coarse intervals
+on all four axes therefore multiplies the stored table size by roughly
+sixteen, even though the global factor enters each axis only once. The
+49-by-193-by-97-by-33 example stores 30,271,857 double values, about 231 MiB
+for one table; Python ownership, C ownership and temporary preparation need
+additional memory. Change an individual YAML axis count when isolating that
+axis's error. The Python fit's `fit_z_boost` and `power_table_boost` control
+different approximations and remain independent of baseline interpolation.
+
+The four BACCO input-axis controls apply to the dynamic producer. A loaded
+fixed response file has no emulator from which to obtain new input values;
+only its dense interpolation can be refined. For dynamic BACCO, a global
+sampling boost increases all four input counts and the dense multiplier,
+so its memory cost can grow rapidly. Refine one axis at a time. The
+[BACCO notebook](../../../../../projects/des_3pcf/EXAMPLE_FISHER_BACCO.ipynb) distinguishes these sampling
+checks from changes to the physical continuation beyond the trained domain.
+
+Projection settings still expose the individual axis counts (`nr`, `nu`,
+`nv`, `np`, `nshape`, `nell`, `npsi`, and the reference-coordinate counts).
+These allow an even narrower test than a whole triangle-grid boost. The
+direct reference route and the prepared production route remain explicit
+choices; a boost does not switch between them.
+
+
+### Shared smoothing controls <a name="shared-smoothing"></a>
+
+`physics.variance_source: shared` asks the ordinary CosmoLike smoothing
+engine for the fit's nonlinear radius, effective index and sigma8(z).
+The default `local` retains the reference calculation while the full joint
+mean and Fisher acceptance checks are completed. This selector is separate
+from the matter prescription: the Python theory producer consumes those
+copied variance arrays and always supplies the complete B table to C.
+
+The project prepares the `local` fit through the independent Python
+`ReferenceVariance` calculation and passes its owned arrays to the theory producer. Its
+finite log-k integration, radius solve and scalar sigma8 normalization
+retain the old reference convention. The normalization multiplies only
+the three-point model's linear power; the ordinary two-point calculation
+receives the original supplied spectrum. The saved metadata records the
+multiplier and all inputs. Neither mode can silently normalize the other's
+spectrum. Native constructors require the complete B table and never fit
+it from smoothing arrays. Original-library equation comparisons use the
+Python BiHalofit implementation against frozen pre-removal C and fastnc
+outputs. Projection comparisons use `reference_physics_model`, which now
+prepares an explicit, small Python B table; its coarse sampling is not a
+survey accuracy result.
+
+`physics.variance_growth: factorized` installs P(k,0)D(z)^2 and retains the
+existing three-point effective-growth approximation. `evolving` instead
+requires the complete linear P(k,z) table. With massive neutrinos those are
+different physical choices. The shared route trusts the supplied power
+amplitude; it does not rescale it to a second sigma8 scalar. The metadata
+records that choice and the Boltzmann provider's exact neutrino density.
+
+Four controls refine the shared tables: `variance_mass_boost` for top-hat
+mass sampling, `variance_a_boost` for both scale-factor tables,
+`variance_radius_boost` for Gaussian radii, and `variance_inverse_boost`
+for the inverse Gaussian-variance table. Each multiplies `accuracy_boost`
+and rounds upward to a power-of-two subdivision of the original intervals,
+up to a factor of sixteen. Counts always come from the saved unboosted
+baseline. Repeated calls therefore cannot square a boost. The analytic
+FFTLog smoothing does not use `integration_accuracy_boost`; input power
+sampling remains a separate producer-grid choice.
+
+The provider retains owned snapshots keyed by the supplied power, cosmology,
+output coordinates and resolved counts. Another provider may replace the
+shared core state without changing an earlier snapshot or immutable model.
+Changing a source distribution does not change its matter smoothing inputs.
+The component tests check those ownership rules and compare the C and Python
+fits using the same shared arrays.
+
+The joint NLA and TATT comparisons pass on factorized-growth inputs prepared
+with CAMB AccuracyBoost 2, k_per_logint 50 and 1025 uniform log-k samples.
+At four-times shared sampling, the largest parameter-pair FoM differences
+from the refined independent reference are 0.0541% for NLA and 0.0581% for
+TATT, including both derivative steps. All two-point stencil rows remain
+bitwise unchanged. NLA refinement from four to eight times sampling changes
+any pair FoM by at most 0.0356%; there is no equivalent full TATT refinement
+run. These are comparisons at specified inputs, not a universal forecast
+accuracy guarantee. The older coarse-input calculation failed the same
+comparison because the legacy scalar normalization changed the spectrum.
+Some marginalized errors still change by about 2.8% under derivative-step
+halving in both NLA methods. Defaults and native compatibility remain
+separate from this acceptance record.
+
+For analytic covariance, the shared route supplies halo variances and
+logarithmic mass slopes at the exact requested mass and line-of-sight
+nodes. It preserves the existing M200m density convention, Sheth-Tormen
+mass function and Duffy concentration parameters. Shared smoothing does
+not replace these physical prescriptions. The saved metadata includes
+separate fit and halo variance records. A declared
+`single_fluid_effective_growth` neutrino approximation requires factorized
+growth; an evolving halo prescription needs its own physical validation.
+
+The optional Cobaya `BiHalofitTheory` uses the same `variance_source` and
+`variance_growth` selectors. Its `variance_accuracy` mapping supplies the
+shared smoothing controls. The project setup must make the compiled 3PCF
+interface importable when this route is selected. The local Python
+reference does not require that compiled dependency.
+
+
 ## Paired baryonic responses <a name="paired-feedback"></a>
 
 An optional immutable input supplies positive ratios of
@@ -1442,7 +1620,9 @@ above. Those functions cannot replace the current kernels unchanged.
 
 The companion project's Cobaya adapter is `des3pcf.bihalofit_theory.BiHalofitTheory`.
 The underlying `des3pcf.bihalofit.BiHalofitProducer` is also called directly
-by its CLI/Fisher provider. The current Nautilus examples call the project's
-`scripts/run_nautilus.py` and its custom joint likelihood. They do not use
-the Cobaya adapter. These paths share the Python matter calculation, but
-their configuration and execution are different.
+by its CLI/Fisher provider. The Nautilus examples use the same shared
+`cocoa_hybrid_sampling.run` as LSST Y1, with `hybrid=False`. Cobaya loads
+`des3pcf.cobaya_likelihood.JointShear`, which calls that physical provider.
+It does not instantiate the separate `BiHalofitTheory` component. Inputs
+live in the project's `data/`; generated theory tables and forecasts live
+in `runs/`, and frozen numerical comparisons live in `tests/`.

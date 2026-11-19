@@ -113,8 +113,10 @@ In the companion DES project, `python/des3pcf/bihalofit_theory.py` defines
 the Cobaya `BiHalofitTheory` component. Its equations and cached table
 producer are in `python/des3pcf/bihalofit.py`. The CLI/Fisher
 `PhysicalProvider` calls the same producer directly. The current project
-Nautilus examples use `scripts/run_nautilus.py` and the custom joint
-likelihood; they do not instantiate that Cobaya component. Mandatory
+Nautilus examples call `cocoa_hybrid_sampling.run(..., hybrid=False)`,
+following the LSST Y1 launcher. Cobaya loads
+`des3pcf.cobaya_likelihood.JointShear`, which owns the same physical
+provider; it does not instantiate `BiHalofitTheory`. Mandatory
 theory inputs to C do not mean every project driver uses Cobaya's theory
 dependency system.
 

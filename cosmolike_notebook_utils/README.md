@@ -6,6 +6,7 @@
 4. [Design rules every module follows](#design)
 5. [The plotting conventions](#plotting)
 6. [CAMB input and Fisher forecasts](#fisher)
+   1. [Choosing accuracy from a default Fisher base](#fisher-noise)
 7. [Units and array conventions](#units)
 8. [The covariance subpackage](#covariance)
 9. [Three-point figures](#threepcf)
@@ -282,6 +283,90 @@ uses the derivkit package; `get_Fisher2` combines both steps.
 The derivative step sizes and the figure-of-merit convention are
 documented in [fisher.py](fisher.py)'s docstrings, including the
 limits of each shortcut.
+
+## Choosing Fisher accuracy from a default-accuracy base <a name="fisher-noise"></a>
+
+A Fisher calculation can report artificially small errors when numerical
+noise contaminates its derivatives. The derivative divides a difference of
+nearby predictions by a small parameter step. Squaring that derivative in
+$`F=D^T C^{-1}D+F_{\rm prior}`$ turns some of the noise into positive
+information. Agreement of the fiducial mean alone does not test this effect.
+
+The expensive part of the screening calculation runs once at **default
+accuracy**: build the full derivative matrix and Fisher matrix, including
+the configured priors. `get_fom_noise_weights`, `get_stencil_noise` and `predict_fom_noise` in
+[fisher.py](fisher.py) compute the marginalized dark-energy
+weights, the per-column stencil noise and the predicted FoM shift. They
+implement the estimate derived in the derivative-accuracy section of the
+Fisher machinery note in the LSST Y1 × DESI project
+(`projects/lssty1xdesi/notes/fisher_machinery/`), with the same meaning of each quantity.
+
+Let $`S=F^{-1}`$ be the parameter covariance and $`S_w`$ its marginalized
+$`(w_0,w_a)`$ block. For parameter $`p_j`$, the default-accuracy calculation
+supplies a weight
+
+```math
+R_j^2\sigma_j^2=S_{j,w}S_w^{-1}S_{w,j},\qquad \sigma_j^2=S_{jj}.
+```
+
+The weight measures how uncertainty in that parameter affects the dark-energy
+ellipse. A nuisance parameter can matter even though it is neither $`w_0`$
+nor $`w_a`$; marginalization must keep its covariance with the pair.
+At each candidate accuracy, measure only the columns that these weights
+and the baseline noise audit select; rebuilding the entire derivative base
+at every setting would lose the method's cost advantage.
+
+Five equally spaced predictions give the fourth difference
+$`\Delta^4m=m(-2h)-4m(-h)+6m(0)-4m(h)+m(2h)`$. If evaluation errors have
+approximately independent, equal-size fluctuations along this stencil,
+
+```math
+\widehat\sigma_{\rm eval,j}^2=
+\frac{\Delta^4m_j^T C^{-1}\Delta^4m_j}{70},\qquad
+a_j=\frac{130}{144}\frac{\widehat\sigma_{\rm eval,j}^2}{h_j^2},\qquad
+\delta\ln{\rm FoM}\simeq\frac12\sum_j R_j^2a_j\sigma_j^2.
+```
+
+Here $`h_j`$ is an absolute step in the units of parameter $`p_j`$.
+`get_stencil_noise` accepts the relative-step convention documented in its
+docstring. An adapter with absolute steps can supply parameter offsets
+about zero; it must not accidentally rescale the step or reverse it at a
+negative fiducial value.
+The factors 70 and 130 are sums of squared stencil coefficients. They
+describe independent numerical errors, not a new physical covariance term.
+For large predicted shifts, the shared calculation also evaluates the exact
+ratio $`{\rm FoM}(F+\operatorname{diag}a)/{\rm FoM}(F)`$ instead of truncating
+the matrix calculation at first order.
+
+A full default-accuracy run can save the five vectors at both $`h`$ and
+$`h/2`$ for every parameter. Its baseline noise audit therefore needs no
+additional model evaluations. A candidate examining $`k`$ columns at one
+spacing needs $`1+4k`$ distinct evaluations, including a shared center.
+The report lists omitted columns and their measured baseline contribution.
+A small baseline contribution is not a bound on how that column's noise
+changes at another accuracy.
+
+This procedure screens settings; it does not certify convergence. A smooth
+fourth derivative also enters $`\Delta^4m`$, while an odd numerical error can
+cancel from it and still bias the first derivative. Correlations between
+nearby evaluations violate the independent-noise estimate. The final check
+therefore compares full Fisher matrices at finer settings and at both step
+sizes, with the covariance, priors, physical model and rows held fixed.
+Separate range, angular-truncation and source-table checks remain
+necessary. Report the actual FoMs from those full derivatives, never an
+estimated corrected scientific FoM obtained by subtracting the noise model.
+
+A concrete diagnostic is a numerical cusp, $`m(p)=v|p-p_0|`$. A centered
+five-point fourth difference at $`p_0`$ is $`-4hv`$. Its inferred vector
+noise amplitude therefore scales as $`h`$, while the corresponding false
+information estimate can remain constant when the step is halved. That
+behavior is not independent random noise. Smooth fourth-derivative
+contamination instead scales as $`h^4`$; ideal independent evaluation noise
+has roughly constant amplitude. Compare one-sided slopes, shifted stencil
+centers and more than two step sizes when a table-cell crossing or source
+boundary could be responsible. Shared stencil samples mean these scaling
+checks are diagnostics, not independent statistical measurements.
+
 
 # Units and array conventions <a name="units"></a>
 

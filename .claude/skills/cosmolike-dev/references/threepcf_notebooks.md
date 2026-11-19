@@ -440,9 +440,10 @@ qualification when choosing a smoother reconstruction.
 
 The pinned integrator repository contains real unblinded Y3 measurements in
 addition to its simulated analysis inputs. The project's separate
-`data/y3_observed_manifest.json` records the matched observed two-point and
+`data/y3_observed_manifest.yaml` records the matched observed two-point and
 aperture files, joint covariance, upstream INI files and Git blob hashes.
-`scripts/fetch_y3_observed.py` verifies those identities. Do not describe the
+The project includes these files in `data/`; its likelihood preparation
+verifies their recorded identities. Do not describe the
 twelve-file simulation selection as proof that observed data are unavailable.
 The observational companion, arXiv:2508.14018, is distinct from the simulation
 methods paper arXiv:2503.03964.
@@ -462,8 +463,8 @@ priors to Nautilus once. A synthetic example generates its data with the exact
 declared fiducial model; it does not relabel a different public simulated
 mean as its own prediction. An observed example remains a declared Gaussian
 demonstration until estimator, cuts, compression and finite-mock likelihood
-choices match the publication. A retained checkpoint requires verified target
-identity before resuming.
+choices match the publication. The shared sampler refuses existing output prefixes. It has no
+project-specific resume command.
 
 The optional project `compression.py` owns a fixed matrix and exact input
 labels. Selection precedes T; data and every mean use T, and covariance
@@ -610,3 +611,27 @@ the correlated-covariance fit and conditional norm identity, opposite
 signs, observable-unit changes, row permutations and named column scaling.
 Render the supplied NLA and TATT curves with the house style and inspect
 them; template fits do not validate the underlying physical derivatives.
+
+### File locations and shared Nautilus examples
+
+All four DES `EXAMPLE_NAUTILUS*.py` files follow the LSST Y1 launcher:
+locate the core, import `cocoa_hybrid_sampling.run`, and pass the project
+and example number. `hybrid=False` retains physical theory; the default
+hybrid route still requires the emulator configuration and fixed neutrino
+mass. The same driver owns priors, MPI, Nautilus and GetDist output.
+Nautilus writes a YAML run record. Minimize/profile records stay JSON.
+`--check` evaluates the fiducial only. Parameter-change tests are separate.
+
+The Cobaya YAML defines `params` and `sampler.evaluate.override`; a
+`JointShear` likelihood reads a dataset in `data/`. That dataset selects
+the prediction YAML and the fixed covariance. `JointShear` calls the
+existing CAMB/BiHalofit physical provider; this is not a separate Cobaya
+CAMB/BiHalofit theory dependency graph.
+
+Released measurements, intentional mock inputs, source distributions and
+released covariance matrices belong in `data/`. The processed demonstration
+source stays there with its clipping record. Generated theory tables,
+artificial feedback responses and trained compression matrices belong in
+`runs/`; `run_3pcf.py prepare` recreates the fiducial theory tables. Frozen
+regression predictions and archived timing vectors belong in `tests/`.
+Notebook path edits preserve historical outputs and do not count as reruns.
