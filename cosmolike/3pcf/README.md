@@ -14,6 +14,8 @@
 12. [Paired baryonic responses](#paired-feedback)
 13. [A supplied matter bispectrum](#supplied-bispectrum)
 14. [Acknowledgements](#credits)
+15. [Matter fraction and expansion history](#matter-fraction-and-expansion-history)
+16. [Upstream interpolation comparisons](#upstream-interpolation-comparisons)
 
 ## What can be calculated? <a name="scope"></a>
 
@@ -837,6 +839,7 @@ finite-sample tests are separate from the C covariance integral.
 | File | Responsibility |
 |---|---|
 | [physics_3pcf.c](physics_3pcf.c), [header](physics_3pcf.h) | Owned physical tables, the matter bispectrum (internal fit or supplied table), TATT/velocity shear, projection and full-filter aperture mean |
+| [physics_reference_3pcf.c](physics_reference_3pcf.c), [header](physics_reference_3pcf.h) | Not-a-knot coefficients and interval search for explicit upstream comparisons; production uses the shared uniform-grid solver |
 | [physics_grid_3pcf.c](physics_grid_3pcf.c), [header](physics_grid_3pcf.h) | Shared source-triplet preparation, uniform triangle/multipole tables and SIMD linear reads |
 | [feedback_3pcf.c](feedback_3pcf.c), [response header](feedback_3pcf.h), [baseline header](baseline_3pcf.h) | Baryonic response ratios (Section 12) and the supplied absolute bispectrum (Section 13); each table keeps its own owner, and both reuse the same uniform preparation and reads |
 | [coupling_3pcf.c](coupling_3pcf.c), [fftlog_3pcf.c](fftlog_3pcf.c), [transform_3pcf.c](transform_3pcf.c) | Angular coupling, two-Bessel transforms and natural-component reconstruction |
@@ -1386,7 +1389,7 @@ Gaussian-mock and independence assumptions. It is a separate statistical
 choice from precision-matrix expansion.
 
 
-### Matter fraction and expansion history
+## Matter fraction and expansion history
 
 BiHalofit uses the redshift-dependent matter fraction in its coefficient
 `d_n`; the halo covariance can use it in the collapse-threshold correction.
@@ -1420,3 +1423,14 @@ model. Passing `None` clears the override, and reset releases its storage.
 An internal bridge fit with nonzero massive-neutrino density requires this
 override. A supplied absolute bispectrum continues to receive its fraction
 through `set_baseline_bispectrum`.
+
+
+## Upstream interpolation comparisons
+
+`physics_reference_3pcf.c` owns the not-a-knot solver and binary interval search
+used by `source_readers=True`. These functions retain the upstream boundary
+condition and its interpolation in distance. Production preparation uses
+`basics.c::spline_coeffs_uniform` on declared uniform segments and arithmetic
+cell lookup. Refinement then supplies the linear tables used by repeated
+physical queries. The comparison code is compiled into the same library, but
+production does not select it. Neither route uses mutable GSL accelerators.

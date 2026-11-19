@@ -631,3 +631,14 @@ fit with Omega_nu>0 refuses the pressureless default. Supplied absolute-B
 models retain their separately supplied background fraction. The original
 CPL relation exists only in the project Python reference adapter for
 identified upstream comparisons and frozen legacy checks.
+
+
+## Source-comparison spline separation
+
+The internal `physics_reference_3pcf.c/.h` pair contains the not-a-knot
+coefficient calculation and binary interval search. Only explicitly selected
+source-comparison tables call them. `physics_3pcf.c` retains model-owned storage
+and the small preparation adapter; production uses shared uniform natural
+coefficients, declared piecewise-uniform metadata and arithmetic cell lookup.
+The project's Makefile must link `physics_reference_3pcf.o`. Do not remove that
+object while the upstream-comparison constructor remains public.

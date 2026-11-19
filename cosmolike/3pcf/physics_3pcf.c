@@ -7,6 +7,7 @@
 #include <string.h>
 #include "simde/x86/sse2.h"
 #include "physics_3pcf.h"
+#include "physics_reference_3pcf.h"
 #include "cosmolike/basics.h"
 #include "cosmolike/structs.h"
 #include "log.c/src/log.h"
@@ -102,7 +103,7 @@ typedef struct {
 
 // One owned interpolation table. Production prepares natural cubics
 // on the uniform pieces declared by Cocoa, then refines each piece
-// for arithmetic-index linear reads. make_spline retains the upstream
+// for arithmetic-index linear reads. make_reference_spline retains the upstream
 // interpolation only for explicit source comparisons. Power tables store
 // log P against log k, so their endpoint slopes are the power-law indices
 // that read_power extrapolates with.
@@ -310,27 +311,10 @@ static void increasing_physics(
 
 
 // ---------------------------------------------------------------------------
-// make_spline: build a not-a-knot cubic spline on an irregular grid.
-//
-// A cubic spline stores the second derivative at every node; between
-// nodes the interpolant is the cubic polynomial those endpoint values
-// determine. Continuity of the first derivative at each interior node
-// gives one equation per interior node,
-//
-//   h_left M[i-1] + 2 (h_left + h_right) M[i] + h_right M[i+1]
-//     = 6 (slope_right - slope_left),
-//
-// with M the second derivatives, h the interval widths and slope the
-// finite-difference slope of each interval. Two boundary conditions
-// close the system. The not-a-knot choice of scipy's
-// InterpolatedUnivariateSpline makes the first two intervals share
-// one cubic polynomial, and likewise the last two; eliminating M[0]
-// and M[n-1] folds that condition into the first and last interior
-// rows and leaves a tridiagonal system. One forward elimination and
-// one back substitution (the Thomas algorithm) solve it here, during
-// preparation; evaluation then only reads and needs no mutable GSL
-// accelerator object.
-static physics_spline make_spline(
+// Copy source-comparison inputs into model-owned storage. The separate
+// reference module supplies their not-a-knot coefficients. Production calls
+// make_natural_spline, which uses the shared uniform-grid solver instead.
+static physics_spline make_reference_spline(
   const double* x,
   const double* y,
   const int count
@@ -356,82 +340,7 @@ static physics_spline make_spline(
     }
   }
 
-  if (count == 2) {
-    return result;
-  }
-  if (count == 3) {
-    const double slope0 = (y[1] - y[0])/(x[1] - x[0]);
-    const double slope1 = (y[2] - y[1])/(x[2] - x[1]);
-    const double second = 2.0*(slope1 - slope0)/(x[2] - x[0]);
-    for (int index=0; index<count; index++) {
-      result.second[index] = second;
-    }
-    return result;
-  }
-
-  const int interior = count - 2;
-  double* diagonal = calloc1d(interior);
-  double* upper = calloc1d(interior);
-  double* rhs = calloc1d(interior);
-
-  // Assemble the interior rows and eliminate on the fly: each row
-  // folds its subdiagonal entry into the previous pivot, so one pass
-  // both builds and forward-eliminates the tridiagonal system.
-  for (int row=0; row<interior; row++) {
-    const int index = row + 1;
-    const double left = x[index] - x[index - 1];
-    const double right = x[index + 1] - x[index];
-    double lower = left;
-    diagonal[row] = 2.0*(left + right);
-    upper[row] = right;
-    rhs[row] = 6.0*((y[index + 1] - y[index])/right
-      - (y[index] - y[index - 1])/left);
-    if (row == 0) {
-      // First interior row: the not-a-knot condition expresses M[0]
-      // through M[1] and M[2]; substituting it modifies this row's
-      // diagonal and upper entries and removes its subdiagonal.
-      diagonal[row] += left*(left + right)/right;
-      upper[row] -= left*left/right;
-      lower = 0.0;
-    }
-    if (row == interior - 1) {
-      // Last interior row: the mirrored not-a-knot condition folds
-      // M[n-1] into the two previous interior values the same way.
-      diagonal[row] += right*(left + right)/left;
-      lower -= right*right/left;
-      upper[row] = 0.0;
-    }
-    if (row > 0) {
-      // Forward elimination: subtract the multiple of the previous
-      // row that zeroes this row's subdiagonal entry.
-      const double multiplier = lower/diagonal[row - 1];
-      diagonal[row] -= multiplier*upper[row - 1];
-      rhs[row] -= multiplier*rhs[row - 1];
-    }
-  }
-
-  // Back substitution fills the interior second derivatives from the
-  // last row upward.
-  for (int row=interior - 1; row>=0; row--) {
-    const double next = row + 1 < interior ? result.second[row + 2] : 0;
-    result.second[row + 1] = (rhs[row] - upper[row]*next)/diagonal[row];
-  }
-
-  // Recover the endpoint second derivatives from the not-a-knot
-  // relations the elimination removed: each endpoint extrapolates
-  // linearly from its two neighboring interior values.
-  const double first = x[1] - x[0];
-  const double second = x[2] - x[1];
-  result.second[0] = ((first + second)*result.second[1]
-    - first*result.second[2])/second;
-  const double last = x[count - 1] - x[count - 2];
-  const double previous = x[count - 2] - x[count - 3];
-  result.second[count - 1] = ((last + previous)*result.second[count - 2]
-    - last*result.second[count - 3])/previous;
-
-  free(diagonal);
-  free(upper);
-  free(rhs);
+  reference_spline_coeffs_3pcf(x, y, count, result.second);
 
   return result;
 }
@@ -502,30 +411,6 @@ static physics_spline make_natural_spline(
 }
 
 // ---------------------------------------------------------------------------
-// interval_physics: binary search for the interval index i with
-// grid[i] <= coordinate < grid[i+1], clamped to the valid range.
-// Preparation and the source-comparison mode search; the production
-// readers find their cell by index arithmetic on uniform grids.
-static int interval_physics(
-  const double* grid,
-  const int count,
-  const double coordinate
-)
-{
-  int lower = 0;
-  int upper = count - 1;
-  while (upper - lower > 1) {
-    const int middle = lower + (upper - lower)/2;
-    if (grid[middle] <= coordinate) {
-      lower = middle;
-    } else {
-      upper = middle;
-    }
-  }
-  return lower;
-}
-
-
 // ---------------------------------------------------------------------------
 // read_spline: evaluate one spline. A uniform table (positive
 // inverse_spacing) interpolates linearly inside the cell its index
@@ -566,7 +451,7 @@ static double read_spline(
     index = piecewise_index(bounded, axis->count, axis->start,
       axis->length, axis->lower, axis->inverse, spline->n);
   } else {
-    index = interval_physics(spline->x, spline->n, coordinate);
+    index = reference_interval_3pcf(spline->x, spline->n, coordinate);
   }
   const double width = spline->x[index + 1] - spline->x[index];
   const double right = (coordinate - spline->x[index])/width;
@@ -909,13 +794,13 @@ static void prepare_bihalofit(
   // comparison retains its not-a-knot convention whether the fit values
   // were prepared locally or supplied by the independent Python reference.
   model->radius = model->source_readers
-    ? make_spline(supplied->z, supplied->rnl, supplied->nz)
+    ? make_reference_spline(supplied->z, supplied->rnl, supplied->nz)
     : make_natural_spline(supplied->z, supplied->rnl, supplied->nz);
   model->neff = model->source_readers
-    ? make_spline(supplied->z, supplied->neff, supplied->nz)
+    ? make_reference_spline(supplied->z, supplied->neff, supplied->nz)
     : make_natural_spline(supplied->z, supplied->neff, supplied->nz);
   model->sigma8z = model->source_readers
-    ? make_spline(supplied->z, supplied->sigma8, supplied->nz)
+    ? make_reference_spline(supplied->z, supplied->sigma8, supplied->nz)
     : make_natural_spline(supplied->z, supplied->sigma8, supplied->nz);
 
 }
@@ -1112,10 +997,10 @@ static void prepare_radial(physics_model_3pcf* model)
     // still integrate over chi. The comparison retains the upstream chi
     // interpolation; either route vanishes beyond the source support.
     physics_spline lens_spline = model->source_readers
-      ? make_spline(model->kernel_chi, lens, nkernel)
+      ? make_reference_spline(model->kernel_chi, lens, nkernel)
       : make_natural_spline(model->kernel_z, lens, nkernel);
     physics_spline shape_spline = model->source_readers
-      ? make_spline(source_chi, source_shape, nz)
+      ? make_reference_spline(source_chi, source_shape, nz)
       : make_natural_spline(source_z, source_shape, nz);
 
     for (int node=0; node<nlos; node++) {
@@ -1363,7 +1248,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     "physics_3pcf: power requires one uniform log-k segment"); exit(1); }
 
   model->linear = model->source_readers
-    ? make_spline(logk, logpower, nk)
+    ? make_reference_spline(logk, logpower, nk)
     : make_natural_spline(logk, logpower, nk);
   // Power and copied fit arrays describe the same supplied spectrum.
   // Model construction never changes that spectrum's amplitude.
@@ -1389,14 +1274,14 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       logpower[index] = log(power);
     }
     model->nonlinear[redshift] = model->source_readers
-      ? make_spline(logk, logpower, nk)
+      ? make_reference_spline(logk, logpower, nk)
       : make_natural_spline(logk, logpower, nk);
   }
 
   if (model->source_readers) {
-    model->distance = make_spline(input->z, input->chi, nz);
-    model->growth = make_spline(input->z, input->growth, nz);
-    model->dz_dchi = make_spline(input->z, input->dz_dchi, nz);
+    model->distance = make_reference_spline(input->z, input->chi, nz);
+    model->growth = make_reference_spline(input->z, input->growth, nz);
+    model->dz_dchi = make_reference_spline(input->z, input->dz_dchi, nz);
   } else {
     model->distance = make_natural_spline(input->z, input->chi, nz);
     model->growth = make_natural_spline(input->z, input->growth, nz);
@@ -1483,7 +1368,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
         "physics_3pcf: Omega_m(z) must be finite and positive"); exit(1); }
     }
     model->omega_m_z = model->source_readers
-      ? make_spline(axis, input->omega_m_z, count)
+      ? make_reference_spline(axis, input->omega_m_z, count)
       : make_natural_spline(axis, input->omega_m_z, count);
   } else {
     // For pressureless matter, rho_m(z)=rho_m0*(1+z)^3. dz/dchi is
@@ -1504,7 +1389,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
         "physics_3pcf: dz/dchi implies invalid Omega_m(z)"); exit(1); }
     }
     model->omega_m_z = model->source_readers
-      ? make_spline(fit->z, matter, fit->nz)
+      ? make_reference_spline(fit->z, matter, fit->nz)
       : make_natural_spline(fit->z, matter, fit->nz);
     free(matter);
   }
@@ -2807,7 +2692,7 @@ static void field_kernel_physics(
   }
 
   physics_spline spline = model->source_readers
-    ? make_spline(model->kernel_chi, kernel, count)
+    ? make_reference_spline(model->kernel_chi, kernel, count)
     : make_natural_spline(model->kernel_z, kernel, count);
   for (int node=0; node<model->nlos; node++) {
     const double coordinate = model->source_readers
