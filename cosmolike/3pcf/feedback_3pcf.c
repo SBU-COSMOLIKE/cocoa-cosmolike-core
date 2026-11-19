@@ -27,8 +27,9 @@
 // never read these tables; only their nonlinear-alignment baseline
 // receives the feedback ratio.
 //
-// Preparation runs serially and ends in one immutable response
-// object. After creation, worker threads read uniform arrays through
+// Preparation splits its independent spline lines across OpenMP
+// workers and ends in one immutable response object. After creation,
+// worker threads read uniform arrays through
 // arithmetic index calculations: no GSL calls, no allocations and no
 // mutable state remain on the query path. Storage is flat and
 // unpadded, in the row order the header documents.
@@ -81,7 +82,7 @@ static size_t table_size(
 // weights are cheap and branch-free inside parallel workers. Linear
 // interpolation on the loaded grid alone would lose the curvature of
 // the response between its nodes. This preparation step recovers that
-// curvature once, serially: it runs a natural cubic spline through the
+// curvature once, at creation: it runs a natural cubic spline through the
 // loaded nodes and evaluates it on a grid with boost intervals per
 // loaded interval, so the later linear reads follow the cubic shape.
 //
@@ -136,6 +137,16 @@ static double* dense_table(
   // buffer, spline it, and scatter the dense result into the new
   // table. The pass grows the axis count to boost*(old_count - 1) + 1,
   // and the next pass reads the denser table as its input.
+  //
+  // Threading: inside one pass, every (block, inner) line reads only
+  // the finished input table and writes only its own dense entries, so
+  // the lines are shared among OpenMP workers with no locks. The passes
+  // themselves depend on each other (pass a+1 reads what pass a wrote),
+  // so each pass has its own parallel region, and the region's closing
+  // barrier finishes every line before the table/dense swap publishes
+  // the result. Each line runs the same serial arithmetic whichever
+  // worker takes it, so the tables are bitwise independent of the
+  // thread count.
   for (int axis=0; axis<dimensions; axis++) {
     const int old_count = current[axis];
     const int new_count = boost*(old_count - 1) + 1;
@@ -148,63 +159,77 @@ static double* dense_table(
     current[axis] = new_count;
 
     double* dense = malloc1d((int)table_size(current, dimensions));
-    double* line = malloc1d(old_count);
-    double* c = malloc1d(old_count); // c_q = S''(x_q)/2 at each loaded node
-    double* b = malloc1d(old_count - 1); // linear coefficient per interval
-    double* d = malloc1d(old_count - 1); // cubic coefficient per interval
 
     // The spline reads this axis as the ideal uniform grid between its
     // endpoints, so one spacing h serves every interval of every line.
     const double h = (axes[axis][old_count - 1] - axes[axis][0])
       /(old_count - 1);
 
-    for (size_t block=0; block<blocks; block++) {
-      for (size_t inner=0; inner<stride; inner++) {
-        for (int node=0; node<old_count; node++) {
-          line[node] = table[(block*old_count + node)*stride + inner];
-        }
+    #pragma omp parallel
+    {
+      // One scratch set per worker, private to this region: the
+      // gathered line and its spline coefficients.
+      double* line = malloc1d(old_count);
+      double* c = malloc1d(old_count); // c_q = S''(x_q)/2 at each loaded node
+      double* b = malloc1d(old_count - 1); // linear coefficient per interval
+      double* d = malloc1d(old_count - 1); // cubic coefficient per interval
+      const double* restrict input = table; // finished previous pass
+      double* restrict output = dense; // this pass, disjoint lines
 
-        // Natural cubic spline through this line, in the house form of
-        // spline2d_upsample_uniform (basics.c). The uniform solver
-        // returns c_q, half the curvature at loaded node q. On interval
-        // q the cubic is S(x_q + del) = y_q + b_q del + c_q del^2
-        // + d_q del^3: b_q makes it reach y_{q+1} at the right node, and
-        // d_q makes the curvature change linearly from 2 c_q to 2 c_{q+1}.
-        spline_coeffs_uniform(line, old_count, h, c);
-        for (int q=0; q<old_count - 1; q++) {
-          b[q] = (line[q + 1] - line[q])/h - h*(c[q + 1] + 2.0*c[q])/3.0;
-          d[q] = (c[q + 1] - c[q])/(3.0*h);
-        }
+      // collapse(2) with a static schedule hands each worker one
+      // contiguous run of (block, inner) pairs. Neighbouring inner lines
+      // interleave in memory, so contiguous runs keep most cache lines
+      // with a single writer.
+      #pragma omp for collapse(2) schedule(static)
+      for (size_t block=0; block<blocks; block++) {
+        for (size_t inner=0; inner<stride; inner++) {
+          for (int node=0; node<old_count; node++) {
+            line[node] = input[(block*old_count + node)*stride + inner];
+          }
 
-        for (int node=0; node<new_count; node++) {
-          // A dense node that falls on a loaded node copies that value
-          // exactly, endpoints included: densifying never moves the
-          // loaded data.
-          double value;
-          if (0 == node%boost) {
-            value = line[node/boost];
-          } else {
-            // Each loaded interval holds boost dense steps, so this
-            // node's interval is the integer quotient node/boost and its
-            // offset inside that interval is (node % boost) h/boost:
-            // arithmetic only, no search.
-            const int q = node/boost;
-            const double del = (node%boost)*h/boost;
-            value = line[q] + del*(b[q] + del*(c[q] + del*d[q])); // Horner
+          // Natural cubic spline through this line, in the house form of
+          // spline2d_upsample_uniform (basics.c). The uniform solver
+          // returns c_q, half the curvature at loaded node q. On interval
+          // q the cubic is S(x_q + del) = y_q + b_q del + c_q del^2
+          // + d_q del^3: b_q makes it reach y_{q+1} at the right node, and
+          // d_q makes the curvature change linearly from 2 c_q to 2 c_{q+1}.
+          spline_coeffs_uniform(line, old_count, h, c);
+          for (int q=0; q<old_count - 1; q++) {
+            b[q] = (line[q + 1] - line[q])/h - h*(c[q + 1] + 2.0*c[q])/3.0;
+            d[q] = (c[q + 1] - c[q])/(3.0*h);
           }
-          if (!(isfinite(value))) {
-            log_fatal("feedback_3pcf: nonfinite prepared log response");
-            exit(1);
+
+          for (int node=0; node<new_count; node++) {
+            // A dense node that falls on a loaded node copies that value
+            // exactly, endpoints included: densifying never moves the
+            // loaded data.
+            double value;
+            if (0 == node%boost) {
+              value = line[node/boost];
+            } else {
+              // Each loaded interval holds boost dense steps, so this
+              // node's interval is the integer quotient node/boost and its
+              // offset inside that interval is (node % boost) h/boost:
+              // arithmetic only, no search.
+              const int q = node/boost;
+              const double del = (node%boost)*h/boost;
+              value = line[q] + del*(b[q] + del*(c[q] + del*d[q])); // Horner
+            }
+            if (!(isfinite(value))) {
+              log_fatal("feedback_3pcf: nonfinite prepared log response");
+              exit(1);
+            }
+            output[(block*new_count + node)*stride + inner] = value;
           }
-          dense[(block*new_count + node)*stride + inner] = value;
         }
       }
+
+      free(d);
+      free(b);
+      free(c);
+      free(line);
     }
 
-    free(d);
-    free(b);
-    free(c);
-    free(line);
     free(table);
     table = dense;
   }
