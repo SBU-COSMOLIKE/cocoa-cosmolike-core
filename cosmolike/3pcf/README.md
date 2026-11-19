@@ -16,6 +16,7 @@
 14. [Acknowledgements](#credits)
 15. [Matter fraction and expansion history](#matter-fraction-and-expansion-history)
 16. [Upstream interpolation comparisons](#upstream-interpolation-comparisons)
+17. [Relation to the ordinary radial kernels](#relation-to-the-ordinary-radial-kernels)
 
 ## What can be calculated? <a name="scope"></a>
 
@@ -1434,3 +1435,12 @@ condition and its interpolation in distance. Production preparation uses
 cell lookup. Refinement then supplies the linear tables used by repeated
 physical queries. The comparison code is compiled into the same library, but
 production does not select it. Neither route uses mutable GSL accelerators.
+
+
+## Relation to the ordinary radial kernels
+
+The three-point and ordinary kernels share their continuum geometry, but use
+different units, finite-grid normalizations, source-shift handling and sampling.
+The [radial reuse review](RADIAL_REUSE.md) derives the conversions and lists the
+checks required before replacing preparation. Immutable three-point models must
+keep copied weights even if their preparation eventually uses shared routines.

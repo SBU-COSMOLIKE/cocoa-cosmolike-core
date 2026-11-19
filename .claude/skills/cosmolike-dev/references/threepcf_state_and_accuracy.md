@@ -642,3 +642,33 @@ and the small preparation adapter; production uses shared uniform natural
 coefficients, declared piecewise-uniform metadata and arithmetic cell lookup.
 The project's Makefile must link `physics_reference_3pcf.o`. Do not remove that
 object while the upstream-comparison constructor remains public.
+
+
+## Radial reuse boundary
+
+Do not replace the three-point radial preparation with `W_kappa`/`W_source`
+without matching conventions. With L=2997.92458 Mpc/h, the conversion to the
+stored three-point lens factor is W_kappa/[L*chi_h*(1+z)]. The physical source
+kernel is W_source/L; the stored shape factor further divides by chi_h*(1+z)
+and the declared finite-grid normalization. Three-point NLA normalizes on the
+kernel-distance grid, while its quadratic TATT residual normalizes on the
+source-distance grid. Lensing uses the source-redshift trapezoid norm.
+
+The upstream three-point lensing constant uses c=299792 km/s; core coverH0
+uses 299792.458. The lensing-prefactor difference is about 3.06e-6. Core g_tomo
+uses cumulative integrals on fine uniform-a samples, coarse linear reads and
+a near-observer zero interval; three-point preparation uses explicit source
+z samples and a uniform-z kernel grid starting at the first LOS node. Source
+reconstruction, shifted support, endpoint rules and normalization must match
+before treating differences as integration error. Explicit bridge sources are
+already shifted; the struct-source route refuses nonzero shifts.
+
+A shared helper over explicit arrays is preferable to importing global survey
+state into triangle workers. Fixed nodal trapezoid lensing can use suffix sums
+P=sum(w*n), Q=sum(w*n/chi), returning P-chi*Q over nodes behind the lens. Preserve
+the original full-grid weights at the crossed cell; test cancellation and
+summation-order changes. Before default adoption, compare separate lens/NLA/TATT
+kernels, independent source/kernel/LOS refinements, all projected placements,
+aperture means, six covariance families and survey-weighted derivatives. Warm
+shared caches serially and copy outputs. Test reset, old owners, A/B/A and
+one/six-worker equality. This radial replacement has not been implemented.
