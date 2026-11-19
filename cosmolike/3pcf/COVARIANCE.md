@@ -305,12 +305,13 @@ covariance families keep their stated noise and filter definitions.
 
 | Quantity | Unit or representation |
 |---|---|
-| $`\chi`$, halo radii | Mpc/$`h`$ |
+| $`\chi`$, three-dimensional comoving halo radii $`r_{200}`$ and $`r_{200}/c`$ | Mpc/$`h`$ |
 | $`k`$, physical lensing weight $`W`$ | $`h`$/Mpc |
 | Matter power / bispectrum | (Mpc/$`h`$)$`^3`$ / (Mpc/$`h`$)$`^6`$ |
 | Halo mass | $`M_\odot/h`$ |
 | $`dn/dM`$ | (Mpc/$`h`$)$`^{-3}`$ ($`M_\odot/h`$)$`^{-1}`$ |
 | Aperture radii, separations, opening angles | Radians |
+| `radius`, `dr`, `profile_radius` | Radians; angular offsets and their integration or interpolation samples |
 | Survey area | Steradians |
 | `field_source`, `row_fields` | Zero-based `int32` labels |
 
