@@ -121,6 +121,14 @@ producer against that independent record. Native tests cover supplied-table
 interpolation, ownership, TATT, projection and covariance; do not call their
 full B result an independent BiHalofit equation evaluation.
 
+Validation of the retirement passed 900 optimized and 900 UBSan project
+tests. The existing supplied-B path preserved 60 before/after arrays and
+all 30 one-versus-six-worker pairs bitwise. These cover NLA/TATT mean
+calculations and the six supported covariance families, not a new complete
+TATT non-Gaussian covariance model. Frozen retired-C and fastnc values remain
+independent references for the Python matter equation. These component and
+state checks establish neither full DES Fisher convergence nor new timings.
+
 ## Supplied absolute matter bispectrum
 
 `baseline_3pcf.h` defines a required absolute B table, distinct from the
