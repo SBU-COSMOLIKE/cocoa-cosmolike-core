@@ -249,6 +249,17 @@ as a validated massive-neutrino halo model. The analytic covariance also
 requires zero fiducial multiplicative shear calibration; a Fisher run can
 vary calibration in its mean while holding that covariance fixed.
 
+The normalized NFW reader is `nfw_u` in `halo_profile.h`. It takes a
+caller-owned f/G table, concentration and the dimensionless product
+q=k*r200. It owns the exact zero limit and small-q expansion before the
+general `nfw_um` table expression. The three-point adapter supplies its
+radius and retains its independent 524288-node descriptor, prepared before
+parallel reads. Keep mass definitions, density constants and concentration
+laws in the callers. In particular, preserve each caller's radius
+arithmetic when sharing the dimensionless reader; equivalent formulas can
+round differently. This table is separate from the per-halo angular shear
+spline and its `profile_upsample` setting.
+
 Xi white noise needs its angular-bin definition. For `noise_mode=1`, the
 large-area uniform-annulus route replaces only the pure NN contribution
 with the analytic continuous-bin overlap, using actual lower/upper edges.

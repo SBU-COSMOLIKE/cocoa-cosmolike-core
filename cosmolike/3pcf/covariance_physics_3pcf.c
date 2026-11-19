@@ -297,22 +297,11 @@ static void covariance_nfw_table_3pcf(void)
 //
 //   u(k) = int_0^c dy y/(1+y)^2 sinc(k r_s y) / [ln(1+c) - c/(1+c)],
 //
-// and that integral has a closed form in the sine and cosine integrals
-// Si(t) = int_0^t sin(s)/s ds and Ci(t) = -int_t^inf cos(s)/s ds. The
-// general branch reads their smooth Abramowitz & Stegun combinations
-// f, g from the shared table (nfw_um, halo_profile.h; the table banner
-// there derives the split) with x = k*r_s; nfw_um returns u times the
-// enclosed-mass factor m(c) = ln(1+c) - c/(1+c), divided out below.
-//
-// Accuracy of the small-argument branch: for k*r200 below 1e-4 the
-// closed form subtracts two nearly equal values close to the common
-// logarithmic divergence of Ci at zero. The branch instead expands
-// u(k) = 1 - k^2 <r^2>/6, with <r^2> the profile's mass-weighted second
-// radial moment; the first omitted term is of order (k*r200)^4, far
-// below double rounding at the threshold. The branch also owns k = 0
-// analytically - u = 1 exactly, the full enclosed mass - so the
-// logarithmic table axis is never asked for ln 0: every table read
-// sits at x > 0.
+// and the dimensionless reader nfw_u in halo_profile.h evaluates it.
+// That shared reader owns the exact zero limit, the small-q radial
+// expansion and the f/G table expression. Here k*r200 supplies its
+// dimensionless q; the covariance retains its own radius, concentration
+// prescription and table descriptor.
 //
 // covariance_nfw_table_3pcf must have run (the build is not
 // thread-safe; this read is).
@@ -327,19 +316,7 @@ static inline double covariance_nfw_3pcf(
   double concentration // NFW concentration c = r200/r_s
 )
 {
-  const double c = concentration;
-  const double t = 1.0 + c;
-  const double ln1c = log1p(c);
-  const double normalization = ln1c - c/t;
-  const double x = k*r200/c;
-
-  if (k*r200 < 1.0e-4) {
-    const double moment = 0.5*t*t - 3.0*t + 3.0*log(t) + 1.0/t + 1.5;
-    return 1.0 - x*x*moment/(6.0*normalization);
-  }
-
-  return nfw_um(&covariance_nfw_profile_3pcf, c, x, log(x), ln1c)
-    /normalization;
+  return nfw_u(&covariance_nfw_profile_3pcf, concentration, k*r200);
 }
 
 

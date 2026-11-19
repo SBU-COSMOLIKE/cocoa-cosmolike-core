@@ -161,9 +161,10 @@ spectrum or a BiHalofit baryon transfer in the request does not also modify
 the NFW halo prescription.
 
 The Fourier transform of this truncated profile uses the numerical
-machinery in [halo_profile.h](../halo_profile.h). Its arguments are the
-dimensionless concentration $`c`$ and $`x=kr_{200}/c`$; the covariance
-caller still supplies its own radius, concentration and mass weights.
+machinery in [halo_profile.h](../halo_profile.h). Its normalized scalar
+reader `nfw_u` takes the dimensionless concentration $`c`$ and
+$`q=kr_{200}`$, then forms $`x=q/c`$ internally. The covariance caller
+supplies its own radius, concentration and mass weights.
 The shared functions tabulate smooth combinations of the sine and cosine
 integrals on a uniform $`\ln t`$ grid, then read them with arithmetic
 indices and linear interpolation. Here $`t`$ is either $`x`$ or
@@ -175,9 +176,10 @@ owns a separate
 depend on that node count, so a cosmology change reuses the same table.
 Changing this instance cannot resize the ordinary halo/IA instance.
 
-For $`kr_{200}<10^{-4}`$, the covariance uses the mass-normalized
+For $`kr_{200}<10^{-4}`$, that shared reader uses the mass-normalized
 small-wavenumber expansion instead of subtracting nearly equal special
-functions. It returns $`u(0)=1`$ exactly. The NFW table's node count is
+functions. It returns $`u(0)=1`$ exactly before taking a logarithm or
+forming a radial moment. The NFW table's node count is
 fixed in this module; `profile_upsample` controls a different table: the
 angular shear profile described below. Reusing the Fourier-transform
 machinery does not remove the need to compute that mass- and

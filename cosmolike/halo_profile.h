@@ -25,6 +25,7 @@ extern "C" {
 //   nfw_profile_reset     frees a descriptor's rows
 //   nfw_pos, nfw_um,
 //   nfw_um4 and helpers   the scalar and SIMD table readers
+//   nfw_u                 normalized scalar profile, including q = 0
 //   nfw_fg_read           f(t), g(t) by cubic Hermite (the IA kernel)
 //
 // Ownership: the descriptor belongs to the caller (halo.c holds the
@@ -296,6 +297,48 @@ static inline double nfw_um(
   const double gu = Gu - lnxu;          // g(xu)
   const double sin_half = sin(0.5*c*x); // sin(c x/2)
   return (Gx - Gu + ln1c) + 2.0*gu*sin_half*sin_half + (fu - 1.0/xu)*sin(c*x);
+}
+
+
+// Normalized transform of an NFW profile truncated at the caller's radius
+// r_Delta. With c = r_Delta/r_s and q = k*r_Delta, its mass integral is
+//
+//   u(c,q) = int_0^c dy y/(1+y)^2 sinc(q*y/c) / m(c),
+//   m(c) = ln(1+c) - c/(1+c),   sinc(t) = sin(t)/t.
+//
+// At q = 0 every mass element has unit Fourier phase, so u = 1 exactly.
+// Return that value before taking logarithms or forming radial moments.
+// For 0 < q < 1e-4, expand sinc through its quadratic term. The moment
+// below is int_0^c dy y^3/(1+y)^2; division by m(c) normalizes its mass
+// weight. The next sinc term contributes at most q^4/120 since every
+// radius is at most r_Delta. This avoids the cancellation between the
+// logarithmic terms of the general expression near zero.
+//
+// Above that branch, nfw_um supplies the same transform multiplied by
+// m(c), using the prepared f/G table. The caller supplies positive finite
+// c and nonnegative finite q and prepares prof before any table read.
+// This reader chooses no mass definition, concentration law or units:
+// only the dimensionless product q enters it.
+static inline double nfw_u(
+  const nfw_profile* prof, // immutable prepared f/G table
+  const double c, // concentration r_Delta/r_s
+  const double q // dimensionless k*r_Delta, including zero
+)
+{
+  if (0.0 == q) {
+    return 1.0;
+  }
+  const double t = 1.0 + c;
+  const double ln1c = log1p(c);
+  const double normalization = ln1c - c/t;
+  const double x = q/c;
+
+  if (1.0e-4 > q) {
+    const double moment = 0.5*t*t - 3.0*t + 3.0*log(t) + 1.0/t + 1.5;
+    return 1.0 - x*x*moment/(6.0*normalization);
+  }
+
+  return nfw_um(prof, c, x, log(x), ln1c)/normalization;
 }
 
 
