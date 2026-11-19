@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <gsl/gsl_spline.h>
 #include "feedback_3pcf.h"
 #include "cosmolike/basics.h"
 #include "log.c/src/log.h"
@@ -150,21 +149,33 @@ static double* dense_table(
 
     double* dense = malloc1d((int)table_size(current, dimensions));
     double* line = malloc1d(old_count);
-    gsl_spline* spline = gsl_spline_alloc(gsl_interp_cspline, old_count);
-    gsl_interp_accel* search = gsl_interp_accel_alloc();
-    if (!(spline
-          && search)) {
-      log_fatal("feedback_3pcf: spline preparation allocation failed");
-      exit(1);
-    }
+    double* c = malloc1d(old_count); // c_q = S''(x_q)/2 at each loaded node
+    double* b = malloc1d(old_count - 1); // linear coefficient per interval
+    double* d = malloc1d(old_count - 1); // cubic coefficient per interval
+
+    // The spline reads this axis as the ideal uniform grid between its
+    // endpoints, so one spacing h serves every interval of every line.
+    const double h = (axes[axis][old_count - 1] - axes[axis][0])
+      /(old_count - 1);
 
     for (size_t block=0; block<blocks; block++) {
       for (size_t inner=0; inner<stride; inner++) {
         for (int node=0; node<old_count; node++) {
           line[node] = table[(block*old_count + node)*stride + inner];
         }
-        gsl_spline_init(spline, axes[axis], line, old_count);
-        gsl_interp_accel_reset(search);
+
+        // Natural cubic spline through this line, in the house form of
+        // spline2d_upsample_uniform (basics.c). The uniform solver
+        // returns c_q, half the curvature at loaded node q. On interval
+        // q the cubic is S(x_q + del) = y_q + b_q del + c_q del^2
+        // + d_q del^3: b_q makes it reach y_{q+1} at the right node, and
+        // d_q makes the curvature change linearly from 2 c_q to 2 c_{q+1}.
+        spline_coeffs_uniform(line, old_count, h, c);
+        for (int q=0; q<old_count - 1; q++) {
+          b[q] = (line[q + 1] - line[q])/h - h*(c[q + 1] + 2.0*c[q])/3.0;
+          d[q] = (c[q + 1] - c[q])/(3.0*h);
+        }
+
         for (int node=0; node<new_count; node++) {
           // A dense node that falls on a loaded node copies that value
           // exactly, endpoints included: densifying never moves the
@@ -173,10 +184,13 @@ static double* dense_table(
           if (0 == node%boost) {
             value = line[node/boost];
           } else {
-            const double coordinate = axes[axis][0]
-              + (axes[axis][old_count - 1] - axes[axis][0])
-              *node/(new_count - 1);
-            value = gsl_spline_eval(spline, coordinate, search);
+            // Each loaded interval holds boost dense steps, so this
+            // node's interval is the integer quotient node/boost and its
+            // offset inside that interval is (node % boost) h/boost:
+            // arithmetic only, no search.
+            const int q = node/boost;
+            const double del = (node%boost)*h/boost;
+            value = line[q] + del*(b[q] + del*(c[q] + del*d[q])); // Horner
           }
           if (!(isfinite(value))) {
             log_fatal("feedback_3pcf: nonfinite prepared log response");
@@ -187,8 +201,9 @@ static double* dense_table(
       }
     }
 
-    gsl_interp_accel_free(search);
-    gsl_spline_free(spline);
+    free(d);
+    free(b);
+    free(c);
     free(line);
     free(table);
     table = dense;
@@ -281,6 +296,10 @@ feedback_3pcf* feedback_create_3pcf(
     // last-digit rounding errors pass, while a genuinely nonuniform
     // axis, whose node offsets are comparable to the spacing itself,
     // still fails clearly.
+    //
+    // An accepted axis is then read as the ideal uniform grid its
+    // endpoints define: the dense preparation never sees the roundoff
+    // offsets of the individual loaded coordinates.
     for (int node=0; node<count; node++) {
       const double expected = low + node*step;
       if (!(isfinite(axes[axis][node])
