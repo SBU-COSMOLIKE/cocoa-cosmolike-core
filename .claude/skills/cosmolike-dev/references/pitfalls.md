@@ -36,10 +36,31 @@ Two independent root causes have produced this exact symptom:
   lazily-initialized `static` state in code reachable from parallel regions
   without real synchronization. "It's just an int flag" is exactly the bug.
 
-Triage when chi2 wobbles: (1) rerun at `OMP_NUM_THREADS=1` — if it
-stabilizes, it's a race (2b-type); if it still wobbles, it's uninitialized
-memory (2a-type). (2) DEBUG build with sanitizers. (3) Diff against the
-preprocessor-guard fallback path.
+Before classifying a changing chi2, pin the input files as well as the
+binary. Record hashes of the data vector, covariance, mask, redshift
+distributions and resolved settings. A refreeze in another process can
+replace the data vector between runs: the returned theory remains
+byte-identical while `(theory - data)^T C^-1 (theory - data)` takes two
+different values. This occurred in the unmasked LSST Y1 TATT check; changing
+only the reference data reproduced both reported values bitwise in one
+process. A binary two-valued result alone does not establish a memory bug.
+
+Triage when chi2 wobbles:
+
+1. Recompute chi2 from the saved theory and the exact data, covariance and
+   mask used by that run. Copy inputs before the sequence; a manifest that
+   is itself regenerated during the sequence does not pin one version.
+2. Compare the likelihood chi2 with the chi2 of the returned theory vector
+   using the same installed likelihood state. The development check in
+   `dev_scripts/likelihood_state_check/` records these comparisons across
+   fresh processes, model orders, and one/four OpenMP threads.
+3. With inputs fixed, rerun at `OMP_NUM_THREADS=1`. Thread dependence helps
+   locate a race, but agreement at one thread does not prove that one
+   exists. A one-thread failure can have several causes, including an
+   uninitialized buffer, stale state, or changed inputs.
+4. Run the DEBUG sanitizers and inspect lazy initialization and buffer
+   padding. Test the suspected mechanism directly before assigning the
+   discrepancy to a numerical commit.
 
 ## 3. Flat `memset`/`memcpy` over padded multi-dim allocations
 

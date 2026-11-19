@@ -603,9 +603,12 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
    was designed to avoid. This applies to every build, including debug:
    COSMO3D_ASSUME_PIECEWISE_UNIFORM and its binary-search alternatives are
    retired. Setters always construct and validate the metadata.
-7. **Determinism is a correctness test.** If chi2 varies run-to-run or with
-   `OMP_NUM_THREADS`, there is a race or uninitialized memory. Full stop. Do
-   not proceed until it is found.
+7. **Determinism is a correctness test.** Pin and hash the binary and all
+   likelihood inputs before comparing runs. Identical theory vectors can
+   give different chi2 if another process regenerates the observed data.
+   With those inputs fixed, variation across runs or `OMP_NUM_THREADS`
+   requires investigation of initialization, stale state and races. Do not
+   proceed until the cause is established; see pitfalls section 2.
 8. **OpenBLAS always uses one thread.** Parallelism belongs to the explicit
    CosmoLike OpenMP loops. Pin OpenBLAS directly at interface initialization
    and before both normal and cluster covariance checks/inversions; do not
@@ -654,7 +657,10 @@ Run all of these before declaring a change correct:
   and in the commit, and state the per-entry tolerance the comparison used.
 - **Determinism sweep:** repeat the evaluation several times within one
   process and across processes, at `OMP_NUM_THREADS=1` and a high count
-  (e.g. 8 or node-width). Any variation = race / uninitialized memory.
+  (e.g. 8 or node-width, subject to the user's current CPU limit). Copy and
+  hash the likelihood inputs before this sequence. Investigate any
+  variation with these inputs fixed; do not infer a memory bug from tests
+  that used different reference data.
 - **Both supported build modes** (Makefile):
   - `COSMOLIKE_DEBUG_MODE`: `-O0` + sanitizers. Catches linkage bugs
     (`inline` vs `static inline`), out-of-bounds writes, double frees.
