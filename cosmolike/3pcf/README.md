@@ -1173,11 +1173,14 @@ response from a power response.
 The nonlinear-alignment baseline receives these ratios; quadratic IA
 terms keep dark-matter-only inputs, and raw building-block queries stay
 dark-matter-only. Native preparation copies uniform axes, upsamples the
-logarithmic ratios with cubic splines, and leaves only arithmetic-index
-linear reads inside projection loops. The amplitude participates in the
-mean and batch identities. The response owner cannot be edited after
-construction, and boundary behavior is an explicit choice: refuse
-out-of-range queries or hold each boundary value.
+logarithmic ratios with natural cubic splines, and leaves only
+arithmetic-index linear reads inside projection loops. OpenMP workers
+share the independent upsampling lines during that preparation, and the
+prepared tables do not depend on the worker count. The amplitude
+participates in the mean and batch identities. The response owner
+cannot be edited after construction, and boundary behavior is an
+explicit choice: refuse out-of-range queries or hold each boundary
+value.
 
 The project response guide (`Cocoa/projects/des_3pcf/FEEDBACK.md`)
 defines units, array order, metadata, the executed teaching notebook and
