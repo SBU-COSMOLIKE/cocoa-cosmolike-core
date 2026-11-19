@@ -116,7 +116,9 @@ family need not be.
 
 ## Projection, halo physics and normalization <a name="halo"></a>
 
-The borrowed `PhysicsModel` supplies the power and BiHalofit bispectrum.
+The borrowed `PhysicsModel` supplies the power and matter bispectrum,
+using either the internal BiHalofit fit or an
+[explicitly supplied baseline](README.md#supplied-bispectrum).
 The physical lensing weight is $`W_i(\chi)=\chi(1+z)g_i(\chi)`$ in that
 model's convention, where $`\chi`$ is the comoving distance, $`z`$ the
 redshift, and $`g_i`$ the lensing efficiency of source sample $`i`$;
@@ -157,6 +159,29 @@ Its coefficients and pivot are explicit inputs. Applying this fit outside
 its fitted mass/redshift range remains an extrapolation. A nonlinear power
 spectrum or a BiHalofit baryon transfer in the request does not also modify
 the NFW halo prescription.
+
+The Fourier transform of this truncated profile uses the numerical
+machinery in [halo_profile.h](../halo_profile.h). Its arguments are the
+dimensionless concentration $`c`$ and $`x=kr_{200}/c`$; the covariance
+caller still supplies its own radius, concentration and mass weights.
+The shared functions tabulate smooth combinations of the sine and cosine
+integrals on a uniform $`\ln t`$ grid, then read them with arithmetic
+indices and linear interpolation. Here $`t`$ is either $`x`$ or
+$`(1+c)x`$ in the analytic transform; both are dimensionless.
+
+Above $`t=50`$, the reader uses the large-argument series. The covariance
+owns a separate
+524,288-node table, prepared before parallel readers start. Its contents
+depend on that node count, so a cosmology change reuses the same table.
+Changing this instance cannot resize the ordinary halo/IA instance.
+
+For $`kr_{200}<10^{-4}`$, the covariance uses the mass-normalized
+small-wavenumber expansion instead of subtracting nearly equal special
+functions. It returns $`u(0)=1`$ exactly. The NFW table's node count is
+fixed in this module; `profile_upsample` controls a different table: the
+angular shear profile described below. Reusing the Fourier-transform
+machinery does not remove the need to compute that mass- and
+distance-dependent shear profile for each halo.
 
 For one halo, the filtered angular profile is
 
@@ -315,10 +340,14 @@ long modes that produce the long-mode response.
 - it must contain at least three increasing nodes;
 - it must extend beyond `max(radius) + max(theta)/2`.
 
-These are preparation samples rather than integration weights. At each
-halo the code forms a natural cubic spline in $`x=\ln(1+r/r_s)`$, where
-$`r_s=\texttt{profile_radius[1]}`$. This choice includes zero and resolves
-a wide angular range.
+These are angular preparation samples in radians rather than integration
+weights. At each halo the code forms a natural cubic spline of its
+tangential shear in $`x=\ln(1+r/r_0)`$, where
+$`r_0=\texttt{profile_radius[1]}`$. This numerical angular scale differs
+from the physical NFW scale radius $`r_{200}/c`$. The coordinate includes
+zero and resolves a wide angular range. The matrix used to solve for the
+spline coefficients depends only on the sample positions; its
+factorization is reused across halos while the shear values change.
 
 The code samples that spline on a uniform $`x`$ grid with
 `(nprofile - 1) * profile_upsample + 1` nodes. The default upsample factor
@@ -591,16 +620,23 @@ global tables:
 - an allocation must track every dimension of the current request;
 - a refill must track every input value, not the identity of the buffer
   that carries it;
-- no model flag or singleton may survive a reset;
+- no model-dependent flag or singleton may survive a reset;
 - a test must reach the calculation whose setting it changes.
 
-The ownership differs from a lazy global table. The covariance C functions
-have no persistent mutable static arrays. Each physical call constructs
-its workspace and profile lookup plan from the current request, uses them,
-and releases them. The borrowed matter model owns immutable physical
-tables. Several models may remain alive simultaneously, and a covariance
-call names its model explicitly. There is no covariance nonce or hidden
-model-selection latch to reset with `initial_setup`.
+Each physical call constructs its model-dependent workspace and angular
+profile lookup plan from the current request, uses them, and releases
+them. The borrowed matter model owns immutable physical tables. Several
+models may remain alive simultaneously, and a covariance call names its
+model explicitly. There is no covariance nonce or hidden model-selection
+latch to reset with `initial_setup`.
+
+The universal NFW transform table is persistent process state. It contains
+no cosmology or nuisance parameters, and completed construction permits
+read-only use by the covariance's OpenMP workers. Its first construction
+must finish in one external call before another call reads it: entering
+two first covariance calculations concurrently is not covered by that
+OpenMP guarantee. The node-count check controls its lifetime independently
+of the per-call physical arrays and angular shear splines.
 
 The production adapter keeps references to the caller's contiguous arrays
 for the duration of one call. The notebook adapter copies arrays into its
