@@ -200,8 +200,13 @@ unity below 1.5e-7. The subsequent full NLA comparison passes at four and
 eight times shared sampling: across both derivative steps, the largest
 pair-FoM difference from the refined local reference is 0.0651%. Refining
 four to eight changes a pair FoM by at most 0.0356%. All ordinary two-point
-stencil rows remain bitwise identical. These results establish method
-agreement for the tested NLA inputs; TATT acceptance is still pending.
+stencil rows remain bitwise identical. The full TATT comparison at
+four-times sampling also passes: 20 parameters, 121 stencil points and
+both derivative steps give maximum derivative, marginalized-error and
+pair-FoM differences of 0.00826%, 0.0541% and 0.0581%. Its mean delta
+chi-squared is 1.55056e-8, with all two-point rows bitwise identical.
+There is no separate full TATT eight-times refinement result. These checks
+establish method agreement at the tested inputs and resolutions.
 Some marginalized errors change by about 2.8% under derivative-step
 halving in both methods. Do not describe agreement between smoothing
 implementations as convergence of the entire forecast.
