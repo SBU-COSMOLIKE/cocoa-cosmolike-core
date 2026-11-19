@@ -103,11 +103,20 @@ two-point TATT BB power is a different order of correlation.
 
 ## Theory ownership of the matter bispectrum
 
-The theory block always supplies B. `physics_3pcf.c` contains no BiHalofit
+The Python theory producer always supplies B. `physics_3pcf.c` contains no BiHalofit
 coefficient construction, one-/three-halo fit evaluation, or fit splines.
 The Python producer owns that prescription and its sampling. Shared core
 variance snapshots remain available for theory preparation and covariance.
 C retains tree-level F2 and power readers because TATT uses them.
+
+In the companion DES project, `python/des3pcf/bihalofit_theory.py` defines
+the Cobaya `BiHalofitTheory` component. Its equations and cached table
+producer are in `python/des3pcf/bihalofit.py`. The CLI/Fisher
+`PhysicalProvider` calls the same producer directly. The current project
+Nautilus examples use `scripts/run_nautilus.py` and the custom joint
+likelihood; they do not instantiate that Cobaya component. Mandatory
+theory inputs to C do not mean every project driver uses Cobaya's theory
+dependency system.
 
 Every factory needs B and its background fraction. Legacy ordinary factory
 keywords remain accepted but cannot select an internal fit. Missing inputs
@@ -128,6 +137,42 @@ calculations and the six supported covariance families, not a new complete
 TATT non-Gaussian covariance model. Frozen retired-C and fastnc values remain
 independent references for the Python matter equation. These component and
 state checks establish neither full DES Fisher convergence nor new timings.
+
+### What remains in the physical model
+
+The numerical solvers already shared with ordinary CosmoLike are the
+natural-uniform spline solver, piecewise-uniform grid detection and cell
+indexing, aligned allocation, and fixed Gauss-Legendre quadrature. Scalar
+two-node interpolation uses the `LERP` expression from `basics.h`.
+The smoothing transforms belong to `cosmo3D.c`; the projection model no
+longer prepares a second variance or BiHalofit fit.
+
+The local spline struct owns copied arrays, endpoint power-law slopes and
+the choice between production and upstream-comparison readers. Its builders
+call the shared solver. This storage and its boundary rules are still
+needed: `interpol1d` holds the endpoint value outside its support, whereas
+the physical power reader extrapolates an endpoint power law and source
+kernels vanish outside their support. Replacing all three by the same
+unconditional interpolation call would change the model. The SIMD power
+reader also keeps its explicit rounding sequence so a neighboring output
+cannot change a lane's answer.
+
+The radial kernels, TATT triangle tensors, cancellation-resistant F2/tree
+sum, and three-leg projection are not duplicate implementations of an
+interchangeable core API. Ordinary `W_kappa` and `W_source` consume mutable
+survey state in c/H0 units. This model retains immutable copied inputs in
+Mpc/h and preserves the upstream finite-grid normalizations. Ordinary
+`IA_A1_Z1` and `IA_A2_Z1` use global nuisance parameters and leave the
+linear minus sign and quadratic factor five to their callers; the 3PCF
+tensor coefficients include those factors and the velocity-shear operator.
+Keep these conventions explicit when comparing the equations.
+
+Further radial consolidation is a change of numerical model, with the
+unit and normalization checks in
+[state and accuracy](threepcf_state_and_accuracy.md#radial-reuse-boundary).
+It has not been completed by removing BiHalofit or by sharing interpolation
+expressions. Moving these remaining functions to another file alone would
+not establish shared physics.
 
 ## Supplied absolute matter bispectrum
 

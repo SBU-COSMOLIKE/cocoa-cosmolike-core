@@ -397,8 +397,7 @@ static double read_spline(
     const double position = (coordinate - spline->x[0])*spline->inverse_spacing;
     int index = (int)floor(fmax(0.0, fmin(spline->n - 2.0, position)));
     const double fraction = position - index;
-    return spline->y[index]
-      + fraction*(spline->y[index + 1] - spline->y[index]);
+    return LERP(spline->y, index, fraction);
   }
 
   // The producer declares uniform segments, so preparation and production
@@ -418,7 +417,7 @@ static double read_spline(
   const double right = (coordinate - spline->x[index])/width;
   const double left = 1.0 - right;
   if (NULL == spline->second) {
-    return spline->y[index] + right*(spline->y[index + 1] - spline->y[index]);
+    return LERP(spline->y, index, right);
   }
   return left*spline->y[index] + right*spline->y[index + 1]
     + width*width/6.0*((left*left*left - left)*spline->second[index]
@@ -658,7 +657,7 @@ static double linear_read(
   const int index = piecewise_index(coordinate, axis->count, axis->start,
     axis->length, axis->lower, axis->inverse, count);
   const double fraction = (coordinate - x[index])/(x[index + 1] - x[index]);
-  return y[index] + fraction*(y[index + 1] - y[index]);
+  return LERP(y, index, fraction);
 }
 
 
@@ -1365,10 +1364,8 @@ static double read_power_row_log(
     const int index = (int)floor(fmax(0.0,
       fmin(lower->n - 2.0, position)));
     const double fraction = position - index;
-    const double first = lower->y[index]
-      + fraction*(lower->y[index + 1] - lower->y[index]);
-    const double second = upper->y[index]
-      + fraction*(upper->y[index + 1] - upper->y[index]);
+    const double first = LERP(lower->y, index, fraction);
+    const double second = LERP(upper->y, index, fraction);
     return exp(first + row->fraction*(second - first));
   }
 

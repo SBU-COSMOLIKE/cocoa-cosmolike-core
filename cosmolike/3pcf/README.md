@@ -17,6 +17,7 @@
 15. [Matter fraction and expansion history](#matter-fraction-and-expansion-history)
 16. [Upstream interpolation comparisons](#upstream-interpolation-comparisons)
 17. [Relation to the ordinary radial kernels](#relation-to-the-ordinary-radial-kernels)
+18. [Why the physical-model file remains](#why-the-physical-model-file-remains)
 
 ## What can be calculated? <a name="scope"></a>
 
@@ -1196,7 +1197,7 @@ from this mean calculation.
 
 ## A supplied matter bispectrum <a name="supplied-bispectrum"></a>
 
-A theory provider can supply the absolute matter bispectrum $`B_m`$
+A theory provider must supply the absolute matter bispectrum $`B_m`$
 itself, while the C code keeps the projection and aperture calculations.
 The supplied table must describe the same matter field and the same
 cosmology as the power and background arrays passed alongside it. It
@@ -1419,3 +1420,29 @@ different units, finite-grid normalizations, source-shift handling and sampling.
 The [radial reuse review](RADIAL_REUSE.md) derives the conversions and lists the
 checks required before replacing preparation. Immutable three-point models must
 keep copied weights even if their preparation eventually uses shared routines.
+
+
+## Why the physical-model file remains
+
+`physics_3pcf.c` reads a supplied matter bispectrum and combines it with
+intrinsic galaxy shapes before integrating along the line of sight. It no
+longer contains BiHalofit or a local variance calculation. It uses the shared
+natural-cubic solver, piecewise-uniform indexing, allocation and quadrature
+from `basics.c`; scalar linear interpolation uses `LERP` from `basics.h`.
+Its table structs retain the copied inputs and their boundary conventions.
+For example, a power law continues beyond the last power-spectrum sample,
+whereas a source kernel must vanish beyond the galaxy sample's support.
+
+The remaining TATT tensors describe three Fourier modes forming a triangle.
+The two-point IA routines do not calculate these tensors. Likewise, the
+radial kernels represent the same continuum lensing equation as ordinary
+CosmoLike, but their finite-grid normalization and endpoint rules differ.
+Replacing them by `W_kappa` or `W_source` requires the comparisons described
+above. Those functions cannot replace the current kernels unchanged.
+
+The companion project's Cobaya adapter is `des3pcf.bihalofit_theory.BiHalofitTheory`.
+The underlying `des3pcf.bihalofit.BiHalofitProducer` is also called directly
+by its CLI/Fisher provider. The current Nautilus examples call the project's
+`scripts/run_nautilus.py` and its custom joint likelihood. They do not use
+the Cobaya adapter. These paths share the Python matter calculation, but
+their configuration and execution are different.
