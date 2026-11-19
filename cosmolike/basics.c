@@ -628,6 +628,14 @@ void* malloc1d_generic(
     log_fatal("array size overflow (malloc1d_generic)"); exit(EXIT_FAILURE);
   }
   size_t nxp = nx * size;
+  // posix_memalign may answer a zero-byte request with NULL and still
+  // report success, and the callers here read NULL as an allocation
+  // failure. A zero-element request - an empty table whose count was
+  // computed at run time - therefore allocates one alignment block: a
+  // valid pointer the caller can free, with no readable elements.
+  if (0 == nxp) {
+    nxp = align;
+  }
   if (nxp % align != 0) nxp = nxp + (align - nxp % align);
   void* vec = NULL;
   if (posix_memalign(&vec, align, nxp) != 0) {
@@ -655,12 +663,23 @@ void* calloc1d_generic(
   if (size > 0 && nx > SIZE_MAX/size) {
     log_fatal("array size overflow (calloc1d_generic)"); exit(EXIT_FAILURE);
   }
+  size_t total = nx * size;
+  // posix_memalign may answer a zero-byte request with NULL and still
+  // report success; the callers here read NULL as an allocation
+  // failure, and memset on a NULL block is undefined even for zero
+  // bytes. A zero-element request - ncontraction in the three-point
+  // covariance assembly can legitimately count to zero - therefore
+  // allocates one 64-byte block, zeroed like any other: a valid
+  // pointer the caller can free, with no readable elements.
+  if (0 == total) {
+    total = 64;
+  }
   void* vec = NULL;
-  if (posix_memalign(&vec, 64, nx * size) != 0) {
+  if (posix_memalign(&vec, 64, total) != 0) {
     log_fatal("array allocation failed (calloc1d_generic)");
     exit(EXIT_FAILURE);
   }
-  memset(vec, 0, nx * size);
+  memset(vec, 0, total);
   return vec;
 }
 

@@ -409,7 +409,11 @@ void* calloc1d(
 //
 // As in malloc1d, the total allocation is padded to a 64-byte boundary
 // and the memory is left uninitialized. An element count whose byte
-// size overflows size_t aborts instead of wrapping around.
+// size overflows size_t aborts instead of wrapping around. A
+// zero-element count returns a valid 64-byte block with no readable
+// elements, never NULL: posix_memalign may answer a zero-byte request
+// with NULL while reporting success, and the callers read NULL as an
+// allocation failure.
 //
 // The caller is responsible for freeing the returned pointer.
 // ---------------------------------------------------------------------------
@@ -425,7 +429,11 @@ void* malloc1d_generic(
 //
 // As in calloc1d, the size is not rounded up: exactly nx*size bytes,
 // all set to zero before returning. An element count whose byte size
-// overflows size_t aborts instead of wrapping around.
+// overflows size_t aborts instead of wrapping around. A zero-element
+// count returns a valid zeroed 64-byte block with no readable
+// elements, never NULL: posix_memalign may answer a zero-byte request
+// with NULL while reporting success, and the callers read NULL as an
+// allocation failure.
 //
 // The caller is responsible for freeing the returned pointer.
 // ---------------------------------------------------------------------------
