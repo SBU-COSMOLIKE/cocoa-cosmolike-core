@@ -62,51 +62,6 @@
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Direct-index lookup for a piecewise-uniform 1D grid.
-//
-// Given a query value q and segment metadata (start[], len[], xmin[],
-// inv_dx[]) for nseg piecewise-uniform segments of an underlying grid of
-// total length n_total, returns the bracket index j such that
-// grid[j] <= q < grid[j+1].
-//
-// The result is clamped to [0, n_total - 2] so the caller can safely
-// access grid[j] and grid[j+1] without bounds checks.
-//
-// Parameters:
-//   q       - query value on the grid axis
-//   nseg    - number of piecewise-uniform segments
-//   start   - first grid index of each segment (length nseg)
-//   len     - number of grid points of each segment (length nseg; carried
-//             with the other segment metadata, not read by the lookup)
-//   xmin    - first grid value of each segment (length nseg)
-//   inv_dx  - inverse grid spacing of each segment (length nseg)
-//   n_total - total number of grid points
-//
-// Returns:
-//   bracket index j with grid[j] <= q < grid[j+1], clamped to [0, n_total-2]
-// ---------------------------------------------------------------------------
-static inline int piecewise_index(double q,
-                                  int nseg,
-                                  const int *start, 
-                                  const int *len,
-                                  const double *xmin, 
-                                  const double *inv_dx,
-                                  int n_total)
-{
-  // Pick the segment: q is in segment s if q is in [xmin[s], xmin[s+1]).
-  // Linear scan is fine for nseg <= ~10 (branch-predicted, all in L1).
-  int s = 0;
-  while (s < nseg - 1 && q >= xmin[s+1]) s++;
-
-  // Direct index within segment s.
-  int j = start[s] + (int)((q - xmin[s]) * inv_dx[s]);
-
-  // Clamp to valid bilinear bracket range.
-  if (j < 0)             j = 0;
-  if (j > n_total - 2)   j = n_total - 2;
-  return j;
-}
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -1280,7 +1235,7 @@ double MG_Sigma(double a __attribute__((unused))) {
 // All rows use the aligned allocators in basics.c, including the FFTW
 // complex rows. Each thread writes only its own work rows.
 // ---------------------------------------------------------------------------
-static struct {
+static struct sigma_fields_cache {
   uint64_t cosmology_tag; // cosmology generation represented by the tables
   uint64_t ntable_tag;    // numerical-settings generation used for the grids
 
@@ -2207,7 +2162,7 @@ double sigma2_matter(
 //    (cosmology.lnPL), the BiHalofit convention explained at
 //    sigma2_matter; there is no cb variant of these tables.
 // ---------------------------------------------------------------------------
-static struct {
+static struct sigma_gauss_cache {
   uint64_t cosmology_tag; // cosmology generation represented by the tables
   uint64_t ntable_tag;    // numerical-settings generation used for the grids
 
@@ -2257,6 +2212,44 @@ static struct {
   fftw_plan plan_inverse; // cached instructions for the complex-to-real FFT
 } sigma_gauss_ = {0};
 
+// Clear both variance workspaces at initial_setup. A reset represents a
+// fresh calculation even when the next grids and power samples match the
+// previous ones. Destroy plans serially, then release their aligned arrays;
+// copied three-point snapshots own their values and remain valid.
+void reset_variance_tables(void)
+{
+  if (0 != omp_in_parallel()) { log_fatal(
+    "reset_variance_tables must run outside OpenMP regions"); exit(1); }
+  if (NULL != sigma_fields_.plan_forward) {
+    fftw_destroy_plan(sigma_fields_.plan_forward);
+  }
+  if (NULL != sigma_fields_.plan_inverse) {
+    fftw_destroy_plan(sigma_fields_.plan_inverse);
+  }
+  free(sigma_fields_.table);
+  free(sigma_fields_.fft_real);
+  free(sigma_fields_.spline_work);
+  free(sigma_fields_.fft_complex);
+  free(sigma_fields_.kernel);
+  free(sigma_fields_.mellin);
+  sigma_fields_ = (struct sigma_fields_cache){0};
+
+  if (NULL != sigma_gauss_.plan_forward) {
+    fftw_destroy_plan(sigma_gauss_.plan_forward);
+  }
+  if (NULL != sigma_gauss_.plan_inverse) {
+    fftw_destroy_plan(sigma_gauss_.plan_inverse);
+  }
+  free(sigma_gauss_.table);
+  free(sigma_gauss_.inverse);
+  free(sigma_gauss_.inverse_y);
+  free(sigma_gauss_.fft_real);
+  free(sigma_gauss_.spline_work);
+  free(sigma_gauss_.fft_complex);
+  free(sigma_gauss_.kernel);
+  sigma_gauss_ = (struct sigma_gauss_cache){0};
+}
+
 
 // ---------------------------------------------------------------------------
 // Build the Gaussian-window variance, slope and inverse tables.
@@ -2282,9 +2275,8 @@ static struct {
 //                       the allocations use is compared directly)
 //   table values:      cosmology.random, or any geometry rebuild
 //   kernels:           only a geometry rebuild (cosmology-free here)
-// The tags cover every input: initial_setup resets the structs the
-// tags and sizes come from, so a new model rebuilds these tables, and
-// no separate reset hook is needed (the sigma_fields_ discipline).
+// initial_setup also calls reset_variance_tables, which releases both
+// variance caches. Within one setup these tags and sizes control reuse.
 //
 // Call once outside any consumer's OpenMP loop to build the lazy
 // cache (the serial warm-up discipline of the top-hat build; the
@@ -2810,11 +2802,11 @@ double dlnsigma2_gauss_dlnr(
 // crossing is one index-arithmetic read: position = (0 - ymin)/dy,
 // then linear interpolation between the two bracketing lnR values.
 //
-// A row whose variance never crosses one has no nonlinear radius: at
-// high redshift a low-amplitude cosmology can keep sigma_G below one
-// at every tabulated radius. That is a physical absence, not a table
-// failure, so the guard stops with the achievable range in the
-// message rather than returning a clamped surrogate.
+// A row whose variance never crosses one has no resolved nonlinear
+// radius inside this table. At high redshift a low-amplitude cosmology
+// can keep sigma_G below one over the tabulated radius range; a crossing
+// at a smaller radius is not excluded. Stop with the sampled range so
+// the caller can check its physical support instead of using a clamp.
 // ---------------------------------------------------------------------------
 static double rnl_gauss_row(
     const int row // scale-factor row index

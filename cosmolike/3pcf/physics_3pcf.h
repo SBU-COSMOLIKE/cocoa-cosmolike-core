@@ -15,7 +15,13 @@ extern "C" {
 // Units and grids. Tables use the wave number k in h/Mpc, the
 // comoving distance chi in Mpc/h and the power spectrum P in
 // (Mpc/h)^3. The background redshift grid includes zero, where the
-// growth factor equals one. The model copies every buffer during
+// growth factor equals one. k is uniform in ln k; z and source_z are
+// piecewise uniform, with at most MAX_GRID_SEGMENTS = 10 segments.
+// Generate each segment with the np.linspace convention; the shared grid
+// detector uses relative spacing tolerance 1e-9. Production preparation
+// uses natural cubic splines within each segment; source_readers retains
+// the original source interpolation for comparisons.
+// The model copies every buffer during
 // creation and owns its interpolation data afterwards, so the caller
 // may free the inputs once physics_create_3pcf returns.
 //
@@ -26,6 +32,19 @@ extern "C" {
 // the caller to provide a consistent flat background; it does not infer
 // dark-energy parameters or density closure from those arrays.
 //
+// Optional fit quantities copied from the shared total-matter variance
+// engine. z is a piecewise-uniform grid; rnl is the Gaussian nonlinear radius
+// in Mpc/h, neff its effective spectral index, and sigma8 the top-hat rms
+// at R = 8 Mpc/h. Supplying this table also trusts the amplitude of the
+// supplied power: the constructor does not renormalize it to scalar sigma8.
+typedef struct {
+  int nz; // anchor count
+  const double* z; // piecewise-uniform redshift nodes [nz]
+  const double* rnl; // positive nonlinear radii [nz], Mpc/h
+  const double* neff; // effective spectral indices [nz]
+  const double* sigma8; // positive linear rms amplitudes [nz]
+} physics_variance_input_3pcf;
+
 // LOS nodes are positive, strictly increasing, at least two in
 // number, and must lie inside the tabulated redshift range; they
 // define a fixed trapezoidal distance integral. kernel_nz, the
@@ -69,6 +88,7 @@ typedef struct {
   // geometry is the caller's responsibility and remains flat in projection.
   const baseline_input_3pcf* baseline; // copied absolute matter B table
   const double* omega_m_z; // required with baseline; Omega_m(z) on z [nz]
+  const physics_variance_input_3pcf* variance; // optional copied fit anchors
 } physics_input_3pcf;
 
 // TATT (tidal alignment and tidal torquing) parameters in the

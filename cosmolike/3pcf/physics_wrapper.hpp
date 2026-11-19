@@ -35,6 +35,15 @@ struct physics_baseline_table_cpp_3pcf {
   int clamp = 0; // reject out-of-domain queries by default
 };
 
+// Copied fit quantities for the notebook constructor. The C model copies
+// these arrays once more into its immutable storage before returning.
+struct physics_variance_tables_cpp_3pcf {
+  arma::Col<double> z; // piecewise-uniform fit redshifts
+  arma::Col<double> rnl; // Gaussian nonlinear radii, Mpc/h
+  arma::Col<double> neff; // effective spectral indices
+  arma::Col<double> sigma8; // top-hat rms at R = 8 Mpc/h
+};
+
 // Python keeps this owner alive; its deleter releases every immutable C
 // table of the model. A projection or covariance may borrow get() only
 // while the owner lives. Constructing a second model changes no global
@@ -107,7 +116,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const physics_feedback_tables_cpp_3pcf* feedback = nullptr, // optional
   const arma::Col<double>* pixel_window = nullptr, // W(ell) at integer ell
   const physics_baseline_table_cpp_3pcf* baseline = nullptr, // absolute B
-  const arma::Col<double>* omega_m_z = nullptr // required with baseline
+  const arma::Col<double>* omega_m_z = nullptr, // required with baseline
+  const physics_variance_tables_cpp_3pcf* variance = nullptr // fit anchors
 );
 
 arma::Mat<double> physics_points_cpp_3pcf(

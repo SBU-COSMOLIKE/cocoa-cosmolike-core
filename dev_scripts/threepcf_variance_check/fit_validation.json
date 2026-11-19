@@ -1,0 +1,31 @@
+{
+  "source_manifest": "/private/tmp/threepcf_fit_variance_20261119/inputs.json",
+  "omp_limit": 6,
+  "blas_threads": 1,
+  "default_variance_path_changed": false,
+  "test_runs": {
+    "strict": {
+      "tests": 42,
+      "failures": 0,
+      "errors": 0,
+      "seconds": 8.047,
+      "binary": "/private/tmp/threepcf_fit_variance_20261119/strict/cosmolike_des_3pcf_interface.so",
+      "sha256": "6511cf4587d4167d627dedf6a108ff8875b208156038956c5f54ed4c11332423",
+      "log": "/private/tmp/threepcf_fit_variance_20261119/strict_tests.log"
+    },
+    "debug": {
+      "tests": 42,
+      "failures": 0,
+      "errors": 0,
+      "seconds": 14.922,
+      "binary": "/private/tmp/threepcf_fit_variance_20261119/debug/cosmolike_des_3pcf_interface.so",
+      "sha256": "77b2c5936b3c7558d3ebabc9a6e3d763723f56c991e3e06229bae9081ea062de",
+      "log": "/private/tmp/threepcf_fit_variance_20261119/debug_tests.log"
+    }
+  },
+  "limits": [
+    "Controlled fit selection/state checks are not survey accuracy acceptance.",
+    "The unbroken k^-2 shared-variance discrepancy remains unresolved.",
+    "Full evolving P(k,z) in shared variances does not change legacy P0 D^2 power legs."
+  ]
+}

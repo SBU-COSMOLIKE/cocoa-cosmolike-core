@@ -867,6 +867,110 @@ static void bridge_baseline_3pcf(
     static_cast<int>(matter_fraction.size()), py::cast<double>(sigma8));
 }
 
+// Prepare owned variance arrays from the current core state. Keep the GIL
+// during this serial entry: another Python thread must not replace the
+// global power tables while the lazy shared builders read them. The
+// builders themselves may use their usual OpenMP workers.
+static py::dict bridge_variance_snapshot_3pcf(
+  const array_3pcf& z, // requested increasing redshifts [nz]
+  const py::object& mass_values, // mass nodes [nmass], or None
+  const double reference_rho, // reference matter density; zero selects core
+  const bool include_fit // include Gaussian radius, slope and sigma8
+)
+{
+  bridge_vector_3pcf(z, "variance redshifts");
+  array_3pcf mass(0);
+  if (!mass_values.is_none()) {
+    if (!array_3pcf::check_(mass_values)) {
+      spdlog::critical("3pcf variance snapshot: masses must be contiguous "
+        "float64 values");
+      std::exit(1);
+    }
+    mass = py::reinterpret_borrow<array_3pcf>(mass_values);
+    if (1 != mass.ndim()
+        || INT_MAX < mass.size()) {
+      spdlog::critical("3pcf variance snapshot: masses must be one vector "
+        "with at most INT_MAX entries");
+      std::exit(1);
+    }
+    finite_3pcf(mass, "variance masses");
+  }
+  if (0 < mass.size()
+      && INT_MAX/mass.size() < z.size()) {
+    spdlog::critical("3pcf variance snapshot: redshift times mass count "
+      "exceeds INT_MAX");
+    std::exit(1);
+  }
+
+  const py::ssize_t fit_count = include_fit ? z.size() : 0;
+  array_3pcf rnl(fit_count);
+  array_3pcf neff(fit_count);
+  array_3pcf sigma8(fit_count);
+  array_3pcf halo_sigma2({z.size(), mass.size()});
+  array_3pcf halo_slope({z.size(), mass.size()});
+  const double core_rho = threepcf_core_variance_snapshot(
+    static_cast<int>(z.size()), z.data(), static_cast<int>(mass.size()),
+    mass.data(), reference_rho, include_fit ? 1 : 0, rnl.mutable_data(),
+    neff.mutable_data(), sigma8.mutable_data(), halo_sigma2.mutable_data(),
+    halo_slope.mutable_data());
+  finite_3pcf(rnl, "variance nonlinear radii");
+  finite_3pcf(neff, "variance effective slopes");
+  finite_3pcf(sigma8, "variance sigma8");
+  finite_3pcf(halo_sigma2, "halo variances");
+  finite_3pcf(halo_slope, "halo logarithmic slopes");
+
+  array_3pcf owned_z(z.size());
+  array_3pcf owned_mass(mass.size());
+  std::copy_n(z.data(), z.size(), owned_z.mutable_data());
+  std::copy_n(mass.data(), mass.size(), owned_mass.mutable_data());
+  py::dict result;
+  result["z"] = owned_z;
+  result["mass"] = owned_mass;
+  result["rnl"] = rnl;
+  result["neff"] = neff;
+  result["sigma8"] = sigma8;
+  result["halo_sigma2"] = halo_sigma2;
+  result["halo_dlnsigma_dlnm"] = halo_slope;
+  result["core_rho"] = core_rho;
+  result["reference_rho"] = 0.0 == reference_rho ? core_rho : reference_rho;
+  return result;
+}
+
+// Only fit fields belong to the model constructor. A full variance_snapshot
+// also contains halo rows; select these four named arrays explicitly.
+static void bridge_variance_3pcf(
+  const py::dict& variance // z, rnl, neff, sigma8; empty clears
+)
+{
+  if (variance.empty()) {
+    threepcf_bridge_set_variance(NULL);
+    return;
+  }
+  if (4 != variance.size()) {
+    throw py::value_error("variance requires exactly z, rnl, neff, sigma8");
+  }
+  const char* names[4] = {"z", "rnl", "neff", "sigma8"};
+  std::vector<array_3pcf> arrays;
+  for (const char* name : names) {
+    if (!variance.contains(name)
+        || !array_3pcf::check_(variance[name])) {
+      throw py::value_error("variance requires contiguous float64 arrays");
+    }
+    arrays.push_back(py::reinterpret_borrow<array_3pcf>(variance[name]));
+    bridge_vector_3pcf(arrays.back(), name);
+    if (arrays[0].size() != arrays.back().size()) {
+      throw py::value_error("variance array lengths disagree");
+    }
+  }
+  physics_variance_input_3pcf input = {};
+  input.nz = static_cast<int>(arrays[0].size());
+  input.z = arrays[0].data();
+  input.rnl = arrays[1].data();
+  input.neff = arrays[2].data();
+  input.sigma8 = arrays[3].data();
+  threepcf_bridge_set_variance(&input);
+}
+
 // Register every bridge entry point on the "core" submodule.
 static void bind_threepcf_core_bridge(
   py::module_& module // Python module receiving the bindings
@@ -877,7 +981,21 @@ static void bind_threepcf_core_bridge(
       "model: struct installers, supplied-tier setters and the cached "
       "model_from_core factory (threepcf_core_bridge.h).");
 
+  core.def("variance_snapshot", &bridge_variance_snapshot_3pcf,
+      py::arg("z").noconvert(), py::arg("mass") = py::none(),
+      py::arg("reference_rho") = 0.0, py::arg("include_fit") = true,
+      "Owned total-matter variance arrays from the installed linear power. "
+      "No cosmology is installed or changed. reference_rho fixes the "
+      "mass-to-radius convention; zero uses core rho_m. include_fit=False "
+      "skips Gaussian preparation. Halo slopes are d ln sigma/d ln M.");
+
   // --- supplied tier -----------------------------------------------------
+  core.def("set_variance", &bridge_variance_3pcf,
+      py::arg("variance") = py::dict(),
+      "Copy z, rnl, neff and sigma8 fit arrays for the installed core state. "
+      "Empty clears. Resupply after changing power, cosmology or accuracy. "
+      "The selected path trusts the supplied power amplitude.");
+
   core.def("set_scalars", &threepcf_bridge_set_scalars,
       "Supply ns, sigma8, w0 and wa; these scalars stay supplied "
       "until a later stage retires them into the structs.",

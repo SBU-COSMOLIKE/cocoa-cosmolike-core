@@ -70,6 +70,54 @@ checks remain necessary even when every sampled density is nonnegative.
 
 ## Supplied baseline and bridge replacement
 
+The physical input contract is one uniform log-k segment and at most ten
+uniform pieces in background/source redshift, with spacing tolerance 1e-9.
+Keep the DES producer's `np.linspace` construction consistent with the other
+Cocoa projects. Do not restore arbitrary irregular-k input or merge fine
+low-z and coarse high-z segments into one grid. Production shares the
+natural-cubic solver and direct piece lookup; the explicit source comparison
+retains its upstream interpolation. The project test
+`data_vector/test_piecewise_physics.py` checks joins, refinement and matching
+Python/C BiHalofit preparation. The numerical guide explains its boundary
+conditions; changing only C leaves the Python producer inconsistent.
+
+### Copied shared variance inputs
+
+`core.variance_snapshot` reads the installed total-matter linear power and
+returns owned z/rnl/neff/sigma8 arrays plus optional halo mass/variance/slope
+arrays. Its serial entry retains the Python GIL while shared lazy tables
+are prepared. It installs no spectrum and changes no physical convention.
+In particular, evolving P(k,z) and P(k,0)D(z)^2 are different inputs with
+massive neutrinos. The halo snapshot's `reference_rho` preserves the
+consumer's mass-to-radius convention; the shared query mass is multiplied
+by core_rho/reference_rho. The returned slope is d ln sigma/d ln M, so the
+covariance multiplies it by 2 sigma² where d sigma²/d ln M is required.
+
+The optional model `variance` dictionary contains exactly z/rnl/neff/sigma8.
+Its presence also disables the local rescaling of linear P to the separate
+sigma8 scalar. Supplied fit anchors must cover the model's full redshift
+domain. Covariance snapshots require exact requested mass/redshift axes and
+the prescribed density. Their caller must establish that they belong to
+the same physical power state; matching dimensions alone is insufficient.
+
+`core.set_variance` copies its arrays and stamps both `cosmology.random`
+and `Ntable.random`. A later bridge read refuses stale supplied variances
+before considering a model cache hit. Resupply or explicitly clear after
+power, cosmology or accuracy changes. The anchor count belongs to the
+allocation key. Retained immutable model owners survive replacement/reset.
+Both ordinary and standalone `initial_setup` call `reset_variance_tables`,
+which frees both shared FFTLog workspaces and their plans serially.
+
+These inputs are an optional integration step, not an accepted replacement
+of the local variance prescription. The shared unbroken P(k) proportional
+to k^-2 discrepancy remains unresolved; do not remove the local path or
+select shared variances by default on the strength of the bias-matched
+power-law test. Read
+[`dev_scripts/threepcf_variance_check/VALIDATION.md`](../../../../dev_scripts/threepcf_variance_check/VALIDATION.md)
+for the measured domain, state checks and outstanding scientific tests.
+
+### Supplied baseline state
+
 `physics_input_3pcf.baseline == NULL` selects the ordinary internal fit.
 An active baseline owns a positive absolute B table and requires the
 background `omega_m_z` array. Replacing the physical model replaces all

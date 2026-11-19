@@ -487,6 +487,7 @@ void initial_setup()
   reset_cosmology_struct();
   reset_tomo_struct();
   reset_Ntable_struct();
+  reset_variance_tables();
   // Forget the accuracy-boost baselines of any previous setup: the next
   // boost call re-captures them from the defaults just restored (or from
   // a dedicated setter that runs before it), so this build's boost never

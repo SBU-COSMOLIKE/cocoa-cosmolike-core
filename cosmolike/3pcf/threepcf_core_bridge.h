@@ -150,6 +150,14 @@ void threepcf_bridge_set_feedback(
   double amplitude              // shared log-response amplitude
 );
 
+// Optional shared fit quantities. Every array is copied. NULL clears the
+// snapshot and restores local fit preparation. The snapshot is stamped with
+// cosmology.random and Ntable.random; a subsequent model build refuses it
+// after either state changes until this setter runs again or clears it.
+void threepcf_bridge_set_variance(
+  const physics_variance_input_3pcf* input // copied fit anchors; NULL clears
+);
+
 // Install an absolute matter B table and the matter-fraction background
 // on the core nonlinear-power redshift axis. Copies every input. sigma8
 // retains the existing linear-power normalization; ns/w0/wa are unused
@@ -215,6 +223,27 @@ const physics_input_3pcf* threepcf_bridge_refresh(void);
 // threepcf_bridge_refresh return. Lets callers and tests observe
 // rebuilds without comparing pointers.
 uint64_t threepcf_bridge_generation(void);
+
+// Copy variance quantities from the installed total-matter power table.
+// This serial preparation may fill the shared cosmo3D caches. The output
+// buffers belong to the caller; later cosmology changes cannot alter them.
+// include_fit = 0 skips the Gaussian tables and all three fit outputs.
+// With masses, reference_rho fixes the smoothing-radius convention:
+// R^3 = 3 M/(4 pi reference_rho). Zero selects the core matter density.
+// The returned value is that core density, in (Msun/h)/(Mpc/h)^3.
+double threepcf_core_variance_snapshot(
+  int nz, // number of requested redshifts, at least one
+  const double* z, // increasing nonnegative redshifts [nz]
+  int nmass, // mass count; zero omits halo outputs
+  const double* mass, // increasing positive masses [nmass], Msun/h
+  double reference_rho, // reference mean density; zero uses the core value
+  int include_fit, // 1 requests R_nl, n_eff and sigma8; otherwise 0
+  double* rnl, // nonlinear Gaussian radius [nz], Mpc/h
+  double* neff, // effective Gaussian spectral slope [nz]
+  double* sigma8, // total-matter top-hat rms at 8 Mpc/h [nz]
+  double* halo_sigma2, // variance [nz,nmass], row-major
+  double* halo_dlnsigma_dlnm // d ln sigma/d ln M [nz,nmass], row-major
+);
 
 // Clear every piece of bridge state: the supplied-tier copies and
 // scalars (back to their defaults), the assembled scratch, the guard

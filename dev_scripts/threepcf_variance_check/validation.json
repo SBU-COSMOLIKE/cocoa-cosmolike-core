@@ -1,0 +1,31 @@
+{
+  "strict": {
+    "passed": 19,
+    "log": "strict_tests.log"
+  },
+  "debug_ubsan": {
+    "passed": 19,
+    "log": "debug_tests.log"
+  },
+  "workers": [
+    1,
+    6
+  ],
+  "blas_threads": 1,
+  "default_adoption": false,
+  "known_unresolved": "P proportional to k^-2 shared FFTLog accuracy; powerlaw_probe.json retains measurements",
+  "curved_oracle": "curved_probe.json",
+  "hashes": {
+    "inputs.json": "2cbe9dbed5a52c30efdaed7ba0981c31c263d9533570ef68a72d8871dc918039",
+    "strict_build.log": "d9b1ceadf09ff5cb74b87e687125e0041a060ac21da723329f2adc055b409a3e",
+    "debug_build.log": "b26bc8b96edeef44aaa50e983ee29c983283a07341a2a5bf7b73d79f9d9d564a",
+    "strict_tests.log": "4f5df43d408fa161d9134a987a7b3151a3058898ca19e5c3d6b49ac1561f94bb",
+    "debug_tests.log": "68dace50bd708dad187f9b7c1a159102e7317ec8896b8876d7e29fd90c7ea116",
+    "strict_tests.xml": "1e385cf589ee972185c6cc27f2a3d530edf7f8a75210812cf423ae8cc4f57ab1",
+    "debug_tests.xml": "8295b2f40cf604b3556cd8310d9cd081ba9029eeb1442b8c0a5c216e91643cf0",
+    "powerlaw_probe.json": "3d61a4c857fba08e8817f85bf5bb80fb3b66f44340d1adbcf8dcf9b1364ff09e",
+    "curved_probe.json": "83588128d795a0002d63c5839c0d31dca468ef979f94c48e51c58f9d59635d5b",
+    "strict/cosmolike_des_3pcf_interface.so": "aecd7868ae1e816547249557a39c8e6d0cb017f2080dfbd3dee54c1d4ee3435c",
+    "debug/cosmolike_des_3pcf_interface.so": "8b0193faaacbfea595fc99ad5ab23eae989befba37fba3c9036498f5091e4c47"
+  }
+}

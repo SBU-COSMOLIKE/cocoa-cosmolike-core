@@ -68,6 +68,15 @@ typedef struct {
   double concentration_c;         // (1+z) exponent, normally -1.01
   double concentration_pivot;     // Msun/h, normally 2e12
   double baryon_strength;         // BiHalofit baryon-transfer parameter
+  // Optional copied shared-core variance on these exact halo nodes.
+  // With nhalo_z = 0 all pointers stay NULL and the k quadrature remains
+  // active. Otherwise every array is required; no interpolation occurs.
+  int nhalo_z;                    // redshifts represented by the snapshot
+  const double* halo_z;            // [nhalo_z], must match queried redshifts
+  const double* halo_mass;         // [nmass], must match mass above
+  const double* halo_sigma2;       // [nhalo_z,nmass], total-matter variance
+  const double* halo_dlnsigma_dlnm; // [nhalo_z,nmass], d ln sigma/d ln M
+  double halo_reference_rho;       // density defining snapshot mass radii
 } covariance_input_3pcf;
 
 // Full physical covariance. terms has shape [6,nrow,nrow] and holds,

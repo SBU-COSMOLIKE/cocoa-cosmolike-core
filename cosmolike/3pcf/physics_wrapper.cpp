@@ -121,7 +121,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   // optional absolute matter-bispectrum table
   const physics_baseline_table_cpp_3pcf* baseline,
   // matter fraction on z, required with an absolute baseline
-  const arma::Col<double>* omega_m_z
+  const arma::Col<double>* omega_m_z,
+  const physics_variance_tables_cpp_3pcf* variance // optional fit anchors
 )
 {
   const arma::uword nsource = source_z.n_elem ? source_z.n_elem : z.n_elem;
@@ -199,6 +200,26 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   input.wa = wa;
   input.ns = ns;
   input.sigma8 = sigma8;
+
+  physics_variance_input_3pcf fit = {};
+  if (nullptr != variance) {
+    const arma::uword count = variance->z.n_elem;
+    if (4 > count
+        || INT_MAX < count
+        || count != variance->rnl.n_elem
+        || count != variance->neff.n_elem
+        || count != variance->sigma8.n_elem) {
+      spdlog::critical("3pcf physics wrapper: variance arrays must have "
+        "one common anchor count of at least four");
+      std::exit(1);
+    }
+    fit.nz = static_cast<int>(count);
+    fit.z = variance->z.memptr();
+    fit.rnl = variance->rnl.memptr();
+    fit.neff = variance->neff.memptr();
+    fit.sigma8 = variance->sigma8.memptr();
+    input.variance = &fit;
+  }
 
   feedback_input_3pcf response = {};
   if (nullptr != feedback) {

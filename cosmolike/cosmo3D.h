@@ -90,6 +90,9 @@ double PkRatio_baryons(double k_NL, double a);
 
 double sigma2(const double M, const double a);
 
+// Serial initial_setup hook: destroy cached variance plans and tables.
+void reset_variance_tables(void);
+
 // Variance and logarithmic rms slope at scale factor a. field is
 // HALO_FIELD_MATTER or HALO_FIELD_CB; M is in M_sun/h.
 double sigma2_field(const double M, const double a, const int field);

@@ -9,7 +9,117 @@
 #include "cosmolike/basics.h"
 #include "cosmolike/structs.h"
 #include "cosmolike/IA.h"
+#include "cosmolike/cosmo3D.h"
+#include "cosmolike/halo.h"
+#include "cosmolike/baryons.h"
 #include "log.c/src/log.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+// The shared variance builders read the installed linear spectrum. This
+// entry point only copies their results: it never installs a cosmology or
+// returns a pointer into a mutable cache. In particular, halo callers can
+// request their own redshift/mass nodes without another interpolation.
+double threepcf_core_variance_snapshot(
+  const int nz, // redshift count
+  const double* z, // increasing nonnegative redshifts [nz]
+  const int nmass, // mass count; zero omits halo outputs
+  const double* mass, // masses [nmass], Msun/h
+  const double reference_rho, // reference density; zero uses core rho_m
+  const int include_fit, // 1 also copies Gaussian fit quantities
+  double* rnl, // nonlinear Gaussian radius [nz], Mpc/h
+  double* neff, // effective Gaussian spectral slope [nz]
+  double* sigma8, // top-hat rms at 8 Mpc/h [nz]
+  double* halo_sigma2, // variance [nz,nmass]
+  double* halo_dlnsigma_dlnm // d ln sigma/d ln M [nz,nmass]
+)
+{
+#ifdef _OPENMP
+  if (0 != omp_in_parallel()) { log_fatal(
+    "threepcf variance snapshot must run outside OpenMP regions"); exit(1); }
+#endif
+  if (1 > nz
+      || NULL == z
+      || 0 > nmass
+      || (0 != include_fit
+          && 1 != include_fit)) { log_fatal(
+    "threepcf variance snapshot needs redshifts, nonnegative mass count "
+    "and include_fit equal to zero or one"); exit(1); }
+  if (0 == nmass
+      && 0 == include_fit) { log_fatal(
+    "threepcf variance snapshot requests no output"); exit(1); }
+  if (1 == include_fit
+      && (NULL == rnl
+          || NULL == neff
+          || NULL == sigma8)) { log_fatal(
+    "threepcf variance snapshot needs all three fit output buffers"); exit(1); }
+  if (0 < nmass
+      && (NULL == mass
+          || NULL == halo_sigma2
+          || NULL == halo_dlnsigma_dlnm)) { log_fatal(
+    "threepcf variance snapshot needs masses and both halo outputs"); exit(1); }
+  if ((size_t)nz*(size_t)nmass > INT_MAX) { log_fatal(
+    "threepcf variance snapshot exceeds the allocator count"); exit(1); }
+  if (!isfinite(reference_rho)
+      || 0.0 > reference_rho
+      || NULL == cosmology.lnPL
+      || 2 > cosmology.lnPL_nk
+      || 2 > cosmology.lnPL_nz) { log_fatal(
+    "threepcf variance snapshot needs finite nonnegative reference_rho "
+    "and an installed linear power table"); exit(1); }
+
+  const double core_rho = cosmology.rho_crit
+    /pow(cosmology.coverH0, 3.0)*cosmology.Omega_m;
+  if (!isfinite(core_rho)
+      || 0.0 >= core_rho) { log_fatal(
+    "threepcf variance snapshot needs a positive core matter density"); exit(1); }
+  const double mass_factor = 0.0 == reference_rho
+    ? 1.0 : core_rho/reference_rho;
+  const double zmax = 1.0/limits.a_min - 1.0;
+  for (int iz=0; iz<nz; iz++) {
+    if (!isfinite(z[iz])
+        || 0.0 > z[iz]
+        || zmax < z[iz]
+        || (0 < iz
+            && z[iz - 1] >= z[iz])) { log_fatal(
+      "threepcf variance snapshot redshifts must increase within [0,%g]",
+      zmax); exit(1); }
+  }
+  for (int im=0; im<nmass; im++) {
+    const double query_mass = mass[im]*mass_factor;
+    if (!isfinite(mass[im])
+        || 0.0 >= mass[im]
+        || (0 < im
+            && mass[im - 1] >= mass[im])
+        || !isfinite(query_mass)
+        || limits.halo_sigma_min > query_mass
+        || limits.halo_m[RANGE_MAX] < query_mass) { log_fatal(
+      "threepcf variance snapshot masses must increase and their density-"
+      "adjusted values must lie in [%g,%g] Msun/h",
+      limits.halo_sigma_min, limits.halo_m[RANGE_MAX]); exit(1); }
+  }
+
+  // Reading on this thread builds each required table once. All returned
+  // arrays are explicit copies, so the consuming covariance can later run
+  // in parallel while another retained model still owns earlier results.
+  for (int iz=0; iz<nz; iz++) {
+    const double a = 1.0/(1.0 + z[iz]);
+    if (1 == include_fit) {
+      rnl[iz] = rnl_gauss(a);
+      neff[iz] = neff_gauss(a);
+      sigma8[iz] = sigma8_matter(a);
+    }
+    for (int im=0; im<nmass; im++) {
+      const size_t index = (size_t)iz*nmass + im;
+      const double query_mass = mass[im]*mass_factor;
+      halo_sigma2[index] = sigma2_matter(query_mass, a);
+      halo_dlnsigma_dlnm[index] = dlnsigma_dlnm_field(
+        query_mass, a, HALO_FIELD_MATTER);
+    }
+  }
+  return core_rho;
+}
 
 // ===========================================================================
 // CORE-STRUCT BRIDGE OF THE THREE-POINT PHYSICS MODEL
@@ -138,6 +248,11 @@ static struct {
     double* omega_m_z; // matter fraction on the core background z
     double sigma8; // supplied-route power normalization
   } baseline;
+  struct {
+    physics_variance_input_3pcf input; // owned fit arrays; nz=0 disables
+    uint64_t cosmology_key; // installed power and background state
+    uint64_t table_key; // shared variance accuracy settings
+  } variance;
   int power_mode;     // physics_ia_3pcf.power_mode
   int ct_mode;        // physics_ia_3pcf.ct_mode
   int suppress_only;  // physics_ia_3pcf.suppress_only
@@ -164,12 +279,24 @@ static void baseline_clear_bridge(void)
   memset(&supplied.baseline, 0, sizeof(supplied.baseline));
 }
 
+// Fit snapshots are copied, so retained model owners never read this
+// mutable bridge storage after their constructor returns.
+static void variance_clear_bridge(void)
+{
+  free((void*)supplied.variance.input.z);
+  free((void*)supplied.variance.input.rnl);
+  free((void*)supplied.variance.input.neff);
+  free((void*)supplied.variance.input.sigma8);
+  memset(&supplied.variance, 0, sizeof(supplied.variance));
+}
+
 // Free every owned supplied-tier array and restore the defaults the
 // initializer above states. free(NULL) is a no-op, so a fresh bridge
 // passes through unchanged.
 static void supplied_clear(void)
 {
   baseline_clear_bridge();
+  variance_clear_bridge();
   free(supplied.los);
   free(supplied.source_z);
   free(supplied.sources);
@@ -468,6 +595,69 @@ void threepcf_bridge_set_feedback(
   supplied.feedback.amplitude = amplitude;
 }
 
+// Install a snapshot belonging to the current global power state. Repeating
+// values in a new state renews validity but never changes an existing owner.
+// Copy all four arrays before releasing old storage; the input may alias it.
+void threepcf_bridge_set_variance(
+  const physics_variance_input_3pcf* input // copied anchors; NULL clears
+)
+{
+  if (omp_in_parallel()) {
+    log_fatal("threepcf bridge: variance installation must be serial");
+    exit(1);
+  }
+  if (NULL == input) {
+    if (0 != supplied.variance.input.nz) {
+      variance_clear_bridge();
+      supplied.nonce = bridge_draw();
+    }
+    return;
+  }
+  if (4 > input->nz
+      || NULL == input->z
+      || NULL == input->rnl
+      || NULL == input->neff
+      || NULL == input->sigma8) {
+    log_fatal("threepcf bridge: variance needs four arrays and at least "
+      "four anchors");
+    exit(1);
+  }
+  for (int i=0; input->nz > i; i++) {
+    if (!isfinite(input->z[i])
+        || !isfinite(input->rnl[i])
+        || !isfinite(input->neff[i])
+        || !isfinite(input->sigma8[i])
+        || 0.0 > input->z[i]
+        || 0.0 >= input->rnl[i]
+        || 0.0 >= input->sigma8[i]) {
+      log_fatal("threepcf bridge: invalid variance anchor at %d", i);
+      exit(1);
+    }
+    if (0 < i
+        && input->z[i-1] >= input->z[i]) {
+      log_fatal("threepcf bridge: variance redshifts must increase");
+      exit(1);
+    }
+  }
+  const physics_variance_input_3pcf* old = &supplied.variance.input;
+  if (old->nz != input->nz
+      || bridge_differs(old->z, input->z, input->nz)
+      || bridge_differs(old->rnl, input->rnl, input->nz)
+      || bridge_differs(old->neff, input->neff, input->nz)
+      || bridge_differs(old->sigma8, input->sigma8, input->nz)) {
+    physics_variance_input_3pcf replacement = *input;
+    replacement.z = bridge_copy(input->z, input->nz);
+    replacement.rnl = bridge_copy(input->rnl, input->nz);
+    replacement.neff = bridge_copy(input->neff, input->nz);
+    replacement.sigma8 = bridge_copy(input->sigma8, input->nz);
+    variance_clear_bridge();
+    supplied.variance.input = replacement;
+    supplied.nonce = bridge_draw();
+  }
+  supplied.variance.cosmology_key = cosmology.random;
+  supplied.variance.table_key = Ntable.random;
+}
+
 // Install immutable B input without deriving a cosmological background.
 // Validation precedes replacement; every scalar, size and array participates
 // in the exact-change test, so resending identical tables preserves reuse.
@@ -715,7 +905,7 @@ static void scratch_clear(void)
 // stores every count as an int; the refill tier stores the cache keys
 // of the structs the assembly read plus the bridge nonce. A build
 // exists only while have_build is one.
-#define BRIDGE_NCOUNT 25
+#define BRIDGE_NCOUNT 26
 #define BRIDGE_NKEY 5
 static struct {
   int have_build;
@@ -755,6 +945,7 @@ static void guard_current(
   counts[22] = supplied.baseline.input.nu;
   counts[23] = supplied.baseline.input.nv;
   counts[24] = supplied.baseline.nz;
+  counts[25] = supplied.variance.input.nz;
   keys[0] = cosmology.random;
   keys[1] = redshift.random_shear;
   keys[2] = nuisance.random_photoz_shear;
@@ -801,6 +992,16 @@ uint64_t threepcf_bridge_generation(void)
 
 const physics_input_3pcf* threepcf_bridge_refresh(void)
 {
+  // A changed spectrum or accuracy invalidates copied fit quantities even
+  // when their dimensions match. Callers must resupply or clear them.
+  if (0 < supplied.variance.input.nz) {
+    if (supplied.variance.cosmology_key != cosmology.random
+        || supplied.variance.table_key != Ntable.random) {
+      log_fatal("threepcf bridge: supplied variance is stale; resupply "
+        "or clear it after power, cosmology or accuracy changes");
+      exit(1);
+    }
+  }
   int counts[BRIDGE_NCOUNT];
   uint64_t keys[BRIDGE_NKEY];
   guard_current(counts, keys);
@@ -1066,6 +1267,9 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   scratch.input.source_readers = supplied.source_readers;
   scratch.input.table_boost = supplied.table_boost;
   scratch.input.fit_nz = supplied.fit_nz;
+  if (0 < supplied.variance.input.nz) {
+    scratch.input.variance = &supplied.variance.input;
+  }
 
   scratch.input.omega_m = cosmology.Omega_m;
   if (0 < supplied.baseline.input.nz) {
@@ -1763,15 +1967,17 @@ void threepcf_core_set_nuisance_ia_ct(
 
 void threepcf_core_initial_setup(void)
 {
-  // the reset_*_struct family lives in structs.c, which this module
-  // compiles; state the full initial_setup resets beyond the structs
-  // (baryon scenarios, Pdelta dispatch, FAST-PT origins, point
-  // masses, CMB products) does not exist here
+  // Reset the shared 3D state as well as the copied bridge inputs. The
+  // variance plans, baryon scenario and Pdelta dispatch live outside the
+  // structs; resetting only those structs would leave their state behind.
   reset_redshift_struct();
   reset_nuisance_struct();
   reset_cosmology_struct();
   reset_tomo_struct();
   reset_Ntable_struct();
+  reset_variance_tables();
+  reset_bary_struct();
+  reset_pdelta_dispatch();
   reset_like_struct();
   reset_cmb_struct();
   bridge_stored_shear_nbin = 0;

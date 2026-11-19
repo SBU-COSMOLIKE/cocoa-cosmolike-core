@@ -3,8 +3,9 @@
 The numerical port lives in `cosmolike/3pcf/`. It predicts the physical
 three-point mean and a specified joint two-/three-point covariance. The
 companion Cocoa project owns survey input, optional CAMB preparation and
-Fisher orchestration. Existing two-point C files are unchanged. This is an
-implemented numerical model, not a demonstrated reproduction of DES Y3 or
+Fisher orchestration. Shared grid indexing and variance readers live in the
+common core; the two-point physical prescriptions retain their definitions.
+This is an implemented numerical model, not a demonstrated reproduction of DES Y3 or
 Y6 or a measured performance result. Read the estimator and physical limits
 before combining its outputs.
 

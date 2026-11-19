@@ -508,7 +508,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   // optional W(ell) samples at integer multipoles
   const py::object& pixel_window,
   const py::dict& baseline, // optional absolute B input
-  const py::object& omega_m_z // required background when baseline is active
+  const py::object& omega_m_z, // required background when baseline is active
+  const py::dict& variance // optional shared fit quantities
 )
 {
   shape_physics(k, 1);
@@ -736,6 +737,41 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
     input.omega_m_z = matter_fraction.data();
   }
 
+  // Retain borrowed production arrays until the immutable C owner has
+  // copied them. The dictionary is deliberately small and exact so a
+  // misspelled field cannot silently leave the old normalization active.
+  physics_variance_input_3pcf fit = {};
+  std::vector<physics_array> fit_arrays;
+  if (!variance.empty()) {
+    const char* names[4] = {"z", "rnl", "neff", "sigma8"};
+    if (4 != variance.size()) {
+      throw py::value_error("variance requires exactly z, rnl, neff, sigma8");
+    }
+    for (const char* name : names) {
+      if (!variance.contains(name)
+          || !physics_array::check_(variance[name])) {
+        throw py::value_error("variance requires contiguous float64 arrays");
+      }
+      fit_arrays.push_back(py::reinterpret_borrow<physics_array>(
+        variance[name]));
+      shape_physics(fit_arrays.back(), 1);
+      finite_physics(fit_arrays.back());
+      if (fit_arrays[0].size() != fit_arrays.back().size()) {
+        throw py::value_error("variance array lengths disagree");
+      }
+    }
+    if (4 > fit_arrays[0].size()
+        || INT_MAX < fit_arrays[0].size()) {
+      throw py::value_error("variance requires at least four anchors");
+    }
+    fit.nz = static_cast<int>(fit_arrays[0].size());
+    fit.z = fit_arrays[0].data();
+    fit.rnl = fit_arrays[1].data();
+    fit.neff = fit_arrays[2].data();
+    fit.sigma8 = fit_arrays[3].data();
+    input.variance = &fit;
+  }
+
   return std::make_shared<physics_owner_3pcf>(input);
 }
 
@@ -761,7 +797,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const int fit_nz, // internal-fit anchors
   const py::object& source_z, // optional source z axis
   const py::dict& feedback, // optional paired responses
-  const py::object& pixel_window // optional integer-ell window
+  const py::object& pixel_window, // optional integer-ell window
+  const py::dict& variance // optional shared fit quantities
 )
 {
   return model_physics_common(k, p_linear0, z, p_nonlinear, chi, dz_dchi,
@@ -769,7 +806,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
     sources, omega_m, omega_de, w0, wa, ns, sigma8, los_z, kernel_nz,
     source_readers,
     table_boost, fit_nz, source_z, feedback, pixel_window,
-    py::dict(), py::none());
+    py::dict(), py::none(), variance);
 }
 
 
@@ -793,7 +830,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_with_bispectrum(
   const int fit_nz, // legacy fit setting; unused for supplied B
   const py::object& source_z, // optional independent source redshift axis
   const py::dict& feedback, // optional independent hydro/DMO ratios
-  const py::object& pixel_window // optional integer-ell angular window
+  const py::object& pixel_window, // optional integer-ell angular window
+  const py::dict& variance // optional shared fit quantities
 )
 {
   // Empty is never a request to reconstruct an internal fit here. The four
@@ -807,7 +845,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_with_bispectrum(
     sources, omega_m, 0.0, 0.0, 0.0, 0.0, sigma8, los_z, kernel_nz,
     source_readers,
     table_boost, fit_nz, source_z, feedback, pixel_window,
-    baseline, omega_m_z);
+    baseline, omega_m_z, variance);
 }
 
 
@@ -851,7 +889,8 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
   // optional W(ell) samples at integer multipoles
   const py::object& pixel_window,
   const py::dict& baseline, // optional absolute B input
-  const py::object& omega_m_z // required background when baseline is active
+  const py::object& omega_m_z, // required background when baseline is active
+  const py::dict& variance // optional shared fit quantities
 )
 {
   const arma::Col<double> wave = copy_column_physics(k);
@@ -937,13 +976,35 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
       py::cast<physics_notebook_array>(omega_m_z));
   }
 
+  physics_variance_tables_cpp_3pcf fit;
+  if (!variance.empty()) {
+    const char* names[4] = {"z", "rnl", "neff", "sigma8"};
+    if (4 != variance.size()) {
+      throw py::value_error("variance requires exactly z, rnl, neff, sigma8");
+    }
+    for (const char* name : names) {
+      if (!variance.contains(name)) {
+        throw py::value_error("missing notebook variance field");
+      }
+    }
+    fit.z = copy_column_physics(
+      py::cast<physics_notebook_array>(variance["z"]));
+    fit.rnl = copy_column_physics(
+      py::cast<physics_notebook_array>(variance["rnl"]));
+    fit.neff = copy_column_physics(
+      py::cast<physics_notebook_array>(variance["neff"]));
+    fit.sigma8 = copy_column_physics(
+      py::cast<physics_notebook_array>(variance["sigma8"]));
+  }
+
   return physics_model_cpp_3pcf(wave, linear, redshift, nonlinear, distance,
     jacobian, normalized_growth, density, omega_m, omega_de, w0, wa, ns,
     sigma8, los, kernel_nz, source_readers, table_boost, fit_nz, source_axis,
     feedback.empty() ? nullptr : &response,
     pixel_window.is_none() ? nullptr : &window,
     baseline.empty() ? nullptr : &supplied,
-    baseline.empty() ? nullptr : &matter_fraction);
+    baseline.empty() ? nullptr : &matter_fraction,
+    variance.empty() ? nullptr : &fit);
 }
 
 static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
@@ -968,14 +1029,15 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const int fit_nz, // internal-fit anchors
   const py::object& source_z, // optional source z axis
   const py::dict& feedback, // optional paired responses
-  const py::object& pixel_window // optional integer-ell window
+  const py::object& pixel_window, // optional integer-ell window
+  const py::dict& variance // optional shared fit quantities
 )
 {
   return model_notebook_physics_common(k, p_linear0, z, p_nonlinear, chi,
     dz_dchi,
     growth, sources, omega_m, omega_de, w0, wa, ns, sigma8, los_z, kernel_nz,
     source_readers, table_boost, fit_nz, source_z, feedback, pixel_window,
-    py::dict(), py::none());
+    py::dict(), py::none(), variance);
 }
 
 
@@ -1000,7 +1062,8 @@ model_notebook_physics_with_bispectrum(
   const int fit_nz, // legacy fit setting; unused for supplied B
   const py::object& source_z, // optional independent source redshift axis
   const py::dict& feedback, // optional independent hydro/DMO ratios
-  const py::object& pixel_window // optional integer-ell angular window
+  const py::object& pixel_window, // optional integer-ell angular window
+  const py::dict& variance // optional shared fit quantities
 )
 {
   // Empty is never a request to reconstruct an internal fit here. The four
@@ -1013,7 +1076,7 @@ model_notebook_physics_with_bispectrum(
     dz_dchi,
     growth, sources, omega_m, 0.0, 0.0, 0.0, 0.0, sigma8, los_z, kernel_nz,
     source_readers, table_boost, fit_nz, source_z, feedback, pixel_window,
-    baseline, omega_m_z);
+    baseline, omega_m_z, variance);
 }
 
 
@@ -1825,7 +1888,8 @@ void bind_threepcf_physics(
     py::arg("table_boost") = 8,
     py::arg("fit_nz") = 33,
     py::arg("source_z") = py::none(), py::arg("feedback") = py::dict(),
-    py::arg("pixel_window") = py::none());
+    py::arg("pixel_window") = py::none(),
+    py::arg("variance") = py::dict());
 
   module.def("physics_model_notebook", &model_notebook_physics,
     py::arg("k"),
@@ -1849,6 +1913,7 @@ void bind_threepcf_physics(
     py::arg("fit_nz") = 33,
     py::arg("source_z") = py::none(), py::arg("feedback") = py::dict(),
     py::arg("pixel_window") = py::none(),
+    py::arg("variance") = py::dict(),
     "Copy sliced or Fortran-order arrays through the Armadillo adapter.");
 
   module.def("physics_model_production_with_bispectrum",
@@ -1873,6 +1938,7 @@ void bind_threepcf_physics(
     py::arg("source_z") = py::none(),
     py::arg("feedback") = py::dict(),
     py::arg("pixel_window") = py::none(),
+    py::arg("variance") = py::dict(),
     "Construct from supplied absolute B and Omega_m(z); no internal B fit. "
     "The caller supplies a flat-geometry background consistent with P and B.");
 
@@ -1898,6 +1964,7 @@ void bind_threepcf_physics(
     py::arg("source_z") = py::none(),
     py::arg("feedback") = py::dict(),
     py::arg("pixel_window") = py::none(),
+    py::arg("variance") = py::dict(),
     "Construct from supplied absolute B and Omega_m(z); no internal B fit. "
     "The caller supplies a flat-geometry background consistent with P and B.");
 

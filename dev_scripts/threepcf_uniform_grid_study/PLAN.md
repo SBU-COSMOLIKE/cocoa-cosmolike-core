@@ -7,6 +7,14 @@ uniform table, and use arithmetic-index linear interpolation in repeated
 calculations. A modest increase in node counts is acceptable when it removes
 a separate interpolation implementation and passes the accuracy checks below.
 
+**Execution update, 2026-11-19:** the maintainer authorized completing this
+consolidation and gave it priority over the paused notebook/refreeze work.
+The implementation starts from core `7264f96`. The earlier read-only scope
+below describes the original study; it no longer prevents the authorized
+implementation. The spline and variance replacements retain separate
+comparisons. Existing project libraries remain installed while private
+builds establish the replacements' accuracy.
+
 The objective is less numerical code to explain, maintain and test at a
 measured accuracy. A runtime reduction is a separate result to establish.
 Moving the existing irregular spline into `basics.c` changes its ownership;

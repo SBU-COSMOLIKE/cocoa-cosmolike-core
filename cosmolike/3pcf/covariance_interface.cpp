@@ -257,6 +257,12 @@ class covariance_arguments {
     const std::set<std::string> real_matrices = {
       "theta", "theta_weight", "noise"
     };
+    const std::set<std::string> variance_vectors = {
+      "halo_z", "halo_mass"
+    };
+    const std::set<std::string> variance_matrices = {
+      "halo_sigma2", "halo_dlnsigma_dlnm"
+    };
     const std::set<std::string> integer_vectors = {
       "field_source", "row_kind"
     };
@@ -267,7 +273,7 @@ class covariance_arguments {
       "profile_upsample",
       "concentration_a",
       "concentration_b", "concentration_c", "concentration_pivot",
-      "baryon_strength"
+      "baryon_strength", "halo_reference_rho"
     };
 
     // --- 2. PARSING LOOP ---
@@ -282,9 +288,13 @@ class covariance_arguments {
         std::exit(1);
       }
       const std::string name = py::cast<std::string>(item.first);
-      if (real_vectors.count(name) || real_matrices.count(name)
-        || name == "theta_edges") {
-        const int rank = real_vectors.count(name) ? 1 : 2;
+      if (real_vectors.count(name)
+          || real_matrices.count(name)
+          || variance_vectors.count(name)
+          || variance_matrices.count(name)
+          || name == "theta_edges") {
+        const int rank = real_vectors.count(name)
+          || variance_vectors.count(name) ? 1 : 2;
         auto array = covariance_array<double>(item.second, rank, notebook);
         covariance_finite(array);
         real.emplace(name, std::move(array));
@@ -387,6 +397,40 @@ class covariance_arguments {
     if (real.count("theta_edges")) {
       matrix_shape("theta_edges", input.nrow, 2);
       input.theta_edges = real.at("theta_edges").data();
+    }
+
+    // A variance snapshot is optional, but partial snapshots are not.
+    // Its mass axis is retained even though mass already appears above:
+    // the C consumer compares them before using these prepared values.
+    const char* variance_names[5] = {"halo_z", "halo_mass",
+      "halo_sigma2", "halo_dlnsigma_dlnm", "halo_reference_rho"};
+    int variance_keys = 0;
+    for (const char* name : variance_names) {
+      variance_keys += values.contains(name) ? 1 : 0;
+    }
+    if (0 != variance_keys
+        && 5 != variance_keys) {
+      spdlog::critical("3pcf covariance interface: supply halo_z, "
+        "halo_mass, halo_sigma2, halo_dlnsigma_dlnm and "
+        "halo_reference_rho together");
+      std::exit(1);
+    }
+    if (5 == variance_keys) {
+      input.nhalo_z = vector_length("halo_z");
+      equal_length("halo_mass", input.nmass);
+      matrix_shape("halo_sigma2", input.nhalo_z, input.nmass);
+      matrix_shape("halo_dlnsigma_dlnm", input.nhalo_z, input.nmass);
+      input.halo_z = real.at("halo_z").data();
+      input.halo_mass = real.at("halo_mass").data();
+      input.halo_sigma2 = real.at("halo_sigma2").data();
+      input.halo_dlnsigma_dlnm = real.at("halo_dlnsigma_dlnm").data();
+      input.halo_reference_rho = py::cast<double>(values["halo_reference_rho"]);
+      if (!std::isfinite(input.halo_reference_rho)
+          || 0.0 >= input.halo_reference_rho) {
+        spdlog::critical("3pcf covariance interface: halo_reference_rho "
+          "must be finite and positive");
+        std::exit(1);
+      }
     }
 
     // --- 6. POINTER WIRING ---

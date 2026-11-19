@@ -364,6 +364,54 @@ static inline double covariance_nfw_3pcf(
 //
 // Parameters and units: see the declaration in covariance_physics_3pcf.h.
 // ---------------------------------------------------------------------------
+// Check a supplied variance snapshot before any quadrature or parallel
+// read. Keeping its coordinates alongside its values makes a changed
+// mass/LOS grid an explicit mismatch, rather than a silently stale table.
+static void covariance_variance_check_3pcf(
+  const covariance_input_3pcf* input, // grids and optional variance snapshot
+  const int nz, // redshift count of the actual halo request
+  const double* z, // redshift nodes of that request [nz]
+  const double rho // density defining the current halo smoothing radii
+)
+{
+  if (0 == input->nhalo_z
+      && NULL == input->halo_z
+      && NULL == input->halo_mass
+      && NULL == input->halo_sigma2
+      && NULL == input->halo_dlnsigma_dlnm
+      && 0.0 == input->halo_reference_rho) {
+    return;
+  }
+  if (nz != input->nhalo_z
+      || NULL == input->halo_z
+      || NULL == input->halo_mass
+      || NULL == input->halo_sigma2
+      || NULL == input->halo_dlnsigma_dlnm
+      || rho != input->halo_reference_rho) { log_fatal(
+    "physical 3pcf covariance: variance snapshot needs all arrays, the "
+    "requested redshift count and the current halo reference density");
+    exit(1); }
+  for (int iz=0; iz<nz; iz++) {
+    if (z[iz] != input->halo_z[iz]) { log_fatal(
+      "physical 3pcf covariance: variance redshifts differ from the "
+      "halo request; prepare a matching snapshot"); exit(1); }
+  }
+  for (int im=0; im<input->nmass; im++) {
+    if (input->mass[im] != input->halo_mass[im]) { log_fatal(
+      "physical 3pcf covariance: variance masses differ from the "
+      "halo request; prepare a matching snapshot"); exit(1); }
+  }
+  const size_t count = covariance_product_3pcf(nz, input->nmass);
+  for (size_t index=0; index<count; index++) {
+    if (!isfinite(input->halo_sigma2[index])
+        || 0.0 >= input->halo_sigma2[index]
+        || !isfinite(input->halo_dlnsigma_dlnm[index])
+        || 0.0 <= input->halo_dlnsigma_dlnm[index]) { log_fatal(
+      "physical 3pcf covariance: snapshot variance must be positive "
+      "and its logarithmic mass slope negative"); exit(1); }
+  }
+}
+
 void covariance_halos_3pcf(
   const physics_model_3pcf* model, // linear power and cosmology
   const covariance_input_3pcf* input, // k/dk, M/dM and the halo prescription
@@ -392,6 +440,7 @@ void covariance_halos_3pcf(
     exit(1);
 
   }
+  covariance_variance_check_3pcf(input, nz, z, rho);
   const size_t halo_count = covariance_product_3pcf(nz, nm);
   if (nk_profile > 0) {
     covariance_product_3pcf(halo_count, nk_profile);
@@ -399,20 +448,19 @@ void covariance_halos_3pcf(
     // profile fills of the parallel loop below only read it
     covariance_nfw_table_3pcf();
   }
-  const size_t power_count = covariance_product_3pcf(nz, input->nk);
-  double* power = calloc1d((int)power_count);
+  double* power = NULL;
+  if (0 == input->nhalo_z) {
+    const size_t power_count = covariance_product_3pcf(nz, input->nk);
+    power = calloc1d((int)power_count);
 
-  // Tabulate the linear power once per (redshift, wavenumber) node. The
-  // variance integral reads the same power row for every mass at one
-  // redshift, so one worker fills one redshift's row and all masses
-  // share it. Mode 0 asks the provider for the linear power
-  // P_linear(k) D^2(z): halo formation statistics are set by the linear
-  // density field, not by the nonlinear lensing spectrum.
-  #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
-  for (int iz=0; iz<nz; iz++) {
-    for (int ik=0; ik<input->nk; ik++) {
-      power[(size_t)iz*input->nk + ik] =
-        physics_power_3pcf(model, input->k[ik], z[iz], 0);
+    // The quadrature path shares one linear-power row among all masses
+    // at a redshift. A supplied variance snapshot skips these reads.
+    #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
+    for (int iz=0; iz<nz; iz++) {
+      for (int ik=0; ik<input->nk; ik++) {
+        power[(size_t)iz*input->nk + ik] =
+          physics_power_3pcf(model, input->k[ik], z[iz], 0);
+      }
     }
   }
 
@@ -439,14 +487,22 @@ void covariance_halos_3pcf(
       double variance = 0.0;
       double slope = 0.0;
 
-      for (int ik=0; ik<input->nk; ik++) {
-        double window;
-        double derivative;
-        covariance_tophat_3pcf(input->k[ik]*radius, &window, &derivative);
-        const double measure = input->dk[ik]*input->k[ik]*input->k[ik]
-          *power[(size_t)iz*input->nk + ik]/(2.0*M_PI*M_PI);
-        variance += measure*window*window;
-        slope += measure*window*derivative*(2.0/3.0);
+      if (0 < input->nhalo_z) {
+        variance = input->halo_sigma2[index];
+        // The shared table differentiates ln sigma, whereas the mass
+        // function below needs d sigma^2/d ln M. The factor 2*sigma^2
+        // converts these definitions without a second mass derivative.
+        slope = 2.0*variance*input->halo_dlnsigma_dlnm[index];
+      } else {
+        for (int ik=0; ik<input->nk; ik++) {
+          double window;
+          double derivative;
+          covariance_tophat_3pcf(input->k[ik]*radius, &window, &derivative);
+          const double measure = input->dk[ik]*input->k[ik]*input->k[ik]
+            *power[(size_t)iz*input->nk + ik]/(2.0*M_PI*M_PI);
+          variance += measure*window*window;
+          slope += measure*window*derivative*(2.0/3.0);
+        }
       }
 
       if (!(isfinite(variance)
@@ -850,6 +906,8 @@ static void covariance_prepare_3pcf(
   const double* shape;
   physics_radial_3pcf(work->model, &work->ns, &work->nz, &work->z,
     &work->chi, &work->dchi, &lens, &shape);
+  covariance_variance_check_3pcf(in, work->nz, work->z,
+    2.77536627e11*physics_omega_m_3pcf(work->model));
 
   const int ns = work->ns;   // source bins
   const int nz = work->nz;   // redshift nodes

@@ -33,17 +33,37 @@ need separate refinement checks.
 
 | Table | Physical calculation or input | Repeated read |
 |---|---|---|
-| Matter power and background | Physical input arrays, resampled during model construction | Uniform log-wave-number/redshift cells |
+| Matter power and background | Uniform log-k and piecewise-uniform redshift inputs | Direct-index linear reads within each segment |
 | Matter-fit coefficients | Fixed uniform redshift anchors | Dense uniform redshift table |
 | Projected bispectrum | Fixed Fourier-triangle charts and radial nodes | Dense triangle-coordinate tables |
 | Angular Legendre coefficients | Fixed angular projection of the prepared bispectrum | Uniform log-scale and angular-coordinate cells |
 | Halo shear profiles | Fixed Fourier quadrature at radial preparation nodes | Uniform transformed-radius cells |
 
-The external input tables need not already be uniform. Their conversion
-can use a general interpolator during serial preparation. That does not
-put a spline or a search inside the production reader. The upstream
-reference modes keep their original interpolation sequence for
-cross-code comparisons; they are distinct numerical choices.
+Power inputs use one uniform log-k grid. Background and prepared source
+redshifts use at most ten uniform segments, detected with a relative
+spacing tolerance of 1e-9. A Python producer constructs log10(k) and each
+redshift segment with `np.linspace`; adjacent redshift segments share one
+endpoint. For example, a fine segment from z=0 to 0.4 can join a coarser
+segment from z=0.4 to 2 without replacing either spacing by their average.
+The native constructor rejects undeclared irregular sampling.
+
+Production prepares each segment with `spline_coeffs_uniform` from
+`basics.c`, then subdivides every coarse interval by `table_boost`. The
+shared `piecewise_index` reader selects among at most ten segments before
+computing the cell index. Increasing `table_boost` preserves the original
+segment endpoints and their relative resolution. Natural end conditions
+set the second derivative to zero at both ends of each segment. Values
+remain continuous at a join, but first derivatives need not match across
+it. Refine the coarse input near joins as well as the dense reader when
+checking parameter derivatives.
+
+Lensing and alignment kernels are interpolated in redshift in production;
+their integration weights still describe a distance integral. Changing the
+lookup coordinate does not remove the Jacobian from a physical density or
+the distance factors in the projection. Explicit `source_readers=True`
+comparisons retain the original not-a-knot interpolation and kernel lookup
+in distance. That comparison path still contains the local irregular
+spline and binary search; it is not the production preparation path.
 
 ## Uniform coordinates and interpolation <a name="interpolation"></a>
 

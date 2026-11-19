@@ -82,6 +82,54 @@ int detect_uniform_segments(
   );
 
 // ---------------------------------------------------------------------------
+// Direct-index lookup for a piecewise-uniform 1D grid.
+//
+// Given a query value q and segment metadata (start[], len[], xmin[],
+// inv_dx[]) for nseg piecewise-uniform segments of an underlying grid of
+// total length n_total, returns the bracket index j such that
+// grid[j] <= q < grid[j+1].
+//
+// The result is clamped to [0, n_total - 2] so the caller can safely
+// access grid[j] and grid[j+1] without bounds checks.
+//
+// Parameters:
+//   q       - query value on the grid axis
+//   nseg    - number of piecewise-uniform segments
+//   start   - first grid index of each segment (length nseg)
+//   len     - number of grid points of each segment (length nseg; carried
+//             with the other segment metadata, not read by the lookup)
+//   xmin    - first grid value of each segment (length nseg)
+//   inv_dx  - inverse grid spacing of each segment (length nseg)
+//   n_total - total number of grid points
+//
+// Returns:
+//   bracket index j with grid[j] <= q < grid[j+1], clamped to [0, n_total-2]
+// ---------------------------------------------------------------------------
+static inline int piecewise_index(
+  double q, // query coordinate
+  int nseg, // number of uniform pieces
+  const int* start, // first node index of each piece [nseg]
+  const int* len, // node counts [nseg], retained with the shared metadata
+  const double* xmin, // first coordinate of each piece [nseg]
+  const double* inv_dx, // inverse spacing of each piece [nseg]
+  int n_total // total coordinate count
+)
+{
+  // Pick the segment: q is in segment s if q is in [xmin[s], xmin[s+1]).
+  // Linear scan is fine for nseg <= ~10 (branch-predicted, all in L1).
+  int s = 0;
+  while (s < nseg - 1 && q >= xmin[s+1]) s++;
+
+  // Direct index within segment s.
+  int j = start[s] + (int)((q - xmin[s]) * inv_dx[s]);
+
+  // Clamp to valid bilinear bracket range.
+  if (j < 0)             j = 0;
+  if (j > n_total - 2)   j = n_total - 2;
+  return j;
+}
+
+// ---------------------------------------------------------------------------
 // Precomputed Legendre polynomial data at the edges of a single angular
 // bin, returned by set_bin_average().
 //

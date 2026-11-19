@@ -10,6 +10,7 @@
 #include "simde/x86/sse2.h"
 #include "physics_3pcf.h"
 #include "cosmolike/basics.h"
+#include "cosmolike/structs.h"
 #include "log.c/src/log.h"
 #ifdef _OPENMP
 #include <omp.h>
@@ -91,12 +92,21 @@ static int omp_get_thread_num(void) { return 0; }
 // each value occupies a vector position called a lane.
 typedef simde__m128d physics_v2d;
 
-// One interpolation table. make_spline fills x, y and second for
-// cubic evaluation on an irregular grid; uniformize_spline later
-// replaces the table with a dense uniform grid and sets
-// inverse_spacing, after which read_spline switches to linear reads
-// with arithmetic cell indices. The power-spectrum tables store log P
-// against log k, so their endpoint slopes are the power-law indices
+// The same segment metadata used by the core power and background tables.
+// Segment boundaries preserve a producer's finer low-redshift sampling.
+typedef struct {
+  int count;
+  int start[MAX_GRID_SEGMENTS];
+  int length[MAX_GRID_SEGMENTS];
+  double lower[MAX_GRID_SEGMENTS];
+  double inverse[MAX_GRID_SEGMENTS];
+} physics_axis;
+
+// One owned interpolation table. Production prepares natural cubics
+// on the uniform pieces declared by Cocoa, then refines each piece
+// for arithmetic-index linear reads. make_spline retains the upstream
+// interpolation only for explicit source comparisons. Power tables store
+// log P against log k, so their endpoint slopes are the power-law indices
 // that read_power extrapolates with.
 typedef struct {
   int n;                  // number of nodes
@@ -104,6 +114,7 @@ typedef struct {
   double* y;              // tabulated values at the nodes [n]
   double* second;         // second derivatives of the cubic fit [n]
   double inverse_spacing; // positive only for prepared uniform linear reads
+  physics_axis axis;      // uniform or piecewise-uniform coarse coordinates
   double slope_low;       // endpoint slope dy/dx of the first interval
   double slope_high;      // endpoint slope dy/dx of the last interval
 } physics_spline;
@@ -211,6 +222,8 @@ struct physics_model_3pcf {
   int nsource;        // source-distribution redshift nodes
   double zmax;        // largest tabulated redshift
   double* power_z;    // redshifts of the nonlinear P(k) rows [npower_z]
+  physics_axis power_axis; // direct indexing of the redshift rows
+  physics_axis source_axis; // direct indexing of source redshifts
   double omega_m;     // matter density fraction today
   double omega_de;    // dark-energy density fraction today
   double w0;          // dark-energy equation of state today
@@ -442,30 +455,27 @@ static void destroy_spline(physics_spline* spline)
 
 
 // ---------------------------------------------------------------------------
-// make_natural_uniform_spline: prepare the second derivatives with
-// natural boundaries, M[0] = M[n-1] = 0, for a uniformly spaced grid.
+// make_natural_spline: shared natural cubics on the declared uniform
+// segments. A common endpoint belongs to both segments and has zero
+// second derivative on either side. Values remain continuous there;
+// matching derivatives between independently sampled segments is not
+// assumed. Refinement tests must include these joining points.
 //
 // The production coefficient tables live on uniform anchors, and
 // fastnc fits them with a natural cubic spline. The shared solver in
 // basics.c supplies c = S''/2, whereas read_spline uses S''. Multiplying
 // its coefficients by two keeps that reader's convention. There is no
 // need to construct an irregular spline before this uniform solve.
-static physics_spline make_natural_uniform_spline(
-  const double* x, // uniform coordinates [count]
+static physics_spline make_natural_spline(
+  const double* x, // piecewise-uniform coordinates [count]
   const double* y, // finite function samples [count]
   const int count // number of nodes, at least two
 )
 {
   increasing_physics(x, count, 0);
-  const double spacing = (x[count - 1] - x[0])/(count - 1);
   for (int index=0; index<count; index++) {
     if (!isfinite(y[index])) { log_fatal(
       "physics_3pcf: nonfinite uniform spline sample"); exit(1); }
-    const double expected = x[0] + spacing*index;
-    const double tolerance = 64.0*DBL_EPSILON
-      *fmax(1.0, fmax(fabs(x[0]), fabs(x[count - 1])));
-    if (fabs(x[index] - expected) > tolerance) { log_fatal(
-      "physics_3pcf: natural spline coordinates must be uniform"); exit(1); }
   }
 
   physics_spline result = {0};
@@ -478,13 +488,20 @@ static physics_spline make_natural_uniform_spline(
   result.slope_low = (y[1] - y[0])/(x[1] - x[0]);
   result.slope_high = (y[count - 1] - y[count - 2])
     /(x[count - 1] - x[count - 2]);
-  spline_coeffs_uniform(result.y, count, spacing, result.second);
+  physics_axis* axis = &result.axis;
+  axis->count = detect_uniform_segments(x, count, 1.0e-9,
+    MAX_GRID_SEGMENTS, axis->start, axis->length, axis->lower,
+    axis->inverse, "3pcf spline");
+  for (int segment=0; segment<axis->count; segment++) {
+    const int start = axis->start[segment];
+    spline_coeffs_uniform(result.y + start, axis->length[segment],
+      1.0/axis->inverse[segment], result.second + start);
+  }
   for (int index=0; index<count; index++) {
     result.second[index] *= 2.0;
   }
   return result;
 }
-
 
 // ---------------------------------------------------------------------------
 // interval_physics: binary search for the interval index i with
@@ -515,7 +532,9 @@ static int interval_physics(
 // read_spline: evaluate one spline. A uniform table (positive
 // inverse_spacing) interpolates linearly inside the cell its index
 // arithmetic selects and follows the edge segments outside the grid.
-// An irregular table evaluates the cubic second-derivative form.
+// Piecewise-uniform tables select a segment before that arithmetic. A
+// coarse table evaluates the cubic second-derivative form; its refined
+// replacement has no second derivatives and uses linear interpolation.
 // zero_outside = 1 instead returns zero beyond the grid; the radial
 // kernels use it so a query outside a source's support contributes
 // nothing.
@@ -538,10 +557,25 @@ static double read_spline(
       + fraction*(spline->y[index + 1] - spline->y[index]);
   }
 
-  const int index = interval_physics(spline->x, spline->n, coordinate);
+  // The producer declares uniform segments, so preparation and production
+  // use the core's segment lookup. A retained upstream comparison can
+  // still carry its original distance coordinates.
+  int index;
+  if (0 < spline->axis.count) {
+    const physics_axis* axis = &spline->axis;
+    const double bounded = fmax(spline->x[0],
+      fmin(spline->x[spline->n - 1], coordinate));
+    index = piecewise_index(bounded, axis->count, axis->start,
+      axis->length, axis->lower, axis->inverse, spline->n);
+  } else {
+    index = interval_physics(spline->x, spline->n, coordinate);
+  }
   const double width = spline->x[index + 1] - spline->x[index];
   const double right = (coordinate - spline->x[index])/width;
   const double left = 1.0 - right;
+  if (NULL == spline->second) {
+    return spline->y[index] + right*(spline->y[index + 1] - spline->y[index]);
+  }
   return left*spline->y[index] + right*spline->y[index + 1]
     + width*width/6.0*((left*left*left - left)*spline->second[index]
     + (right*right*right - right)*spline->second[index + 1]);
@@ -578,9 +612,8 @@ static double read_power(
 // strategy separates expensive preparation from repeated reads: cubic
 // interpolation fills a dense uniform grid once, and workers then
 // locate a cell by (x - xmin)/dx and linearly interpolate its two
-// values. Input tables may be irregular; only the serial preparation
-// searches their intervals, and the production reader above never
-// searches a grid.
+// values. Power rows use one uniform log-k segment. Redshift tables use
+// uniformize_spline, which preserves every declared uniform segment.
 static physics_spline uniform_storage(
   const int count,
   const double lower,
@@ -622,15 +655,48 @@ static int boosted_count(const int original, const int boost)
 
 
 // ---------------------------------------------------------------------------
-// uniformize_spline: replace an irregular cubic table with its dense
-// uniform resampling. Cubic reads of the original table fill the new
-// nodes once; afterwards the table serves linear arithmetic-index
-// reads and keeps the original endpoint slopes for extrapolation.
-static void uniformize_spline(physics_spline* spline, const int boost)
+// Refine every declared uniform segment without changing its endpoints
+// or merging its spacing with another segment. This preserves the finer
+// low-redshift sampling used by the other Cocoa projects.
+static void refine_axis_physics(
+  const double* coarse, // original coordinate nodes
+  const physics_axis* original, // uniform-segment metadata of coarse
+  const int boost, // subdivisions per original interval
+  double* fine, // output coordinates, (ncoarse - 1)*boost + 1 entries
+  physics_axis* refined // output segment metadata
+)
+{
+  *refined = *original;
+  for (int segment=0; segment<original->count; segment++) {
+    const int start = original->start[segment];
+    const int last = start + original->length[segment] - 1;
+    const int count = boosted_count(original->length[segment], boost);
+    refined->start[segment] = start*boost;
+    refined->length[segment] = count;
+    refined->inverse[segment] = original->inverse[segment]*boost;
+    for (int index=0; index<count; index++) {
+      fine[start*boost + index] = coarse[start]
+        + (coarse[last] - coarse[start])*index/(count - 1);
+    }
+    fine[last*boost] = coarse[last];
+  }
+}
+
+static void uniformize_spline(
+  physics_spline* spline, // owned coarse cubic, replaced after preparation
+  const int boost // refinement of each interval in each uniform segment
+)
 {
   const int count = boosted_count(spline->n, boost);
-  physics_spline dense = uniform_storage(count, spline->x[0],
-    spline->x[spline->n - 1]);
+  physics_spline dense = {0};
+  dense.n = count;
+  dense.x = calloc1d(count);
+  dense.y = calloc1d(count);
+  refine_axis_physics(spline->x, &spline->axis, boost,
+    dense.x, &dense.axis);
+  if (1 == dense.axis.count) {
+    dense.inverse_spacing = dense.axis.inverse[0];
+  }
   dense.slope_low = spline->slope_low;
   dense.slope_high = spline->slope_high;
 
@@ -683,8 +749,10 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
   }
 
   double* new_z = calloc1d(new_count);
+  physics_axis new_axis;
+  refine_axis_physics(model->power_z, &model->power_axis, boost,
+    new_z, &new_axis);
   for (int redshift=0; redshift<new_count; redshift++) {
-    new_z[redshift] = model->zmax*redshift/(new_count - 1);
     dense[redshift] = uniform_storage(nk, model->nonlinear[0].x[0],
       model->nonlinear[0].x[nk - 1]);
   }
@@ -701,7 +769,8 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
           : model->nonlinear[redshift].slope_high;
       }
     }
-    physics_spline along_z = make_spline(model->power_z, column, old_count);
+    physics_spline along_z = make_natural_spline(
+      model->power_z, column, old_count);
     for (int redshift=0; redshift<new_count; redshift++) {
       const double value = read_spline(&along_z, new_z[redshift], 0);
       if (wave < nk) {
@@ -724,28 +793,31 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
 
   model->nonlinear = dense;
   model->power_z = new_z;
+  model->power_axis = new_axis;
   model->npower_z = new_count;
 }
 
 
 // ---------------------------------------------------------------------------
-// linear_read: linear interpolation on an irregular grid, with zero
+// linear_read: linear interpolation on a piecewise-uniform grid, with zero
 // outside the tabulated range. The radial preparation reads the
 // source densities with it, so a node outside a source's support
 // gets zero, and the linear rule matches fastnc's handling of those
 // raw tables.
 static double linear_read(
-  const double* x,
-  const double* y,
-  const int count,
-  const double coordinate
+  const double* x, // piecewise-uniform coordinate nodes [count]
+  const double* y, // samples [count]
+  const int count, // node count
+  const physics_axis* axis, // prepared segment metadata for x
+  const double coordinate // query within the source support
 )
 {
   if (coordinate < x[0] || coordinate > x[count - 1]) {
     return 0.0;
   }
 
-  const int index = interval_physics(x, count, coordinate);
+  const int index = piecewise_index(coordinate, axis->count, axis->start,
+    axis->length, axis->lower, axis->inverse, count);
   const double fraction = (coordinate - x[index])/(x[index + 1] - x[index]);
   return y[index] + fraction*(y[index + 1] - y[index]);
 }
@@ -1004,9 +1076,30 @@ static physics_bh_coefficients bh_coefficients(
 // z below 0.5 and 0.3 above it; production places fit_nz uniform
 // anchors instead. A small redshift domain still receives at least
 // four anchors so the cubic fit stays defined.
-static void prepare_bihalofit(physics_model_3pcf* model)
+static void prepare_bihalofit(
+  physics_model_3pcf* model, // model owning the fit tables
+  const physics_variance_input_3pcf* supplied // copied core fit quantities
+)
 {
   const double zmax = model->growth.x[model->nz - 1];
+  if (NULL != supplied) {
+    double* matter = calloc1d(supplied->nz);
+    for (int index=0; index<supplied->nz; index++) {
+      matter[index] = omega_m_physics(model, supplied->z[index]);
+    }
+    // These copies belong to this model. No later cosmology update can
+    // change them, and no Gaussian variance integral runs in this route.
+    model->radius = make_natural_spline(supplied->z,
+      supplied->rnl, supplied->nz);
+    model->neff = make_natural_spline(supplied->z,
+      supplied->neff, supplied->nz);
+    model->sigma8z = make_natural_spline(supplied->z,
+      supplied->sigma8, supplied->nz);
+    model->omega_m_z = make_natural_spline(supplied->z,
+      matter, supplied->nz);
+    free(matter);
+    return;
+  }
   if (!(zmax/0.15 < INT_MAX - 8)) {
     log_fatal("physics_3pcf: BiHalofit coefficient grid is too large");
     exit(1);
@@ -1095,10 +1188,10 @@ static void prepare_bihalofit(physics_model_3pcf* model)
     model->sigma8z = make_spline(redshift, sigma8z, count);
     model->omega_m_z = make_spline(redshift, matter, count);
   } else {
-    model->radius = make_natural_uniform_spline(redshift, radius, count);
-    model->neff = make_natural_uniform_spline(redshift, spectral, count);
-    model->sigma8z = make_natural_uniform_spline(redshift, sigma8z, count);
-    model->omega_m_z = make_natural_uniform_spline(redshift, matter, count);
+    model->radius = make_natural_spline(redshift, radius, count);
+    model->neff = make_natural_spline(redshift, spectral, count);
+    model->sigma8z = make_natural_spline(redshift, sigma8z, count);
+    model->omega_m_z = make_natural_spline(redshift, matter, count);
   }
 
   free(redshift);
@@ -1252,7 +1345,7 @@ static void prepare_radial(physics_model_3pcf* model)
         /redshift_norm;
       // NLA kernel sample: the source density per unit comoving
       // distance, n(z) dz/dchi, read at this kernel node's redshift.
-      nla_shape[node] = linear_read(source_z, density, nz,
+      nla_shape[node] = linear_read(source_z, density, nz, &model->source_axis,
         model->kernel_z[node])*read_spline(&model->dz_dchi,
         model->kernel_z[node], 0);
     }
@@ -1295,17 +1388,24 @@ static void prepare_radial(physics_model_3pcf* model)
         /(shape_norm*source_chi[source]*(1.0 + source_z[source]));
     }
 
-    // Resample both kernels onto the LOS nodes by cubic spline; the
-    // zero-outside read keeps a node beyond the sources empty.
-    physics_spline lens_spline = make_spline(model->kernel_chi,
-      lens, nkernel);
-    physics_spline shape_spline = make_spline(source_chi, source_shape, nz);
+    // Production interpolates in z, whose uniform pieces are supplied
+    // explicitly. This changes only the lookup coordinate: LOS weights
+    // still integrate over chi. The comparison retains the upstream chi
+    // interpolation; either route vanishes beyond the source support.
+    physics_spline lens_spline = model->source_readers
+      ? make_spline(model->kernel_chi, lens, nkernel)
+      : make_natural_spline(model->kernel_z, lens, nkernel);
+    physics_spline shape_spline = model->source_readers
+      ? make_spline(source_chi, source_shape, nz)
+      : make_natural_spline(source_z, source_shape, nz);
 
     for (int node=0; node<nlos; node++) {
+      const double coordinate = model->source_readers
+        ? model->los_chi[node] : model->los_z[node];
       model->los_lens[(size_t)bin*nlos + node]
-        = read_spline(&lens_spline, model->los_chi[node], 1);
+        = read_spline(&lens_spline, coordinate, 1);
       model->los_shape[(size_t)bin*nlos + node]
-        = read_spline(&shape_spline, model->los_chi[node], 1);
+        = read_spline(&shape_spline, coordinate, 1);
     }
 
     destroy_spline(&lens_spline);
@@ -1319,10 +1419,11 @@ static void prepare_radial(physics_model_3pcf* model)
 
 // ---------------------------------------------------------------------------
 // physics_create_3pcf: validate the input, copy every table and run
-// the preparation passes in a fixed order. The constructor normalizes
-// the linear power spectrum to sigma8 before anything reads it; the
-// BiHalofit background and the radial kernels then build on the
-// original cubic splines; prepare_uniform_readers replaces the
+// the preparation passes in a fixed order. A supplied variance snapshot
+// keeps the input power amplitude; otherwise the constructor normalizes
+// the linear power spectrum to sigma8. The BiHalofit background and the
+// radial kernels then build on the coarse cubic splines;
+// prepare_uniform_readers replaces the
 // production tables last. Because that replacement changes
 // interpolation details, the constructor re-evaluates the per-LOS
 // BiHalofit coefficients, power rows and kernel growth samples
@@ -1362,6 +1463,36 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   if (!(fabs(input->growth[0] - 1.0) <= 1.0e-10)) {
     log_fatal("physics_3pcf: growth must be normalized to one at z=0");
     exit(1);
+  }
+  // Validate optional fit arrays even when the absolute matter bispectrum
+  // is supplied. Their presence also selects the upstream power amplitude.
+  if (NULL != input->variance) {
+    const physics_variance_input_3pcf* supplied = input->variance;
+    const double zmax = input->z[input->nz - 1];
+    if (4 > supplied->nz) { log_fatal(
+      "physics_3pcf: supplied variance needs at least four redshifts"); exit(1); }
+    if (NULL == supplied->rnl
+        || NULL == supplied->neff
+        || NULL == supplied->sigma8) { log_fatal(
+      "physics_3pcf: supplied variance needs radius, slope and rms arrays");
+      exit(1); }
+    increasing_physics(supplied->z, supplied->nz, 0);
+    if (0.0 != supplied->z[0]
+        || zmax > supplied->z[supplied->nz - 1]) { log_fatal(
+      "physics_3pcf: supplied variance must cover [0,zmax]"); exit(1); }
+    physics_axis axis;
+    axis.count = detect_uniform_segments(supplied->z, supplied->nz,
+      1.0e-9, MAX_GRID_SEGMENTS, axis.start, axis.length, axis.lower,
+      axis.inverse, "3pcf variance redshift");
+    for (int index=0; index<supplied->nz; index++) {
+      if (!isfinite(supplied->rnl[index])
+          || 0.0 >= supplied->rnl[index]
+          || !isfinite(supplied->neff[index])
+          || !isfinite(supplied->sigma8[index])
+          || 0.0 >= supplied->sigma8[index]) { log_fatal(
+        "physics_3pcf: supplied variance requires finite slope and "
+        "positive radius and rms"); exit(1); }
+    }
   }
   // The supplied route takes its background from arrays. Only Omega_m0
   // (lensing/IA) and sigma8 (the existing power normalization) are scalars
@@ -1471,6 +1602,14 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->zmax = input->z[input->nz - 1];
   model->power_z = calloc1d(input->nz);
   memcpy(model->power_z, input->z, (size_t)input->nz*sizeof(double));
+  physics_axis* power_axis = &model->power_axis;
+  power_axis->count = detect_uniform_segments(input->z, input->nz,
+    1.0e-9, MAX_GRID_SEGMENTS, power_axis->start, power_axis->length,
+    power_axis->lower, power_axis->inverse, "3pcf power redshift");
+  physics_axis* source_axis = &model->source_axis;
+  source_axis->count = detect_uniform_segments(source_z, nsource,
+    1.0e-9, MAX_GRID_SEGMENTS, source_axis->start, source_axis->length,
+    source_axis->lower, source_axis->inverse, "3pcf source redshift");
   model->omega_m = input->omega_m;
   if (NULL == model->baseline) {
     model->omega_de = input->omega_de;
@@ -1494,12 +1633,27 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     logpower[index] = log(input->p_linear0[index]);
   }
 
-  model->linear = make_spline(logk, logpower, nk);
-  const double variance = variance_physics(model, 8.0, 1.0,
-    log(1.0e-3), 1000, 0, 0);
-  const double log_normalization = log(model->sigma8*model->sigma8/variance);
-  for (int index=0; index<nk; index++) {
-    model->linear.y[index] += log_normalization;
+  physics_axis wave_axis;
+  wave_axis.count = detect_uniform_segments(logk, nk, 1.0e-9,
+    MAX_GRID_SEGMENTS, wave_axis.start, wave_axis.length,
+    wave_axis.lower, wave_axis.inverse, "3pcf log k");
+  if (1 != wave_axis.count) { log_fatal(
+    "physics_3pcf: power requires one uniform log-k segment"); exit(1); }
+
+  model->linear = model->source_readers
+    ? make_spline(logk, logpower, nk)
+    : make_natural_spline(logk, logpower, nk);
+  // A core variance snapshot was calculated from the supplied power
+  // amplitude. Renormalizing P here would make those tables inconsistent.
+  // Without a snapshot, both production and source-comparison models retain
+  // their explicit scalar normalization until variance adoption is tested.
+  if (NULL == input->variance) {
+    const double variance = variance_physics(model, 8.0, 1.0,
+      log(1.0e-3), 1000, 0, 0);
+    const double log_normalization = log(model->sigma8*model->sigma8/variance);
+    for (int index=0; index<nk; index++) {
+      model->linear.y[index] += log_normalization;
+    }
   }
 
   model->nonlinear = calloc((size_t)nz, sizeof(physics_spline));
@@ -1522,12 +1676,20 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       }
       logpower[index] = log(power);
     }
-    model->nonlinear[redshift] = make_spline(logk, logpower, nk);
+    model->nonlinear[redshift] = model->source_readers
+      ? make_spline(logk, logpower, nk)
+      : make_natural_spline(logk, logpower, nk);
   }
 
-  model->distance = make_spline(input->z, input->chi, nz);
-  model->growth = make_spline(input->z, input->growth, nz);
-  model->dz_dchi = make_spline(input->z, input->dz_dchi, nz);
+  if (model->source_readers) {
+    model->distance = make_spline(input->z, input->chi, nz);
+    model->growth = make_spline(input->z, input->growth, nz);
+    model->dz_dchi = make_spline(input->z, input->dz_dchi, nz);
+  } else {
+    model->distance = make_natural_spline(input->z, input->chi, nz);
+    model->growth = make_natural_spline(input->z, input->growth, nz);
+    model->dz_dchi = make_natural_spline(input->z, input->dz_dchi, nz);
+  }
 
   model->source_z = calloc1d(nsource);
   model->source_chi = calloc1d(nsource);
@@ -1588,9 +1750,11 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   memcpy(model->los_z, input->los_z, (size_t)input->nlos*sizeof(double));
 
   if (NULL == model->baseline) {
-    prepare_bihalofit(model);
+    prepare_bihalofit(model, input->variance);
   } else {
-    model->omega_m_z = make_spline(input->z, input->omega_m_z, input->nz);
+    model->omega_m_z = model->source_readers
+      ? make_spline(input->z, input->omega_m_z, input->nz)
+      : make_natural_spline(input->z, input->omega_m_z, input->nz);
   }
   prepare_radial(model);
   prepare_uniform_readers(model);
@@ -1750,8 +1914,8 @@ const double* physics_window_samples_3pcf(
 // growth factor D^2(z); mode 1 does the same with the nonlinear power
 // at z = 0; mode 2 interpolates log P between the two nonlinear
 // redshift rows that bracket z. Production finds the bracket by index
-// arithmetic on the uniform redshift axis; the source-comparison mode
-// searches the original irregular axis.
+// arithmetic within the producer's uniform redshift segments. Both
+// production and source comparisons share this core indexing rule.
 static physics_power_row prepare_power_row(
   const physics_model_3pcf* model,
   const double z,
@@ -1765,13 +1929,11 @@ static physics_power_row prepare_power_row(
     return row;
   }
 
-  int index;
-  if (model->source_readers) {
-    index = interval_physics(model->power_z, model->npower_z, z);
-  } else {
-    const double position = z*(model->npower_z - 1)/model->zmax;
-    index = (int)floor(fmax(0.0, fmin(model->npower_z - 2.0, position)));
-  }
+  const physics_axis* axis = &model->power_axis;
+  const double bounded = fmax(model->power_z[0],
+    fmin(model->power_z[model->npower_z - 1], z));
+  const int index = piecewise_index(bounded, axis->count, axis->start,
+    axis->length, axis->lower, axis->inverse, model->npower_z);
 
   row.lower = model->nonlinear + index;
   row.upper = row.lower + 1;
@@ -2889,9 +3051,13 @@ static void field_kernel_physics(
     }
   }
 
-  physics_spline spline = make_spline(model->kernel_chi, kernel, count);
+  physics_spline spline = model->source_readers
+    ? make_spline(model->kernel_chi, kernel, count)
+    : make_natural_spline(model->kernel_z, kernel, count);
   for (int node=0; node<model->nlos; node++) {
-    out[node] = read_spline(&spline, model->los_chi[node], 1)
+    const double coordinate = model->source_readers
+      ? model->los_chi[node] : model->los_z[node];
+    out[node] = read_spline(&spline, coordinate, 1)
       *model->los_chi[node]*(1.0 + model->los_z[node]);
   }
 

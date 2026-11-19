@@ -59,6 +59,22 @@ covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
     request.theta_edges = real.at("theta_edges").memptr();
   }
 
+  // Retain independent copies of every optional variance coordinate and
+  // value. The notebook caller may change or discard its arrays as soon
+  // as this request has been constructed.
+  if (0 < input.nhalo_z) {
+    const size_t count = (size_t)input.nhalo_z*input.nmass;
+    real.emplace("halo_z", arma::Col<double>(input.halo_z, input.nhalo_z));
+    real.emplace("halo_mass", arma::Col<double>(input.halo_mass, input.nmass));
+    real.emplace("halo_sigma2", arma::Col<double>(input.halo_sigma2, count));
+    real.emplace("halo_dlnsigma_dlnm",
+      arma::Col<double>(input.halo_dlnsigma_dlnm, count));
+    request.halo_z = real.at("halo_z").memptr();
+    request.halo_mass = real.at("halo_mass").memptr();
+    request.halo_sigma2 = real.at("halo_sigma2").memptr();
+    request.halo_dlnsigma_dlnm = real.at("halo_dlnsigma_dlnm").memptr();
+  }
+
   // The source count comes from the model, not from the field subset
   // the request selects, so the noise copy keeps every off-diagonal
   // source pair.
