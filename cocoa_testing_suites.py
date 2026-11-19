@@ -4604,7 +4604,7 @@ def cache_ladder_suite(u, name, example="example2",
 # ---- the setting-sequence checks --------------------------------------------
 
 def nonlimber_endpoint_suite(u, name, example, project_endpoint,
-                            tatt=True, cluster=False):
+                            tatt=True, cluster=False, galaxy_lensing=True):
     """Check endpoint validation, reset behavior and cached projections.
 
     The endpoint sets the largest redshift of the FFTLog distance grid.
@@ -4622,6 +4622,8 @@ def nonlimber_endpoint_suite(u, name, example, project_endpoint,
       project_endpoint = endpoint explicitly selected by the project YAML.
       tatt = whether this example has a TATT variant.
       cluster = whether to read the joint cluster vector.
+      galaxy_lensing = whether the likelihood supports adopt_limber_gs.
+                       Shear-plus-clustering layouts can omit this probe.
     Returns:
       A unittest.TestCase subclass. Invalid settings run in child processes
       because the C++ initialization contract exits on invalid input.
@@ -4636,7 +4638,6 @@ def nonlimber_endpoint_suite(u, name, example, project_endpoint,
             overrides = {
                 "nonlimber_zmax": 4.0,
                 "adopt_limber_gg": 0,
-                "adopt_limber_gs": 0,
                 "nonlimber_lowrank_gg": engine,
                 "nonlimber_lowrank_rank": 5,
                 "nonlimber_lowrank_lmax": 200,
@@ -4644,6 +4645,8 @@ def nonlimber_endpoint_suite(u, name, example, project_endpoint,
                 "nonlimber_tolerance_gg": 0.0,
                 "nonlimber_tolerance_gs": 0.0,
             }
+            if galaxy_lensing:
+                overrides["adopt_limber_gs"] = 0
             evaluator = "masked"
             if cluster:
                 overrides["cluster_adopt_limber_cc"] = 0
@@ -4731,7 +4734,8 @@ def nonlimber_endpoint_suite(u, name, example, project_endpoint,
             block = info["likelihood"][likelihood_name]
             block["nonlimber_zmax"] = 4.0
             block["adopt_limber_gg"] = 0
-            block["adopt_limber_gs"] = 0
+            if galaxy_lensing:
+                block["adopt_limber_gs"] = 0
             if cluster:
                 block["cluster_adopt_limber_cc"] = 0
                 block["cluster_adopt_limber_cg"] = 0
@@ -4740,7 +4744,7 @@ def nonlimber_endpoint_suite(u, name, example, project_endpoint,
                 point = u.build_point(model=model, example=example, tatt=False)
                 u.evaluate_chi2(model=model, point=point)
                 ci = _interface(u)
-                evaluate = ci.compute_data_vector_masked
+                evaluate = _masked_vector_fn(u, ci)
                 if cluster:
                     evaluate = ci.compute_data_vector_cluster_masked
                 first = np.asarray(evaluate()).copy()

@@ -374,7 +374,15 @@ import tempfile
 # worker subprocess runs at this count too (_run_isolated and the
 # comparison sweeps' child programs set it). The value is a string,
 # not a number: environment variables only carry text.
-REQUIRED_OMP_THREADS = "4"
+# Four is the reproducible default. A long validation run can explicitly
+# select another multi-threaded count before importing any native library.
+# Project entry points read the same override before setting OMP_NUM_THREADS.
+REQUIRED_OMP_THREADS = os.environ.get("COCOA_TEST_OMP_THREADS", "4")
+if (not REQUIRED_OMP_THREADS.isdecimal()
+        or int(REQUIRED_OMP_THREADS) < 2):
+    raise ValueError(
+        f"COCOA_TEST_OMP_THREADS={REQUIRED_OMP_THREADS!r}; "
+        "choose an integer >= 2 so the race checks use multiple threads")
 
 # Reference tests: |chi2(now) - chi2(frozen reference)| must stay
 # below this. The bound is a chosen regression tolerance: wide enough
@@ -657,7 +665,7 @@ def require_cocoa_environment():
 
 
 def assert_omp_threads():
-    """Refuse a race test whose environment does not request 4 threads.
+    """Require the configured race-test thread count (four by default).
 
     OpenMP reads OMP_NUM_THREADS once, when the compiled library is
     first loaded, so the value must be in the environment before any

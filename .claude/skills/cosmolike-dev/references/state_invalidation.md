@@ -85,6 +85,29 @@ next prediction then rebuilds. The shared `nonlimber_endpoint_suite` checks
 the 4 to 5 to 4.5 to 4 sequence against fresh processes for NLA and TATT,
 using both gg engines; cluster projects test their joint vector.
 
+The bindings cover LSST Y1, DES Y3, DES Y1 with Planck, DES cluster,
+Roman real, Roman Fourier, Roman KL and LSST Y1 with DESI. The DESI
+likelihood omits galaxy-galaxy lensing: its endpoint suite explicitly
+sets `galaxy_lensing=False`, so it does not insert an unsupported
+`adopt_limber_gs` option. Its vector getter must include Fourier
+cross-bin clustering. The generic real-space getter is not a valid
+substitute even though that symbol exists in its dual-space interface.
+
+## Thread count for numerical validation
+
+The shared test harness uses four OpenMP threads by default. Set
+`COCOA_TEST_OMP_THREADS` before importing the harness to select another
+integer count of at least two. Each project's data-vector test entry
+point and reference generator uses that value to set `OMP_NUM_THREADS`
+before native imports; worker processes inherit the same selected count.
+Set `OMP_THREAD_LIMIT` consistently. BLAS stays at one thread.
+
+The lower bound matters because a single-thread run cannot exercise a
+race between OpenMP workers. This override does not establish numerical
+determinism by itself: cross-thread comparisons remain separate tests.
+Frozen reference metadata records the count that actually generated it.
+The import/validation checks are in `dev_scripts/testing_threads/`.
+
 ## The failure classes, with one example each
 
 Each example is written as the audit found it; the Status section
