@@ -104,8 +104,13 @@ call alone does not exercise the native input conversion.
 The folder name `3pcf` begins with a digit. Import it explicitly with
 `importlib.import_module("cosmolike_notebook_utils.3pcf")`; do not rename the
 folder or modify the package's root `__init__.py` to hide the distinction.
-The [plotting guide](../../../../cosmolike_notebook_utils/3pcf/README.md)
-contains input shapes and teaching examples.
+`plot_Map3` receives a list of `(radius, values)` pairs, with values shaped
+`[ntriplet, nradius]`, radii in arcminutes and identical grids across curves.
+`map3_ref` supplies one reference pair. `plot_ia_components` instead uses
+`[ncomponent, ncoordinate]` and explicit component, coordinate and quantity
+labels. Triplet arrays use zero-based indices; displayed labels are
+one-based and preserve the supplied order. `show=None` returns the figure
+and axes for explicit saving by the caller.
 
 The shared functions receive arrays. They never import a project's compiled
 extension, run CAMB, interpolate a reference onto another grid, change source

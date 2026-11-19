@@ -17,9 +17,9 @@ The state reference also defines `residual_scaling`, `shape_stretch`, and
 `psi_scale`: separate controls for signed radial amplitudes, physical triangle
 fractions, and multipole angular sampling. Read their diagnostic separation
 before changing table bounds or interpreting an aperture/Fisher result. The
-[core numerical guide](../../../../cosmolike/3pcf/NUMERICS.md) explains why the
-physical angle exported to users differs from its uniform interpolation
-coordinate and which coordinate belongs in the retained-query key.
+[angular-coordinate explanation](#physical-angles-and-interpolation-coordinates)
+below distinguishes the exported physical angle from its uniform lookup
+coordinate. Both axes belong in the retained-query key.
 
 For plotting, original-code comparisons and YAML-driven forecasts, read
 [notebook workflows](threepcf_notebooks.md). Shared plotters belong in
@@ -54,10 +54,11 @@ legs and source labels.
 | Physical joint covariance | [covariance_physics_3pcf.c](../../../../cosmolike/3pcf/covariance_physics_3pcf.c) | Gravitational projections, halo abundances/profiles, binned xi spin kernels, six separate covariance families and their two-/three-point cross blocks |
 | Supplied-array contractions | [covariance_3pcf.c](../../../../cosmolike/3pcf/covariance_3pcf.c) | Filtered pairs, fifteen Gaussian cubic-field pairings and a weighted response Gram matrix; these lower-level functions do not construct a halo model |
 
-Use the [module guide](../../../../cosmolike/3pcf/README.md) for conventions,
-[NUMERICS.md](../../../../cosmolike/3pcf/NUMERICS.md) for preparation and
-reuse, and [COVARIANCE.md](../../../../cosmolike/3pcf/COVARIANCE.md) for the
-actual covariance equations. A catalogue estimator, a full-filter map
+The [numerical strategy](#numerical-strategy-required-for-changes) and
+[scientific conventions](#scientific-conventions-that-must-survive-optimization)
+below define preparation, reuse and covariance scope. For covariance
+contractions and derivations, read the skill's
+[covariance study](threepcf_study/15_analytic_covariance_cpu_port.md). A catalogue estimator, a full-filter map
 estimator and a finite triangle integral can have equal array dimensions
 while measuring different quantities. Matching their labels is insufficient.
 
@@ -131,9 +132,8 @@ separate one-/three-halo pieces. Raw perturbative IA and signed residuals
 retain their P prescription. Halo integrals in the covariance are separate
 physical terms and never request diagnostic components 2/3.
 
-The [module guide](../../../../cosmolike/3pcf/README.md#supplied-bispectrum)
-and [project producer guide](https://github.com/SBU-COSMOLIKE/cocoa_des_3pcf/blob/main/BIHALOFIT_PYTHON.md)
-explain the caller contract. `dev_scripts/supplied_baseline_check/` contains
+The caller contract above applies to both adapters and the Python producer.
+`dev_scripts/supplied_baseline_check/` contains
 default-route captures; the project `tests/test_supplied_baseline.py` checks
 analytic values, ownership, bridge invalidation, refusals and independent
 BB/PB scaling. Preserve the pre-edit binary and every reference input before
@@ -201,6 +201,27 @@ plan. Reuse forward coefficients across different Bessel orders and equal
 inverse kernels where the identity holds. The two-order Gamma recurrence
 needs high-order checks against direct complex Gamma evaluations, not only
 low-order tests. Cap scratch capacity and worker teams by available tasks.
+
+### Physical angles and interpolation coordinates
+
+Angular multipoles use `ELL = sqrt(ell1^2 + ell2^2)` and
+`PSI = atan2(ell2, ell1)`. Two ordered charts retain
+`psi = min(PSI, pi/2 - PSI)` and which leg was larger. Uniform ln(psi)
+spacing can leave too few coarse samples near pi/4 when the smallest
+angle is tiny. Dense interpolation cannot replace those missing samples.
+
+For positive `psi_scale = s`, preparation samples uniformly in
+`x = ln(psi) + psi/s`. Its inverse slope is `dpsi/dx = psi*s/(psi+s)`:
+small angles are spaced approximately logarithmically, large angles
+approximately linearly. The scale is in radians; zero retains ln(psi).
+Preparation alone inverts this relation. Exported `log_psi` remains the
+physical ln(psi), generally nonuniform, while internal `psi_coordinate`
+is uniform and supplies arithmetic indices and interpolation fractions.
+Cache keys retain both axes, the scale and the reference-mode selector.
+Repeated readers perform neither root finding nor binary search. No new
+integration Jacobian is needed: the projection still integrates over its
+fixed cosine-angle nodes. `reference_mode: 1` retains the upstream angular
+axis and reader independently of this production setting.
 
 ## Scientific conventions that must survive optimization
 

@@ -290,6 +290,13 @@ The fixed-rule ladders cap at 8,192 nodes. Retain completed results and
 identify the settings of each comparison reference. The highest tested
 level is not automatically a converged result.
 
+**Skill documentation.** Keep explanations needed to apply this skill inside
+the skill files. Link to skill references for those explanations, rather
+than to module READMEs, project studies or temporary validation notes.
+Port the necessary equations, assumptions, acceptance criteria and measured
+limits into the relevant reference. Source and test paths identify code
+and executable checks; they do not replace the explanation in the skill.
+
 **Public documentation.** READMEs are
 for human readers, including advanced undergraduate physics students.
 Explain the physics, define symbols and approximations, and describe each

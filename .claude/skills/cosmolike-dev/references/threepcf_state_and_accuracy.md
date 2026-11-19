@@ -78,8 +78,11 @@ low-z and coarse high-z segments into one grid. Production shares the
 natural-cubic solver and direct piece lookup; the explicit source comparison
 retains its upstream interpolation. The project test
 `data_vector/test_piecewise_physics.py` checks joins, refinement and matching
-Python/C BiHalofit preparation. The numerical guide explains its boundary
-conditions; changing only C leaves the Python producer inconsistent.
+Python/C BiHalofit preparation. The natural cubic has zero second
+derivative at the two outer endpoints, with continuous value, first
+and second derivatives at interior segment joins. A spacing change is
+not a new spline boundary. Changing only C leaves the Python producer
+inconsistent.
 
 ### Copied shared variance inputs
 
@@ -127,9 +130,29 @@ ordinary turnover and DES fiducial snapshots retain their exact values.
 The nearly saturated low-tail stress case requires Gaussian-table
 refinement. These component checks do not replace full joint mean,
 derivative and Fisher acceptance before selecting shared variances or
-removing the local path. Read
-[`dev_scripts/threepcf_variance_check/VALIDATION.md`](../../../../dev_scripts/threepcf_variance_check/VALIDATION.md)
-for the measured domain, state checks and outstanding scientific tests.
+removing the local path. The analytic correction and its resolution limits
+are explained in [the shared variance reference](sigma_fftlog_implementation.md#endpoint-correction-and-validation).
+
+The initial controlled curved-spectrum comparison with direct quadrature
+had maximum relative differences of 2.55e-4 in nonlinear radius and 1.45e-4
+in mass variance; the effective-index absolute difference was 4.01e-5.
+Snapshot/constructor checks covered both adapters, copied ownership,
+amplitude replacement/restoration, reset, one/six-worker equality,
+fit-only and halo-only requests, unchanged mean/non-halo terms, and
+refusal of incomplete, mismatched or stale inputs. Refusal checks must
+reach the intended request; an import or setup error is not evidence
+that the input validation worked.
+
+The combined pre-correction strict build passed 875 project and variance
+checks. The corresponding UBSan checks passed as 833 project and 42 variance
+checks in separate commands after correcting the external harness setup.
+The later endpoint and sampling suites above are distinct validation
+stages. These standalone builds exercise the standalone reset; the generic
+full-project reset call still needs a full-project rebuild. Acceptance of
+shared variances also requires the full joint mean, every derivative and
+marginalized Fisher comparisons at fixed physical inputs. Evolving P(k,z)
+and factorized P(k,0)D(z)^2 must be tested as separate physical choices;
+component agreement alone cannot authorize changing that prescription.
 
 ### Supplied baseline state
 
@@ -418,9 +441,10 @@ The real-space bispectrum table is used only by finite-window BB. Preserve
 those distinctions when reducing work, and compare all six terms separately
 across both window branches, mixed rows and quadratic-only rows.
 
-Read [NUMERICS.md](../../../../cosmolike/3pcf/NUMERICS.md) for the production
-cubic-preparation/linear-read strategy and
-[COVARIANCE.md](../../../../cosmolike/3pcf/COVARIANCE.md) for the physical scope.
+Read [the numerical strategy](threepcf.md#numerical-strategy-required-for-changes)
+for cubic preparation and linear reads, and
+[the scientific conventions](threepcf.md#scientific-conventions-that-must-survive-optimization)
+for the covariance families and physical limits.
 Record executed strict/debug checks and their limits in the project's
 `tests/VALIDATION.md`; source-level reasoning is not a replacement for them.
 
