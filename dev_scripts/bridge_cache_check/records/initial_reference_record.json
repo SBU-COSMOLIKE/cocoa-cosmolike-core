@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "name": "freeze_bridge",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "/private/tmp/bridge_cache_3pcf_20261119/capture.py",
+        "freeze",
+        "--project",
+        "/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf",
+        "--output",
+        "/private/tmp/bridge_cache_3pcf_20261119/bridge_inputs.npz"
+      ],
+      "cwd": "None",
+      "seconds": 0.12252116203308105,
+      "returncode": 1,
+      "log_sha256": "1f148a1b595f268f7739f58f7f17b9af075e4ca7fe63c029339928801d8c8678",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/freeze_bridge.log"
+    }
+  ],
+  "started": 1795090984.9773839
+}

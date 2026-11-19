@@ -1,0 +1,303 @@
+{
+  "date": "2026-11-19",
+  "reference_core_revision": "2bc4500a9a55c1c4dcbe26952e0cfd658846fdc5",
+  "reference_project_revision": "d9f2a1e74a6f09327b5571a2414ed22522bd679d",
+  "private_artifact_directory": "/private/tmp/bridge_cache_3pcf_20261119",
+  "installed_binary_changed": false,
+  "strict_tests": 829,
+  "ubsan_tests": 829,
+  "focused_bridge_and_size_tests_per_build": 40,
+  "byte_comparisons": {
+    "bridge_array_pairs": 360,
+    "stage0_array_pairs": 385,
+    "threads": [
+      1,
+      4
+    ],
+    "comparison": "Same dtype, shape and exact array bytes, including signed zero."
+  },
+  "capture_scope": {
+    "three_point": "Raw IA and projected queries use the actual TATT state.",
+    "two_point": "Separate NLA-only dictionary zeroes a2, bta, ct and legacy fb; this is not a full-TATT two-point check.",
+    "survey_data_covariance_mask": "None; controlled raw-observable inputs.",
+    "model_generations": {
+      "reference": [
+        {
+          "supplied": false,
+          "phases": [
+            "initial",
+            "changed_ia",
+            "restored_ia",
+            "amplitude",
+            "prescription",
+            "restored"
+          ],
+          "generations": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        {
+          "supplied": true,
+          "phases": [
+            "initial",
+            "changed_ia",
+            "restored_ia",
+            "amplitude",
+            "prescription",
+            "restored"
+          ],
+          "generations": [
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        }
+      ],
+      "strict": [
+        {
+          "supplied": false,
+          "phases": [
+            "initial",
+            "changed_ia",
+            "restored_ia",
+            "amplitude",
+            "prescription",
+            "restored"
+          ],
+          "generations": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "supplied": true,
+          "phases": [
+            "initial",
+            "changed_ia",
+            "restored_ia",
+            "amplitude",
+            "prescription",
+            "restored"
+          ],
+          "generations": [
+            2,
+            2,
+            2,
+            2,
+            2,
+            2
+          ]
+        }
+      ],
+      "debug": [
+        {
+          "supplied": false,
+          "phases": [
+            "initial",
+            "changed_ia",
+            "restored_ia",
+            "amplitude",
+            "prescription",
+            "restored"
+          ],
+          "generations": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "supplied": true,
+          "phases": [
+            "initial",
+            "changed_ia",
+            "restored_ia",
+            "amplitude",
+            "prescription",
+            "restored"
+          ],
+          "generations": [
+            2,
+            2,
+            2,
+            2,
+            2,
+            2
+          ]
+        }
+      ]
+    }
+  },
+  "asan_scope": "Only threepcf_core_bridge.c is instrumented over the retained original strict object bank; four typed native borrowed-view calls, not whole-program ASan or concurrent entry.",
+  "asan_cases": [
+    {
+      "case": "feedback_boost",
+      "original_diagnostic": [
+        "==29903==ERROR: AddressSanitizer: heap-use-after-free on address 0x60a0000002c0 at pc 0x0001053d971c bp 0x00016b437d50 sp 0x00016b437500",
+        "SUMMARY: AddressSanitizer: heap-use-after-free (/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf/interface/cosmolike_des_3pcf_interface.so:arm64+0xa82d0) in threepcf_bridge_set_feedback+0x558"
+      ],
+      "original_log_sha256": "078b01d4e7b89c48ed46aee8947e9ab8ae2f150a8345a923169ccae0e06d88ae",
+      "fixed_log_sha256": "20baeccaa46139134f5d332905edb57f8ed9279ea1ebeb91f59b9f48878d4a55",
+      "fixed_passed": true
+    },
+    {
+      "case": "source_axis",
+      "original_diagnostic": [
+        "==29915==ERROR: AddressSanitizer: heap-use-after-free on address 0x614000005040 at pc 0x000102aad71c bp 0x00016dd63e80 sp 0x00016dd63630",
+        "SUMMARY: AddressSanitizer: heap-use-after-free (/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf/interface/cosmolike_des_3pcf_interface.so:arm64+0xa7ab8) in threepcf_bridge_set_sources+0x204"
+      ],
+      "original_log_sha256": "1014110631a3c560c16fb2efd456b21a73a9bae00c0e88db0b3781c812c73b1a",
+      "fixed_log_sha256": "a74fc762c62e26d99a1111a594e314dbd4b9dcfee25ccd37ccdd594138c303e9",
+      "fixed_passed": true
+    },
+    {
+      "case": "los_prefix",
+      "original_diagnostic": [
+        "==29921==ERROR: AddressSanitizer: heap-use-after-free on address 0x612000008440 at pc 0x000100f8971c bp 0x00016f887e90 sp 0x00016f887640",
+        "SUMMARY: AddressSanitizer: heap-use-after-free (/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf/interface/cosmolike_des_3pcf_interface.so:arm64+0xa77ac) in threepcf_bridge_set_los+0xf4"
+      ],
+      "original_log_sha256": "2094a858c28a01b4c067d5af43c352a580b7264316e3831449322e9e7f49f144",
+      "fixed_log_sha256": "a74fc762c62e26d99a1111a594e314dbd4b9dcfee25ccd37ccdd594138c303e9",
+      "fixed_passed": true
+    },
+    {
+      "case": "window_prefix",
+      "original_diagnostic": [
+        "==29928==ERROR: AddressSanitizer: heap-use-after-free on address 0x611000014540 at pc 0x000100ead71c bp 0x00016f963e90 sp 0x00016f963640",
+        "SUMMARY: AddressSanitizer: heap-use-after-free (/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf/interface/cosmolike_des_3pcf_interface.so:arm64+0xa7cc8) in threepcf_bridge_set_pixel_window+0x120"
+      ],
+      "original_log_sha256": "99c506ed8f0ef889bae78f47ec616194a3e0866131c3dca1d5747e2c34660442",
+      "fixed_log_sha256": "a74fc762c62e26d99a1111a594e314dbd4b9dcfee25ccd37ccdd594138c303e9",
+      "fixed_passed": true
+    }
+  ],
+  "allocator_checks": "Strict, UBSan and ASan: five runs per mode; original/new positive layouts equal, new empty/positive outputs agree at one/six workers.",
+  "concurrency_scope": "Setters, refresh/model_from_core and reset are sequential process-global operations. Completed-call ownership checks and internal OpenMP do not establish concurrent Python entry safety.",
+  "failed_setup_attempts": [
+    {
+      "record": "/private/tmp/bridge_cache_3pcf_20261119/initial_pi_record.json",
+      "sha256": "9447a00fdc90c4bd9d1ccf32f3b40e7e0e8f6984e996be0b7b61ab24c0becb67",
+      "scope": "Standalone pi link initially omitted the native build library search paths; rerun used the actual build search/rpath flags."
+    },
+    {
+      "record": "/private/tmp/bridge_cache_3pcf_20261119/initial_reference_record.json",
+      "sha256": "315bc7c6d7adb55bd71f66ae92f49f08faacbefdcd9e37fd95f99e9b6f7785d1",
+      "scope": "Capture initially lacked the existing data_vector helper import directory; corrected only the harness search path."
+    },
+    {
+      "record": "/private/tmp/bridge_cache_3pcf_20261119/initial_keyword_reference_record.json",
+      "sha256": "1bf2e389f0e0d01ec35265a3e682c6825636974e1c77d109142c95f5d550759f",
+      "scope": "Harness used BTA rather than the binding keyword B_TA; corrected the harness and new test."
+    },
+    {
+      "record": "/private/tmp/bridge_cache_3pcf_20261119/initial_nla_reference_record.json",
+      "sha256": "0d6d0b2b638d2e3e4b9cc1876efdd8c30851468c3d6d3d4ee84b614121b7c3f9",
+      "scope": "NLA two-point API correctly refused TATT coefficients; capture now uses and documents a separate NLA-only dictionary."
+    },
+    {
+      "record": "/private/tmp/bridge_cache_3pcf_20261119/initial_strict_record.json",
+      "sha256": "f704b49bdd119f82176f8192134a20290892e61991378b7c14d5fa5f04b904db",
+      "scope": "Two new test calls used an unsupported NumPy concatenate keyword; corrected to positional sequence argument."
+    },
+    {
+      "record": "/private/tmp/bridge_cache_3pcf_20261119/initial_capture_alias_record.json",
+      "sha256": "999c8da3d7b84d9429a1a236a71da91b79f961a5d2573c3007ff54e952c700ac",
+      "scope": "Pytest file-descriptor capture hid the native ASan report on abort; retained this attempt and reran with -s. Return code alone was never counted as ownership evidence."
+    },
+    {
+      "record": "/private/tmp/bridge_cache_3pcf_20261119/initial_fixed_alias_record.json",
+      "sha256": "aab2a65b7717639b4af1dfc51175d01739f23c7d8dea71e138601ee257fcd29c",
+      "scope": "First fixed ASan child exited with signal 9 and no report. Replacing the private extension using unlink+copy resolved it; no definitive OS cause is claimed."
+    }
+  ],
+  "binaries": {
+    "reference": {
+      "path": "/private/tmp/bridge_cache_3pcf_20261119/reference/cosmolike_des_3pcf_interface.so",
+      "sha256": "c451e2a1d1538072746fd7caf261bbe36f97bb4c19f8c487d3a7677148f81939"
+    },
+    "strict": {
+      "path": "/private/tmp/bridge_cache_3pcf_20261119/strict/interface/cosmolike_des_3pcf_interface.so",
+      "sha256": "6550f3718576bbaba2fc20b07453375d43af83cd577630bf8ad52782ee8c4878"
+    },
+    "debug": {
+      "path": "/private/tmp/bridge_cache_3pcf_20261119/debug/interface/cosmolike_des_3pcf_interface.so",
+      "sha256": "41b5df11ce2802f4aa026cbbf16106c1b67ca86de7762cb29fef3fa8d8933ae2"
+    }
+  },
+  "input_sha256": "a1dbbaad1af31d44ffd20cee9bc105b95cb107a208ef4e4cfc05498aad84c779",
+  "original_stage0_project_files_verified": 655,
+  "log_hashes": {
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_old_link.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/private/tmp/bridge_cache_3pcf_20261119/debug_stage0_4.log": "29e9b2bd26a6869593524a8dabe43b1285c14fbd55f3fae18f1fb295eb6317cf",
+    "/private/tmp/bridge_cache_3pcf_20261119/pi_debug_build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/private/tmp/bridge_cache_3pcf_20261119/reference_bridge_1.log": "7f33afada6be0575cf224b97f4239600e9642d8e9b8c3c6e5ef61fe7bcdbe26a",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_fixed_link.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/private/tmp/bridge_cache_3pcf_20261119/allocators.log": "37c13007d19f231308085444656db4a9fd87b4fc393afb313e0694e08b537f43",
+    "/private/tmp/bridge_cache_3pcf_20261119/reference_bridge_4.log": "4dd1b27e50c0e88b2369df01eea133697cabbaf9c4d33fb50242d973d06b8b95",
+    "/private/tmp/bridge_cache_3pcf_20261119/debug_stage0_1.log": "7894e2b8cda4e581c6621e4a82077f6976c56aa9c4f6f70859730248cb87b22f",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_fixed_0.log": "20baeccaa46139134f5d332905edb57f8ed9279ea1ebeb91f59b9f48878d4a55",
+    "/private/tmp/bridge_cache_3pcf_20261119/strict_build.log": "54c222fc6bdabc27774d12ec064d9393c33c6020637335c86808b9560de45808",
+    "/private/tmp/bridge_cache_3pcf_20261119/initial_keyword_reference_bridge_1.log": "e50383d170ccbfc705bcd5be184bebd55f5c0ff825edaa8263880cadd19bcdc6",
+    "/private/tmp/bridge_cache_3pcf_20261119/reference_stage0_4.log": "5848652c3441aef80996a4cc66401710df74f3fc94a6c608332cb395ac7d37a2",
+    "/private/tmp/bridge_cache_3pcf_20261119/freeze_bridge.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_fixed_1.log": "a74fc762c62e26d99a1111a594e314dbd4b9dcfee25ccd37ccdd594138c303e9",
+    "/private/tmp/bridge_cache_3pcf_20261119/debug_build.log": "56d0aebcf1925108585a59669d17f9a12f8eaa33874df10d58d269c14d5c6f8b",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_fixed_3.log": "a74fc762c62e26d99a1111a594e314dbd4b9dcfee25ccd37ccdd594138c303e9",
+    "/private/tmp/bridge_cache_3pcf_20261119/debug_bridge_1.log": "e4f8b125b05e61628b11e770208bbf06af75eca3f5bf5458aa27d09b598c28d7",
+    "/private/tmp/bridge_cache_3pcf_20261119/debug_full.log": "8e48322b18bef645bb7af7046f4559a784b88216e1caa57c0d83b02f406f8a7c",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_fixed_2.log": "a74fc762c62e26d99a1111a594e314dbd4b9dcfee25ccd37ccdd594138c303e9",
+    "/private/tmp/bridge_cache_3pcf_20261119/debug_bridge_4.log": "a0158e857a9d18d8228e765ea323d98223b7d90ffaac7c2cc6aa3caf5e41cf0f",
+    "/private/tmp/bridge_cache_3pcf_20261119/strict_full.log": "d3ad8cc0ad98d8b95252820390b4c4931406226d06c26ca0956e9b6aff44426b",
+    "/private/tmp/bridge_cache_3pcf_20261119/initial_strict_focused.log": "2f476af96c39b3196261218bc05f9d3b025ce24f2a1025df6fdfc02d68400245",
+    "/private/tmp/bridge_cache_3pcf_20261119/reference_stage0_1.log": "5f10962fa63a88fda23e4e8bfdc97a39e9d4d00e6eeb4f564dbce4589cd8f549",
+    "/private/tmp/bridge_cache_3pcf_20261119/pi_debug.log": "f446dfe256628d5bec37115058384d2b6bfcc06f9e1f109984f7011789ed2a81",
+    "/private/tmp/bridge_cache_3pcf_20261119/strict_bridge_1.log": "0ab9d21c88c86f9577ec04e78be5a717ba89512306fbb03ba4451ea7fc04254b",
+    "/private/tmp/bridge_cache_3pcf_20261119/pi_strict_build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/private/tmp/bridge_cache_3pcf_20261119/initial_freeze_bridge.log": "1f148a1b595f268f7739f58f7f17b9af075e4ca7fe63c029339928801d8c8678",
+    "/private/tmp/bridge_cache_3pcf_20261119/initial_nla_reference_bridge_1.log": "acb5700b57acaa19e55957dafee06fb3131b1aabc2b8ae9670ff44bb1b389161",
+    "/private/tmp/bridge_cache_3pcf_20261119/initial_capture_alias_old_0.log": "eb9277dbd46ca5793e0bf7314c58c5f4df203077aea781785e970c34d35f86a5",
+    "/private/tmp/bridge_cache_3pcf_20261119/pi_strict.log": "f446dfe256628d5bec37115058384d2b6bfcc06f9e1f109984f7011789ed2a81",
+    "/private/tmp/bridge_cache_3pcf_20261119/initial_strict_build.log": "6d157b609359d2b0ad33f01e70f29e2756dbaeeb0c6fef75f17353a2e84e5dd8",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_old_3.log": "99c506ed8f0ef889bae78f47ec616194a3e0866131c3dca1d5747e2c34660442",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_old_2.log": "2094a858c28a01b4c067d5af43c352a580b7264316e3831449322e9e7f49f144",
+    "/private/tmp/bridge_cache_3pcf_20261119/strict_bridge_4.log": "ef59b46f9345aa1e2063d292e818c94210660b10540127dc05b6ce5f6fe25fa6",
+    "/private/tmp/bridge_cache_3pcf_20261119/initial_pi_strict_build.log": "d48266f6eb2a6d99d11ef690fdca6722665ae317a54e78e307da3fe5f0800099",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_old_0.log": "078b01d4e7b89c48ed46aee8947e9ab8ae2f150a8345a923169ccae0e06d88ae",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_old_1.log": "1014110631a3c560c16fb2efd456b21a73a9bae00c0e88db0b3781c812c73b1a",
+    "/private/tmp/bridge_cache_3pcf_20261119/strict_focused.log": "5bad0dec84ca1a7a53aaa792766c1d713c285ac75c37d3d35e5d7b2eb6fc2453",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_fixed_compile.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/private/tmp/bridge_cache_3pcf_20261119/strict_stage0_4.log": "938486f6bcbc3a3a51c7486338e47c3312f8fa57e5b3cc3c1d0bb872c6fddfe1",
+    "/private/tmp/bridge_cache_3pcf_20261119/alias_old_compile.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/private/tmp/bridge_cache_3pcf_20261119/initial_fixed_alias_fixed_0.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/private/tmp/bridge_cache_3pcf_20261119/debug_focused.log": "494a46b48529221bd62a1a40b492dcbd699a306b20e2a283a990502e73a1d547",
+    "/private/tmp/bridge_cache_3pcf_20261119/strict_stage0_1.log": "703413edbd8a61c81d76ad444a7697d1892638e51e4dc701baf85a344bce51a4"
+  },
+  "root_independent_verification": {
+    "pinned_input_files": 764,
+    "current_native_source_files_matching_snapshot": 141,
+    "verified_log_hashes": 44,
+    "saved_output_archives_checked_for_finite_values": 48,
+    "finite_numeric_arrays": 852,
+    "row_kind_label_arrays": 42,
+    "repeated_byte_comparisons": {
+      "bridge": 360,
+      "stage0": 385
+    },
+    "scope": "Read saved arrays and verify input, native-source and log hashes; no new native calculation. Row-kind strings participate in byte comparisons but not finite-number checks."
+  }
+}

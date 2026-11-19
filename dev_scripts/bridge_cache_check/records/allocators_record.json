@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "name": "allocators",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/dev_scripts/allocator_zero_check/run_checks.py",
+        "--reference",
+        "2bc4500a9a55c1c4dcbe26952e0cfd658846fdc5",
+        "--output",
+        "/private/tmp/bridge_cache_3pcf_20261119/allocators"
+      ],
+      "cwd": "None",
+      "seconds": 8.063523769378662,
+      "returncode": 0,
+      "log_sha256": "37c13007d19f231308085444656db4a9fd87b4fc393afb313e0694e08b537f43",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/allocators.log"
+    }
+  ],
+  "started": 1795091585.412402,
+  "finished": 1795091593.476852
+}

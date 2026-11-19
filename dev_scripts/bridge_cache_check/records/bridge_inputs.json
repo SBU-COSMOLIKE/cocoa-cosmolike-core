@@ -1,0 +1,8 @@
+{
+  "input_sha256": "a1dbbaad1af31d44ffd20cee9bc105b95cb107a208ef4e4cfc05498aad84c779",
+  "fixture_sha256": {
+    "tests/data_vector/test_physics_model.py": "2f3fa2d77f8ac780e139008d9843606dedcebcbdf4b7ca87ab6845ce87d87de2",
+    "tests/data_vector/test_feedback.py": "75b20830b846e2eab09c68fb529258e3eeb19c558e9e8f0c1e0256f80f0d28d3",
+    "tests/test_supplied_baseline.py": "46dd9b0f5fcc61770ace8175ec8dc2f39e5b6d76aac4647621851aa7460d735b"
+  }
+}

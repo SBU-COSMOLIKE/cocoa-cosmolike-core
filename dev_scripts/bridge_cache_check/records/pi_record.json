@@ -1,0 +1,90 @@
+{
+  "steps": [
+    {
+      "name": "pi_strict_build",
+      "command": [
+        "/opt/homebrew/opt/llvm@22/bin/clang++",
+        "-std=c++23",
+        "-fPIC",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-fno-associative-math",
+        "-frounding-math",
+        "-ftrapping-math",
+        "-Wno-pass-failed",
+        "-fno-reciprocal-math",
+        "-O3",
+        "-march=native",
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/to_reproduce/threepcf_adapter_style_20261119/pi_check.cpp",
+        "-L/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+        "-L/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+        "-Wl,-rpath,/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+        "-Wl,-rpath,/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+        "-o",
+        "/private/tmp/bridge_cache_3pcf_20261119/pi_strict"
+      ],
+      "cwd": "None",
+      "seconds": 0.11405587196350098,
+      "returncode": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/pi_strict_build.log"
+    },
+    {
+      "name": "pi_strict",
+      "command": [
+        "/private/tmp/bridge_cache_3pcf_20261119/pi_strict"
+      ],
+      "cwd": "None",
+      "seconds": 0.21458983421325684,
+      "returncode": 0,
+      "log_sha256": "f446dfe256628d5bec37115058384d2b6bfcc06f9e1f109984f7011789ed2a81",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/pi_strict.log"
+    },
+    {
+      "name": "pi_debug_build",
+      "command": [
+        "/opt/homebrew/opt/llvm@22/bin/clang++",
+        "-std=c++23",
+        "-fPIC",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-fno-associative-math",
+        "-frounding-math",
+        "-ftrapping-math",
+        "-Wno-pass-failed",
+        "-fno-reciprocal-math",
+        "-O0",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-fsanitize=undefined,float-divide-by-zero",
+        "-fno-sanitize-recover=all",
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/to_reproduce/threepcf_adapter_style_20261119/pi_check.cpp",
+        "-L/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+        "-L/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+        "-Wl,-rpath,/Users/vivianmiranda/miniforge/envs/cocoapy311/lib",
+        "-Wl,-rpath,/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/lib",
+        "-o",
+        "/private/tmp/bridge_cache_3pcf_20261119/pi_debug"
+      ],
+      "cwd": "None",
+      "seconds": 0.3200068473815918,
+      "returncode": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/pi_debug_build.log"
+    },
+    {
+      "name": "pi_debug",
+      "command": [
+        "/private/tmp/bridge_cache_3pcf_20261119/pi_debug"
+      ],
+      "cwd": "None",
+      "seconds": 0.17533016204833984,
+      "returncode": 0,
+      "log_sha256": "f446dfe256628d5bec37115058384d2b6bfcc06f9e1f109984f7011789ed2a81",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/pi_debug.log"
+    }
+  ],
+  "started": 1795090946.68237,
+  "finished": 1795090947.508637
+}

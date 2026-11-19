@@ -1,0 +1,30 @@
+{
+  "steps": [
+    {
+      "name": "pi_strict_build",
+      "command": [
+        "/opt/homebrew/opt/llvm@22/bin/clang++",
+        "-std=c++23",
+        "-fPIC",
+        "-fopenmp",
+        "-fno-fast-math",
+        "-fno-associative-math",
+        "-frounding-math",
+        "-ftrapping-math",
+        "-Wno-pass-failed",
+        "-fno-reciprocal-math",
+        "-O3",
+        "-march=native",
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/to_reproduce/threepcf_adapter_style_20261119/pi_check.cpp",
+        "-o",
+        "/private/tmp/bridge_cache_3pcf_20261119/pi_strict"
+      ],
+      "cwd": "None",
+      "seconds": 0.5567350387573242,
+      "returncode": 1,
+      "log_sha256": "d48266f6eb2a6d99d11ef690fdca6722665ae317a54e78e307da3fe5f0800099",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/pi_strict_build.log"
+    }
+  ],
+  "started": 1795090937.71196
+}

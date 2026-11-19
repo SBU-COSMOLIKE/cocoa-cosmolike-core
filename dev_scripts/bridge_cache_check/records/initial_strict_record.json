@@ -1,0 +1,45 @@
+{
+  "steps": [
+    {
+      "name": "strict_build",
+      "command": [
+        "make",
+        "-j1",
+        "-f",
+        "MakefileCosmolike",
+        "ROOTDIR=/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa",
+        "CORE=/private/tmp/bridge_cache_3pcf_20261119/source",
+        "SOURCE=/private/tmp/bridge_cache_3pcf_20261119/source/cosmolike/3pcf",
+        "CONDA_PREFIX=/Users/vivianmiranda/miniforge/envs/cocoapy311",
+        "PYTHON=/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "C_COMPILER=/opt/homebrew/opt/llvm@22/bin/clang",
+        "CXX_COMPILER=/opt/homebrew/opt/llvm@22/bin/clang++"
+      ],
+      "cwd": "/private/tmp/bridge_cache_3pcf_20261119/strict/interface",
+      "seconds": 56.88231706619263,
+      "returncode": 0,
+      "log_sha256": "6d157b609359d2b0ad33f01e70f29e2756dbaeeb0c6fef75f17353a2e84e5dd8",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/strict_build.log"
+    },
+    {
+      "name": "strict_focused",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "tests/test_bridge_cache.py",
+        "tests/test_bridge_sizes.py"
+      ],
+      "cwd": "/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf",
+      "seconds": 1.3236429691314697,
+      "returncode": 1,
+      "log_sha256": "2f476af96c39b3196261218bc05f9d3b025ce24f2a1025df6fdfc02d68400245",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/strict_focused.log"
+    }
+  ],
+  "started": 1795091044.1201909,
+  "binary_sha256": "6550f3718576bbaba2fc20b07453375d43af83cd577630bf8ad52782ee8c4878"
+}

@@ -1,0 +1,145 @@
+{
+  "steps": [
+    {
+      "name": "debug_build",
+      "command": [
+        "make",
+        "-j1",
+        "-f",
+        "MakefileCosmolike",
+        "ROOTDIR=/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa",
+        "CORE=/private/tmp/bridge_cache_3pcf_20261119/source",
+        "SOURCE=/private/tmp/bridge_cache_3pcf_20261119/source/cosmolike/3pcf",
+        "CONDA_PREFIX=/Users/vivianmiranda/miniforge/envs/cocoapy311",
+        "PYTHON=/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "C_COMPILER=/opt/homebrew/opt/llvm@22/bin/clang",
+        "CXX_COMPILER=/opt/homebrew/opt/llvm@22/bin/clang++",
+        "COSMOLIKE_DEBUG_MODE=1"
+      ],
+      "cwd": "/private/tmp/bridge_cache_3pcf_20261119/debug/interface",
+      "seconds": 42.065852880477905,
+      "returncode": 0,
+      "log_sha256": "56d0aebcf1925108585a59669d17f9a12f8eaa33874df10d58d269c14d5c6f8b",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/debug_build.log"
+    },
+    {
+      "name": "debug_focused",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "tests/test_bridge_cache.py",
+        "tests/test_bridge_sizes.py"
+      ],
+      "cwd": "/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf",
+      "seconds": 2.4011738300323486,
+      "returncode": 0,
+      "log_sha256": "494a46b48529221bd62a1a40b492dcbd699a306b20e2a283a990502e73a1d547",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/debug_focused.log"
+    },
+    {
+      "name": "debug_full",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--durations=15",
+        "tests"
+      ],
+      "cwd": "/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf",
+      "seconds": 200.61971306800842,
+      "returncode": 0,
+      "log_sha256": "8e48322b18bef645bb7af7046f4559a784b88216e1caa57c0d83b02f406f8a7c",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/debug_full.log"
+    },
+    {
+      "name": "debug_stage0_1",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "/private/tmp/bridge_cache_3pcf_20261119/stage0_debug/scripts/make_snapshots.py",
+        "--build",
+        "/private/tmp/bridge_cache_3pcf_20261119/debug/interface",
+        "--threads",
+        "1",
+        "--repeat-first"
+      ],
+      "cwd": "None",
+      "seconds": 11.936860084533691,
+      "returncode": 0,
+      "log_sha256": "7894e2b8cda4e581c6621e4a82077f6976c56aa9c4f6f70859730248cb87b22f",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/debug_stage0_1.log"
+    },
+    {
+      "name": "debug_bridge_1",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "/private/tmp/bridge_cache_3pcf_20261119/capture.py",
+        "capture",
+        "--project",
+        "/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf",
+        "--interface",
+        "/private/tmp/bridge_cache_3pcf_20261119/debug/interface",
+        "--inputs",
+        "/private/tmp/bridge_cache_3pcf_20261119/bridge_inputs.npz",
+        "--threads",
+        "1",
+        "--output",
+        "/private/tmp/bridge_cache_3pcf_20261119/debug_bridge_1.npz"
+      ],
+      "cwd": "None",
+      "seconds": 0.29555797576904297,
+      "returncode": 0,
+      "log_sha256": "e4f8b125b05e61628b11e770208bbf06af75eca3f5bf5458aa27d09b598c28d7",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/debug_bridge_1.log"
+    },
+    {
+      "name": "debug_stage0_4",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "/private/tmp/bridge_cache_3pcf_20261119/stage0_debug/scripts/make_snapshots.py",
+        "--build",
+        "/private/tmp/bridge_cache_3pcf_20261119/debug/interface",
+        "--threads",
+        "4",
+        "--repeat-first"
+      ],
+      "cwd": "None",
+      "seconds": 3.8545639514923096,
+      "returncode": 0,
+      "log_sha256": "29e9b2bd26a6869593524a8dabe43b1285c14fbd55f3fae18f1fb295eb6317cf",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/debug_stage0_4.log"
+    },
+    {
+      "name": "debug_bridge_4",
+      "command": [
+        "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/.local/bin/python3",
+        "/private/tmp/bridge_cache_3pcf_20261119/capture.py",
+        "capture",
+        "--project",
+        "/private/tmp/bridge_cache_3pcf_20261119/full/Cocoa/projects/des_3pcf",
+        "--interface",
+        "/private/tmp/bridge_cache_3pcf_20261119/debug/interface",
+        "--inputs",
+        "/private/tmp/bridge_cache_3pcf_20261119/bridge_inputs.npz",
+        "--threads",
+        "4",
+        "--output",
+        "/private/tmp/bridge_cache_3pcf_20261119/debug_bridge_4.npz"
+      ],
+      "cwd": "None",
+      "seconds": 0.29379987716674805,
+      "returncode": 0,
+      "log_sha256": "a0158e857a9d18d8228e765ea323d98223b7d90ffaac7c2cc6aa3caf5e41cf0f",
+      "log": "/private/tmp/bridge_cache_3pcf_20261119/debug_bridge_4.log"
+    }
+  ],
+  "started": 1795091238.179389,
+  "binary_sha256": "41b5df11ce2802f4aa026cbbf16106c1b67ca86de7762cb29fef3fa8d8933ae2",
+  "finished": 1795091499.664783
+}
