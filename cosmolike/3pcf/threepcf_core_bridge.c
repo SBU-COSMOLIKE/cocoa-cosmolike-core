@@ -238,8 +238,10 @@ void threepcf_bridge_set_los(
   }
   bridge_require_finite(z, n, "los_z");
   if (supplied.nlos != n || bridge_differs(supplied.los, z, n)) {
+    // z may be a shorter prefix of the current borrowed bridge view.
+    double* replacement = bridge_copy(z, n);
     free(supplied.los);
-    supplied.los = bridge_copy(z, n);
+    supplied.los = replacement;
     supplied.nlos = n;
     supplied.nonce = bridge_draw();
   }
@@ -299,10 +301,13 @@ void threepcf_bridge_set_sources(
   if (supplied.nbin != nbin || supplied.nsource != nsource ||
       bridge_differs(supplied.source_z, source_z, nsource) ||
       bridge_differs(supplied.sources, sources, nbin*nsource)) {
+    // Either incoming array may still point into the stored source view.
+    double* replacement_z = bridge_copy(source_z, nsource);
+    double* replacement_sources = bridge_copy(sources, nbin*nsource);
     free(supplied.source_z);
     free(supplied.sources);
-    supplied.source_z = bridge_copy(source_z, nsource);
-    supplied.sources = bridge_copy(sources, nbin*nsource);
+    supplied.source_z = replacement_z;
+    supplied.sources = replacement_sources;
     supplied.nbin = nbin;
     supplied.nsource = nsource;
     supplied.nonce = bridge_draw();
@@ -331,8 +336,10 @@ void threepcf_bridge_set_pixel_window(
   }
   bridge_require_finite(window, n, "pixel window");
   if (supplied.nwindow != n || bridge_differs(supplied.window, window, n)) {
+    // window may be a shorter prefix of the current borrowed bridge view.
+    double* replacement = bridge_copy(window, n);
     free(supplied.window);
-    supplied.window = bridge_copy(window, n);
+    supplied.window = replacement;
     supplied.nwindow = n;
     supplied.nonce = bridge_draw();
   }
@@ -407,19 +414,28 @@ void threepcf_bridge_set_feedback(
       bridge_differs(supplied.feedback.log_power, log_power, nz*nk) ||
       bridge_differs(supplied.feedback.log_bispectrum, log_bispectrum,
                      nz*nk*nu*nv)) {
+    // A native caller may resubmit the current bridge input with a new
+    // upsampling factor. Copy every incoming array before releasing the
+    // old storage, since any incoming pointer may refer to that storage.
+    double* replacement_z = bridge_copy(z, nz);
+    double* replacement_logk = bridge_copy(logk, nk);
+    double* replacement_logu = bridge_copy(logu, nu);
+    double* replacement_v = bridge_copy(v, nv);
+    double* replacement_power = bridge_copy(log_power, nz*nk);
+    double* replacement_bispectrum = bridge_copy(log_bispectrum,
+      nz*nk*nu*nv);
     free(supplied.feedback.z);
     free(supplied.feedback.logk);
     free(supplied.feedback.logu);
     free(supplied.feedback.v);
     free(supplied.feedback.log_power);
     free(supplied.feedback.log_bispectrum);
-    supplied.feedback.z = bridge_copy(z, nz);
-    supplied.feedback.logk = bridge_copy(logk, nk);
-    supplied.feedback.logu = bridge_copy(logu, nu);
-    supplied.feedback.v = bridge_copy(v, nv);
-    supplied.feedback.log_power = bridge_copy(log_power, nz*nk);
-    supplied.feedback.log_bispectrum = bridge_copy(log_bispectrum,
-                                                   nz*nk*nu*nv);
+    supplied.feedback.z = replacement_z;
+    supplied.feedback.logk = replacement_logk;
+    supplied.feedback.logu = replacement_logu;
+    supplied.feedback.v = replacement_v;
+    supplied.feedback.log_power = replacement_power;
+    supplied.feedback.log_bispectrum = replacement_bispectrum;
     supplied.feedback.nz = nz;
     supplied.feedback.nk = nk;
     supplied.feedback.nu = nu;
