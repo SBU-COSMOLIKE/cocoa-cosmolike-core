@@ -8,14 +8,15 @@ FFTW transforms fastest. Such a length is called admissible below. Several
 callers additionally need an EVEN length, because they split the transform
 at N/2 (the Nyquist index, the highest frequency a length-N grid resolves):
 J_abl in cfastpt/cfastpt.c and the FFTLog spectra of cosmolike/cosmo2D.c and
-cosmolike/cosmo2D_cluster.c. Those callers round the request up to even,
-call next_fft_size, and retry from the next integer until the result lands
-even.
+cosmolike/cosmo2D_cluster.c. Those callers take their lengths from
+next_even_fft_size_radix7 (cosmolike/basics.c), which scans even candidates
+only.
 
 The failure mode this guards. Consecutive admissible lengths can share
 parity: the even request 242 meets 243 = 3^5 and then 245 = 5 * 7^2, both
-odd, before the even 250. A selection that retries only once can therefore
-still return an odd length. With an odd N, J_abl's padding loop fills its
+odd, before the even 250. A selection that rounds the request to even and
+retries once past an odd result can therefore still return an odd length.
+With an odd N, J_abl's padding loop fills its
 work buffer only up to index 2*(N/2) = N - 1, the next loop reads the
 unwritten entry N back while mirroring the negative-frequency coefficients,
 and that uninitialized read made the scalar FAST-PT bias spectra differ
@@ -34,37 +35,40 @@ How the check works, stage by stage:
      powers of 2, 3, 5 and 7 (about 80000 values). This reference never
      repeats the production algorithm's trial division of candidates, so
      the two implementations cannot share a bug;
-  4. probe every request from 1 to 100000: next_fft_size must return the
-     smallest admissible length at or above the request, and the caller
-     selection must return the smallest EVEN admissible length at or above
-     the even-rounded request, with exactly the retry count the
-     enumeration predicts (1040 of these requests need more than one
-     retry, among them the named cases 242, 722 and 6056);
+  4. probe every request from 2 to 100000: next_fft_size must return the
+     smallest admissible length at or above the request, and
+     next_even_fft_size_radix7 - the selector every even-required
+     production call site uses - must return the smallest EVEN admissible
+     length at or above it (1040 of these requests are parity traps whose
+     first two admissible lengths are both odd, among them the named
+     cases 242, 722 and 6056: a round-and-retry-once selection returned
+     an odd length exactly there);
   5. probe requests around INT_MAX: the selection stays minimal-even in
      long arithmetic, and the driver reports which results exceed
      INT_MAX - at the call sites such a result triggers log_fatal instead
      of being truncated by the (int) cast;
-  6. run the refusal cases in child processes with a timeout: a request
-     below 1 and a request above the largest representable admissible
-     length must terminate the probe through log_fatal (exit code 1)
-     instead of hanging or returning an unusable 0;
-  7. run the PRODUCTION kernel route. The selection probe of stages 4-6
-     replicates the call sites' retry loop, and a replica cannot guard
-     the code that actually runs, so a second probe
-     (fft_kernel_probe.c) compiles the live cfastpt/cfastpt.c (with
-     its utils files) and calls the real J_abl on the configuration
-     that formerly selected the odd length: 1306 input points, the
-     public internal-boost-1.187 setting, padded raw request 6056.
-     The driver asserts that the selected lengths are even and minimal
-     (derived through the live next_fft_size, since J_abl keeps its
-     length in function-local state with no read-out), that the two
-     in-process calls, a second fresh process and an OMP_NUM_THREADS=1
-     process all agree bitwise (the output prints in exact
-     hexadecimal-float form), and that the peak matches the repaired
-     kernel's reference value 42.849612101071031 - with an odd length
-     the kernel read an unwritten work-buffer entry and these
-     comparisons failed. The unboosted default route (1100 points)
-     runs once and must reproduce itself bitwise in-process.
+  6. run the refusal cases in child processes with a timeout: for
+     next_fft_size and for next_even_fft_size_radix7 alike, a request
+     below the domain and a request above the largest representable
+     admissible length must terminate the probe through log_fatal
+     (exit code 1) instead of hanging or returning an unusable 0;
+  7. run the PRODUCTION kernel route. Stages 4-6 exercise the selector
+     in isolation, so a second probe (fft_kernel_probe.c) compiles the
+     live cfastpt/cfastpt.c (with its utils files) and calls the real
+     J_abl - the selector's consumer - on the configuration that
+     formerly selected the odd length: 1306 input points, the public
+     internal-boost-1.187 setting, padded raw request 6056. The driver
+     asserts that the selected lengths are even and minimal (asked of
+     the same next_even_fft_size_radix7 the production site calls,
+     since J_abl keeps its length in function-local state with no
+     read-out), that the two in-process calls, a second fresh process
+     and an OMP_NUM_THREADS=1 process all agree bitwise (the output
+     prints in exact hexadecimal-float form), and that the peak
+     matches the repaired kernel's reference value 42.849612101071031
+     - with an odd length the kernel read an unwritten work-buffer
+     entry and these comparisons failed. The unboosted default route
+     (1100 points) runs once and must reproduce itself bitwise
+     in-process.
 
 How to run it (from the Cocoa/ folder, cocoa environment active, so the
 compiler and the gsl/fftw headers of the environment are found):
@@ -89,16 +93,21 @@ import sys
 import tempfile
 
 # The exhaustive request range of stage 4. Probing every request up to
-# 100000 covers all 1040 multi-retry requests below that bound (the three
+# 100000 covers all 1040 parity-trap requests below that bound (the three
 # named cases included) and finishes in seconds; the INT_MAX neighborhood
-# is covered separately in stage 5.
+# is covered separately in stage 5. The range starts at 2 because that is
+# next_even_fft_size_radix7's domain floor (an FFT needs at least two
+# points) and both selectors share one probe line; the floor itself and
+# the requests below it are exercised by the stage-6 refusals.
+RANGE_START = 2
 RANGE_LIMIT = 100000
 
 # The three requests the 2026-11-18 defect report demonstrated: for each,
 # the first two admissible lengths above the even-rounded request are both
-# odd, so the selection needs two retries (242 -> 250, 722 -> 750,
-# 6056 -> 6144). They sit inside the stage-4 range and are also asserted
-# individually so a regression names them directly.
+# odd, so a selection that rounded to even and retried once past an odd
+# result returned an odd length (the correct even selections are
+# 242 -> 250, 722 -> 750, 6056 -> 6144). They sit inside the stage-4 range
+# and are also asserted individually so a regression names them directly.
 NAMED_CASES = (242, 722, 6056)
 
 # Signed 32-bit bounds of the call sites that store the selected length in
@@ -399,8 +408,9 @@ def check_production_route(executable, even_lengths):
     internal-boost-1.187 setting, padded raw request 6056): two at
     4 OpenMP threads and one at 1 thread. Asserted, in order: the
     selected transform length is even and is the minimal even
-    admissible length (derived through the live next_fft_size; J_abl
-    itself keeps the length in function-local state with no read-out);
+    admissible length (asked of the same next_even_fft_size_radix7 the
+    production site calls; J_abl itself keeps the length in
+    function-local state with no read-out);
     every call is finite; the two calls inside each process agree
     bitwise; the two 4-thread processes agree bitwise; the 1-thread
     process agrees bitwise with them; and the peak matches
@@ -510,68 +520,87 @@ def enumerate_admissible():
 
 
 def expected_selection(request, all_lengths, even_lengths):
-    """Predict the probe's full output line for one request.
+    """Predict the probe's output line for one request.
 
-    Reproduces, from the enumeration alone, what a correct selection
-    must do: the direct result is the first admissible length at or
-    above the request; the caller result is the first EVEN admissible
-    length at or above the even-rounded request; the retry count walks
-    the same path the caller's loop walks (first admissible, then the
-    first admissible above each odd intermediate) and counts the steps,
-    so the probe's loop structure is checked, not only its endpoint.
+    Reproduces, from the enumeration alone, what the two selectors
+    must return: the direct result is the first admissible length at
+    or above the request, and the even result is the first EVEN
+    admissible length at or above it. No rounding step is needed here:
+    an odd request and its even-rounded successor share the same
+    smallest even admissible length, because an even length at or
+    above an odd number is also at or above the next integer.
 
     Arguments:
-      request = the transform-length request, at least 1
+      request = the transform-length request, at least 2
       all_lengths = sorted admissible lengths from enumerate_admissible
       even_lengths = the even subset, same order
 
     Returns:
-      (direct, caller, retries) as integers.
+      (direct, even) as integers.
     """
     # bisect_left returns the index of the first list entry >= request,
     # so all_lengths[index] is the minimal admissible length at or
     # above the request.
     direct = all_lengths[bisect.bisect_left(all_lengths, request)]
+    even = even_lengths[bisect.bisect_left(even_lengths, request)]
+    return direct, even
+
+
+def is_parity_trap(request, all_lengths):
+    """Say whether a round-and-retry-once selection failed this request.
+
+    A request is a parity trap when the first admissible length at or
+    above its even-rounded value is odd AND the first admissible
+    length above that one is odd as well. The historical selection -
+    round the request to even, take next_fft_size, retry once past an
+    odd result - returned the second odd length exactly there. The
+    even-stepping selector never visits an odd candidate, so the traps
+    only serve the report: the log names how many of them the range
+    covers.
+
+    Arguments:
+      request = the transform-length request, at least 2
+      all_lengths = sorted admissible lengths from enumerate_admissible
+
+    Returns:
+      True when the request is a parity trap.
+    """
     even_start = request + request % 2
-    caller = even_lengths[bisect.bisect_left(even_lengths, even_start)]
-    retries = 0
-    step = all_lengths[bisect.bisect_left(all_lengths, even_start)]
-    while step % 2 == 1:
-        step = all_lengths[bisect.bisect_left(all_lengths, step + 1)]
-        retries = retries + 1
-    assert step == caller, (
-        f"reference inconsistency at request {request}: walked to {step}, "
-        f"minimal even is {caller}")
-    return direct, caller, retries
+    first = all_lengths[bisect.bisect_left(all_lengths, even_start)]
+    if first % 2 == 0:
+        return False
+    second = all_lengths[bisect.bisect_left(all_lengths, first + 1)]
+    return second % 2 == 1
 
 
 def parse_probe_lines(text):
-    """Turn the probe's stdout into a list of 4-integer tuples.
+    """Turn the probe's stdout into a list of 3-integer tuples.
 
     Arguments:
-      text = the probe's stdout: lines of "n direct caller retries".
+      text = the probe's stdout: lines of "n direct even".
 
     Returns:
-      list of (request, direct, caller, retries) tuples in file order.
+      list of (request, direct, even) tuples in file order.
 
     Raises:
-      AssertionError on a line that does not hold exactly 4 integers.
+      AssertionError on a line that does not hold exactly 3 integers.
     """
     rows = []
     for line in text.splitlines():
         fields = line.split()
-        assert len(fields) == 4, f"malformed probe line: {line!r}"
-        rows.append((int(fields[0]), int(fields[1]),
-                     int(fields[2]), int(fields[3])))
+        assert len(fields) == 3, f"malformed probe line: {line!r}"
+        rows.append((int(fields[0]), int(fields[1]), int(fields[2])))
     return rows
 
 
 def check_exhaustive_range(executable, all_lengths, even_lengths):
-    """Stage 4: verify every request from 1 to RANGE_LIMIT.
+    """Stage 4: verify every request from RANGE_START to RANGE_LIMIT.
 
     One probe run prints all RANGE_LIMIT lines; each is compared with
-    the enumeration's prediction. The multi-retry count is reported so
-    the log shows the parity trap was actually exercised.
+    the enumeration's prediction for both selectors. The parity-trap
+    count is reported so the log shows the range still covers the
+    requests where a round-and-retry-once selection returned an odd
+    length.
 
     Arguments:
       executable = the compiled probe
@@ -584,26 +613,26 @@ def check_exhaustive_range(executable, all_lengths, even_lengths):
       AssertionError naming the first disagreeing request.
     """
     probe = subprocess.run(
-        [executable, "range", "1", str(RANGE_LIMIT)],
+        [executable, "range", str(RANGE_START), str(RANGE_LIMIT)],
         capture_output=True, text=True, check=True)
     rows = parse_probe_lines(probe.stdout)
-    assert len(rows) == RANGE_LIMIT, (
-        f"probe printed {len(rows)} lines, expected {RANGE_LIMIT}")
-    multi_retry = 0
-    for request, direct, caller, retries in rows:
+    expected_rows = RANGE_LIMIT - RANGE_START + 1
+    assert len(rows) == expected_rows, (
+        f"probe printed {len(rows)} lines, expected {expected_rows}")
+    traps = 0
+    for request, direct, even in rows:
         expected = expected_selection(request, all_lengths, even_lengths)
-        assert (direct, caller, retries) == expected, (
+        assert (direct, even) == expected, (
             f"request {request}: probe returned direct={direct}, "
-            f"caller={caller}, retries={retries}; the enumeration "
-            f"requires direct={expected[0]}, caller={expected[1]}, "
-            f"retries={expected[2]}")
-        if retries > 1:
-            multi_retry = multi_retry + 1
-    assert multi_retry > 0, (
-        "no request below RANGE_LIMIT needed more than one retry; the "
-        "range no longer covers the parity trap this check exists for")
-    print(f"PASS stage 4: requests 1..{RANGE_LIMIT} minimal and "
-          f"minimal-even ({multi_retry} needed more than one retry)")
+            f"even={even}; the enumeration requires "
+            f"direct={expected[0]}, even={expected[1]}")
+        if is_parity_trap(request, all_lengths):
+            traps = traps + 1
+    assert traps > 0, (
+        "no request below RANGE_LIMIT is a parity trap; the range no "
+        "longer covers the defect this check exists for")
+    print(f"PASS stage 4: requests {RANGE_START}..{RANGE_LIMIT} minimal "
+          f"and minimal-even ({traps} parity traps covered)")
 
 
 def check_named_cases(executable, all_lengths, even_lengths):
@@ -625,17 +654,16 @@ def check_named_cases(executable, all_lengths, even_lengths):
     probe = subprocess.run(arguments, capture_output=True, text=True,
                            check=True)
     rows = parse_probe_lines(probe.stdout)
-    for request, direct, caller, retries in rows:
+    for request, direct, even in rows:
         expected = expected_selection(request, all_lengths, even_lengths)
-        assert (direct, caller, retries) == expected, (
-            f"named case {request}: probe returned {caller} after "
-            f"{retries} retries; the enumeration requires {expected[1]} "
-            f"after {expected[2]}")
-        assert retries >= 2, (
-            f"named case {request} needed only {retries} retries; it is "
-            "documented as needing at least two")
-        print(f"  named case {request}: caller selection {caller} "
-              f"after {retries} retries")
+        assert (direct, even) == expected, (
+            f"named case {request}: probe returned even={even}; the "
+            f"enumeration requires {expected[1]}")
+        assert is_parity_trap(request, all_lengths), (
+            f"named case {request} is documented as a parity trap, but "
+            "the enumeration no longer marks it as one")
+        print(f"  named case {request}: even selection {even} "
+              f"(parity trap: its first two admissible lengths are odd)")
     print("PASS stage 4b: named cases 242, 722, 6056")
 
 
@@ -671,32 +699,33 @@ def check_int_boundary(executable, all_lengths, even_lengths):
     probe = subprocess.run(arguments, capture_output=True, text=True,
                            check=True)
     rows = parse_probe_lines(probe.stdout)
-    for request, direct, caller, retries in rows:
+    for request, direct, even in rows:
         expected = expected_selection(request, all_lengths, even_lengths)
-        assert (direct, caller, retries) == expected, (
+        assert (direct, even) == expected, (
             f"boundary case {request}: probe returned direct={direct}, "
-            f"caller={caller}, retries={retries}; the enumeration "
-            f"requires {expected}")
-        if caller > INT_MAX:
+            f"even={even}; the enumeration requires {expected}")
+        if even > INT_MAX:
             side = "exceeds INT_MAX, so the call sites refuse it"
         else:
             side = "fits an int"
-        print(f"  boundary case {request}: caller selection {caller} "
+        print(f"  boundary case {request}: even selection {even} "
               f"({side})")
     print("PASS stage 5: INT_MAX boundary selections minimal-even")
 
 
 def check_refusals(executable, all_lengths):
-    """Stage 6: the requests next_fft_size must refuse, in timed children.
+    """Stage 6: the requests the selectors must refuse, in timed children.
 
-    Three requests must terminate the probe through log_fatal with exit
-    code 1: 0 and -4 (below the domain; the scan would otherwise walk
-    through candidate 0, where the repeated division by 2 never
-    terminates) and a request so high that no admissible length exists
-    between it and LONG_MAX (exhaustion; the scan would otherwise
-    return an unusable 0). Each runs as a child process with a timeout,
-    so a regression back to the hang becomes a clear test failure
-    instead of a stuck run.
+    Both public entry points refuse through log_fatal with exit code 1.
+    For next_fft_size: 0 and -4 (below the domain; the scan would
+    otherwise walk through candidate 0, where the repeated division by
+    2 never terminates) and a request so high that no admissible length
+    exists between it and LONG_MAX (exhaustion; the scan would
+    otherwise return an unusable 0). For next_even_fft_size_radix7,
+    whose domain floor is 2: the requests 0 and 1, and the same
+    exhaustion request. Each runs as a child process with a timeout, so
+    a regression back to the hang becomes a clear test failure instead
+    of a stuck run.
 
     The exhaustion request is LONG_MAX - 16, not one above the largest
     admissible length: the gap between that length and LONG_MAX spans
@@ -722,17 +751,26 @@ def check_refusals(executable, all_lengths):
     assert all_lengths[-1] < exhaustion_request, (
         f"the largest admissible length {all_lengths[-1]} is not below "
         f"{exhaustion_request}; the exhaustion case would succeed")
-    for request in (0, -4, exhaustion_request):
+    refusals = (
+        ("one", 0),
+        ("one", -4),
+        ("one", exhaustion_request),
+        ("evenone", 0),
+        ("evenone", 1),
+        ("evenone", exhaustion_request),
+    )
+    for mode, request in refusals:
         child = subprocess.run(
-            [executable, "one", str(request)],
+            [executable, mode, str(request)],
             capture_output=True, text=True,
             timeout=REFUSAL_TIMEOUT_SECONDS)
         assert child.returncode == 1, (
-            f"next_fft_size({request}) must terminate through log_fatal "
-            f"with exit code 1; the child exited {child.returncode} with "
-            f"stdout {child.stdout!r}")
-        print(f"  refusal {request}: child exited 1 (log_fatal, no hang)")
-    print("PASS stage 6: domain and exhaustion refusals")
+            f"probe mode {mode} with request {request} must terminate "
+            "through log_fatal with exit code 1; the child exited "
+            f"{child.returncode} with stdout {child.stdout!r}")
+        print(f"  refusal {mode} {request}: child exited 1 "
+              f"(log_fatal, no hang)")
+    print("PASS stage 6: domain and exhaustion refusals, both selectors")
 
 
 def main():

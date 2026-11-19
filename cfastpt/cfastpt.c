@@ -26,9 +26,8 @@
 
 // next_fft_size (basics.c) rounds the convolution lengths here up to
 // the next number whose only prime factors are 2, 3, 5 and 7, the
-// radices FFTW transforms fastest; the call site in J_abl retries
-// from the next integer, as often as needed, until it holds an even
-// length.
+// radices FFTW transforms fastest; J_abl takes its even padded
+// length from the sibling next_even_fft_size_radix7.
 
 // ---------------------------------------------------------------------------
 // J_abJ1J2Jk: Core FAST-PT computation engine
@@ -920,18 +919,12 @@ void J_abl(
   N += (2 * N_pad + N_extrap_low + N_extrap_high);
  
   // Round up to next even FFT-friendly size (factors of 2,3,5,7 only).
-  // Must be even so halfN = N/2 is an integer. A single retry cannot
-  // guarantee that: consecutive admissible sizes can share parity (the
-  // even request 242 meets 243 = 3^5 and then 245 = 5 * 7^2, both odd,
-  // before the even 250), so keep retrying until the scan lands on an
-  // even size. A power of two always ends the loop; if the scan runs
-  // out of admissible sizes first, next_fft_size itself aborts. The
-  // FFTW planner receives this length as an int, so reject a size
-  // beyond INT_MAX here instead of truncating it in the implicit
-  // conversion at plan creation.
-  if (N % 2) N++;
-  N = next_fft_size(N);
-  while (N % 2) N = next_fft_size(N + 1);
+  // Must be even so halfN = N/2 is an integer; the selection story
+  // lives with next_even_fft_size_radix7 in basics.c. The FFTW
+  // planner receives this length as an int, so reject a size beyond
+  // INT_MAX here instead of truncating it in the implicit conversion
+  // at plan creation.
+  N = next_even_fft_size_radix7(N);
   if (N > INT_MAX) {
     log_fatal("J_abl: even FFT length %ld exceeds INT_MAX", N);
     exit(1);

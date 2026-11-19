@@ -9063,8 +9063,8 @@ double C_kk_limber(const double l)
 
 // next_fft_size (basics.c) rounds every FFTLog grid length here up to
 // the next number whose only prime factors are 2, 3, 5 and 7, the
-// radices FFTW transforms fastest; the call sites retry from the next
-// integer, as often as needed, until they hold an even length.
+// radices FFTW transforms fastest; the call sites take their even
+// lengths from the sibling next_even_fft_size_radix7.
 
 // The FFTLog configuration of one radial component (cosmo2D.h,
 // cfftlog_config); config is this file's short name for it.
@@ -10318,21 +10318,13 @@ static double** C_cl_tomo_core(
     // -------------------------------------------------------------------------
     // Round up to the next FFT-friendly even size whose only prime factors
     // are 2, 3, 5, or 7.  The extra elements are zero-padded in cfftlog_ells_p1
-    // and do not affect the convolution result. A single retry cannot
-    // guarantee evenness: consecutive admissible sizes can share parity
-    // (the even request 242 meets 243 = 3^5 and then 245 = 5 * 7^2, both
-    // odd, before the even 250), so keep retrying until the scan lands on
-    // an even size. A power of two always ends the loop; if the scan runs
-    // out of admissible sizes first, next_fft_size itself aborts. The
-    // selected length must also fit the int slot N[j][2], so reject a
-    // size beyond INT_MAX instead of truncating it in the cast.
+    // and do not affect the convolution result; the selection story lives
+    // with next_even_fft_size_radix7 in basics.c. The selected length
+    // must fit the int slot N[j][2], so reject a size beyond INT_MAX
+    // instead of truncating it in the cast.
     // -------------------------------------------------------------------------
     long raw = 2*N[j][0] + N[j][1];
-    if (raw % 2) raw++;
-    long nfft = next_fft_size(raw);
-    while (nfft % 2) {
-      nfft = next_fft_size(nfft + 1);
-    }
+    long nfft = next_even_fft_size_radix7(raw);
     if (nfft > INT_MAX) {
       log_fatal("C_cl_tomo_core: even FFT length %ld exceeds INT_MAX", nfft);
       exit(1);
@@ -11038,15 +11030,10 @@ static double** C_gs_tomo_core(
     // FFT-friendly even size: only prime factors 2, 3, 5, 7, so FFTW
     // uses its fast small-radix codelets; the extra elements are
     // zero-padded in cfftlog_ells_p1 and do not affect the result.
-    // Retry until even - one retry is not enough, because consecutive
-    // admissible sizes can share parity - and reject a length beyond
-    // INT_MAX instead of truncating it; C_cl_tomo_core tells the story
+    // Reject a length beyond INT_MAX instead of truncating it in the
+    // int slot N[j][2]; C_cl_tomo_core tells the story
     long raw = 2*N[j][0] + N[j][1];
-    if (raw % 2) raw++;
-    long nfft = next_fft_size(raw);
-    while (nfft % 2) {
-      nfft = next_fft_size(nfft + 1);
-    }
+    long nfft = next_even_fft_size_radix7(raw);
     if (nfft > INT_MAX) {
       log_fatal("C_gs_tomo_core: even FFT length %ld exceeds INT_MAX", nfft);
       exit(1);
@@ -13164,16 +13151,10 @@ static double** C_cl_tomo_lowrank_core(
     N[j][0] = cfg[j].N_pad;
     N[j][1] = nchi;
     // FFT-friendly even size (only prime factors 2, 3, 5, 7); the
-    // derivation lives in C_cl_tomo_core. Retry until even - one retry
-    // is not enough, because consecutive admissible sizes can share
-    // parity - and reject a length beyond INT_MAX instead of
-    // truncating it
+    // derivation lives in C_cl_tomo_core. Reject a length beyond
+    // INT_MAX instead of truncating it in the int slot N[j][2]
     long raw = 2*N[j][0] + N[j][1];
-    if (raw % 2) raw++;
-    long nfft = next_fft_size(raw);
-    while (nfft % 2) {
-      nfft = next_fft_size(nfft + 1);
-    }
+    long nfft = next_even_fft_size_radix7(raw);
     if (nfft > INT_MAX) {
       log_fatal("C_cl_tomo_lowrank_core: even FFT length %ld exceeds "
                 "INT_MAX", nfft);
@@ -15751,10 +15732,9 @@ static double** C_cl_tomo_fkem_pairs_core(
   }
 
   // FFT sizes per slot, as in C_cl_tomo_core: padded length rounded up
-  // to an even size with only the prime factors 2, 3, 5 and 7. Retry
-  // until even - one retry is not enough, because consecutive
-  // admissible sizes can share parity - and reject a length beyond
-  // INT_MAX instead of truncating it; C_cl_tomo_core tells the story
+  // to an even size with only the prime factors 2, 3, 5 and 7, with a
+  // length beyond INT_MAX rejected instead of truncated in the int
+  // slot; C_cl_tomo_core tells the story
   const int SIZE2 = (is_bmag_zero == 0) ? 3 : 2;
   int Nmax = 0;
   int N[SIZE2][3];
@@ -15762,11 +15742,7 @@ static double** C_cl_tomo_fkem_pairs_core(
     N[j][0] = cfg[j].N_pad;
     N[j][1] = nchi;
     long raw = 2*N[j][0] + N[j][1];
-    if (raw % 2) raw++;
-    long nfft = next_fft_size(raw);
-    while (nfft % 2) {
-      nfft = next_fft_size(nfft + 1);
-    }
+    long nfft = next_even_fft_size_radix7(raw);
     if (nfft > INT_MAX) {
       log_fatal("C_cl_tomo_fkem_pairs_core: even FFT length %ld exceeds "
                 "INT_MAX", nfft);

@@ -789,14 +789,11 @@ void hankel_kernel_FT_3D(
 // Returns the smallest m >= n whose prime factorization contains only
 // 2, 3, 5 and 7, the radices with fast dedicated FFTW kernels; the
 // comment above next_fft_size_scan in basics.c tells the full story.
-// A caller that also needs an even length must retry from m + 1 until
-// the result comes back even. One retry is not always enough:
-// consecutive admissible sizes can share parity (after the request
-// 242 come 243 = 3^5 and 245 = 5 * 7^2, both odd, before the even
-// 250), so the retry belongs in a loop. Terminates the program when n
-// is below 1 - the scan would otherwise hang - or when no admissible
-// length is representable as a long, rather than returning an
-// unusable 0.
+// A caller that also needs an even length uses
+// next_even_fft_size_radix7 below instead of rounding or retrying
+// here. Terminates the program when n is below 1 - the scan would
+// otherwise hang - or when no admissible length is representable as a
+// long, rather than returning an unusable 0.
 // ---------------------------------------------------------------------------
 long next_fft_size(
     const long n        // minimum acceptable transform size
@@ -812,6 +809,31 @@ long next_fft_size(
 // ---------------------------------------------------------------------------
 int next_even_fft_size(
     const int minimum   // smallest acceptable even transform length
+  );
+
+// ---------------------------------------------------------------------------
+// Round a transform length up to the next even FFT-friendly size with
+// 7 admitted as a radix.
+//
+// Returns the smallest even m >= minimum whose prime factorization
+// contains only 2, 3, 5 and 7. The radix {2, 3, 5} sibling above
+// serves the three-point FFTLog grids; this one serves the
+// one-dimensional FFTLog convolution lengths of cfastpt.c, cosmo2D.c
+// and cosmo2D_cluster.c, which admit 7 and need an even length
+// because they reconstruct the negative-frequency coefficients by
+// conjugation around the Nyquist index N/2 - the highest frequency a
+// length-N grid resolves - which only an even N places on an integer
+// index. Rounding the request to even does not make the RESULT even,
+// and one retry past an odd result is not enough either: consecutive
+// admissible lengths can share parity (the even request 242 meets
+// 243 = 3^5 and then 245 = 5 * 7^2, both odd, before the even 250).
+// The even-stepping scan here returns, in one call, the same length a
+// retry-until-even loop would. Terminates the program when minimum is
+// below 2 or when no such length is representable as a long, rather
+// than overflow.
+// ---------------------------------------------------------------------------
+long next_even_fft_size_radix7(
+    const long minimum  // smallest acceptable even transform length
   );
 
 #ifndef __cplusplus

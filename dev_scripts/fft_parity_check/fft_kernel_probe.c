@@ -6,7 +6,7 @@
 // repository's own cfastpt/cfastpt.c (plus its utils files),
 // cosmolike/basics.c, cosmolike/structs.c and log.c/src/log.c, so the
 // J_abl that runs here is the working tree's J_abl, padding rules,
-// retry loop and all - nothing is replicated on the parity-sensitive
+// length selection and all - nothing is replicated on the parity-sensitive
 // path. The python driver asserts bitwise repeatability of the
 // printed output across the two in-process calls, across fresh
 // processes and across OpenMP thread counts, and compares the peak
@@ -42,33 +42,6 @@
 // drawn from the galaxy-bias calculation, the same configuration the
 // defect report used to demonstrate the odd-length failure.
 #define NTERMS 3
-
-// ---------------------------------------------------------------------------
-// The even-length selection as J_abl performs it, repeated here only
-// to PRINT the length the kernel is about to use: J_abl keeps its
-// selected length in function-local static variables with no read-out
-// function, so the probe derives it through the same live
-// next_fft_size call chain. fft_parity_probe.c's exhaustive stage
-// verifies this idiom against an independent enumeration; the
-// production selection inside J_abl itself is guarded by the
-// repeatability and reference-peak assertions on this probe's output.
-//
-// Parameters:
-//   request = the raw padded length request, at least 1
-// Returns:
-//   the smallest even admissible length at or above the even-rounded
-//   request
-// ---------------------------------------------------------------------------
-static long derived_even_selection(const long request)
-{
-  long size = request;
-  if (size % 2) size++;
-  size = next_fft_size(size);
-  while (size % 2) {
-    size = next_fft_size(size + 1);
-  }
-  return size;
-}
 
 // ---------------------------------------------------------------------------
 // Integer ceiling of numerator/denominator for positive operands,
@@ -115,7 +88,14 @@ int main(int argc, char* argv[])
 
   const long raw = size + 2 * config.N_pad
                         + config.N_extrap_low + config.N_extrap_high;
-  const long selected = derived_even_selection(raw);
+  // The length J_abl is about to use, printed for the driver: J_abl
+  // keeps its selected length in function-local static variables with
+  // no read-out function, so the probe asks the same
+  // next_even_fft_size_radix7 the production call site asks. The
+  // production call inside J_abl itself is guarded by the
+  // repeatability and reference-peak assertions on this probe's
+  // output.
+  const long selected = next_even_fft_size_radix7(raw);
   // The convolution transform length J_abl derives from the selected
   // length; it has no evenness requirement of its own.
   const long ntotal = next_fft_size(2 * selected + 1);

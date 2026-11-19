@@ -2014,10 +2014,9 @@ void hankel_kernel_FT_3D(
 // transform depends on, so each caller keeps the radix set its
 // reference results were computed with. The one-dimensional FFTLog
 // convolutions of the Limber and cluster pipelines admit 7 to the
-// radix set, and impose any evenness requirement at the call site by
-// retrying from the next integer until the result lands even; one
-// retry is not always enough, because consecutive admissible lengths
-// can share parity (243 = 3^5 and 245 = 5 * 7^2 are neighbors). The
+// radix set and take their even lengths from
+// next_even_fft_size_radix7, whose header comment explains why
+// evenness cannot be imposed by rounding or a single retry. The
 // two-dimensional FFTLog of the three-point transform stays with 2, 3
 // and 5 and asks for an even length here, because its frequency
 // bookkeeping gives the Nyquist frequency - the highest frequency a
@@ -2087,6 +2086,35 @@ int next_even_fft_size(const int minimum)
     exit(1);
   }
   return (int) found;
+}
+
+long next_even_fft_size_radix7(const long minimum)
+{
+  if (!(minimum >= 2 && minimum < LONG_MAX - 2)) {
+    log_fatal("next_even_fft_size_radix7: invalid minimum FFT length %ld",
+              minimum);
+    exit(1);
+  }
+
+  // Round the request up to an even start and test even candidates
+  // only, since an odd candidate can never satisfy the evenness rule.
+  // The even-stepping scan returns the same length as scanning every
+  // integer and retrying past each odd result: both give the smallest
+  // even length with admitted factors at or above the request. The
+  // bound sits one below LONG_MAX so the final += 2 cannot step past
+  // LONG_MAX and overflow: from an even start the last candidate
+  // under the bound is LONG_MAX - 3, and the next step lands exactly
+  // on the bound, ending the loop. The one even value this excludes,
+  // LONG_MAX - 1 = 2 * (2^62 - 1), has huge prime factors and could
+  // never be returned anyway.
+  const long found = next_fft_size_scan(minimum + (minimum%2), 2,
+                                        LONG_MAX - 1, 1);
+  if (found == 0) {
+    log_fatal("next_even_fft_size_radix7: no representable FFT length "
+              "at or above %ld", minimum);
+    exit(1);
+  }
+  return found;
 }
 
 
