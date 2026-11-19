@@ -202,7 +202,7 @@ static inline double covariance_filter_3pcf(
   double radius // aperture radius R in radians; 0: unfiltered leg
 )
 {
-  if (radius == 0.0) {
+  if (0.0 == radius) {
     return 1.0;
   }
   const double x = ell*radius;
@@ -436,7 +436,7 @@ void covariance_halos_3pcf(
       // collapse_model = 1 adds the weak Omega_m(z) dependence of the
       // spherical-collapse threshold delta_c; model 0 keeps it constant.
       double collapse = input->delta_c;
-      if (input->collapse_model == 1) {
+      if (1 == input->collapse_model) {
         collapse *= 1.0 + 0.0123*log10(
           physics_omega_m_z_3pcf(model, z[iz]));
       }
@@ -578,11 +578,11 @@ static inline double covariance_window_3pcf(
   int fourier // 0 returns the pair density; 1 returns G(q)
 )
 {
-  if (in->center_window == 1) {
+  if (1 == in->center_window) {
     const double radius = sqrt(in->area/COV_PI);
     if (fourier) {
       const double x = value*radius;
-      const double amplitude = x == 0.0 ? 1.0
+      const double amplitude = 0.0 == x ? 1.0
         : 2.0*gsl_sf_bessel_J1(x)/x;
       return amplitude*amplitude;
     }
@@ -602,8 +602,8 @@ static inline double covariance_window_3pcf(
     if (fourier) {
       const double a = 0.5*side*x;
       const double b = 0.5*side*y;
-      const double sx = a == 0.0 ? 1.0 : sin(a)/a;
-      const double sy = b == 0.0 ? 1.0 : sin(b)/b;
+      const double sx = 0.0 == a ? 1.0 : sin(a)/a;
+      const double sy = 0.0 == b ? 1.0 : sin(b)/b;
       factor = sx*sx*sy*sy;
     } else {
       factor = fmax(0.0, 1.0 - fabs(x)/side)
@@ -642,7 +642,7 @@ static inline double covariance_closure_3pcf(
   double phi // relative angle between the two vectors, radians
 )
 {
-  if (q == p && phi == COV_PI) {
+  if (q == p && COV_PI == phi) {
     return 0.0;
   }
   return hypot(q + p*cos(phi), p*sin(phi));
@@ -694,7 +694,7 @@ static inline double covariance_power_value_3pcf(
 {
   const size_t pair = (size_t)a*work->ns + b;
   const double noise = work->in->noise[pair];
-  return mode == 0 ? work->power[pair*work->in->nell + ell] + noise : noise;
+  return 0 == mode ? work->power[pair*work->in->nell + ell] + noise : noise;
 }
 
 
@@ -740,7 +740,7 @@ static inline void covariance_quadratic_3pcf(
   const int kind = in->row_kind[row];
   const int* fields = in->row_fields + (size_t)row*3;
 
-  if (kind == 0) {
+  if (0 == kind) {
     *ee = covariance_filter_3pcf(p, in->field_radius[fields[0]])
       *covariance_filter_3pcf(q, in->field_radius[fields[1]]);
     *eb = 0.0;
@@ -751,14 +751,14 @@ static inline void covariance_quadratic_3pcf(
   const double dy = -q*sin(angle);
   const double separation_wave = 0.5*hypot(dx, dy);
   double bessel = 0.0;
-  const int order = kind == 2 ? 0 : 4;
+  const int order = 2 == kind ? 0 : 4;
   for (int node=0; node<in->ntheta; node++) {
     const size_t index = (size_t)row*in->ntheta + node;
     bessel += in->theta_weight[index]
       *gsl_sf_bessel_Jn(order, separation_wave*in->theta[index]);
   }
 
-  if (kind == 2) {
+  if (2 == kind) {
     *ee = cos(2.0*angle)*bessel;
     *eb = -sin(2.0*angle)*bessel;
   } else {
@@ -785,7 +785,7 @@ static int covariance_quadratic_equal_3pcf(
     return 0;
   }
 
-  if (in->row_kind[first] == 0) {
+  if (0 == in->row_kind[first]) {
     for (int leg=0; leg<2; leg++) {
       const int a = in->row_fields[(size_t)first*3 + leg];
       const int b = in->row_fields[(size_t)second*3 + leg];
@@ -849,7 +849,7 @@ static void covariance_prepare_3pcf(
   const size_t ng = work->ngeometry; // Fourier triangles (q, p, phi)
 
   for (int row=0; row<in->nrow; row++) {
-    work->has_cubic = work->has_cubic || in->row_kind[row] == 1;
+    work->has_cubic = work->has_cubic || 1 == in->row_kind[row];
   }
 
   work->lens = calloc1d((int)covariance_product_3pcf(ns, nz));
@@ -893,7 +893,7 @@ static void covariance_prepare_3pcf(
     memset(work->quadratic_representative, 0, sizeof(int)*(size_t)in->nrow);
     for (int row=0; row<in->nrow; row++) {
       work->quadratic_index[row] = -1;
-      if (in->row_kind[row] == 1) {
+      if (1 == in->row_kind[row]) {
         continue;
       }
       int shape = 0;
@@ -962,7 +962,7 @@ static void covariance_prepare_3pcf(
   // limit and the zero-mode halo response only ever need Q(l, l, pi),
   // where the mixed E/B kernel vanishes identically.
   for (int row=0; row<in->nrow; row++) {
-    if (in->row_kind[row] != 1) {
+    if (1 != in->row_kind[row]) {
       for (int l=0; l<nl; l++) {
         double unused;
         covariance_quadratic_3pcf(in, row, in->ell[l], in->ell[l], COV_PI,
@@ -1122,7 +1122,7 @@ static void covariance_prepare_3pcf(
   memset(bspec_pair_needed, 0, sizeof(int)*field_pairs);
 
   for (int row=0; row<in->nrow; row++) {
-    if (in->row_kind[row] != 1) {
+    if (1 != in->row_kind[row]) {
       continue;
     }
     const int* fields = in->row_fields + (size_t)row*3;
@@ -1349,8 +1349,8 @@ void covariance_xi_from_power_3pcf(
   memset(row_kernel, 0, sizeof(int)*(size_t)nrow);
   int nkernel = 0;
   for (int row=0; row<nrow; row++) {
-    if (!(sign[row] == 1
-          || sign[row] == -1)) {
+    if (!(1 == sign[row]
+          || -1 == sign[row])) {
       log_fatal("physical 3pcf covariance: xi sign must be +1 or -1");
       exit(1);
     }
@@ -1381,7 +1381,7 @@ void covariance_xi_from_power_3pcf(
   #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int k=0; k<nkernel; k++) {
     const int row = representative[k];
-    const int order = sign[row] == 1 ? 0 : 4;
+    const int order = 1 == sign[row] ? 0 : 4;
     for (int l=0; l<nell; l++) {
       double kernel = 0.0;
       for (int t=0; t<ntheta; t++) {
@@ -1517,7 +1517,7 @@ static void covariance_profile_plan_3pcf_prepare(
 )
 {
   memset(plan, 0, sizeof(*plan));
-  if (nxi == 0) {
+  if (0 == nxi) {
     return;
   }
 
@@ -1560,7 +1560,7 @@ static void covariance_profile_plan_3pcf_prepare(
   plan->endpoint_weight = calloc1d((int)endpoints);
 
   const double scale = in->profile_radius[1];
-  if (!(in->profile_radius[0] == 0.0
+  if (!(0.0 == in->profile_radius[0]
         && scale > 0.0)) {
     log_fatal("physical 3pcf covariance: profile preparation nodes must "
       "start with zero then a positive radius");
@@ -1570,7 +1570,7 @@ static void covariance_profile_plan_3pcf_prepare(
   for (int r=0; r<nc; r++) {
     plan->x[r] = log1p(in->profile_radius[r]/scale);
     if (!(isfinite(plan->x[r])
-          && (r == 0 || plan->x[r] > plan->x[r - 1]))) {
+          && (0 == r || plan->x[r] > plan->x[r - 1]))) {
       log_fatal("physical 3pcf covariance: profile coordinates must be "
         "finite and strictly increasing");
       exit(1);
@@ -1668,7 +1668,7 @@ static void covariance_profile_plan_3pcf_prepare(
           // orientation quadrature, so only the cosine is stored.
           const double phm = atan2(-dy, xm);
           const double php = atan2(dy, xp);
-          const double phase = in->row_kind[row] == 2
+          const double phase = 2 == in->row_kind[row]
             ? 2.0*(phm - php) : 2.0*(phm + php) - 4.0*in->phi[a];
           plan->endpoint_weight[index] = in->theta_weight[ti]
             *in->dphi[a]*COV_I2PI*cos(phase);
@@ -1942,14 +1942,14 @@ static void covariance_halo_terms_3pcf(
   // only through their lensing weights.
   for (int row=0; row<no; row++) {
     const int kind = in->row_kind[row];
-    const int nleg = kind == 1 ? 3 : 2;
+    const int nleg = 1 == kind ? 3 : 2;
     const int* fields = in->row_fields + (size_t)row*3;
     int radii[3] = {-1, -1, -1};
     if (kind <= 1) {
       for (int a=0; a<nleg; a++) {
         radii[a] = radius_index[fields[a]];
         radius_needed[radii[a]] = radius_needed[radii[a]]
-          || kind == 1 || !in->large_area;
+          || 1 == kind || !in->large_area;
       }
       // Sort the radius indices in place: the halo response depends on
       // the unordered multiset of radii, so putting them in canonical
@@ -1964,7 +1964,7 @@ static void covariance_halo_terms_3pcf(
         }
       }
     }
-    if (kind == 1) {
+    if (1 == kind) {
       for (int a=0; a<3; a++) {
         pair_needed[covariance_radius_pair_3pcf(nrad,
           radii[(a + 1)%3], radii[(a + 2)%3])] = 1;
@@ -2029,26 +2029,26 @@ static void covariance_halo_terms_3pcf(
   if (work->has_cubic) {
     size_t ncubic = 0;
     for (int row=0; row<no; row++) {
-      ncubic += in->row_kind[row] == 1;
+      ncubic += 1 == in->row_kind[row];
     }
 
     const size_t capacity = covariance_product_3pcf(ncubic, 3);
     row_entity = calloc1d_generic(
       covariance_product_3pcf(no, 3), sizeof(size_t));
-    if (row_entity == NULL) {
+    if (NULL == row_entity) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
       exit(1);
     }
     entity_field = malloc1d_int((int)capacity);
     memset(entity_field, 0, sizeof(int)*capacity);
     entity_radius_pair = calloc1d_generic(capacity, sizeof(size_t));
-    if (entity_radius_pair == NULL) {
+    if (NULL == entity_radius_pair) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
       exit(1);
     }
 
     for (int row=0; row<no; row++) {
-      if (in->row_kind[row] != 1) {
+      if (1 != in->row_kind[row]) {
         continue;
       }
       const int* fields = in->row_fields + (size_t)row*3;
@@ -2072,7 +2072,7 @@ static void covariance_halo_terms_3pcf(
 
     contraction_index = calloc1d_generic(
       covariance_product_3pcf(nentity, nentity), sizeof(size_t));
-    if (contraction_index == NULL) {
+    if (NULL == contraction_index) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
       exit(1);
     }
@@ -2081,11 +2081,11 @@ static void covariance_halo_terms_3pcf(
     // differently. In contraction_index a zero marks an unused pair,
     // and a used pair stores its compact contraction index plus one.
     for (int i=0; i<no; i++) {
-      if (in->row_kind[i] != 1) {
+      if (1 != in->row_kind[i]) {
         continue;
       }
       for (int j=i; j<no; j++) {
-        if (in->row_kind[j] != 1) {
+        if (1 != in->row_kind[j]) {
           continue;
         }
         for (int p=0; p<3; p++) {
@@ -2093,7 +2093,7 @@ static void covariance_halo_terms_3pcf(
           for (int q=0; q<3; q++) {
             const size_t right = row_entity[(size_t)j*3 + q];
             const size_t pair = left*nentity + right;
-            if (contraction_index[pair] == 0) {
+            if (0 == contraction_index[pair]) {
               contraction_index[pair] = 1;
               ncontraction++;
             }
@@ -2103,12 +2103,12 @@ static void covariance_halo_terms_3pcf(
     }
 
     contraction_left = calloc1d_generic(ncontraction, sizeof(size_t));
-    if (contraction_left == NULL) {
+    if (NULL == contraction_left) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
       exit(1);
     }
     contraction_right = calloc1d_generic(ncontraction, sizeof(size_t));
-    if (contraction_right == NULL) {
+    if (NULL == contraction_right) {
       log_fatal("physical 3pcf covariance: cannot allocate covariance tables");
       exit(1);
     }
@@ -2118,7 +2118,7 @@ static void covariance_halo_terms_3pcf(
     for (size_t left=0; left<nentity; left++) {
       for (size_t right=0; right<nentity; right++) {
         const size_t pair = left*nentity + right;
-        if (contraction_index[pair] != 0) {
+        if (0 != contraction_index[pair]) {
           contraction_left[next] = left;
           contraction_right[next] = right;
           contraction_index[pair] = ++next;
@@ -2212,7 +2212,7 @@ static void covariance_halo_terms_3pcf(
     for (int row=0; row<no; row++) {
       const int* fields = in->row_fields + (size_t)row*3;
       row_lens[row] = field_lens[fields[0]]*field_lens[fields[1]];
-      if (in->row_kind[row] == 1) {
+      if (1 == in->row_kind[row]) {
         row_lens[row] *= field_lens[fields[2]];
       }
     }
@@ -2302,7 +2302,7 @@ static void covariance_halo_terms_3pcf(
       for (int s=0; s<nshape; s++) {
         const int row = representative[s];
         const int kind = in->row_kind[row];
-        if (in->large_area && kind != 1) {
+        if (in->large_area && 1 != kind) {
           shape_zero[s] = covariance_dot_3pcf(nl, work->fourier_measure,
             work->quadratic_zero + (size_t)row*nl, nfw_square);
           continue;
@@ -2313,7 +2313,7 @@ static void covariance_halo_terms_3pcf(
             const int* radii = shape_radius + (size_t)3*s;
             value = profile_real[(size_t)radii[0]*nr + r]
               *profile_real[(size_t)radii[1]*nr + r];
-            if (kind == 1) {
+            if (1 == kind) {
               value *= profile_real[(size_t)radii[2]*nr + r];
             }
           } else {
@@ -2332,7 +2332,7 @@ static void covariance_halo_terms_3pcf(
         // replaces the radial sum here: it avoids truncating the
         // halo-offset quadrature and is the same expression the
         // large-area branch above uses.
-        if (kind != 1) {
+        if (1 != kind) {
           zero = covariance_dot_3pcf(nl, work->fourier_measure,
             work->quadratic_zero + (size_t)row*nl, nfw_square);
         }
@@ -2420,7 +2420,7 @@ static void covariance_halo_terms_3pcf(
                 response_fourier + (size_t)row_shape[j]*nw);
           terms[4*matrix + cell] += measure*connected;
 
-          if (in->row_kind[i] == 1 && in->row_kind[j] == 1) {
+          if (1 == in->row_kind[i] && 1 == in->row_kind[j]) {
             // P*T partition sum. Nine choices pair the two P fields
             // across the estimators: p picks row i's separated field
             // and q picks row j's; the prepared contraction holds the
@@ -2590,8 +2590,8 @@ static double covariance_gaussian_two_3pcf(
   const int c = in->field_source[aj[0]];
   const int d = in->field_source[aj[1]];
   const int both_shear = in->row_kind[i] >= 2 && in->row_kind[j] >= 2;
-  const double bb_sign_i = in->row_kind[i] == 3 ? -1.0 : 1.0;
-  const double bb_sign_j = in->row_kind[j] == 3 ? -1.0 : 1.0;
+  const double bb_sign_i = 3 == in->row_kind[i] ? -1.0 : 1.0;
+  const double bb_sign_j = 3 == in->row_kind[j] ? -1.0 : 1.0;
 
   double value = 0.0;
   for (int q=0; q<nl; q++) {
@@ -2605,7 +2605,7 @@ static double covariance_gaussian_two_3pcf(
       double spectra;
       // noise_mode = 1 forms CC and CN only; the closed-form NN of the
       // header is added once after this loop.
-      if (both_shear && in->noise_mode == 1) {
+      if (both_shear && 1 == in->noise_mode) {
         const size_t ac = (size_t)a*work->ns + c;
         const size_t bd = (size_t)b*work->ns + d;
         const size_t ad = (size_t)a*work->ns + d;
@@ -2660,8 +2660,8 @@ static double covariance_gaussian_two_3pcf(
         // acquires when the E and B legs swap between its two Fourier
         // arguments: odd for xi+ (its sine is of the relative angle
         // alone), even for xi-.
-        const double mixed_sign_i = in->row_kind[i] == 2 ? -1.0 : 1.0;
-        const double mixed_sign_j = in->row_kind[j] == 2 ? -1.0 : 1.0;
+        const double mixed_sign_i = 2 == in->row_kind[i] ? -1.0 : 1.0;
+        const double mixed_sign_j = 2 == in->row_kind[j] ? -1.0 : 1.0;
         mixedspectra = covariance_power_value_3pcf(work, a, c, q, 0)
             *covariance_power_value_3pcf(work, b, d, p, 1)
           + covariance_power_value_3pcf(work, a, d, q, 0)
@@ -2689,7 +2689,7 @@ static double covariance_gaussian_two_3pcf(
         // vectors only through exchange-symmetric combinations - so qj
         // already serves both pairings. Only an unequal-radius Map^2
         // kernel changes: its swapped filter product is formed here.
-        const double swapped = in->row_kind[j] == 0
+        const double swapped = 0 == in->row_kind[j]
           ? work->filters[(size_t)aj[0]*nl + p]
               *work->filters[(size_t)aj[1]*nl + q] : qj;
         const double mixed = work->quadratic_mixed[ii]
@@ -2708,7 +2708,7 @@ static double covariance_gaussian_two_3pcf(
   // Omega = pi (hi^2 - lo^2) is each row's annulus area and the overlap
   // is the area of the annulus intersection. Only equal xi kinds
   // receive it: between xi+ and xi- the E and B noise cancel.
-  if (both_shear && in->noise_mode == 1
+  if (both_shear && 1 == in->noise_mode
     && in->row_kind[i] == in->row_kind[j]) {
     const double lo_i = in->theta_edges[(size_t)i*2];
     const double hi_i = in->theta_edges[(size_t)i*2 + 1];
@@ -2798,7 +2798,7 @@ static double covariance_pb_3pcf(
         // an xi kernel and an equal-radius Map^2 kernel are symmetric
         // under that exchange, so qe serves both; only an
         // unequal-radius Map^2 forms a swapped filter product.
-        const double swapped = in->row_kind[quadratic] == 0
+        const double swapped = 0 == in->row_kind[quadratic]
           ? work->filters[(size_t)a[0]*nl + p]
               *work->filters[(size_t)a[1]*nl + q] : qe;
         // Six cross choices: P joins quadratic field a[left] to cubic
@@ -2809,7 +2809,7 @@ static double covariance_pb_3pcf(
         double partitions = 0.0;
         for (int left=0; left<2; left++) {
           const int source = in->field_source[a[1 - left]];
-          const double kernel = left == 0 ? qe : swapped;
+          const double kernel = 0 == left ? qe : swapped;
           for (int right=0; right<3; right++) {
             const int b0 = b[(right + 1)%3];
             const int b1 = b[(right + 2)%3];
@@ -3016,35 +3016,35 @@ void covariance_physical_3pcf(
 {
   int pixel_count;
   physics_window_samples_3pcf(model, &pixel_count);
-  if (!(pixel_count == 0)) {
+  if (!(0 == pixel_count)) {
     log_fatal("physical 3pcf covariance: pixel-smoothed means require a "
       "separately matched covariance");
     exit(1);
   }
-  if (!(input->estimator == 0)) {
+  if (!(0 == input->estimator)) {
     log_fatal("physical 3pcf covariance: finite-triangle or catalogue-mask "
       "covariance is not this estimator");
     exit(1);
   }
-  if (!(input->ia_model == 0)) {
+  if (!(0 == input->ia_model)) {
     log_fatal("physical 3pcf covariance: nonlinear IA connected covariance "
       "requires additional cumulants");
     exit(1);
   }
-  if (!(input->noise_mode == 0
-        || input->noise_mode == 1)) {
+  if (!(0 == input->noise_mode
+        || 1 == input->noise_mode)) {
     log_fatal("physical 3pcf covariance: noise_mode must select finite-band "
       "(0) or uniform-area xi noise (1)");
     exit(1);
   }
-  if (!(input->noise_mode == 0
-        || (input->large_area == 1 && input->theta_edges != NULL))) {
+  if (!(0 == input->noise_mode
+        || (1 == input->large_area && NULL != input->theta_edges))) {
     log_fatal("physical 3pcf covariance: analytic xi noise requires "
       "large_area=1 and exact theta_edges");
     exit(1);
   }
-  if (!(input->center_window == 1
-        || input->center_window == 2)) {
+  if (!(1 == input->center_window
+        || 2 == input->center_window)) {
     log_fatal("physical 3pcf covariance: choose a circle or square center "
       "window");
     exit(1);
@@ -3081,7 +3081,7 @@ void covariance_physical_3pcf(
       log_fatal("physical 3pcf covariance: invalid row kind");
       exit(1);
     }
-    const int nleg = kind == 1 ? 3 : 2;
+    const int nleg = 1 == kind ? 3 : 2;
     for (int leg=0; leg<nleg; leg++) {
       const int field = input->row_fields[(size_t)row*3 + leg];
       if (!(field >= 0
@@ -3089,7 +3089,7 @@ void covariance_physical_3pcf(
         log_fatal("physical 3pcf covariance: row field index out of range");
         exit(1);
       }
-      if (!(kind >= 2 ? input->field_radius[field] == 0.0
+      if (!(kind >= 2 ? 0.0 == input->field_radius[field]
             : input->field_radius[field] > 0.0)) {
         log_fatal("physical 3pcf covariance: xi legs require R=0; aperture "
           "legs require positive R");
@@ -3097,7 +3097,7 @@ void covariance_physical_3pcf(
       }
     }
     if (kind >= 2) {
-      if (input->noise_mode == 1) {
+      if (1 == input->noise_mode) {
         const double lower = input->theta_edges[(size_t)row*2];
         const double upper = input->theta_edges[(size_t)row*2 + 1];
         if (!(isfinite(lower)
@@ -3156,7 +3156,7 @@ void covariance_physical_3pcf(
   for (int row=0; row<no; row++) {
     const int* fields = input->row_fields + (size_t)row*3;
     double value = 0.0;
-    if (input->row_kind[row] == 1) {
+    if (1 == input->row_kind[row]) {
       // A cubic estimator is symmetric under permuting its three legs.
       // Averaging the three choices of separated leg keeps that
       // symmetry exact under a finite numerical quadrature.
@@ -3192,14 +3192,14 @@ void covariance_physical_3pcf(
   for (int i=0; i<no; i++) {
     for (int j=i; j<no; j++) {
       const size_t cell = (size_t)i*no + j;
-      if (input->row_kind[i] == 1 && input->row_kind[j] == 1) {
+      if (1 == input->row_kind[i] && 1 == input->row_kind[j]) {
         covariance_cubic_disconnected_3pcf(&work, i, j,
           terms + cell, terms + matrix + cell);
-      } else if (input->row_kind[i] != 1 && input->row_kind[j] != 1) {
+      } else if (1 != input->row_kind[i] && 1 != input->row_kind[j]) {
         terms[cell] = covariance_gaussian_two_3pcf(&work, i, j);
       } else {
-        const int quadratic = input->row_kind[i] == 1 ? j : i;
-        const int cubic = input->row_kind[i] == 1 ? i : j;
+        const int quadratic = 1 == input->row_kind[i] ? j : i;
+        const int cubic = 1 == input->row_kind[i] ? i : j;
         terms[3*matrix + cell] = covariance_pb_3pcf(&work, quadratic, cubic);
       }
     }

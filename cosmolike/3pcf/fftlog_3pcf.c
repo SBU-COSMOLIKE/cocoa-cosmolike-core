@@ -146,10 +146,10 @@ static double taper_fftlog_3pcf(
   const int cutoff = (int)floor(width*length*0.5);
   const int absolute = abs(frequency);
   const int edge = length/2;
-  if (cutoff == 0 || absolute <= edge-cutoff) {
+  if (0 == cutoff || absolute <= edge-cutoff) {
     return 1.0;
   }
-  if (cutoff == 1) {
+  if (1 == cutoff) {
     // A one-cell taper region has no interior to roll off across, so
     // only the Nyquist coefficient itself turns off.
     return 0.0;
@@ -232,8 +232,8 @@ static double complex kernel_fftlog_3pcf(
   const int status2 = gsl_sf_lngamma_complex_e((order+2.5-nu)*0.5,
       -eta*0.5, &denominator_log, &denominator_phase);
 
-  if (!(status1 == GSL_SUCCESS
-        && status2 == GSL_SUCCESS)) {
+  if (!(GSL_SUCCESS == status1
+        && GSL_SUCCESS == status2)) {
     log_fatal("fftlog_3pcf: complex gamma evaluation failed");
     exit(1);
   }
@@ -302,8 +302,8 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   // kernel entry stays finite. The grid must be positive and uniformly
   // log-spaced, because the common step enters every kernel phase.
   if (!(n >= 2
-        && n%2 == 0
-        && ell != NULL
+        && 0 == n%2
+        && NULL != ell
         && max_order >= 0
         && max_order < INT_MAX-1
         && workers > 0
@@ -325,7 +325,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
         && isfinite(window_width)
         && window_width >= 0.0
         && window_width <= 1.0
-        && (window == 0 || window == 1))) {
+        && (0 == window || 1 == window))) {
     log_fatal("fftlog_3pcf: invalid bias, bin width, phase or window");
     exit(1);
   }
@@ -361,7 +361,7 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
   // the slices of different workers never share a cache line. The
   // overflow checks run before any multiplication that could wrap.
   fftlog_workspace_3pcf* work = calloc1d_generic(1, sizeof(*work));
-  if (!(work != NULL)) {
+  if (!(NULL != work)) {
     log_fatal("fftlog_3pcf: workspace allocation failed");
     exit(1);
   }
@@ -505,8 +505,8 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
       work->real, work->forward, FFTW_ESTIMATE);
   work->inverse_plan = fftw_plan_dft_c2r_2d(work->padded, work->padded,
       work->scratch, work->real, FFTW_ESTIMATE);
-  if (!(work->forward_plan != NULL
-        && work->inverse_plan != NULL)) {
+  if (!(NULL != work->forward_plan
+        && NULL != work->inverse_plan)) {
     log_fatal("fftlog_3pcf: FFTW planning failed");
     exit(1);
   }
@@ -522,7 +522,7 @@ void fftlog_destroy_3pcf(
   fftlog_workspace_3pcf* work // owning workspace
 )
 {
-  if (work == NULL) {
+  if (NULL == work) {
     return;
   }
 
@@ -561,18 +561,18 @@ void fftlog_select_3pcf(
   const int* indices // positions on xy/reversed(ell)
 )
 {
-  if (!(work != NULL
+  if (!(NULL != work
         && ntheta > 0
         && ntheta <= work->n
-        && indices != NULL
-        && work->selected_count == 0)) {
+        && NULL != indices
+        && 0 == work->selected_count)) {
     log_fatal("fftlog_3pcf: invalid or repeated FFT output selection");
     exit(1);
   }
   for (int index=0; index<ntheta; index++) {
     if (!(indices[index] >= 0
           && indices[index] < work->n
-          && (index == 0 || indices[index] > indices[index-1]))) {
+          && (0 == index || indices[index] > indices[index-1]))) {
       log_fatal("fftlog_3pcf: FFT output indices must increase within the "
         "original grid");
       exit(1);
@@ -619,7 +619,7 @@ double* fftlog_input_3pcf(
   const int worker // requested private slice
 )
 {
-  if (!(work != NULL
+  if (!(NULL != work
         && worker >= 0
         && worker < work->workers)) {
     log_fatal("fftlog_3pcf: worker exceeds allocated scratch");
@@ -659,7 +659,7 @@ void fftlog_forward_3pcf(
   // transform, so only the alignment tail after it needs clearing.
   // With padding the border cells must also return to zero, because
   // the previous inverse transform wrote its full padded output here.
-  const size_t clear_start = work->padding == 0 ? (size_t)work->n*work->n : 0;
+  const size_t clear_start = 0 == work->padding ? (size_t)work->n*work->n : 0;
   for (size_t index=clear_start; index<work->real_stride; index++) {
     real[index] = 0.0;
   }

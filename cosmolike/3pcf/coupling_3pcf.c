@@ -188,10 +188,10 @@ void legendre_coupling_3pcf(
       || mmax < 0
       || lmax > INT_MAX-1-mmax
       || nquery < 1
-      || npsi == 1
+      || 1 == npsi
       || npsi < 0
-      || psi == NULL
-      || output == NULL) {
+      || NULL == psi
+      || NULL == output) {
     log_fatal("legendre_coupling_3pcf: invalid input");
     exit(1);
   }
@@ -219,7 +219,7 @@ void legendre_coupling_3pcf(
   }
 
   double* coefficients = calloc1d((int)(stride*stride));
-  if (coefficients == NULL) {
+  if (NULL == coefficients) {
     log_fatal("legendre_coupling_3pcf: allocation failed");
     exit(1);
   }
@@ -266,7 +266,7 @@ void legendre_coupling_3pcf(
       const double* row = coefficients+(size_t)degree*stride;
       double* result = output+((size_t)mode*stride+degree)*nquery;
       for (int query=0; query<nquery; query++) {
-        if (npsi == 0) {
+        if (0 == npsi) {
           result[query] = coupling_value_3pcf(row, degree, mode, psi[query]);
         } else {
           // Reproduce fastnc's tabulation: npsi uniform nodes span

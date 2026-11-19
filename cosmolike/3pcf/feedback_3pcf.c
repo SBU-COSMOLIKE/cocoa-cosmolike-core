@@ -122,7 +122,7 @@ static double* dense_table(
     table[index] = source[index];
   }
 
-  if (boost == 1) {
+  if (1 == boost) {
     return table;
   }
 
@@ -170,7 +170,7 @@ static double* dense_table(
           // exactly, endpoints included: densifying never moves the
           // loaded data.
           double value;
-          if (node%boost == 0) {
+          if (0 == node%boost) {
             value = line[node/boost];
           } else {
             const double coordinate = axes[axis][0]
@@ -223,7 +223,7 @@ feedback_3pcf* feedback_create_3pcf(
   const feedback_input_3pcf* input // borrowed loaded tables; NULL returns NULL
 )
 {
-  if (input == NULL) {
+  if (NULL == input) {
     return NULL;
   }
   if (!(input->boost >= 1
@@ -240,7 +240,7 @@ feedback_3pcf* feedback_create_3pcf(
   const double* axes[4] = {input->z, input->logk, input->logu, input->v};
 
   feedback_3pcf* response = calloc1d_generic(1, sizeof(*response));
-  if (!(response != NULL)) {
+  if (!(NULL != response)) {
     log_fatal("feedback_3pcf: response owner allocation failed");
     exit(1);
   }
@@ -284,7 +284,7 @@ feedback_3pcf* feedback_create_3pcf(
     for (int node=0; node<count; node++) {
       const double expected = low + node*step;
       if (!(isfinite(axes[axis][node])
-            && (node == 0 || axes[axis][node] > axes[axis][node - 1])
+            && (0 == node || axes[axis][node] > axes[axis][node - 1])
             && fabs(axes[axis][node] - expected)
               <= 64.0*DBL_EPSILON*fmax(1.0, fmax(fabs(low), fabs(high))))) {
         log_fatal("feedback_3pcf: response coordinates must be uniform");
@@ -329,7 +329,7 @@ void feedback_destroy_3pcf(
   feedback_3pcf* response // owned response object; NULL does nothing
 )
 {
-  if (response != NULL) {
+  if (NULL != response) {
     free(response->power);
     free(response->bispectrum);
     free(response);
@@ -367,10 +367,10 @@ static double read_response(
     log_fatal("feedback_3pcf: feedback amplitude must be finite");
     exit(1);
   }
-  if (amplitude == 0.0) {
+  if (0.0 == amplitude) {
     return 1.0;
   }
-  if (!(response != NULL)) {
+  if (!(NULL != response)) {
     log_fatal("feedback_3pcf: nonzero feedback needs paired tables");
     exit(1);
   }
@@ -406,7 +406,7 @@ static double read_response(
     fractions[axis] = position - cells[axis];
   }
 
-  const double* table = dimensions == 2
+  const double* table = 2 == dimensions
     ? response->power : response->bispectrum;
   double logarithm = 0.0;
 
@@ -495,7 +495,7 @@ double feedback_bispectrum_3pcf(
 {
   // Amplitude zero needs no tables and no triangle sorting: the
   // hydro-to-DMO ratio is exactly 1.
-  if (amplitude == 0.0) {
+  if (0.0 == amplitude) {
     return 1.0;
   }
 

@@ -108,12 +108,12 @@ void filtered_pair_3pcf(
   if (nfield <= 0
       || nell <= 0
       || nr <= 0
-      || ell == NULL
-      || ell_weights == NULL
-      || r == NULL
-      || filters == NULL
-      || power == NULL
-      || out == NULL) {
+      || NULL == ell
+      || NULL == ell_weights
+      || NULL == r
+      || NULL == filters
+      || NULL == power
+      || NULL == out) {
     log_fatal("filtered_pair_3pcf: invalid dimensions or pointer");
     exit(1);
   }
@@ -248,9 +248,9 @@ void connected_gram_3pcf(
 {
   if (nrow <= 0
       || nnode <= 0
-      || responses == NULL
-      || weights == NULL
-      || out == NULL) {
+      || NULL == responses
+      || NULL == weights
+      || NULL == out) {
     log_fatal("connected_gram_3pcf: invalid dimensions or pointer");
     exit(1);
   }
@@ -381,11 +381,11 @@ void gaussian_aperture_covariance_3pcf(
   if (nfield <= 0
       || nr <= 0
       || nrow <= 0
-      || triplets == NULL
-      || pair == NULL
-      || pair_zero == NULL
-      || radial_weights == NULL
-      || out == NULL) {
+      || NULL == triplets
+      || NULL == pair
+      || NULL == pair_zero
+      || NULL == radial_weights
+      || NULL == out) {
     log_fatal("gaussian_aperture_covariance_3pcf: invalid dimensions or "
       "pointer");
     exit(1);

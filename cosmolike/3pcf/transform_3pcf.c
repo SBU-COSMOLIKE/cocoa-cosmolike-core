@@ -196,9 +196,9 @@ transform_plan_3pcf* transform_create_3pcf(
         && lmax <= INT_MAX-1-mmax
         && mmax < INT_MAX-3
         && workers > 0
-        && ell != NULL
-        && indices != NULL
-        && phi != NULL)) {
+        && NULL != ell
+        && NULL != indices
+        && NULL != phi)) {
     log_fatal("transform_3pcf: invalid dimensions");
     exit(1);
   }
@@ -227,7 +227,7 @@ transform_plan_3pcf* transform_create_3pcf(
   // One grid point cannot define an interpolation segment, so the
   // coupling accepts zero (exact evaluation) or at least two points.
   if (!(npsi >= 0
-        && npsi != 1)) {
+        && 1 != npsi)) {
     log_fatal("transform_3pcf: coupling grid needs zero or at least two "
       "points");
     exit(1);
@@ -240,7 +240,7 @@ transform_plan_3pcf* transform_create_3pcf(
   // coupling table spans the 2*nell-1 leg-index differences explained
   // at stage 4. Every product is overflow-checked before use.
   transform_plan_3pcf* plan = calloc1d_generic(1, sizeof(*plan));
-  if (plan == NULL) {
+  if (NULL == plan) {
     log_fatal("transform_3pcf: allocation failed");
     exit(1);
   }
@@ -358,7 +358,7 @@ transform_plan_3pcf* transform_create_3pcf(
   for (int mode=0; mode<=mmax; mode++) {
     for (int degree=0; degree<=lmax; degree++) {
       const size_t offset = ((size_t)mode*(lmax + 1) + degree)*nratio;
-      const double sign = degree%2 == 0 ? 1.0 : -1.0;
+      const double sign = 0 == degree%2 ? 1.0 : -1.0;
       for (size_t ratio=0; ratio<nratio; ratio++) {
         plan->coupling[offset + ratio] = sign*plan->coupling[offset + ratio];
       }
@@ -386,7 +386,7 @@ transform_plan_3pcf* transform_create_3pcf(
     for (int mode=0; mode<=mmax; mode++) {
       const size_t offset = ((size_t)mode*nphi+angle)*2;
       const double half_width = 0.5*mode*dphi;
-      const double average = half_width == 0.0
+      const double average = 0.0 == half_width
           ? 1.0 : sin(half_width)/half_width;
       plan->angles[offset] = average*cos(mode*phi[angle]);
       plan->angles[offset+1] = average*sin(mode*phi[angle]);
@@ -458,9 +458,9 @@ transform_plan_3pcf* transform_create_3pcf(
         const size_t triangle =
             ((size_t)first*ntheta+second)*nphi+angle;
         for (int component=0; component<4; component++) {
-          if (projection == 0) {
+          if (0 == projection) {
             phases[component] = 1.0;
-          } else if (projection == 2) {
+          } else if (2 == projection) {
             phases[component] = conj(phases[component]);
           }
           const size_t offset = ((size_t)component*triangles+triangle)*2;
@@ -481,7 +481,7 @@ void transform_destroy_3pcf(
   transform_plan_3pcf* plan // owning plan
 )
 {
-  if (plan == NULL) {
+  if (NULL == plan) {
     return;
   }
 
@@ -525,10 +525,10 @@ void transform_natural_3pcf(
   double* gamma_imag // same shape
 )
 {
-  if (!(plan != NULL
-        && multipoles != NULL
-        && gamma_real != NULL
-        && gamma_imag != NULL)) {
+  if (!(NULL != plan
+        && NULL != multipoles
+        && NULL != gamma_real
+        && NULL != gamma_imag)) {
     log_fatal("transform_3pcf: null array");
     exit(1);
   }
@@ -583,7 +583,7 @@ void transform_natural_3pcf(
         mode = job == nmodes - 2 ? -1 : 1;
       }
     } else if (plan->mmax > 0) {
-      mode = job == nmodes - 1 ? 1 : (job == 0 ? 0 : job + 1);
+      mode = job == nmodes - 1 ? 1 : (0 == job ? 0 : job + 1);
     }
 
     // The storage slot always follows physical M, whatever the job
@@ -772,7 +772,7 @@ void transform_natural_3pcf(
       // Component 1's transform of H_M belongs to Gamma_1 at -M (see
       // the order table above); every other component stores at M.
       int destination = task;
-      if (plan->ordered_legs && component == 1) {
+      if (plan->ordered_legs && 1 == component) {
         destination = plan->mmax-mode;
       }
       double* target =
@@ -791,7 +791,7 @@ void transform_natural_3pcf(
       // transforms coincide; copying the finished values spares a
       // second inverse FFT. This is an identity of the kernels alone
       // and does not exchange physical legs.
-      if (abs(mode) == 1) {
+      if (1 == abs(mode)) {
         for (int previous=0; previous<component; previous++) {
           if (abs(order1[previous]) == abs(first_order)
               && abs(order2[previous]) == abs(second_order)) {
@@ -954,8 +954,8 @@ void transform_aperture_3pcf(
   double* output // real aperture moments
 )
 {
-  if (!(plan != NULL
-        && plan->projection != 0)) {
+  if (!(NULL != plan
+        && 0 != plan->projection)) {
     log_fatal("transform_3pcf: aperture contraction requires centroid "
       "projection");
     exit(1);
@@ -967,14 +967,14 @@ void transform_aperture_3pcf(
 
   transform_natural_3pcf(plan, multipoles, real, imag);
 
-  if (plan->convention == 0) {
+  if (0 == plan->convention) {
     // The aperture weights follow TreeCorr, whose natural components
     // read -[Gamma_0, Gamma_1, Gamma_3, Gamma_2]. A fastnc-convention
     // plan therefore converts in place before the contraction; both
     // members of the exchanged pair are read before either is set.
     for (int index=0; index<triangles; index++) {
       for (int part=0; part<2; part++) {
-        double* values = part == 0 ? real : imag;
+        double* values = 0 == part ? real : imag;
         values[index] = -values[index];
         values[(size_t)triangles+index] =
             -values[(size_t)triangles+index];
@@ -1041,7 +1041,7 @@ void transform_aperture_grid_3pcf(
   }
 
   const size_t count = (size_t)(plan->lmax + 1)*pairs;
-  if (plan->grid_multipoles == NULL) {
+  if (NULL == plan->grid_multipoles) {
     plan->grid_multipoles = calloc1d((int)count);
   }
 

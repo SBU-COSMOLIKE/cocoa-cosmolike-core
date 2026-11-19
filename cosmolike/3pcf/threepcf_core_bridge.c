@@ -204,7 +204,7 @@ void threepcf_bridge_set_los(
   const int n // node count
 )
 {
-  if (z == NULL
+  if (NULL == z
       || n < 2) {
     log_fatal("threepcf bridge: the line of sight needs at least two "
               "nodes (physics_3pcf.h)");
@@ -247,9 +247,9 @@ void threepcf_bridge_set_sources(
   const int nsource // source redshift nodes
 )
 {
-  if (source_z == NULL && sources == NULL && nbin == 0 && nsource == 0) {
+  if (NULL == source_z && NULL == sources && 0 == nbin && 0 == nsource) {
     // clear the override; the struct-read path takes over
-    if (supplied.nbin != 0) {
+    if (0 != supplied.nbin) {
       free(supplied.source_z);
       free(supplied.sources);
       supplied.source_z = NULL;
@@ -260,8 +260,8 @@ void threepcf_bridge_set_sources(
     }
     return;
   }
-  if (source_z == NULL
-      || sources == NULL
+  if (NULL == source_z
+      || NULL == sources
       || nbin < 1
       || nsource < 2) {
     log_fatal("threepcf bridge: supplied sources need both arrays, at "
@@ -288,8 +288,8 @@ void threepcf_bridge_set_pixel_window(
   const int n // sample count, or zero
 )
 {
-  if (window == NULL && n == 0) {
-    if (supplied.nwindow != 0) {
+  if (NULL == window && 0 == n) {
+    if (0 != supplied.nwindow) {
       free(supplied.window);
       supplied.window = NULL;
       supplied.nwindow = 0;
@@ -297,7 +297,7 @@ void threepcf_bridge_set_pixel_window(
     }
     return;
   }
-  if (window == NULL
+  if (NULL == window
       || n < 2) {
     log_fatal("threepcf bridge: the pixel window needs at least two "
               "integer-ell samples (physics_3pcf.h)");
@@ -328,9 +328,9 @@ void threepcf_bridge_set_feedback(
   const double amplitude // shared log-response amplitude
 )
 {
-  if (z == NULL && logk == NULL && logu == NULL && v == NULL &&
-      nz == 0 && nk == 0 && nu == 0 && nv == 0) {
-    if (supplied.feedback.nz != 0 || supplied.feedback.amplitude != 0.0) {
+  if (NULL == z && NULL == logk && NULL == logu && NULL == v &&
+      0 == nz && 0 == nk && 0 == nu && 0 == nv) {
+    if (0 != supplied.feedback.nz || 0.0 != supplied.feedback.amplitude) {
       free(supplied.feedback.z);
       free(supplied.feedback.logk);
       free(supplied.feedback.logu);
@@ -344,12 +344,12 @@ void threepcf_bridge_set_feedback(
   }
   // feedback_create_3pcf requires at least four nodes per axis for
   // its cubic preparation; refuse earlier with the same bound
-  if (z == NULL
-      || logk == NULL
-      || logu == NULL
-      || v == NULL
-      || log_power == NULL
-      || log_bispectrum == NULL
+  if (NULL == z
+      || NULL == logk
+      || NULL == logu
+      || NULL == v
+      || NULL == log_power
+      || NULL == log_bispectrum
       || nz < 4
       || nk < 4
       || nu < 4
@@ -468,7 +468,7 @@ void threepcf_bridge_ia_from_core(
   physics_ia_3pcf* parameters // receives the translated parameters
 )
 {
-  if (parameters == NULL) {
+  if (NULL == parameters) {
     log_fatal("threepcf bridge: missing IA parameter output");
     exit(1);
   }
@@ -478,14 +478,14 @@ void threepcf_bridge_ia_from_core(
   // translation above is the power-law (IA_REDSHIFT_EVOLUTION) map,
   // and the module implements TATT operators, so both flags must
   // say so.
-  if (nuisance.IA == IA_REDSHIFT_BINNING) {
+  if (IA_REDSHIFT_BINNING == nuisance.IA) {
     log_fatal("threepcf bridge: nuisance.IA = IA_REDSHIFT_BINNING is "
               "refused: ia[1][2] holds the bin-2 A2 amplitude there, "
               "not the velocity-shear C_t");
     exit(1);
   }
-  if (nuisance.IA != IA_REDSHIFT_EVOLUTION
-      || nuisance.IA_MODEL != IA_MODEL_TATT) {
+  if (IA_REDSHIFT_EVOLUTION != nuisance.IA
+      || IA_MODEL_TATT != nuisance.IA_MODEL) {
     log_fatal("threepcf bridge: the IA translation requires "
               "nuisance.IA = IA_REDSHIFT_EVOLUTION and "
               "nuisance.IA_MODEL = IA_MODEL_TATT (got IA = %d, "
@@ -509,7 +509,7 @@ void threepcf_bridge_ia_from_core(
   // collapsing it to bin 0. Under IA_REDSHIFT_EVOLUTION the setter
   // writes slot 0 only, so untouched slots hold their reset zeros.
   for (int i=1; i<redshift.shear_nbin; i++) {
-    if (nuisance.ia[2][i] != 0.0
+    if (0.0 != nuisance.ia[2][i]
         && nuisance.ia[2][i] != nuisance.ia[2][0]) {
       log_fatal("threepcf bridge: per-bin b_TA values differ "
                 "(ia[2][%d] = %e vs ia[2][0] = %e); one scalar b_TA "
@@ -678,14 +678,14 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   }
 
   // --- refusals: everything the assembly reads must be installed ---
-  if (cosmology.lnP == NULL
-      || cosmology.lnPL == NULL) {
+  if (NULL == cosmology.lnP
+      || NULL == cosmology.lnPL) {
     log_fatal("threepcf bridge: install the nonlinear and linear power "
               "spectra before building the three-point model");
     exit(1);
   }
-  if (cosmology.chi == NULL
-      || cosmology.G == NULL) {
+  if (NULL == cosmology.chi
+      || NULL == cosmology.G) {
     log_fatal("threepcf bridge: install the distances and the growth "
               "table before building the three-point model");
     exit(1);
@@ -700,7 +700,7 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
               "w0, wa) before building the three-point model");
     exit(1);
   }
-  if (supplied.nlos == 0) {
+  if (0 == supplied.nlos) {
     log_fatal("threepcf bridge: set the line-of-sight nodes before "
               "building the three-point model");
     exit(1);
@@ -761,7 +761,7 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   }
   int j0 = -1;
   for (int j=0; j<cosmology.lnPL_nz; j++) {
-    if (cosmology.lnPL[cosmology.lnPL_nk][j] == 0.0) {
+    if (0.0 == cosmology.lnPL[cosmology.lnPL_nk][j]) {
       j0 = j;
       break;
     }
@@ -776,8 +776,8 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   // struct table must live on the background grid with every photo-z
   // shift exactly zero (threepcf_core_bridge.h explains why shifted
   // sources are supplied, never recomputed here).
-  if (supplied.nbin == 0) {
-    if (redshift.shear_zdist_table == NULL
+  if (0 == supplied.nbin) {
+    if (NULL == redshift.shear_zdist_table
         || redshift.shear_nbin < 1) {
       log_fatal("threepcf bridge: no supplied sources and no source "
                 "sample installed (set_source_sample)");
@@ -799,7 +799,7 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
       }
     }
     for (int i=0; i<redshift.shear_nbin; i++) {
-      if (nuisance.photoz[0][0][i] != 0.0) {
+      if (0.0 != nuisance.photoz[0][0][i]) {
         log_fatal("threepcf bridge: source photo-z shift of bin %d is "
                   "%e; the bridge never replicates the Python shift "
                   "convention - apply the shifts in Python and supply "
@@ -849,7 +849,7 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   // convention), so D = G a with a = 1/(1+z), normalized by the z = 0
   // node so D(0) = 1 exactly, as the model contract requires. The
   // grid-equality guard above makes the z = 0 node the first one.
-  if (!(cosmology.G[1][0] != 0.0)) {
+  if (!(0.0 != cosmology.G[1][0])) {
     log_fatal("threepcf bridge: growth table has G(z=0) = 0");
     exit(1);
   }
@@ -1024,8 +1024,8 @@ void threepcf_core_set_distances(
   const int n // node count
 )
 {
-  if (z == NULL
-      || chi == NULL
+  if (NULL == z
+      || NULL == chi
       || n < 5) {
     log_fatal("threepcf bridge: set_distances needs matching z and chi "
               "arrays with at least five nodes");
@@ -1072,7 +1072,7 @@ void threepcf_core_set_growth(
   const int n // node count
 )
 {
-  if (z == NULL
+  if (NULL == z
       || G == NULL
       || n < 5) {
     log_fatal("threepcf bridge: set_growth needs matching z and G "
@@ -1131,9 +1131,9 @@ static void bridge_install_power(
   const int is_linear // 1 fills the linear table; 0 the nonlinear one
 )
 {
-  if (log10k == NULL
-      || z == NULL
-      || lnP == NULL
+  if (NULL == log10k
+      || NULL == z
+      || NULL == lnP
       || nk < 2
       || nz < 2) {
     log_fatal("threepcf bridge: a power-spectrum table needs log10k, "
@@ -1184,7 +1184,7 @@ static void bridge_install_power(
         log10k, nk, 1e-9, MAX_GRID_SEGMENTS,
         s_start, s_len, s_xmin, s_inv_dx,
         is_linear ? "lnPL log10k" : "lnP log10k");
-    if (nseg != 1) {
+    if (1 != nseg) {
       log_fatal("threepcf bridge: the log10 k axis must be one uniform "
                 "segment, got %d", nseg);
       exit(1);
@@ -1310,7 +1310,7 @@ void threepcf_core_set_source_sample(
               "(set_source_sample_size) before installing n(z)");
     exit(1);
   }
-  if (table == NULL
+  if (NULL == table
       || nzbins < 2
       || ntomo != Ntomo) {
     log_fatal("threepcf bridge: the n(z) table needs at least two "
@@ -1414,7 +1414,7 @@ void threepcf_core_set_nuisance_shear_photoz(
               "the photo-z shifts");
     exit(1);
   }
-  if (shifts == NULL
+  if (NULL == shifts
       || redshift.shear_nbin != n) {
     log_fatal("threepcf bridge: expected %d photo-z shifts, got %d",
               redshift.shear_nbin, n);
@@ -1455,10 +1455,10 @@ void threepcf_core_init_ia(
     log_fatal("threepcf bridge: invalid IA_MODEL = %d", ia_model);
     exit(1);
   }
-  if (ia_redshift_evolution == NO_IA
-      || ia_redshift_evolution == IA_NLA_LF
-      || ia_redshift_evolution == IA_REDSHIFT_BINNING
-      || ia_redshift_evolution == IA_REDSHIFT_EVOLUTION) {
+  if (NO_IA == ia_redshift_evolution
+      || IA_NLA_LF == ia_redshift_evolution
+      || IA_REDSHIFT_BINNING == ia_redshift_evolution
+      || IA_REDSHIFT_EVOLUTION == ia_redshift_evolution) {
     nuisance.IA = ia_redshift_evolution;
   }
   else {
@@ -1492,7 +1492,7 @@ void threepcf_core_set_nuisance_ia(
   }
   int cache_update = 0;
   nuisance.c1rhocrit_ia = 0.01389;
-  if (nuisance.IA == IA_REDSHIFT_BINNING) {
+  if (IA_REDSHIFT_BINNING == nuisance.IA) {
     for (int i=0; i<redshift.shear_nbin; i++) {
       if (isnan(A1[i])
           || isnan(A2[i])
@@ -1510,7 +1510,7 @@ void threepcf_core_set_nuisance_ia(
       }
     }
   }
-  else if (nuisance.IA == IA_REDSHIFT_EVOLUTION) {
+  else if (IA_REDSHIFT_EVOLUTION == nuisance.IA) {
     // the power law reads A1[0], A1[1], A2[0], A2[1] and BTA[0]
     if (n < 2) {
       log_fatal("threepcf bridge: the IA power law needs two entries "
