@@ -20,7 +20,9 @@
 #include <omp.h>
 #endif
 
-extern "C" void openblas_set_num_threads(int nthreads);
+extern "C" void openblas_set_num_threads(
+  int nthreads // BLAS worker count; this module always requests one
+);
 
 namespace py = pybind11;
 namespace cosmolike_interface {
@@ -76,8 +78,8 @@ static void rank_3pcf(
   }
 
   for (int axis=0; axis<rank; axis++) {
-    if (values.shape(axis) < 1
-        || values.shape(axis) > INT_MAX) {
+    if (1 > values.shape(axis)
+        || INT_MAX < values.shape(axis)) {
       spdlog::critical("3pcf interface: {} has an invalid axis", name);
       std::exit(1);
     }
@@ -96,7 +98,7 @@ static void aligned_3pcf(
   )
 {
   const auto address = reinterpret_cast<std::uintptr_t>(values.data());
-  if (address%alignment != 0) {
+  if (0 != address%alignment) {
     spdlog::critical("3pcf interface: {} has an unaligned buffer", name);
     std::exit(1);
   }
@@ -152,8 +154,8 @@ static void lower_bound_3pcf(
   )
 {
   for (py::ssize_t index=0; index<values.size(); index++) {
-    if (values.data()[index] < 0.0
-        || (strict && values.data()[index] == 0.0)) {
+    if (0.0 > values.data()[index]
+        || (strict && 0.0 == values.data()[index])) {
       spdlog::critical("3pcf interface: {} violates its lower bound", name);
       std::exit(1);
     }
@@ -212,7 +214,7 @@ static py::tuple aperture_weights_production_3pcf(
   rank_3pcf(phi, 1, "phi");
   rank_3pcf(filters, 2, "filters");
 
-  if (!(filters.shape(1) == 3)) {
+  if (!(3 == filters.shape(1))) {
     spdlog::critical("3pcf interface: filters need three columns");
     std::exit(1);
   }
@@ -227,16 +229,16 @@ static py::tuple aperture_weights_production_3pcf(
   lower_bound_3pcf(filters, true, "filters");
 
   if (!(std::isfinite(dlnd)
-        && dlnd > 0.0
+        && 0.0 < dlnd
         && std::isfinite(dphi)
-        && dphi > 0.0)) {
+        && 0.0 < dphi)) {
     spdlog::critical("3pcf interface: bin widths must be finite and positive");
     std::exit(1);
   }
 
   for (py::ssize_t index=0; index<phi.size(); index++) {
-    if (!(phi.data()[index] > 0.0
-          && phi.data()[index] < std::acos(-1.0))) {
+    if (!(0.0 < phi.data()[index]
+          && M_PI > phi.data()[index])) {
       spdlog::critical("3pcf interface: phi must lie strictly between zero "
         "and pi");
       std::exit(1);
@@ -297,8 +299,8 @@ static array_3pcf aperture_apply_production_3pcf(
 
   if (!(same_shape_3pcf(weights_real, weights_imag)
         && same_shape_3pcf(gamma_real, gamma_imag)
-        && weights_real.shape(1) == 4
-        && gamma_real.shape(1) == 4
+        && 4 == weights_real.shape(1)
+        && 4 == gamma_real.shape(1)
         && weights_real.shape(2) == gamma_real.shape(2))) {
     spdlog::critical("3pcf interface: aperture component and triangle axes "
       "disagree");
@@ -448,7 +450,7 @@ static array_3pcf gaussian_covariance_production_3pcf(
   rank_3pcf(radial_weights, 1, "radial_weights");
   aligned_3pcf(triplets, alignof(int), "triplets");
 
-  if (!(triplets.shape(1) == 3
+  if (!(3 == triplets.shape(1)
         && pair.shape(0) == pair.shape(1)
         && pair_zero.shape(0) == pair.shape(0)
         && pair_zero.shape(1) == pair.shape(0)
@@ -527,22 +529,22 @@ static Array notebook_input_3pcf(
 
   using Element = typename Array::elem_type;
   if constexpr (std::is_integral<Element>::value) {
-    if (!(values.dtype().kind() == 'i'
-          || values.dtype().kind() == 'u')) {
+    if (!('i' == values.dtype().kind()
+          || 'u' == values.dtype().kind())) {
       spdlog::critical("3pcf interface: triplets must have integer dtype");
       std::exit(1);
     }
     const double minimum = py::cast<double>(input.attr("min")());
     const double maximum = py::cast<double>(input.attr("max")());
-    if (!(minimum >= INT_MIN
-          && maximum <= INT_MAX)) {
+    if (!(INT_MIN <= minimum
+          && INT_MAX >= maximum)) {
       spdlog::critical("3pcf interface: triplets exceed int32 range");
       std::exit(1);
     }
   } else {
-    if (!(values.dtype().kind() == 'f'
-          || values.dtype().kind() == 'i'
-          || values.dtype().kind() == 'u')) {
+    if (!('f' == values.dtype().kind()
+          || 'i' == values.dtype().kind()
+          || 'u' == values.dtype().kind())) {
       spdlog::critical("3pcf interface: physical inputs must have a real "
         "numeric dtype");
       std::exit(1);
@@ -585,7 +587,7 @@ static void set_threads_3pcf(
     const int nthreads // positive requested OpenMP team size
   )
 {
-  if (!(nthreads > 0)) {
+  if (!(0 < nthreads)) {
     spdlog::critical("3pcf interface: nthreads must be positive");
     std::exit(1);
   }
@@ -596,7 +598,7 @@ static void set_threads_3pcf(
   omp_set_dynamic(0);
   omp_set_num_threads(nthreads);
 #else
-  if (!(nthreads == 1)) {
+  if (!(1 == nthreads)) {
     spdlog::critical("3pcf interface: this module was built without OpenMP");
     std::exit(1);
   }
@@ -653,7 +655,7 @@ static std::shared_ptr<physics_owner_3pcf> model_from_core_3pcf()
     py::gil_scoped_release release;
     input = threepcf_bridge_refresh();
   }
-  if (input == NULL && !cached) {
+  if (NULL == input && !cached) {
     // the guard snapshot exists but this adapter never built: some
     // other caller consumed a refresh without the owner this factory
     // hands out; refuse rather than return an empty owner
@@ -662,7 +664,7 @@ static std::shared_ptr<physics_owner_3pcf> model_from_core_3pcf()
       "threepcf_bridge_refresh consumer in this process");
     std::exit(1);
   }
-  if (input != NULL) {
+  if (NULL != input) {
     py::gil_scoped_release release;
     cached = std::make_shared<physics_owner_3pcf>(*input);
   }
@@ -743,7 +745,7 @@ static void bridge_feedback_3pcf(
   )
 {
   if (feedback.empty()) {
-    if (amplitude != 0.0) {
+    if (0.0 != amplitude) {
       spdlog::critical("3pcf interface: a feedback amplitude without "
         "response tables has no meaning");
       std::exit(1);
@@ -754,14 +756,14 @@ static void bridge_feedback_3pcf(
   }
   const char* names[6] = {"z", "logk", "logu", "v", "log_power",
     "log_bispectrum"};
-  if (!(feedback.size() == 8
+  if (!(8 == feedback.size()
         && feedback.contains("boost") && feedback.contains("clamp"))) {
     spdlog::critical("3pcf interface: feedback requires six arrays "
       "plus boost and clamp");
     std::exit(1);
   }
   std::vector<array_3pcf> arrays;
-  for (int index=0; index<6; index++) {
+  for (int index=0; 6 > index; index++) {
     if (!(feedback.contains(names[index])
           && array_3pcf::check_(feedback[names[index]]))) {
       spdlog::critical("3pcf interface: feedback arrays must be "
@@ -779,7 +781,7 @@ static void bridge_feedback_3pcf(
   const auto nv = static_cast<size_t>(arrays[3].size());
   // one chained check, as in the model factory: every axis fits an
   // int, the products cannot wrap, and the flattened tables match
-  if (!(nz <= INT_MAX && nk <= INT_MAX && nu <= INT_MAX && nv <= INT_MAX
+  if (!(INT_MAX >= nz && INT_MAX >= nk && INT_MAX >= nu && INT_MAX >= nv
         && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
         && nz*nk*nu <= SIZE_MAX/nv
         && static_cast<size_t>(arrays[4].size()) == nz*nk
@@ -825,7 +827,7 @@ static void bridge_baseline_3pcf(
     "baseline clamp is missing"); }
   std::vector<array_3pcf> arrays;
   size_t size = 1;
-  for (int axis=0; axis<5; axis++) {
+  for (int axis=0; 5 > axis; axis++) {
     if (!(dictionary.contains(names[axis]))) { throw py::value_error(
       "baseline array is missing"); }
     if (!(array_3pcf::check_(dictionary[names[axis]]))) { throw py::value_error(
@@ -834,7 +836,7 @@ static void bridge_baseline_3pcf(
       dictionary[names[axis]]));
     rank_3pcf(arrays.back(), 1, names[axis]);
     finite_3pcf(arrays.back(), names[axis]);
-    if (axis < 4) {
+    if (4 > axis) {
       const size_t count = arrays.back().size();
       if (!(4 <= count)) { throw py::value_error(
         "baseline axes need four nodes"); }
@@ -866,7 +868,9 @@ static void bridge_baseline_3pcf(
 }
 
 // Register every bridge entry point on the "core" submodule.
-static void bind_threepcf_core_bridge(py::module_& module)
+static void bind_threepcf_core_bridge(
+  py::module_& module // Python module receiving the bindings
+)
 {
   py::module_ core = module.def_submodule("core",
       "Bridge between Cosmolike's global structs and the three-point "
@@ -879,7 +883,9 @@ static void bind_threepcf_core_bridge(py::module_& module)
       "until a later stage retires them into the structs.",
       py::arg("ns"), py::arg("sigma8"), py::arg("w0"), py::arg("wa"));
 
-  core.def("set_los", [](const array_3pcf& z) {
+  core.def("set_los", [](
+    const array_3pcf& z // redshift coordinates of the supplied values
+  ) {
     threepcf_bridge_set_los(bridge_vector_3pcf(z, "los_z"),
         static_cast<int>(z.size()));
   }, "Supply the line-of-sight node redshifts.",
@@ -897,7 +903,10 @@ static void bind_threepcf_core_bridge(py::module_& module)
       "photo-z shift to be exactly zero).",
       py::arg("source_z") = py::none(), py::arg("sources") = py::none());
 
-  core.def("set_pixel_window", [](const py::object& window) {
+  core.def("set_pixel_window", [](
+    // optional W(ell) at integer multipoles; None clears it
+    const py::object& window
+  ) {
     if (window.is_none()) {
       threepcf_bridge_set_pixel_window(NULL, 0);
       return;
@@ -940,8 +949,10 @@ static void bind_threepcf_core_bridge(py::module_& module)
       py::arg("omega_matter"), py::arg("omega_baryon"),
       py::arg("hubble"), py::arg("omega_nu_h2") = 0.0);
 
-  core.def("set_distances", [](const array_3pcf& z,
-      const array_3pcf& chi) {
+  core.def("set_distances", [](
+    const array_3pcf& z, // redshift coordinates of the supplied values
+    const array_3pcf& chi // comoving distances at each z, in Mpc/h
+  ) {
     rank_3pcf(z, 1, "z");
     rank_3pcf(chi, 1, "chi");
     finite_3pcf(z, "z");
@@ -955,7 +966,10 @@ static void bind_threepcf_core_bridge(py::module_& module)
   }, "Install chi(z) in Mpc/h into the cosmology struct.",
       py::arg("z").noconvert(), py::arg("chi").noconvert());
 
-  core.def("set_growth", [](const array_3pcf& z, const array_3pcf& G) {
+  core.def("set_growth", [](
+    const array_3pcf& z, // redshift coordinates of the supplied values
+    const array_3pcf& G // growth table G(z)=(1+z)D(z)
+  ) {
     rank_3pcf(z, 1, "z");
     rank_3pcf(G, 1, "G");
     finite_3pcf(z, "z");
@@ -970,8 +984,13 @@ static void bind_threepcf_core_bridge(py::module_& module)
       py::arg("z").noconvert(), py::arg("G").noconvert());
 
   // one lambda serves both power installers: same layout, same units
-  const auto power_installer = [](const array_3pcf& log10k,
-      const array_3pcf& z, const array_3pcf& lnP, const bool linear) {
+  const auto power_installer = [](
+    const array_3pcf& log10k, // uniform log10 k coordinates, k in h/Mpc
+    const array_3pcf& z, // redshift coordinates of the supplied values
+    const array_3pcf& lnP, // flattened ln P [k,z], P in (Mpc/h)^3
+    // true installs linear power; false installs nonlinear power
+    const bool linear
+  ) {
     rank_3pcf(log10k, 1, "log10k");
     rank_3pcf(z, 1, "z");
     rank_3pcf(lnP, 1, "lnP");
@@ -996,8 +1015,10 @@ static void bind_threepcf_core_bridge(py::module_& module)
   };
 
   core.def("set_linear_power_spectrum", [power_installer](
-      const array_3pcf& log10k, const array_3pcf& z,
-      const array_3pcf& lnP) {
+      const array_3pcf& log10k, // uniform log10 k coordinates, k in h/Mpc
+      const array_3pcf& z, // redshift coordinates of the supplied values
+      const array_3pcf& lnP // flattened ln P [k,z], P in (Mpc/h)^3
+  ) {
     power_installer(log10k, z, lnP, true);
   }, "Install ln P_lin(log10 k, z), flattened as lnP[i*nz + j], into "
       "the cosmology struct (k in h/Mpc, P in (Mpc/h)^3).",
@@ -1005,8 +1026,10 @@ static void bind_threepcf_core_bridge(py::module_& module)
       py::arg("lnP").noconvert());
 
   core.def("set_non_linear_power_spectrum", [power_installer](
-      const array_3pcf& log10k, const array_3pcf& z,
-      const array_3pcf& lnP) {
+      const array_3pcf& log10k, // uniform log10 k coordinates, k in h/Mpc
+      const array_3pcf& z, // redshift coordinates of the supplied values
+      const array_3pcf& lnP // flattened ln P [k,z], P in (Mpc/h)^3
+  ) {
     power_installer(log10k, z, lnP, false);
   }, "Install ln P_nonlin(log10 k, z), same layout and units as the "
       "linear installer.",
@@ -1018,10 +1041,12 @@ static void bind_threepcf_core_bridge(py::module_& module)
       "Declare the number of source tomographic bins.",
       py::arg("ntomo"));
 
-  core.def("set_source_sample", [](const array_3pcf& nofz) {
+  core.def("set_source_sample", [](
+    const array_3pcf& nofz // redshift column followed by source-density columns
+  ) {
     rank_3pcf(nofz, 2, "nofz");
     finite_3pcf(nofz, "nofz");
-    if (!(nofz.shape(1) >= 2)) {
+    if (!(2 <= nofz.shape(1))) {
       spdlog::critical("3pcf interface: the n(z) table needs a z "
         "column plus at least one bin column");
       std::exit(1);
@@ -1033,7 +1058,9 @@ static void bind_threepcf_core_bridge(py::module_& module)
       "the redshift axis) into the redshift struct.",
       py::arg("nofz").noconvert());
 
-  core.def("set_nuisance_shear_photoz", [](const array_3pcf& bias) {
+  core.def("set_nuisance_shear_photoz", [](
+    const array_3pcf& bias // one source photo-z displacement per bin
+  ) {
     threepcf_core_set_nuisance_shear_photoz(
         bridge_vector_3pcf(bias, "photo-z shifts"),
         static_cast<int>(bias.size()));
@@ -1045,8 +1072,12 @@ static void bind_threepcf_core_bridge(py::module_& module)
       "dependence).",
       py::arg("ia_model"), py::arg("ia_redshift_evolution"));
 
-  core.def("set_nuisance_ia", [](const array_3pcf& A1,
-      const array_3pcf& A2, const array_3pcf& B_TA) {
+  core.def("set_nuisance_ia", [](
+    const array_3pcf& A1, // linear tidal-alignment parameters
+    const array_3pcf& A2, // quadratic tidal-torquing parameters
+    // density-weighting parameters of the alignment model
+    const array_3pcf& B_TA
+  ) {
     rank_3pcf(A1, 1, "A1");
     rank_3pcf(A2, 1, "A2");
     rank_3pcf(B_TA, 1, "B_TA");
@@ -1103,7 +1134,7 @@ void bind_threepcf(
   )
 {
   // Triplet labels cross the Python/C boundary as 32-bit C int.
-  static_assert(sizeof(int) == 4, "triplets require 32-bit C int");
+  static_assert(4 == sizeof(int), "triplets require 32-bit C int");
 
   // Pin BLAS to one thread at import, before any OpenMP region runs
   // (set_threads_3pcf explains why).

@@ -80,8 +80,8 @@ using physics_notebook_int = py::array;
 // ---------------------------------------------------------------------------
 template <typename Array>
 static void shape_physics(
-  const Array& values,
-  const int rank
+  const Array& values, // input array whose rank and dimension sizes are checked
+  const int rank // required number of array axes
 )
 {
   if (!(values.ndim() == rank)) {
@@ -91,8 +91,8 @@ static void shape_physics(
 
   size_t product = 1;
   for (int axis=0; axis<rank; axis++) {
-    if (!(values.shape(axis) > 0
-          && values.shape(axis) <= INT_MAX)) {
+    if (!(0 < values.shape(axis)
+          && INT_MAX >= values.shape(axis))) {
       spdlog::critical("3pcf physics interface: invalid input dimension");
       std::exit(1);
     }
@@ -123,12 +123,13 @@ static void shape_physics(
 //   alignment - alignof the C element type
 // ---------------------------------------------------------------------------
 static void aligned_physics(
+  // input buffer whose starting address must satisfy alignment
   const py::array& values,
-  const size_t alignment
+  const size_t alignment // required byte alignment for typed C reads
 )
 {
   const auto address = reinterpret_cast<std::uintptr_t>(values.data());
-  if (!(address%alignment == 0)) {
+  if (!(0 == address%alignment)) {
     spdlog::critical("3pcf physics interface: production input buffer is "
       "not aligned for its element type");
     std::exit(1);
@@ -144,7 +145,10 @@ static void aligned_physics(
 // silently. The alignment check comes first because this scan itself
 // reads the data through a double pointer.
 // ---------------------------------------------------------------------------
-static void finite_physics(const physics_array& values)
+static void finite_physics(
+  // double array scanned for NaN or infinite entries
+  const physics_array& values
+)
 {
   aligned_physics(values, alignof(double));
 
@@ -168,6 +172,7 @@ static void finite_physics(const physics_array& values)
 // ---------------------------------------------------------------------------
 template <typename Number>
 static arma::Col<Number> copy_column_physics(
+  // NumPy column copied into an independently owned Armadillo vector
   const py::array_t<Number, py::array::forcecast>& values
 )
 {
@@ -200,6 +205,7 @@ static arma::Col<Number> copy_column_physics(
 // ---------------------------------------------------------------------------
 template <typename Number>
 static arma::Mat<Number> copy_matrix_physics(
+  // NumPy matrix copied into independently owned Armadillo storage
   const py::array_t<Number, py::array::forcecast>& values
 )
 {
@@ -239,14 +245,15 @@ static arma::Mat<Number> copy_matrix_physics(
 //   the same data as an int32 array, ready for copy_column/matrix
 // ---------------------------------------------------------------------------
 static py::array_t<int, py::array::forcecast> integer_notebook_physics(
+  // integer labels checked before conversion to C int
   const py::array& values,
-  const int rank
+  const int rank // required number of array axes
 )
 {
   shape_physics(values, rank);
 
-  if (!(values.dtype().kind() == 'i'
-        || values.dtype().kind() == 'u')) {
+  if (!('i' == values.dtype().kind()
+        || 'u' == values.dtype().kind())) {
     spdlog::critical("3pcf physics interface: notebook source bins must "
       "have integer dtype");
     std::exit(1);
@@ -254,7 +261,7 @@ static py::array_t<int, py::array::forcecast> integer_notebook_physics(
 
   const double minimum = py::cast<double>(values.attr("min")());
   const double maximum = py::cast<double>(values.attr("max")());
-  if (!(minimum >= INT_MIN && maximum <= INT_MAX)) {
+  if (!(INT_MIN <= minimum && INT_MAX >= maximum)) {
     spdlog::critical("3pcf physics interface: notebook source bins exceed "
       "int32 range");
     std::exit(1);
@@ -265,7 +272,9 @@ static py::array_t<int, py::array::forcecast> integer_notebook_physics(
 
 
 // Integer overload: check the dtype first, then copy the column.
-static arma::Col<int> copy_column_physics(const py::array& values)
+static arma::Col<int> copy_column_physics(
+  const py::array& values // integer labels copied into an owned column
+)
 {
   const auto integers = integer_notebook_physics(values, 1);
   return copy_column_physics<int>(integers);
@@ -273,7 +282,9 @@ static arma::Col<int> copy_column_physics(const py::array& values)
 
 
 // Integer overload: check the dtype first, then copy the matrix.
-static arma::Mat<int> copy_matrix_physics(const py::array& values)
+static arma::Mat<int> copy_matrix_physics(
+  const py::array& values // integer labels copied into an owned matrix
+)
 {
   const auto integers = integer_notebook_physics(values, 2);
   return copy_matrix_physics<int>(integers);
@@ -313,7 +324,9 @@ static arma::Mat<int> copy_matrix_physics(const py::array& values)
 // Returns:
 //   the complete physics_ia_3pcf parameter struct, by value
 // ---------------------------------------------------------------------------
-static physics_ia_3pcf parameters_physics(const py::dict& values)
+static physics_ia_3pcf parameters_physics(
+  const py::dict& values // intrinsic-alignment and feedback settings
+)
 {
   physics_ia_3pcf parameters;
   physics_default_ia_3pcf(&parameters);
@@ -377,7 +390,9 @@ static physics_ia_3pcf parameters_physics(const py::dict& values)
 // Returns:
 //   the complete physics_grid_settings_3pcf struct, by value
 // ---------------------------------------------------------------------------
-static physics_grid_settings_3pcf settings_physics_grid(const py::dict& values)
+static physics_grid_settings_3pcf settings_physics_grid(
+  const py::dict& values // grid bounds, node counts and angular cutoffs
+)
 {
   physics_grid_settings_3pcf settings;
   physics_grid_defaults_3pcf(&settings);
@@ -422,7 +437,7 @@ static physics_grid_settings_3pcf settings_physics_grid(const py::dict& values)
         std::exit(1);
       }
     } else {
-      if (!(integer.count(name) != 0)) {
+      if (!(0 != integer.count(name))) {
         spdlog::critical("3pcf physics interface: unknown interpolation "
           "setting");
         std::exit(1);
@@ -465,27 +480,32 @@ static physics_grid_settings_3pcf settings_physics_grid(const py::dict& values)
 //   shared owner of the C model; Python keeps it alive
 // ---------------------------------------------------------------------------
 static std::shared_ptr<physics_owner_3pcf> model_physics_common(
-  const physics_array& k,
-  const physics_array& p_linear0,
-  const physics_array& z,
-  const physics_array& p_nonlinear,
-  const physics_array& chi,
-  const physics_array& dz_dchi,
-  const physics_array& growth,
+  const physics_array& k, // wavenumbers in h/Mpc
+  const physics_array& p_linear0, // linear P(k,0), in (Mpc/h)^3
+  const physics_array& z, // redshift coordinates of the supplied values
+  const physics_array& p_nonlinear, // nonlinear P [z,k], in (Mpc/h)^3
+  const physics_array& chi, // comoving distances at each z, in Mpc/h
+  const physics_array& dz_dchi, // background Jacobian at each z, in h/Mpc
+  const physics_array& growth, // linear growth D(z), normalized to D(0)=1
+  // source densities per unit z, [bin,source node]
   const physics_array& sources,
-  const double omega_m,
-  const double omega_de,
-  const double w0,
-  const double wa,
-  const double ns,
-  const double sigma8,
-  const physics_array& los_z,
-  const int kernel_nz,
+  const double omega_m, // matter density parameter today
+  const double omega_de, // dark-energy density parameter today
+  const double w0, // dark-energy equation of state today
+  const double wa, // coefficient in w(a)=w0+wa*(1-a)
+  const double ns, // primordial scalar spectral index
+  const double sigma8, // linear rms amplitude at R=8 Mpc/h today
+  const physics_array& los_z, // line-of-sight integration redshifts
+  const int kernel_nz, // number of radial-kernel preparation nodes
+  // retain cubic input readers for source comparisons
   const bool source_readers,
+  // dense intervals per coarse interval; zero uses default
   const int table_boost,
-  const int fit_nz,
-  const py::object& source_z,
+  const int fit_nz, // BiHalofit anchor count; zero uses the default
+  const py::object& source_z, // optional redshift axis of the source densities
+  // optional paired hydro/DMO power and bispectrum responses
   const py::dict& feedback,
+  // optional W(ell) samples at integer multipoles
   const py::object& pixel_window,
   const py::dict& baseline, // optional absolute B input
   const py::object& omega_m_z // required background when baseline is active
@@ -583,14 +603,14 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   if (!feedback.empty()) {
     const char* names[6] = {"z", "logk", "logu", "v",
       "log_power", "log_bispectrum"};
-    if (!(feedback.size() == 8
+    if (!(8 == feedback.size()
           && feedback.contains("boost") && feedback.contains("clamp"))) {
       spdlog::critical("3pcf physics interface: feedback requires six "
         "arrays plus boost and clamp");
       std::exit(1);
     }
 
-    for (int index=0; index<6; index++) {
+    for (int index=0; 6 > index; index++) {
       if (!(feedback.contains(names[index])
             && physics_array::check_(feedback[names[index]]))) {
         spdlog::critical("3pcf physics interface: production feedback "
@@ -612,8 +632,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
     // preparation and must fit a C int; each division guard proves the
     // next multiplication cannot wrap around SIZE_MAX; the flattened
     // tables must then match their axis products exactly.
-    if (!(nz >= 4 && nk >= 4 && nu >= 4 && nv >= 4
-          && nz <= INT_MAX && nk <= INT_MAX && nu <= INT_MAX && nv <= INT_MAX
+    if (!(4 <= nz && 4 <= nk && 4 <= nu && 4 <= nv
+          && INT_MAX >= nz && INT_MAX >= nk && INT_MAX >= nu && INT_MAX >= nv
           && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
           && nz*nk*nu <= SIZE_MAX/nv
           && static_cast<size_t>(response_arrays[4].size()) == nz*nk
@@ -650,7 +670,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
     }
     window = py::reinterpret_borrow<physics_array>(pixel_window);
     shape_physics(window, 1);
-    if (!(window.size() >= 2)) {
+    if (!(2 <= window.size())) {
       spdlog::critical("3pcf physics interface: pixel window needs at least "
         "two integer-ell samples");
       std::exit(1);
@@ -672,7 +692,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
     if (!(baseline.contains("clamp"))) { spdlog::critical(
       "3pcf: baseline clamp is missing"); std::exit(1); }
     size_t size = 1;
-    for (int axis=0; axis<5; axis++) {
+    for (int axis=0; 5 > axis; axis++) {
       if (!(baseline.contains(names[axis]))) { spdlog::critical(
         "3pcf: baseline array is missing"); std::exit(1); }
       if (!(physics_array::check_(baseline[names[axis]]))) { spdlog::critical(
@@ -682,7 +702,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
         baseline[names[axis]]));
       shape_physics(baseline_arrays.back(), 1);
       finite_physics(baseline_arrays.back());
-      if (axis < 4) {
+      if (4 > axis) {
         const size_t count = baseline_arrays.back().size();
         if (!(4 <= count)) { spdlog::critical(
           "3pcf: B axes need four nodes"); std::exit(1); }
@@ -800,27 +820,35 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_with_bispectrum(
 // model_physics.
 // ---------------------------------------------------------------------------
 static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
-  const physics_notebook_array& k,
-  const physics_notebook_array& p_linear0,
+  const physics_notebook_array& k, // wavenumbers in h/Mpc
+  const physics_notebook_array& p_linear0, // linear P(k,0), in (Mpc/h)^3
+  // redshift coordinates of the supplied values
   const physics_notebook_array& z,
-  const physics_notebook_array& p_nonlinear,
-  const physics_notebook_array& chi,
+  const physics_notebook_array& p_nonlinear, // nonlinear P [z,k], in (Mpc/h)^3
+  const physics_notebook_array& chi, // comoving distances at each z, in Mpc/h
+  // background Jacobian at each z, in h/Mpc
   const physics_notebook_array& dz_dchi,
+  // linear growth D(z), normalized to D(0)=1
   const physics_notebook_array& growth,
+  // source densities per unit z, [bin,source node]
   const physics_notebook_array& sources,
-  const double omega_m,
-  const double omega_de,
-  const double w0,
-  const double wa,
-  const double ns,
-  const double sigma8,
-  const physics_notebook_array& los_z,
-  const int kernel_nz,
+  const double omega_m, // matter density parameter today
+  const double omega_de, // dark-energy density parameter today
+  const double w0, // dark-energy equation of state today
+  const double wa, // coefficient in w(a)=w0+wa*(1-a)
+  const double ns, // primordial scalar spectral index
+  const double sigma8, // linear rms amplitude at R=8 Mpc/h today
+  const physics_notebook_array& los_z, // line-of-sight integration redshifts
+  const int kernel_nz, // number of radial-kernel preparation nodes
+  // retain cubic input readers for source comparisons
   const bool source_readers,
+  // dense intervals per coarse interval; zero uses default
   const int table_boost,
-  const int fit_nz,
-  const py::object& source_z,
+  const int fit_nz, // BiHalofit anchor count; zero uses the default
+  const py::object& source_z, // optional redshift axis of the source densities
+  // optional paired hydro/DMO power and bispectrum responses
   const py::dict& feedback,
+  // optional W(ell) samples at integer multipoles
   const py::object& pixel_window,
   const py::dict& baseline, // optional absolute B input
   const py::object& omega_m_z // required background when baseline is active
@@ -846,7 +874,7 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
   if (!feedback.empty()) {
     const char* names[8] = {"z", "logk", "logu", "v", "log_power",
       "log_bispectrum", "boost", "clamp"};
-    if (!(feedback.size() == 8)) {
+    if (!(8 == feedback.size())) {
       spdlog::critical("3pcf physics interface: feedback requires six "
         "arrays plus boost and clamp");
       std::exit(1);
@@ -1018,27 +1046,33 @@ model_notebook_physics_with_bispectrum(
 //   NumPy array [point] or [point,19], checked finite
 // ---------------------------------------------------------------------------
 static physics_array points_physics(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  // triangles [point,3], in h/Mpc or angular multipoles
   const physics_array& sides,
+  // redshift for each physical query; empty after projection
   const physics_array& redshifts,
+  // ordered source-bin labels for the requested correlation
   const physics_int_array& bins,
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
+  // 0=matter, 1=IA, 2=projected, 3=shared-shape IA, 4=response
   const int operation,
-  const int component,
+  const int component, // matter-fit or projected split selected by operation
+  // omit the linear-alignment baseline from IA outputs
   const bool remove_alignment
 )
 {
   shape_physics(sides, 2);
   finite_physics(sides);
-  if (!(sides.shape(1) == 3)) {
+  if (!(3 == sides.shape(1))) {
     spdlog::critical("3pcf physics interface: sides must have shape [point,3]");
     std::exit(1);
   }
 
-  if (operation == 2) {
+  if (2 == operation) {
     shape_physics(bins, 1);
     aligned_physics(bins, alignof(int));
-    if (!(bins.size() == 3)) {
+    if (!(3 == bins.size())) {
       spdlog::critical("3pcf physics interface: three bins are required");
       std::exit(1);
     }
@@ -1057,8 +1091,8 @@ static physics_array points_physics(
   // Operations 1 and 3 return the nineteen density/E/B leg combinations
   // that physics_ia_bispectra_3pcf lists in physics_3pcf.h; every other
   // operation returns one value per triangle.
-  const int ncomponent = operation == 1 || operation == 3 ? 19 : 1;
-  physics_array output = operation == 1 || operation == 3
+  const int ncomponent = 1 == operation || 3 == operation ? 19 : 1;
+  physics_array output = 1 == operation || 3 == operation
     ? physics_array({static_cast<py::ssize_t>(count),
       static_cast<py::ssize_t>(ncomponent)})
     : physics_array(count);
@@ -1066,7 +1100,7 @@ static physics_array points_physics(
   const double* triangles = sides.data();
   double* result = output.mutable_data();
 
-  if (operation == 3) {
+  if (3 == operation) {
     {
       // Python's global interpreter lock (the GIL) lets only one thread
       // run Python code at a time. py::gil_scoped_release hands the
@@ -1089,7 +1123,7 @@ static physics_array points_physics(
   // reads it without writing. physics_3pcf.h states this thread
   // contract: a projection and its model support simultaneous
   // read-only calls.
-  physics_projection_3pcf* projection = operation == 2
+  physics_projection_3pcf* projection = 2 == operation
     ? physics_projector_create_3pcf(owner.get(), &parameters, bins.data())
     : nullptr;
   {
@@ -1107,16 +1141,16 @@ static physics_array points_physics(
     #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
     for (int point=0; point<count; point++) {
       const double* triangle = triangles + static_cast<size_t>(point)*3;
-      if (operation == 0) { // matter bispectrum
+      if (0 == operation) { // matter bispectrum
         result[point] = physics_matter_3pcf(owner.get(), triangle[0],
           triangle[1], triangle[2], redshifts.data()[point], component,
           parameters.fb);
-      } else if (operation == 1) { // nineteen IA bispectra
+      } else if (1 == operation) { // nineteen IA bispectra
         physics_ia_bispectra_3pcf(owner.get(), &parameters, triangle[0],
           triangle[1], triangle[2], redshifts.data()[point],
           remove_alignment ? 1 : 0,
           result + static_cast<size_t>(point)*ncomponent);
-      } else if (operation == 4) { // feedback bispectrum response
+      } else if (4 == operation) { // feedback bispectrum response
         result[point] = physics_feedback_bispectrum_3pcf(owner.get(),
           triangle, redshifts.data()[point], parameters.feedback_amplitude);
       } else { // operation 2: projection through the shared projector
@@ -1141,13 +1175,19 @@ static physics_array points_physics(
 // points_physics.
 // ---------------------------------------------------------------------------
 static physics_array points_notebook_physics(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  // triangles [point,3], in h/Mpc or angular multipoles
   const physics_notebook_array& sides,
+  // redshift for each physical query; empty after projection
   const physics_notebook_array& redshifts,
+  // ordered source-bin labels for the requested correlation
   const physics_notebook_int& bins,
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
+  // 0=matter, 1=IA, 2=projected, 3=shared-shape IA, 4=response
   const int operation,
-  const int component,
+  const int component, // matter-fit or projected split selected by operation
+  // omit the linear-alignment baseline from IA outputs
   const bool remove_alignment
 )
 {
@@ -1155,7 +1195,7 @@ static physics_array points_notebook_physics(
   arma::Col<double> redshift;
   arma::Col<int> bin;
 
-  if (operation == 2) {
+  if (2 == operation) {
     bin = copy_column_physics(bins);
   } else {
     redshift = copy_column_physics(redshifts);
@@ -1164,7 +1204,7 @@ static physics_array points_notebook_physics(
   const arma::Mat<double> result = physics_points_cpp_3pcf(owner, triangles,
     redshift, bin, parameters, operation, component, remove_alignment);
 
-  physics_array output = operation == 1 || operation == 3
+  physics_array output = 1 == operation || 3 == operation
     ? physics_array({static_cast<py::ssize_t>(result.n_rows),
       static_cast<py::ssize_t>(result.n_cols)})
     : physics_array(result.n_rows);
@@ -1199,13 +1239,14 @@ static physics_array points_notebook_physics(
 //   NumPy array [lmax+1,nell,nell], checked finite
 // ---------------------------------------------------------------------------
 static physics_array multipoles_physics(
-  const physics_owner_3pcf& owner,
-  const physics_array& ell,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  const physics_array& ell, // angular-multipole nodes
+  // ordered source-bin labels for the requested correlation
   const physics_int_array& bins,
-  const py::dict& parameters,
-  const int lmax,
-  const int nmu,
-  const int component
+  const py::dict& parameters, // intrinsic-alignment and feedback parameters
+  const int lmax, // largest retained Legendre degree L
+  const int nmu, // angular quadrature nodes per Legendre integral
+  const int component // 0=total, 1=NLA baseline, 2=residual IA
 )
 {
   shape_physics(ell, 1);
@@ -1213,7 +1254,7 @@ static physics_array multipoles_physics(
   finite_physics(ell);
   aligned_physics(bins, alignof(int));
 
-  if (!(bins.size() == 3 && lmax >= 0 && lmax < INT_MAX)) {
+  if (!(3 == bins.size() && 0 <= lmax && INT_MAX > lmax)) {
     spdlog::critical("3pcf physics interface: invalid multipole dimensions");
     std::exit(1);
   }
@@ -1258,13 +1299,14 @@ static physics_array multipoles_physics(
 // array. Arguments match multipoles_physics.
 // ---------------------------------------------------------------------------
 static physics_array multipoles_notebook_physics(
-  const physics_owner_3pcf& owner,
-  const physics_notebook_array& ell,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  const physics_notebook_array& ell, // angular-multipole nodes
+  // ordered source-bin labels for the requested correlation
   const physics_notebook_int& bins,
-  const py::dict& parameters,
-  const int lmax,
-  const int nmu,
-  const int component
+  const py::dict& parameters, // intrinsic-alignment and feedback parameters
+  const int lmax, // largest retained Legendre degree L
+  const int nmu, // angular quadrature nodes per Legendre integral
+  const int component // 0=total, 1=NLA baseline, 2=residual IA
 )
 {
   const arma::Col<double> multipole = copy_column_physics(ell);
@@ -1313,14 +1355,15 @@ static physics_array multipoles_notebook_physics(
 //   NumPy array [nfilter], checked finite
 // ---------------------------------------------------------------------------
 static physics_array aperture_full_physics(
-  const physics_owner_3pcf& owner,
-  const physics_array& ell,
-  const physics_array& dell,
-  const physics_array& phi,
-  const physics_array& dphi,
-  const physics_array& filters,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  const physics_array& ell, // angular-multipole nodes
+  const physics_array& dell, // weights for integration over ell
+  const physics_array& phi, // triangle opening-angle nodes, in radians
+  const physics_array& dphi, // opening-angle integration weights, in radians
+  const physics_array& filters, // aperture radii [filter,3], in radians
+  // ordered source-bin labels for the requested correlation
   const physics_int_array& bins,
-  const py::dict& parameters
+  const py::dict& parameters // intrinsic-alignment and feedback parameters
 )
 {
   shape_physics(ell, 1);
@@ -1340,8 +1383,8 @@ static physics_array aperture_full_physics(
   // One chained check: each weight array matches its node array; each
   // filter row holds three radii; exactly three source bins arrive.
   if (!(ell.size() == dell.size()
-        && phi.size() == dphi.size() && filters.shape(1) == 3
-        && bins.size() == 3)) {
+        && phi.size() == dphi.size() && 3 == filters.shape(1)
+        && 3 == bins.size())) {
     spdlog::critical("3pcf physics interface: full-aperture input shapes "
       "disagree");
     std::exit(1);
@@ -1373,14 +1416,17 @@ static physics_array aperture_full_physics(
 // a NumPy array. Arguments match aperture_full_physics.
 // ---------------------------------------------------------------------------
 static physics_array aperture_full_notebook_physics(
-  const physics_owner_3pcf& owner,
-  const physics_notebook_array& ell,
-  const physics_notebook_array& dell,
-  const physics_notebook_array& phi,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  const physics_notebook_array& ell, // angular-multipole nodes
+  const physics_notebook_array& dell, // weights for integration over ell
+  const physics_notebook_array& phi, // triangle opening-angle nodes, in radians
+  // opening-angle integration weights, in radians
   const physics_notebook_array& dphi,
+  // aperture radii [filter,3], in radians
   const physics_notebook_array& filters,
+  // ordered source-bin labels for the requested correlation
   const physics_notebook_int& bins,
-  const py::dict& parameters
+  const py::dict& parameters // intrinsic-alignment and feedback parameters
 )
 {
   const arma::Col<double> multipole = copy_column_physics(ell);
@@ -1420,12 +1466,13 @@ static physics_array aperture_full_notebook_physics(
 //   NumPy array [nfilter], checked finite
 // ---------------------------------------------------------------------------
 static physics_array aperture_grid_physics(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
-  const physics_array& ell,
-  const physics_array& dell,
-  const physics_array& phi,
-  const physics_array& dphi,
-  const physics_array& filters
+  const physics_array& ell, // angular-multipole nodes
+  const physics_array& dell, // weights for integration over ell
+  const physics_array& phi, // triangle opening-angle nodes, in radians
+  const physics_array& dphi, // opening-angle integration weights, in radians
+  const physics_array& filters // aperture radii [filter,3], in radians
 )
 {
   shape_physics(ell, 1);
@@ -1443,7 +1490,7 @@ static physics_array aperture_grid_physics(
   // One chained check: each weight array matches its node array and
   // each filter row holds three radii.
   if (!(ell.size() == dell.size()
-        && phi.size() == dphi.size() && filters.shape(1) == 3)) {
+        && phi.size() == dphi.size() && 3 == filters.shape(1))) {
     spdlog::critical("3pcf physics interface: grid aperture input shapes "
       "disagree");
     std::exit(1);
@@ -1478,14 +1525,15 @@ static physics_array aperture_grid_physics(
 //   NumPy array [point], checked finite
 // ---------------------------------------------------------------------------
 static physics_array projected_grid_physics(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
-  const physics_array& sides,
-  const int component
+  const physics_array& sides, // multipole triangles [point,3]
+  const int component // 0=total, 1=NLA baseline, 2=residual IA
 )
 {
   shape_physics(sides, 2);
   finite_physics(sides);
-  if (!(sides.shape(1) == 3)) {
+  if (!(3 == sides.shape(1))) {
     spdlog::critical("3pcf physics interface: projected grid sides must "
       "have shape [point,3]");
     std::exit(1);
@@ -1532,9 +1580,10 @@ static physics_array projected_grid_physics(
 //   NumPy array [lmax+1,nell,nell], checked finite
 // ---------------------------------------------------------------------------
 static physics_array multipoles_grid_physics(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
-  const physics_array& ell,
-  const int component
+  const physics_array& ell, // angular-multipole nodes
+  const int component // 0=total, 1=NLA baseline, 2=residual IA
 )
 {
   shape_physics(ell, 1);
@@ -1577,14 +1626,18 @@ static physics_array multipoles_grid_physics(
 // the Python object has the wrong type; reading the pointer changes no
 // state and builds no second model.
 // ---------------------------------------------------------------------------
-const physics_model_3pcf* borrow_physics_model_3pcf(py::handle owner)
+const physics_model_3pcf* borrow_physics_model_3pcf(
+  py::handle owner // Python owner of the immutable physical model
+)
 {
   return py::cast<const physics_owner_3pcf&>(owner).get();
 }
 
 
 // Same contract for a prepared projection-grid table.
-const physics_grid_3pcf* borrow_physics_grid_3pcf(py::handle owner)
+const physics_grid_3pcf* borrow_physics_grid_3pcf(
+  py::handle owner // Python owner of the immutable projected grid
+)
 {
   return py::cast<const physics_grid_owner_3pcf&>(owner).get();
 }
@@ -1602,7 +1655,9 @@ const physics_grid_3pcf* borrow_physics_grid_3pcf(py::handle owner)
 // Parameters:
 //   module - the extension module under construction
 // ---------------------------------------------------------------------------
-void bind_threepcf_physics(py::module_& module)
+void bind_threepcf_physics(
+  py::module_& module // Python module receiving the bindings
+)
 {
   // --- 1. PROJECTION-GRID TABLE BINDINGS ---------------------------------
   // ProjectionGrid wraps one prepared interpolation table: the stored
@@ -1633,8 +1688,12 @@ void bind_threepcf_physics(py::module_& module)
     "Legendre multipoles b_L[L,ell1,ell2]; the model's pixel window "
     "multiplies all three legs.");
 
-  grid.def("projected_notebook", [](const physics_grid_owner_3pcf& owner,
-      const physics_notebook_array& sides, int component) {
+  grid.def("projected_notebook", [](
+    // owner of the immutable projected-bispectrum grid
+    const physics_grid_owner_3pcf& owner,
+    const physics_notebook_array& sides, // multipole triangles [point,3]
+    int component // 0=total, 1=NLA baseline, 2=residual IA
+  ) {
     const arma::Mat<double> triangles = copy_matrix_physics(sides);
     const arma::Col<double> values = physics_grid_projected_cpp_3pcf(owner,
       triangles, component);
@@ -1648,8 +1707,12 @@ void bind_threepcf_physics(py::module_& module)
     "Interpolated projected bispectrum B[point] without pixel "
     "smoothing, copied through the notebook adapter.");
 
-  grid.def("multipoles_notebook", [](const physics_grid_owner_3pcf& owner,
-      const physics_notebook_array& ell, int component) {
+  grid.def("multipoles_notebook", [](
+    // owner of the immutable projected-bispectrum grid
+    const physics_grid_owner_3pcf& owner,
+    const physics_notebook_array& ell, // angular-multipole nodes
+    int component // 0=total, 1=NLA baseline, 2=residual IA
+  ) {
     const arma::Col<double> nodes = copy_column_physics(ell);
     const arma::Cube<double> values = physics_grid_multipoles_cpp_3pcf(owner,
       nodes, component);
@@ -1679,10 +1742,18 @@ void bind_threepcf_physics(py::module_& module)
     "Full-filter aperture mean from the prepared table; the model's "
     "pixel window multiplies all three legs.");
 
-  grid.def("aperture_full_notebook", [](const physics_grid_owner_3pcf& owner,
-      const physics_notebook_array& ell, const physics_notebook_array& dell,
-      const physics_notebook_array& phi, const physics_notebook_array& dphi,
-      const physics_notebook_array& filters) {
+  grid.def("aperture_full_notebook", [](
+    // owner of the immutable projected-bispectrum grid
+    const physics_grid_owner_3pcf& owner,
+    const physics_notebook_array& ell, // angular-multipole nodes
+    const physics_notebook_array& dell, // weights for integration over ell
+    // triangle opening-angle nodes, in radians
+    const physics_notebook_array& phi,
+    // opening-angle integration weights, in radians
+    const physics_notebook_array& dphi,
+    // aperture radii [filter,3], in radians
+    const physics_notebook_array& filters
+  ) {
     const arma::Col<double> values = physics_grid_aperture_cpp_3pcf(owner,
       copy_column_physics(ell), copy_column_physics(dell),
       copy_column_physics(phi), copy_column_physics(dphi),
@@ -1697,13 +1768,16 @@ void bind_threepcf_physics(py::module_& module)
     "Full-filter aperture mean through the copying notebook adapter; "
     "the model's pixel window multiplies all three legs.");
 
-  grid.def("axes", [](const physics_grid_owner_3pcf& owner) {
+  grid.def("axes", [](
+    // owner of the immutable projected-bispectrum grid
+    const physics_grid_owner_3pcf& owner
+  ) {
     py::dict result;
     // The eight axis codes and their names follow physics_grid_axis_3pcf
     // in physics_grid_3pcf.h; the dictionary keys repeat those names.
     const char* names[8] = {"log_r", "log_u", "v", "log_p", "pu",
       "log_ell", "log_psi", "mu"};
-    for (int axis=0; axis<8; axis++) {
+    for (int axis=0; 8 > axis; axis++) {
       int count;
       const double* values;
       physics_grid_axis_3pcf(owner.get(), axis, &count, &values);
@@ -1832,9 +1906,14 @@ void bind_threepcf_physics(py::module_& module)
   // triangles, Legendre multipoles and full aperture means. The
   // production methods funnel into points_physics or the dedicated
   // evaluators above; physics_3pcf.h holds every integrand.
-  model.def("matter", [](const physics_owner_3pcf& owner,
-      const physics_array& sides, const physics_array& redshifts,
-      int component, double fb) {
+  model.def("matter", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_array& sides, // Fourier triangles [point,3], in h/Mpc
+    // redshift at which each physical query is evaluated
+    const physics_array& redshifts,
+    int component, // 0=full matter B, 1=tree, 2=one-halo, 3=three-halo fit
+    double fb // bispectrum-only feedback amplitude
+  ) {
     physics_ia_3pcf parameters;
     physics_default_ia_3pcf(&parameters);
     parameters.fb = fb;
@@ -1847,9 +1926,14 @@ void bind_threepcf_physics(py::module_& module)
     "These are fitted matter terms, not the "
     "halo integrals of the covariance module.");
 
-  model.def("ia", [](const physics_owner_3pcf& owner,
-      const physics_array& sides, const physics_array& redshifts,
-      const py::dict& parameters, bool remove_alignment) {
+  model.def("ia", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_array& sides, // Fourier triangles [point,3], in h/Mpc
+    // redshift at which each physical query is evaluated
+    const physics_array& redshifts,
+    const py::dict& parameters, // intrinsic-alignment and feedback parameters
+    bool remove_alignment // omit the linear-alignment baseline from IA outputs
+  ) {
     return points_physics(owner, sides, redshifts, physics_int_array(),
       parameters_physics(parameters), 1, 0, remove_alignment);
   }, py::arg("sides").noconvert(), py::arg("redshifts").noconvert(),
@@ -1857,9 +1941,14 @@ void bind_threepcf_physics(py::module_& module)
     "[point,19] IA bispectra in the nineteen-entry leg order that "
     "physics_3pcf.h defines.");
 
-  model.def("ia_same_shape", [](const physics_owner_3pcf& owner,
-      const physics_array& sides, const physics_array& redshifts,
-      const py::dict& parameters, bool remove_alignment) {
+  model.def("ia_same_shape", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_array& sides, // Fourier triangles [point,3], in h/Mpc
+    // redshift at which each physical query is evaluated
+    const physics_array& redshifts,
+    const py::dict& parameters, // intrinsic-alignment and feedback parameters
+    bool remove_alignment // omit the linear-alignment baseline from IA outputs
+  ) {
     return points_physics(owner, sides, redshifts, physics_int_array(),
       parameters_physics(parameters), 3, 0, remove_alignment);
   }, py::arg("sides").noconvert(), py::arg("redshifts").noconvert(),
@@ -1868,19 +1957,29 @@ void bind_threepcf_physics(py::module_& module)
     "triangles may differ only by a positive common scaling of all "
     "three sides.");
 
-  model.def("ia_same_shape_notebook", [](const physics_owner_3pcf& owner,
-      const physics_notebook_array& sides,
-      const physics_notebook_array& redshifts, const py::dict& parameters,
-      bool remove_alignment) {
+  model.def("ia_same_shape_notebook", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    // Fourier triangles [point,3], in h/Mpc
+    const physics_notebook_array& sides,
+    // redshift at which each physical query is evaluated
+    const physics_notebook_array& redshifts,
+    const py::dict& parameters, // intrinsic-alignment and feedback parameters
+    bool remove_alignment // omit the linear-alignment baseline from IA outputs
+  ) {
     return points_notebook_physics(owner, sides, redshifts,
       physics_notebook_int(), parameters_physics(parameters), 3, 0,
       remove_alignment);
   }, py::arg("sides"), py::arg("redshifts"),
     py::arg("parameters") = py::dict(), py::arg("remove_alignment") = false);
 
-  model.def("projected", [](const physics_owner_3pcf& owner,
-      const physics_array& sides, const physics_int_array& bins,
-      const py::dict& parameters, int component) {
+  model.def("projected", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_array& sides, // multipole triangles [point,3]
+    // ordered source-bin labels for the requested correlation
+    const physics_int_array& bins,
+    const py::dict& parameters, // intrinsic-alignment and feedback parameters
+    int component // 0=total, 1=NLA baseline, 2=residual IA
+  ) {
     return points_physics(owner, sides, physics_array(), bins,
       parameters_physics(parameters), 2, component, false);
   }, py::arg("sides").noconvert(), py::arg("bins").noconvert(),
@@ -1922,12 +2021,17 @@ void bind_threepcf_physics(py::module_& module)
   // settings fixed at construction. The batch factory shares the
   // triangle and redshift preparation across all triplets.
   model.def("projection_grid", [](
+      // owner of the immutable physical model
       const std::shared_ptr<physics_owner_3pcf>& owner,
-      const physics_int_array& bins, const py::dict& parameters,
-      const py::dict& settings) {
+      // ordered source-bin labels for the requested correlation
+      const physics_int_array& bins,
+      const py::dict& parameters, // intrinsic-alignment and feedback parameters
+      // physical-grid bounds, node counts and angular cutoffs
+      const py::dict& settings
+  ) {
     shape_physics(bins, 1);
     aligned_physics(bins, alignof(int));
-    if (!(bins.size() == 3)) {
+    if (!(3 == bins.size())) {
       spdlog::critical("3pcf physics interface: three source bins are "
         "required");
       std::exit(1);
@@ -1944,12 +2048,17 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("settings") = py::dict(),
     "Prepare projected-B and b_L tables with explicit resolution settings.");
 
-  model.def("projection_grids", [](const physics_owner_3pcf& owner,
-      const physics_int_array& bins, const py::dict& parameters,
-      const py::dict& settings) {
+  model.def("projection_grids", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    // ordered source-bin labels for the requested correlation
+    const physics_int_array& bins,
+    const py::dict& parameters, // intrinsic-alignment and feedback parameters
+    // physical-grid bounds, node counts and angular cutoffs
+    const py::dict& settings
+  ) {
     shape_physics(bins, 2);
     aligned_physics(bins, alignof(int));
-    if (!(bins.shape(1) == 3)) {
+    if (!(3 == bins.shape(1))) {
       spdlog::critical("3pcf physics interface: batch bins must have shape "
         "[ntriplet,3]");
       std::exit(1);
@@ -1976,9 +2085,14 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("settings") = py::dict(),
     "Prepare ordered triplets while sharing all triangle/redshift physics.");
 
-  model.def("projection_grids_notebook", [](const physics_owner_3pcf& owner,
-      const physics_notebook_int& bins, const py::dict& parameters,
-      const py::dict& settings) {
+  model.def("projection_grids_notebook", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    // ordered source-bin labels for the requested correlation
+    const physics_notebook_int& bins,
+    const py::dict& parameters, // intrinsic-alignment and feedback parameters
+    // physical-grid bounds, node counts and angular cutoffs
+    const py::dict& settings
+  ) {
     const arma::Mat<int> sources = copy_matrix_physics(bins);
     const auto prepared = physics_grids_cpp_3pcf(owner, sources,
       parameters_physics(parameters), settings_physics_grid(settings));
@@ -1991,11 +2105,16 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("settings") = py::dict());
 
   model.def("projection_grid_notebook", [](
+      // owner of the immutable physical model
       const std::shared_ptr<physics_owner_3pcf>& owner,
-      const physics_notebook_int& bins, const py::dict& parameters,
-      const py::dict& settings) {
+      // ordered source-bin labels for the requested correlation
+      const physics_notebook_int& bins,
+      const py::dict& parameters, // intrinsic-alignment and feedback parameters
+      // physical-grid bounds, node counts and angular cutoffs
+      const py::dict& settings
+  ) {
     const arma::Col<int> source = copy_column_physics(bins);
-    if (!(source.n_elem == 3)) {
+    if (!(3 == source.n_elem)) {
       spdlog::critical("3pcf physics interface: three bins are required");
       std::exit(1);
     }
@@ -2011,9 +2130,15 @@ void bind_threepcf_physics(py::module_& module)
   // The copying twins of the stage 3 point queries: same physics, same
   // dispatch, routed through points_notebook_physics so sliced and
   // Fortran-order inputs work.
-  model.def("matter_notebook", [](const physics_owner_3pcf& owner,
-      const physics_notebook_array& sides,
-      const physics_notebook_array& redshifts, int component, double fb) {
+  model.def("matter_notebook", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    // Fourier triangles [point,3], in h/Mpc
+    const physics_notebook_array& sides,
+    // redshift at which each physical query is evaluated
+    const physics_notebook_array& redshifts,
+    int component, // 0=full matter B, 1=tree, 2=one-halo, 3=three-halo fit
+    double fb // bispectrum-only feedback amplitude
+  ) {
     physics_ia_3pcf parameters;
     physics_default_ia_3pcf(&parameters);
     parameters.fb = fb;
@@ -2022,19 +2147,29 @@ void bind_threepcf_physics(py::module_& module)
   }, py::arg("sides"), py::arg("redshifts"), py::arg("component") = 0,
     py::arg("fb") = 0.0);
 
-  model.def("ia_notebook", [](const physics_owner_3pcf& owner,
-      const physics_notebook_array& sides,
-      const physics_notebook_array& redshifts,
-      const py::dict& parameters, bool remove_alignment) {
+  model.def("ia_notebook", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    // Fourier triangles [point,3], in h/Mpc
+    const physics_notebook_array& sides,
+    // redshift at which each physical query is evaluated
+    const physics_notebook_array& redshifts,
+    const py::dict& parameters, // intrinsic-alignment and feedback parameters
+    bool remove_alignment // omit the linear-alignment baseline from IA outputs
+  ) {
     return points_notebook_physics(owner, sides, redshifts,
       physics_notebook_int(), parameters_physics(parameters), 1, 0,
       remove_alignment);
   }, py::arg("sides"), py::arg("redshifts"),
     py::arg("parameters") = py::dict(), py::arg("remove_alignment") = false);
 
-  model.def("projected_notebook", [](const physics_owner_3pcf& owner,
-      const physics_notebook_array& sides, const physics_notebook_int& bins,
-      const py::dict& parameters, int component) {
+  model.def("projected_notebook", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_notebook_array& sides, // multipole triangles [point,3]
+    // ordered source-bin labels for the requested correlation
+    const physics_notebook_int& bins,
+    const py::dict& parameters, // intrinsic-alignment and feedback parameters
+    int component // 0=total, 1=NLA baseline, 2=residual IA
+  ) {
     return points_notebook_physics(owner, sides, physics_notebook_array(),
       bins, parameters_physics(parameters), 2, component, false);
   }, py::arg("sides"), py::arg("bins"),
@@ -2047,8 +2182,12 @@ void bind_threepcf_physics(py::module_& module)
   // cross-checks of the tables the model interpolates, plus the NLA
   // shear C_ell and the radial-kernel dump that the covariance route
   // reuses.
-  model.def("power", [](const physics_owner_3pcf& owner,
-      const physics_array& k, const physics_array& z, int mode) {
+  model.def("power", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_array& k, // wavenumbers in h/Mpc
+    const physics_array& z, // redshift coordinates of the supplied values
+    int mode // 0=linear(0)*D^2, 1=nonlinear(0)*D^2, 2=nonlinear(z)
+  ) {
     shape_physics(k, 1);
     shape_physics(z, 1);
     finite_physics(k);
@@ -2071,8 +2210,12 @@ void bind_threepcf_physics(py::module_& module)
     "2=the tabulated nonlinear evolution. D is the linear growth "
     "factor, normalized to one today.");
 
-  model.def("power_response", [](const physics_owner_3pcf& owner,
-      const physics_array& k, const physics_array& z, double amplitude) {
+  model.def("power_response", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_array& k, // wavenumbers in h/Mpc
+    const physics_array& z, // redshift coordinates of the supplied values
+    double amplitude // shared logarithmic feedback response; zero is DMO
+  ) {
     shape_physics(k, 1);
     shape_physics(z, 1);
     finite_physics(k);
@@ -2091,9 +2234,13 @@ void bind_threepcf_physics(py::module_& module)
   }, py::arg("k").noconvert(), py::arg("z").noconvert(),
     py::arg("amplitude"));
 
-  model.def("power_response_notebook", [](const physics_owner_3pcf& owner,
-      const physics_notebook_array& k, const physics_notebook_array& z,
-      double amplitude) {
+  model.def("power_response_notebook", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_notebook_array& k, // wavenumbers in h/Mpc
+    // redshift coordinates of the supplied values
+    const physics_notebook_array& z,
+    double amplitude // shared logarithmic feedback response; zero is DMO
+  ) {
     const arma::Col<double> values = physics_feedback_power_cpp_3pcf(owner,
       copy_column_physics(k), copy_column_physics(z), amplitude);
     physics_array result(values.n_elem);
@@ -2102,9 +2249,13 @@ void bind_threepcf_physics(py::module_& module)
     return result;
   }, py::arg("k"), py::arg("z"), py::arg("amplitude"));
 
-  model.def("bispectrum_response", [](const physics_owner_3pcf& owner,
-      const physics_array& sides, const physics_array& redshifts,
-      double amplitude) {
+  model.def("bispectrum_response", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_array& sides, // Fourier triangles [point,3], in h/Mpc
+    // redshift at which each physical query is evaluated
+    const physics_array& redshifts,
+    double amplitude // shared logarithmic feedback response; zero is DMO
+  ) {
     physics_ia_3pcf parameters;
     physics_default_ia_3pcf(&parameters);
     parameters.feedback_amplitude = amplitude;
@@ -2114,8 +2265,13 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("amplitude"));
 
   model.def("bispectrum_response_notebook", [](
-      const physics_owner_3pcf& owner, const physics_notebook_array& sides,
-      const physics_notebook_array& redshifts, double amplitude) {
+      const physics_owner_3pcf& owner, // owner of the immutable physical model
+      // Fourier triangles [point,3], in h/Mpc
+      const physics_notebook_array& sides,
+      // redshift at which each physical query is evaluated
+      const physics_notebook_array& redshifts,
+      double amplitude // shared logarithmic feedback response; zero is DMO
+  ) {
     physics_ia_3pcf parameters;
     physics_default_ia_3pcf(&parameters);
     parameters.feedback_amplitude = amplitude;
@@ -2123,14 +2279,18 @@ void bind_threepcf_physics(py::module_& module)
       physics_notebook_int(), parameters, 4, 0, false);
   }, py::arg("sides"), py::arg("redshifts"), py::arg("amplitude"));
 
-  model.def("nla_power", [](const physics_owner_3pcf& owner,
-      const physics_array& ell, const physics_int_array& bins,
-      const py::dict& parameters) {
+  model.def("nla_power", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_array& ell, // angular-multipole nodes
+    // ordered source-bin labels for the requested correlation
+    const physics_int_array& bins,
+    const py::dict& parameters // intrinsic-alignment and feedback parameters
+  ) {
     shape_physics(ell, 1);
     shape_physics(bins, 1);
     finite_physics(ell);
     aligned_physics(bins, alignof(int));
-    if (!(bins.size() == 2)) {
+    if (!(2 == bins.size())) {
       spdlog::critical("3pcf physics interface: two power bins are required");
       std::exit(1);
     }
@@ -2150,9 +2310,13 @@ void bind_threepcf_physics(py::module_& module)
     py::arg("parameters") = py::dict(),
     "Shear C_ell with NLA and optional paired feedback; no TATT loops.");
 
-  model.def("nla_power_notebook", [](const physics_owner_3pcf& owner,
-      const physics_notebook_array& ell, const physics_notebook_int& bins,
-      const py::dict& parameters) {
+  model.def("nla_power_notebook", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    const physics_notebook_array& ell, // angular-multipole nodes
+    // ordered source-bin labels for the requested correlation
+    const physics_notebook_int& bins,
+    const py::dict& parameters // intrinsic-alignment and feedback parameters
+  ) {
     const arma::Col<double> values = physics_nla_power_cpp_3pcf(owner,
       copy_column_physics(ell), copy_column_physics(bins),
       parameters_physics(parameters));
@@ -2163,8 +2327,11 @@ void bind_threepcf_physics(py::module_& module)
     return result;
   }, py::arg("ell"), py::arg("bins"), py::arg("parameters") = py::dict());
 
-  model.def("background_matter_fraction", [](const physics_owner_3pcf& owner,
-      const physics_array& redshifts) {
+  model.def("background_matter_fraction", [](
+    const physics_owner_3pcf& owner, // owner of the immutable physical model
+    // redshift at which each physical query is evaluated
+    const physics_array& redshifts
+  ) {
     shape_physics(redshifts, 1);
     finite_physics(redshifts);
     physics_array output(redshifts.size());
@@ -2177,7 +2344,9 @@ void bind_threepcf_physics(py::module_& module)
     "Omega_m(z) used by halo covariance: supplied table when selected, "
     "otherwise the legacy w0-wa background. This is a dimensionless fraction.");
 
-  model.def("radial", [](const physics_owner_3pcf& owner) {
+  model.def("radial", [](
+    const physics_owner_3pcf& owner // owner of the immutable physical model
+  ) {
     int nbin;
     int nlos;
     const double* z;
@@ -2193,8 +2362,8 @@ void bind_threepcf_physics(py::module_& module)
     // The C side lends its row-major [nbin,nlos] kernel tables for the
     // model's lifetime; the loop copies each one into an owned NumPy
     // array of the same layout, so Python cannot dangle into the model.
-    for (int index=0; index<5; index++) {
-      physics_array values = index < 3 ? physics_array(nlos)
+    for (int index=0; 5 > index; index++) {
+      physics_array values = 3 > index ? physics_array(nlos)
         : physics_array({static_cast<py::ssize_t>(nbin),
           static_cast<py::ssize_t>(nlos)});
       std::memcpy(values.mutable_data(), arrays[index],

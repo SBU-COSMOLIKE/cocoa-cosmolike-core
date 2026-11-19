@@ -89,8 +89,8 @@ static void shape_transform(
   }
 
   for (int axis=0; axis<rank; axis++) {
-    if (!(values.shape(axis) > 0
-          && values.shape(axis) <= INT_MAX)) {
+    if (!(0 < values.shape(axis)
+          && INT_MAX >= values.shape(axis))) {
       spdlog::critical("3pcf transform: invalid array axis");
       std::exit(1);
     }
@@ -98,7 +98,7 @@ static void shape_transform(
 
   using scalar = typename Array::value_type;
   const auto address = reinterpret_cast<std::uintptr_t>(values.data());
-  if (!(address%alignof(scalar) == 0)) {
+  if (!(0 == address%alignof(scalar))) {
     spdlog::critical("3pcf transform: unaligned array");
     std::exit(1);
   }
@@ -185,8 +185,8 @@ static Array notebook_transform_input(
     std::exit(1);
   }
   for (int axis=0; axis<rank; axis++) {
-    if (!(input.shape(axis) > 0
-          && input.shape(axis) <= INT_MAX)) {
+    if (!(0 < input.shape(axis)
+          && INT_MAX >= input.shape(axis))) {
       spdlog::critical("3pcf transform: invalid notebook axis");
       std::exit(1);
     }
@@ -394,9 +394,9 @@ class bessel_owner_3pcf {
       const int order2 // second requested Bessel order
     ) const
   {
-    if (!(order1 >= 0
+    if (!(0 <= order1
           && order1 <= max_order_
-          && order2 >= 0
+          && 0 <= order2
           && order2 <= max_order_)) {
       spdlog::critical("3pcf two-Bessel plan: orders must be in [0, {}]",
           max_order_);
@@ -482,7 +482,7 @@ class transform_owner_3pcf {
     finite_transform(ell);
     finite_transform(phi);
 
-    if (!(lmax >= 0 && lmax < INT_MAX-1)) {
+    if (!(0 <= lmax && INT_MAX-1 > lmax)) {
       spdlog::critical("3pcf transform: invalid Legendre cutoff");
       std::exit(1);
     }
@@ -597,12 +597,12 @@ class transform_owner_3pcf {
     shape_transform(imag, 3);
 
     const int triangles = ntheta_*ntheta_*nphi_;
-    if (!(real.shape(1) == 4 && real.shape(2) == triangles)) {
+    if (!(4 == real.shape(1) && real.shape(2) == triangles)) {
       spdlog::critical("3pcf transform: weights do not match this plan's "
         "triangle grid");
       std::exit(1);
     }
-    for (int axis=0; axis<3; axis++) {
+    for (int axis=0; 3 > axis; axis++) {
       if (!(real.shape(axis) == imag.shape(axis))) {
         spdlog::critical("3pcf transform: real and imaginary weight shapes "
           "differ");
@@ -645,12 +645,12 @@ class transform_owner_3pcf {
     shape_transform(imag, 3);
 
     const int triangles = ntheta_*ntheta_*nphi_;
-    if (!(real.shape(1) == 4 && real.shape(2) == triangles)) {
+    if (!(4 == real.shape(1) && real.shape(2) == triangles)) {
       spdlog::critical("3pcf transform: weights do not match this plan's "
         "triangle grid");
       std::exit(1);
     }
-    for (int axis=0; axis<3; axis++) {
+    for (int axis=0; 3 > axis; axis++) {
       if (!(real.shape(axis) == imag.shape(axis))) {
         spdlog::critical("3pcf transform: real and imaginary weight shapes "
           "differ");
@@ -893,8 +893,8 @@ static transform_array coupling_production(
   shape_transform(psi, 1);
   finite_transform(psi);
 
-  if (!(lmax >= 0 && lmax < INT_MAX-1
-        && mmax >= 0 && mmax < INT_MAX-1
+  if (!(0 <= lmax && INT_MAX-1 > lmax
+        && 0 <= mmax && INT_MAX-1 > mmax
         && lmax <= INT_MAX-1-mmax)) {
     spdlog::critical("3pcf transform: invalid coupling cutoffs");
     std::exit(1);
@@ -955,7 +955,7 @@ static transform_array bessel_production(
     spdlog::critical("3pcf transform: integrand shape mismatch");
     std::exit(1);
   }
-  if (!(order1 >= 0 && order2 >= 0)) {
+  if (!(0 <= order1 && 0 <= order2)) {
     spdlog::critical("3pcf transform: negative Bessel order");
     std::exit(1);
   }

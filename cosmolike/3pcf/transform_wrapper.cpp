@@ -64,9 +64,9 @@ arma::Cube<double> coupling_cpp_3pcf(
   // cutoff is nonnegative and leaves room for the +1 of its table axis;
   // and lmax + mmax stays within int, because the coupling's Fourier
   // sum reaches the combined harmonic M + L.
-  if (!(psi.n_elem > 0 && psi.n_elem <= INT_MAX
-        && psi.is_finite() && lmax >= 0 && lmax < INT_MAX-1
-        && mmax >= 0 && mmax < INT_MAX-1
+  if (!(0 < psi.n_elem && INT_MAX >= psi.n_elem
+        && psi.is_finite() && 0 <= lmax && INT_MAX-1 > lmax
+        && 0 <= mmax && INT_MAX-1 > mmax
         && lmax <= INT_MAX-1-mmax)) {
     spdlog::critical("3pcf transform wrapper: invalid coupling input");
     std::exit(1);
@@ -142,10 +142,10 @@ arma::Mat<double> bessel_cpp_3pcf(
   // populated and counts within a C int; the integrand is square on
   // that grid and every value, grid included, is finite; and both
   // Bessel orders are nonnegative.
-  if (!(ell.n_elem > 0 && ell.n_elem <= INT_MAX
+  if (!(0 < ell.n_elem && INT_MAX >= ell.n_elem
         && integrand.n_rows == ell.n_elem
         && integrand.n_cols == ell.n_elem && ell.is_finite()
-        && integrand.is_finite() && order1 >= 0 && order2 >= 0)) {
+        && integrand.is_finite() && 0 <= order1 && 0 <= order2)) {
     spdlog::critical("3pcf transform wrapper: invalid two-Bessel input");
     std::exit(1);
   }
@@ -182,7 +182,7 @@ void bessel_forward_cpp_3pcf(
   )
 {
   if (!(nullptr != work
-        && nell >= 2
+        && 2 <= nell
         && integrand.n_rows == static_cast<arma::uword>(nell)
         && integrand.n_cols == static_cast<arma::uword>(nell)
         && integrand.is_finite())) {
@@ -214,7 +214,7 @@ arma::Mat<double> bessel_inverse_cpp_3pcf(
   )
 {
   if (!(nullptr != work
-        && nell >= 2)) {
+        && 2 <= nell)) {
     spdlog::critical("3pcf transform wrapper: invalid retained workspace");
     std::exit(1);
   }
@@ -290,7 +290,7 @@ natural_result_cpp_3pcf natural_cpp_3pcf(
   // Unpack the row-major C output [4, ntheta*ntheta, nphi]: cell
   // (component, pair, angle) lives at (component*pairs + pair)*nphi +
   // angle, again pack_cube_3pcf's storage rule read in reverse.
-  for (int component=0; component<4; component++) {
+  for (int component=0; 4 > component; component++) {
     for (arma::uword pair=0; pair<pairs; pair++) {
       for (int angle=0; angle<nphi; angle++) {
         const arma::uword cell = (component*pairs+pair)*nphi+angle;
@@ -320,11 +320,12 @@ natural_result_cpp_3pcf natural_cpp_3pcf(
 // components on every triangle bin.
 // ---------------------------------------------------------------------------
 arma::Col<double> aperture_grid_cpp_3pcf(
+    // retained transform geometry and scratch owned by the caller
     transform_plan_3pcf* plan,
-    const physics_grid_3pcf* grid,
-    const arma::Cube<double>& real,
-    const arma::Cube<double>& imag,
-    const int ntriangle
+    const physics_grid_3pcf* grid, // immutable projected-bispectrum table
+    const arma::Cube<double>& real, // real aperture weights [filter,4,triangle]
+    const arma::Cube<double>& imag, // matching imaginary aperture weights
+    const int ntriangle // triangle count expected by the retained plan
   )
 {
   // One guard covers four groups of requirements: the plan and grid
@@ -332,8 +333,8 @@ arma::Col<double> aperture_grid_cpp_3pcf(
   // component axis holds the four natural components and the triangle
   // axis matches the plan the caller prepared; and the imaginary cube
   // matches the real cube in shape, with every value finite.
-  if (!(plan && grid && real.n_rows > 0
-        && real.n_rows <= INT_MAX && real.n_cols == 4 && ntriangle > 0
+  if (!(plan && grid && 0 < real.n_rows
+        && INT_MAX >= real.n_rows && 4 == real.n_cols && 0 < ntriangle
         && real.n_slices == static_cast<arma::uword>(ntriangle)
         && imag.n_rows == real.n_rows && imag.n_cols == real.n_cols
         && imag.n_slices == real.n_slices && real.is_finite()
@@ -350,7 +351,7 @@ arma::Col<double> aperture_grid_cpp_3pcf(
   arma::Col<double> packed_real(real.n_elem);
   arma::Col<double> packed_imag(imag.n_elem);
   for (arma::uword filter=0; filter<real.n_rows; filter++) {
-    for (int component=0; component<4; component++) {
+    for (int component=0; 4 > component; component++) {
       for (int triangle=0; triangle<ntriangle; triangle++) {
         const arma::uword cell = (filter*4 + component)*ntriangle + triangle;
         packed_real(cell) = real(filter, component, triangle);

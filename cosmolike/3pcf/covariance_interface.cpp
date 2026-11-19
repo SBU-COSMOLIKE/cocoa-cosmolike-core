@@ -67,12 +67,15 @@ namespace cosmolike_interface {
 // Returns:
 //   the product of the dimensions: the number of array elements
 // ---------------------------------------------------------------------------
-static size_t covariance_count(const std::vector<py::ssize_t>& shape)
+static size_t covariance_count(
+  // axis lengths of the requested C-order storage
+  const std::vector<py::ssize_t>& shape
+)
 {
   size_t product = 1;
 
   for (const auto length : shape) {
-    if (!(length > 0 && length <= INT_MAX)) {
+    if (!(0 < length && INT_MAX >= length)) {
       spdlog::critical("3pcf covariance interface: invalid array dimension");
       std::exit(1);
     }
@@ -126,8 +129,9 @@ static size_t covariance_count(const std::vector<py::ssize_t>& shape)
 // ---------------------------------------------------------------------------
 template <typename Number>
 static py::array_t<Number, py::array::c_style> covariance_array(
-  const py::handle object,
-  const int rank,
+  const py::handle object, // Python buffer to validate or copy
+  const int rank, // required number of array axes
+  // true copies notebook inputs; false borrows production arrays
   const bool notebook
 )
 {
@@ -154,13 +158,13 @@ static py::array_t<Number, py::array::c_style> covariance_array(
   const size_t count = covariance_count(shape);
 
   if (!notebook) {
-    if (!((input.flags() & py::array::c_style) != 0)) {
+    if (!(0 != (input.flags() & py::array::c_style))) {
       spdlog::critical("3pcf covariance interface: production requires "
         "contiguous C-order inputs");
       std::exit(1);
     }
     const auto address = reinterpret_cast<std::uintptr_t>(input.data());
-    if (!(address%alignof(Number) == 0)) {
+    if (!(0 == address%alignof(Number))) {
       spdlog::critical("3pcf covariance interface: production input is not "
         "aligned for its C element type");
       std::exit(1);
@@ -176,7 +180,7 @@ static py::array_t<Number, py::array::c_style> covariance_array(
   for (size_t index=0; index<count; index++) {
     size_t remainder = index;
     py::ssize_t offset = 0;
-    for (int axis=rank - 1; axis>=0; axis--) {
+    for (int axis=rank - 1; 0 <= axis; axis--) {
       const size_t coordinate = remainder%static_cast<size_t>(shape[axis]);
       remainder /= static_cast<size_t>(shape[axis]);
       offset += static_cast<py::ssize_t>(coordinate)*input.strides(axis);
@@ -192,7 +196,9 @@ static py::array_t<Number, py::array::c_style> covariance_array(
 
 // Stop when any element is not finite: a NaN or infinity in an input
 // or output marks a broken calculation, never valid physics.
-static void covariance_finite(const py::array_t<double>& array)
+static void covariance_finite(
+  const py::array_t<double>& array // real array whose entries must be finite
+)
 {
   for (py::ssize_t index=0; index<array.size(); index++) {
     if (!(std::isfinite(array.data()[index]))) {
@@ -230,8 +236,10 @@ class covariance_arguments {
   std::map<std::string, py::array_t<int, py::array::c_style>> integer;
 
   covariance_arguments(
+    // immutable physical model retained for this call
     const physics_model_3pcf* model,
-    const py::dict& values,
+    const py::dict& values, // named input arrays and scalar settings
+    // true copies notebook inputs; false borrows production arrays
     const bool notebook
   )
   {
@@ -285,7 +293,7 @@ class covariance_arguments {
         auto array = covariance_array<int>(item.second, rank, notebook);
         integer.emplace(name, std::move(array));
       } else {
-        if (!(scalars.count(name) != 0)) {
+        if (!(0 != scalars.count(name))) {
           spdlog::critical("3pcf covariance interface: unknown covariance "
             "dictionary key");
           std::exit(1);
@@ -297,26 +305,26 @@ class covariance_arguments {
     // Every array key is required (only theta_edges is optional), and
     // the survey area has no sensible default.
     for (const auto& name : real_vectors) {
-      if (!(real.count(name) != 0)) {
+      if (!(0 != real.count(name))) {
         spdlog::critical("3pcf covariance interface: missing real input "
           "vector");
         std::exit(1);
       }
     }
     for (const auto& name : real_matrices) {
-      if (!(real.count(name) != 0)) {
+      if (!(0 != real.count(name))) {
         spdlog::critical("3pcf covariance interface: missing real input "
           "matrix");
         std::exit(1);
       }
     }
     for (const auto& name : integer_vectors) {
-      if (!(integer.count(name) != 0)) {
+      if (!(0 != integer.count(name))) {
         spdlog::critical("3pcf covariance interface: missing integer vector");
         std::exit(1);
       }
     }
-    if (!(integer.count("row_fields") != 0)) {
+    if (!(0 != integer.count("row_fields"))) {
       spdlog::critical("3pcf covariance interface: missing row_fields matrix");
       std::exit(1);
     }
@@ -366,7 +374,7 @@ class covariance_arguments {
       std::exit(1);
     }
     if (!(integer.at("row_fields").shape(0) == input.nrow
-          && integer.at("row_fields").shape(1) == 3)) {
+          && 3 == integer.at("row_fields").shape(1))) {
       spdlog::critical("3pcf covariance interface: row_fields must have "
         "shape [nrow,3]");
       std::exit(1);
@@ -444,14 +452,19 @@ class covariance_arguments {
 
  private:
   // Length of an owned real vector, as the C struct's int size.
-  int vector_length(const char* name) const
+  int vector_length(
+    const char* name // dictionary key or array label checked here
+  ) const
   {
     return static_cast<int>(real.at(name).size());
   }
 
   // A quadrature's weight array must have exactly as many entries as
   // its node array.
-  void equal_length(const char* name, const int expected) const
+  void equal_length(
+    const char* name, // dictionary key or array label checked here
+    const int expected // required array length
+  ) const
   {
     if (!(vector_length(name) == expected)) {
       spdlog::critical("3pcf covariance interface: integration nodes and "
@@ -462,7 +475,11 @@ class covariance_arguments {
 
   // A labeled matrix must match the row and column counts its
   // physical labels promise.
-  void matrix_shape(const char* name, const int rows, const int columns) const
+  void matrix_shape(
+    const char* name, // dictionary key or array label checked here
+    const int rows, // required first-axis length
+    const int columns // required second-axis length
+  ) const
   {
     const auto& values = real.at(name);
     if (!(values.shape(0) == rows && values.shape(1) == columns)) {
@@ -475,9 +492,9 @@ class covariance_arguments {
   // Real scalar with a default: an absent key falls back, a present
   // key must be a finite number.
   static double scalar(
-    const py::dict& values,
-    const char* name,
-    const double fallback
+    const py::dict& values, // named input arrays and scalar settings
+    const char* name, // dictionary key or array label checked here
+    const double fallback // default value when the dictionary omits this key
   )
   {
     const double result = values.contains(name)
@@ -492,9 +509,9 @@ class covariance_arguments {
   // Integer model switch with a default. Only Python integers pass:
   // a float here would hide a mis-set discrete switch.
   static int integer_scalar(
-    const py::dict& values,
-    const char* name,
-    const int fallback
+    const py::dict& values, // named input arrays and scalar settings
+    const char* name, // dictionary key or array label checked here
+    const int fallback // default value when the dictionary omits this key
   )
   {
     if (!values.contains(name)) {
@@ -511,19 +528,20 @@ class covariance_arguments {
   // Every node grid must increase strictly, from a nonnegative (or,
   // when strictly_positive, a positive) lower bound.
   static void increasing(
-    const double* values,
-    const int count,
+    const double* values, // integration nodes checked in their stored order
+    const int count, // number of entries in the supplied array
+    // require positive nodes instead of allowing zero
     const bool strictly_positive
   )
   {
     for (int index=0; index<count; index++) {
-      if (!(strictly_positive ? values[index] > 0.0
-            : values[index] >= 0.0)) {
+      if (!(strictly_positive ? 0.0 < values[index]
+            : 0.0 <= values[index])) {
         spdlog::critical("3pcf covariance interface: grid has an invalid "
           "lower bound");
         std::exit(1);
       }
-      if (!(index == 0 || values[index] > values[index - 1])) {
+      if (!(0 == index || values[index] > values[index - 1])) {
         spdlog::critical("3pcf covariance interface: integration grid must "
           "be strictly increasing");
         std::exit(1);
@@ -532,10 +550,13 @@ class covariance_arguments {
   }
 
   // Quadrature weights must be strictly positive.
-  static void positive(const double* values, const int count)
+  static void positive(
+    const double* values, // integration weights that must be positive
+    const int count // number of entries in the supplied array
+  )
   {
     for (int index=0; index<count; index++) {
-      if (!(values[index] > 0.0)) {
+      if (!(0.0 < values[index])) {
         spdlog::critical("3pcf covariance interface: integration weights "
           "must be positive");
         std::exit(1);
@@ -564,18 +585,18 @@ class covariance_arguments {
     positive(input.dk, input.nk);
     positive(input.dmass, input.nmass);
 
-    if (!(input.nprofile >= 3 && input.profile_radius[0] == 0.0)) {
+    if (!(3 <= input.nprofile && 0.0 == input.profile_radius[0])) {
       spdlog::critical("3pcf covariance interface: profile_radius needs at "
         "least three nodes and must start at zero");
       std::exit(1);
     }
-    if (!(input.profile_upsample >= 1
+    if (!(1 <= input.profile_upsample
           && input.nprofile - 1 <= (INT_MAX - 1)/input.profile_upsample)) {
       spdlog::critical("3pcf covariance interface: profile upsampling count "
         "is invalid or overflows");
       std::exit(1);
     }
-    if (!(input.phi[input.nphi - 1] <= 2.0*arma::datum::pi)) {
+    if (!(2.0*arma::datum::pi >= input.phi[input.nphi - 1])) {
       spdlog::critical("3pcf covariance interface: relative angle lies "
         "outside [0,2pi]");
       std::exit(1);
@@ -589,63 +610,63 @@ class covariance_arguments {
     for (int index=0; index<input.nphi; index++) {
       angle_measure += input.dphi[index];
     }
-    if (!(std::abs(angle_measure - 2.0*arma::datum::pi) < 1.0e-10)) {
+    if (!(1.0e-10 > std::abs(angle_measure - 2.0*arma::datum::pi))) {
       spdlog::critical("3pcf covariance interface: relative-angle "
         "quadrature weights must sum to 2pi");
       std::exit(1);
     }
 
-    if (!(input.area > 0.0 && input.area <= 4.0*arma::datum::pi)) {
+    if (!(0.0 < input.area && 4.0*arma::datum::pi >= input.area)) {
       spdlog::critical("3pcf covariance interface: survey solid angle must "
         "lie in (0,4pi]");
       std::exit(1);
     }
-    if (!(input.center_window == 1 || input.center_window == 2)) {
+    if (!(1 == input.center_window || 2 == input.center_window)) {
       spdlog::critical("3pcf covariance interface: center_window must be 1 "
         "(circle) or 2 (square)");
       std::exit(1);
     }
-    if (!(input.large_area == 0 || input.large_area == 1)) {
+    if (!(0 == input.large_area || 1 == input.large_area)) {
       spdlog::critical("3pcf covariance interface: large_area must be zero "
         "or one");
       std::exit(1);
     }
-    if (!(input.estimator == 0 && input.ia_model == 0)) {
+    if (!(0 == input.estimator && 0 == input.ia_model)) {
       spdlog::critical("3pcf covariance interface: only full-filter map "
         "products with gravitational covariance exist");
       std::exit(1);
     }
-    if (!(input.noise_mode == 0 || input.noise_mode == 1)) {
+    if (!(0 == input.noise_mode || 1 == input.noise_mode)) {
       spdlog::critical("3pcf covariance interface: noise_mode must be "
         "finite-band (0) or uniform-area xi noise (1)");
       std::exit(1);
     }
-    if (!(input.noise_mode == 0
-          || (input.large_area == 1 && input.theta_edges != nullptr))) {
+    if (!(0 == input.noise_mode
+          || (1 == input.large_area && nullptr != input.theta_edges))) {
       spdlog::critical("3pcf covariance interface: analytic xi noise "
         "requires large_area=1 and theta_edges[nrow,2]");
       std::exit(1);
     }
-    if (!(input.st_a > 0.0 && input.st_p >= 0.0
-          && input.st_norm > 0.0 && input.delta_c > 0.0
-          && input.concentration_a > 0.0 && input.concentration_pivot > 0.0)) {
+    if (!(0.0 < input.st_a && 0.0 <= input.st_p
+          && 0.0 < input.st_norm && 0.0 < input.delta_c
+          && 0.0 < input.concentration_a && 0.0 < input.concentration_pivot)) {
       spdlog::critical("3pcf covariance interface: invalid halo prescription");
       std::exit(1);
     }
-    if (!(input.collapse_model == 0 || input.collapse_model == 1)) {
+    if (!(0 == input.collapse_model || 1 == input.collapse_model)) {
       spdlog::critical("3pcf covariance interface: collapse_model must "
         "select constant (0) or evolving (1) threshold");
       std::exit(1);
     }
 
     for (int field=0; field<input.nfield; field++) {
-      if (!(input.field_source[field] >= 0
+      if (!(0 <= input.field_source[field]
             && input.field_source[field] < nsource)) {
         spdlog::critical("3pcf covariance interface: field source index is "
           "out of range");
         std::exit(1);
       }
-      if (!(input.field_radius[field] >= 0.0)) {
+      if (!(0.0 <= input.field_radius[field])) {
         spdlog::critical("3pcf covariance interface: field aperture radius "
           "must be nonnegative");
         std::exit(1);
@@ -655,22 +676,22 @@ class covariance_arguments {
     double largest_theta = 0.0;
     for (int row=0; row<input.nrow; row++) {
       const int kind = input.row_kind[row];
-      if (!(kind >= 0 && kind <= 3)) {
+      if (!(0 <= kind && 3 >= kind)) {
         spdlog::critical("3pcf covariance interface: unknown observable row "
           "kind");
         std::exit(1);
       }
 
-      const int legs = kind == 1 ? 3 : 2;
+      const int legs = 1 == kind ? 3 : 2;
       for (int leg=0; leg<legs; leg++) {
         const int field = input.row_fields[static_cast<size_t>(row)*3 + leg];
-        if (!(field >= 0 && field < input.nfield)) {
+        if (!(0 <= field && field < input.nfield)) {
           spdlog::critical("3pcf covariance interface: observable field "
             "index is out of range");
           std::exit(1);
         }
-        if (!(kind < 2 ? input.field_radius[field] > 0.0
-              : input.field_radius[field] == 0.0)) {
+        if (!(2 > kind ? 0.0 < input.field_radius[field]
+              : 0.0 == input.field_radius[field])) {
           spdlog::critical("3pcf covariance interface: Map rows need "
             "positive filters and xi rows need bare shear "
             "legs");
@@ -678,12 +699,12 @@ class covariance_arguments {
         }
       }
 
-      if (kind >= 2) {
-        if (input.noise_mode == 1) {
+      if (2 <= kind) {
+        if (1 == input.noise_mode) {
           const double lower = input.theta_edges[static_cast<size_t>(row)*2];
           const double upper = input.theta_edges[
             static_cast<size_t>(row)*2 + 1];
-          if (!(lower > 0.0 && upper > lower)) {
+          if (!(0.0 < lower && upper > lower)) {
             spdlog::critical("3pcf covariance interface: analytic xi noise "
               "needs positive ordered bin edges");
             std::exit(1);
@@ -702,8 +723,8 @@ class covariance_arguments {
         double normalization = 0.0;
         for (int node=0; node<input.ntheta; node++) {
           const size_t index = static_cast<size_t>(row)*input.ntheta + node;
-          if (!(input.theta[index] > 0.0
-                && input.theta_weight[index] >= 0.0)) {
+          if (!(0.0 < input.theta[index]
+                && 0.0 <= input.theta_weight[index])) {
             spdlog::critical("3pcf covariance interface: xi nodes must be "
               "positive and their weights nonnegative");
             std::exit(1);
@@ -714,7 +735,7 @@ class covariance_arguments {
         // A bin average needs weights that sum to one, or the xi value
         // would carry a spurious overall scale. 1.0e-10 forgives the
         // roundoff of accumulating ntheta weights, nothing larger.
-        if (!(std::abs(normalization - 1.0) <= 1.0e-10)) {
+        if (!(1.0e-10 >= std::abs(normalization - 1.0))) {
           spdlog::critical("3pcf covariance interface: xi-bin weights must "
             "sum to one");
           std::exit(1);
@@ -799,8 +820,9 @@ class covariance_arguments {
 //   (mean[nrow], terms[6,nrow,nrow]) as a tuple of NumPy arrays
 // ---------------------------------------------------------------------------
 static py::tuple physical_covariance_binding(
-  const py::handle owner,
-  const py::dict& values,
+  const py::handle owner, // owner of the immutable model or projected grid
+  const py::dict& values, // named input arrays and scalar settings
+  // true copies notebook inputs; false borrows production arrays
   const bool notebook
 )
 {
@@ -841,7 +863,7 @@ static py::tuple physical_covariance_binding(
     for (int row=0; row<count; row++) {
       mean.mutable_data()[row] = result.first(row);
       for (int column=0; column<count; column++) {
-        for (int term=0; term<6; term++) {
+        for (int term=0; 6 > term; term++) {
           terms.mutable_data()[(static_cast<size_t>(term)*count + row)*count
             + column] = result.second(row, column, term);
         }
@@ -884,10 +906,11 @@ static py::tuple physical_covariance_binding(
 //   shapes above
 // ---------------------------------------------------------------------------
 static py::tuple halos_binding(
-  const py::handle owner,
-  const py::dict& values,
-  const py::handle redshifts,
-  const py::handle wavenumbers,
+  const py::handle owner, // owner of the immutable model or projected grid
+  const py::dict& values, // named input arrays and scalar settings
+  const py::handle redshifts, // redshift nodes for the halo tables
+  const py::handle wavenumbers, // profile wavenumbers in h/Mpc
+  // true copies notebook inputs; false borrows production arrays
   const bool notebook
 )
 {
@@ -900,16 +923,16 @@ static py::tuple halos_binding(
   covariance_finite(k);
 
   for (py::ssize_t index=0; index<z.size(); index++) {
-    if (!(z.data()[index] >= 0.0
-          && (index == 0 || z.data()[index] > z.data()[index - 1]))) {
+    if (!(0.0 <= z.data()[index]
+          && (0 == index || z.data()[index] > z.data()[index - 1]))) {
       spdlog::critical("3pcf covariance interface: halo redshifts must be "
         "nonnegative and strictly increasing");
       std::exit(1);
     }
   }
   for (py::ssize_t index=0; index<k.size(); index++) {
-    if (!(k.data()[index] >= 0.0
-          && (index == 0 || k.data()[index] > k.data()[index - 1]))) {
+    if (!(0.0 <= k.data()[index]
+          && (0 == index || k.data()[index] > k.data()[index - 1]))) {
       spdlog::critical("3pcf covariance interface: profile wavenumbers must "
         "be nonnegative and strictly increasing");
       std::exit(1);
@@ -927,7 +950,7 @@ static py::tuple halos_binding(
   // variance), dndm (the halo abundance), bias and concentration.
   // The fifth is the NFW Fourier profile u on [z,M,k].
   std::vector<py::array_t<double>> result;
-  for (int index=0; index<4; index++) {
+  for (int index=0; 4 > index; index++) {
     result.emplace_back(std::vector<py::ssize_t>{z.size(), mass_count});
   }
   result.emplace_back(std::vector<py::ssize_t>{z.size(), mass_count, k.size()});
@@ -951,7 +974,7 @@ static py::tuple halos_binding(
     // plain byte copy lands every element in its [z,M] or [z,M,k]
     // slot. No two-dimensional Armadillo matrix enters, so no
     // column-major transpose can occur.
-    for (int index=0; index<5; index++) {
+    for (int index=0; 5 > index; index++) {
       std::memcpy(result[index].mutable_data(), computed[index].memptr(),
         static_cast<size_t>(result[index].size())*sizeof(double));
     }
@@ -999,13 +1022,15 @@ static py::tuple halos_binding(
 //   NumPy array [nrow]: the bin-averaged xi of each row
 // ---------------------------------------------------------------------------
 static py::array_t<double> xi_binding(
-  const py::handle ell_object,
-  const py::handle dell_object,
-  const py::handle theta_object,
+  const py::handle ell_object, // angular-multipole quadrature nodes
+  const py::handle dell_object, // weights for integration over ell
+  const py::handle theta_object, // separations [row,node], in radians
+  // normalized separation-bin weights [row,node]
   const py::handle weight_object,
-  const py::handle e_object,
-  const py::handle b_object,
-  const py::handle sign_object,
+  const py::handle e_object, // E-mode angular power [row,ell]
+  const py::handle b_object, // B-mode angular power [row,ell]
+  const py::handle sign_object, // +1 for xi+, -1 for xi-
+  // true copies notebook inputs; false borrows production arrays
   const bool notebook
 )
 {
@@ -1041,8 +1066,8 @@ static py::array_t<double> xi_binding(
     std::exit(1);
   }
   for (int node=0; node<nell; node++) {
-    if (!(ell.data()[node] > 0.0 && dell.data()[node] > 0.0
-          && (node == 0 || ell.data()[node] > ell.data()[node - 1]))) {
+    if (!(0.0 < ell.data()[node] && 0.0 < dell.data()[node]
+          && (0 == node || ell.data()[node] > ell.data()[node - 1]))) {
       spdlog::critical("3pcf covariance interface: xi Fourier nodes must "
         "increase and have positive weights");
       std::exit(1);
@@ -1050,7 +1075,7 @@ static py::array_t<double> xi_binding(
   }
 
   for (int row=0; row<nrow; row++) {
-    if (!(sign.data()[row] == 1 || sign.data()[row] == -1)) {
+    if (!(1 == sign.data()[row] || -1 == sign.data()[row])) {
       spdlog::critical("3pcf covariance interface: xi sign must be +1 or -1");
       std::exit(1);
     }
@@ -1058,7 +1083,7 @@ static py::array_t<double> xi_binding(
     double normalization = 0.0;
     for (int node=0; node<ntheta; node++) {
       const size_t index = static_cast<size_t>(row)*ntheta + node;
-      if (!(theta.data()[index] > 0.0 && weight.data()[index] >= 0.0)) {
+      if (!(0.0 < theta.data()[index] && 0.0 <= weight.data()[index])) {
         spdlog::critical("3pcf covariance interface: xi separation nodes "
           "must be positive and weights nonnegative");
         std::exit(1);
@@ -1067,7 +1092,7 @@ static py::array_t<double> xi_binding(
     }
     // A bin average needs weights that sum to one (the same rule and
     // 1.0e-10 roundoff allowance as in covariance_arguments).
-    if (!(std::abs(normalization - 1.0) <= 1.0e-10)) {
+    if (!(1.0e-10 >= std::abs(normalization - 1.0))) {
       spdlog::critical("3pcf covariance interface: xi-bin weights must sum "
         "to one");
       std::exit(1);
@@ -1142,7 +1167,9 @@ static py::array_t<double> xi_binding(
 // Returns:
 //   nothing; the three functions appear in both submodules
 // ---------------------------------------------------------------------------
-void bind_threepcf_covariance(py::module_& module)
+void bind_threepcf_covariance(
+  py::module_& module // Python module receiving the bindings
+)
 {
   py::module_ production = module.attr("production").cast<py::module_>();
   py::module_ notebook = module.attr("notebook").cast<py::module_>();
@@ -1152,7 +1179,11 @@ void bind_threepcf_covariance(py::module_& module)
   for (const bool copying : {false, true}) {
     py::module_ target = copying ? notebook : production;
     target.def("physical_covariance",
-      [copying](py::handle model, const py::dict& inputs) {
+      [copying](
+        py::handle model, // immutable physical model retained for this call
+        // covariance grids, row definitions and physical settings
+        const py::dict& inputs
+      ) {
         return physical_covariance_binding(model, inputs, copying);
       }, py::arg("model"), py::arg("inputs"),
       "Mean data vector mean[nrow] and covariance terms[6,nrow,nrow] of "
@@ -1162,8 +1193,13 @@ void bind_threepcf_covariance(py::module_& module)
       "selected halo-abundance response.");
 
     target.def("halo_tables",
-      [copying](py::handle model, const py::dict& inputs, py::handle z,
-          py::handle k_profile) {
+      [copying](
+        py::handle model, // immutable physical model retained for this call
+        // covariance grids, row definitions and physical settings
+        const py::dict& inputs,
+        py::handle z, // redshift coordinates of the supplied values
+        py::handle k_profile // profile wavenumbers in h/Mpc
+      ) {
         return halos_binding(model, inputs, z, k_profile, copying);
       }, py::arg("model"), py::arg("inputs"), py::arg("z"),
       py::arg("k_profile"),
@@ -1174,9 +1210,15 @@ void bind_threepcf_covariance(py::module_& module)
       "profile u(k|M,z) with shape [z,M,k].");
 
     target.def("xi_from_power",
-      [copying](py::handle ell, py::handle dell, py::handle theta,
-          py::handle theta_weight, py::handle spectra_e,
-          py::handle spectra_b, py::handle sign) {
+      [copying](
+        py::handle ell, // angular-multipole nodes
+        py::handle dell, // weights for integration over ell
+        py::handle theta, // separations [row,node], in radians
+        py::handle theta_weight, // normalized separation-bin weights [row,node]
+        py::handle spectra_e, // E-mode angular power [row,ell]
+        py::handle spectra_b, // B-mode angular power [row,ell]
+        py::handle sign // +1 for xi+, -1 for xi-
+      ) {
         return xi_binding(ell, dell, theta, theta_weight, spectra_e,
           spectra_b, sign, copying);
       }, py::arg("ell"), py::arg("dell"), py::arg("theta"),

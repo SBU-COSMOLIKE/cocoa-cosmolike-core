@@ -18,11 +18,15 @@ namespace cosmolike_interface {
 class covariance_request_cpp_3pcf {
  public:
   covariance_request_cpp_3pcf(
-    const covariance_input_3pcf& input, int nsource
+    // validated arrays and scalars copied into this owner
+    const covariance_input_3pcf& input,
+    int nsource // full source-bin count, including bins not selected
   );
-  covariance_request_cpp_3pcf(const covariance_request_cpp_3pcf&) = delete;
+  covariance_request_cpp_3pcf(
+    const covariance_request_cpp_3pcf& // copying this owner is disabled
+  ) = delete;
   covariance_request_cpp_3pcf& operator=(
-    const covariance_request_cpp_3pcf&
+    const covariance_request_cpp_3pcf& // assigning this owner is disabled
   ) = delete;
   const covariance_input_3pcf& get() const;
 

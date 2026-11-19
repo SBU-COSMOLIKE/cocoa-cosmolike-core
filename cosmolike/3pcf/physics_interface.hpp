@@ -7,7 +7,9 @@
 
 namespace cosmolike_interface {
 
-void bind_threepcf_physics(pybind11::module_& module);
+void bind_threepcf_physics(
+  pybind11::module_& module // Python module receiving the bindings
+);
 
 // The covariance and transform interfaces call these readers to reach
 // the C model and grid pointers that a Python-side owner object holds.
@@ -15,8 +17,12 @@ void bind_threepcf_physics(pybind11::module_& module);
 // pointer borrows tables the owner will release. Reading the pointer
 // changes no state and builds no second model. py::cast throws when the
 // Python object has the wrong type.
-const physics_model_3pcf* borrow_physics_model_3pcf(pybind11::handle owner);
-const physics_grid_3pcf* borrow_physics_grid_3pcf(pybind11::handle owner);
+const physics_model_3pcf* borrow_physics_model_3pcf(
+  pybind11::handle owner // Python owner of the immutable physical model
+);
+const physics_grid_3pcf* borrow_physics_grid_3pcf(
+  pybind11::handle owner // Python owner of the immutable projected grid
+);
 
 }
 #endif

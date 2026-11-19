@@ -41,7 +41,10 @@ struct physics_baseline_table_cpp_3pcf {
 // cosmology state.
 class physics_owner_3pcf {
  public:
-  explicit physics_owner_3pcf(const physics_input_3pcf& input);
+  explicit physics_owner_3pcf(
+    // validated arrays and scalars copied into this owner
+    const physics_input_3pcf& input
+  );
   const physics_model_3pcf* get() const;
 
  private:
@@ -53,9 +56,12 @@ class physics_owner_3pcf {
 class physics_grid_owner_3pcf {
  public:
   physics_grid_owner_3pcf(
+    // physical model retained while the grid is prepared
     const std::shared_ptr<physics_owner_3pcf>& model,
+    // intrinsic-alignment and feedback parameters
     const physics_ia_3pcf& parameters,
-    const int* bins,
+    const int* bins, // ordered source-bin labels for the requested correlation
+    // physical-grid bounds, node counts and angular cutoffs
     const physics_grid_settings_3pcf& settings
   );
 
@@ -63,7 +69,11 @@ class physics_grid_owner_3pcf {
   // factory physics_grid_create_many_3pcf already built, and the owner
   // will destroy it. The public C interface exposes no reader for the
   // table's Legendre cutoff, so the caller passes lmax alongside.
-  physics_grid_owner_3pcf(physics_grid_3pcf* prepared, int lmax);
+  physics_grid_owner_3pcf(
+    // prepared C grid whose ownership is transferred here
+    physics_grid_3pcf* prepared,
+    int lmax // largest retained Legendre degree L
+  );
   const physics_grid_3pcf* get() const;
   int lmax() const;
 
@@ -101,29 +111,31 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
 );
 
 arma::Mat<double> physics_points_cpp_3pcf(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
   const arma::Mat<double>& sides, // [point,3], h/Mpc or angular ell
   const arma::Col<double>& redshifts, // empty for projected queries
   const arma::Col<int>& bins, // [3] only for projected queries
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
   // operation 4 is the baryon-feedback bispectrum response; B names the
   // bispectrum there, not the B shape mode of the IA entries
   int operation, // 0=matter, 1=IA, 2=projected, 3=shared-shape IA, 4=response
-  int component,
-  bool remove_alignment
+  int component, // matter-fit or projected split selected by operation
+  bool remove_alignment // omit the linear-alignment baseline from IA outputs
 );
 
 arma::Col<double> physics_feedback_power_cpp_3pcf(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
   const arma::Col<double>& k, // wavenumbers, h/Mpc
   const arma::Col<double>& z, // one redshift per wavenumber
   double amplitude // shared log-response amplitude; zero is DMO
 );
 
 arma::Cube<double> physics_multipoles_cpp_3pcf(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
   const arma::Col<double>& ell, // Fourier sides of the b_L output grid
   const arma::Col<int>& bins, // [3] ordered source bins
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
   int lmax, // largest Legendre degree L
   int nmu, // mu quadrature nodes per Legendre integral
@@ -131,17 +143,19 @@ arma::Cube<double> physics_multipoles_cpp_3pcf(
 );
 
 arma::Col<double> physics_aperture_full_cpp_3pcf(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
   const arma::Col<double>& ell, // Fourier quadrature nodes
   const arma::Col<double>& dell, // their quadrature weights
   const arma::Col<double>& phi, // angular quadrature nodes, radians
   const arma::Col<double>& dphi, // their quadrature weights, radians
   const arma::Mat<double>& filters, // [nfilter,3] aperture radii, radians
   const arma::Col<int>& bins, // [3] ordered source bins
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters
 );
 
 arma::Col<double> physics_grid_projected_cpp_3pcf(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
   const arma::Mat<double>& sides, // [point,3] multipole triangles
   int component // total=0, NLA baseline=1, residual IA=2
@@ -149,13 +163,16 @@ arma::Col<double> physics_grid_projected_cpp_3pcf(
 
 std::vector<std::shared_ptr<physics_grid_owner_3pcf>>
 physics_grids_cpp_3pcf(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
   const arma::Mat<int>& bins, // [ntriplet,3] ordered source triplets
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
+  // physical-grid bounds, node counts and angular cutoffs
   const physics_grid_settings_3pcf& settings
 );
 
 arma::Col<double> physics_grid_aperture_cpp_3pcf(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
   const arma::Col<double>& ell, // Fourier quadrature nodes
   const arma::Col<double>& dell, // their quadrature weights
@@ -165,13 +182,15 @@ arma::Col<double> physics_grid_aperture_cpp_3pcf(
 );
 
 arma::Col<double> physics_nla_power_cpp_3pcf(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
   const arma::Col<double>& ell, // output multipoles of the shear C_ell
   const arma::Col<int>& bins, // [2] source bins of the power spectrum
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters
 );
 
 arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
   const arma::Col<double>& ell, // Fourier sides of the b_L output grid
   int component // total=0, NLA baseline=1, residual IA=2

@@ -33,8 +33,8 @@ static int count_3pcf(
     const char* name // axis description for the error message
   )
 {
-  if (count < 1
-      || count > INT_MAX) {
+  if (1 > count
+      || INT_MAX < count) {
     spdlog::critical("3pcf notebook: invalid {} count", name);
     std::exit(1);
   }
@@ -173,7 +173,7 @@ aperture_weights_result_3pcf aperture_weights_cpp_3pcf(
   const int nphi = count_3pcf(phi.n_elem, "phi");
   const int nfilter = count_3pcf(filters.n_rows, "filter");
 
-  if (!(filters.n_cols == 3)) {
+  if (!(3 == filters.n_cols)) {
     spdlog::critical("3pcf notebook: filters must have three columns");
     std::exit(1);
   }
@@ -185,20 +185,20 @@ aperture_weights_result_3pcf aperture_weights_cpp_3pcf(
     std::exit(1);
   }
   if (!(std::isfinite(dlnd)
-        && dlnd > 0.0
+        && 0.0 < dlnd
         && std::isfinite(dphi)
-        && dphi > 0.0)) {
+        && 0.0 < dphi)) {
     spdlog::critical("3pcf notebook: bin widths must be positive");
     std::exit(1);
   }
-  if (!(d2.min() > 0.0
-        && d3.min() > 0.0
-        && filters.min() > 0.0)) {
+  if (!(0.0 < d2.min()
+        && 0.0 < d3.min()
+        && 0.0 < filters.min())) {
     spdlog::critical("3pcf notebook: side lengths and radii must be positive");
     std::exit(1);
   }
-  if (!(phi.min() > 0.0
-        && phi.max() < std::acos(-1.0))) {
+  if (!(0.0 < phi.min()
+        && M_PI > phi.max())) {
     spdlog::critical("3pcf notebook: phi must lie strictly between zero and "
       "pi");
     std::exit(1);
@@ -253,8 +253,8 @@ arma::Mat<double> aperture_apply_cpp_3pcf(
   const int ntriangle = count_3pcf(weights_real.n_slices, "triangle");
   const int nsample = count_3pcf(gamma_real.n_rows, "sample");
 
-  if (!(weights_real.n_cols == 4
-        && gamma_real.n_cols == 4)) {
+  if (!(4 == weights_real.n_cols
+        && 4 == gamma_real.n_cols)) {
     spdlog::critical("3pcf notebook: aperture cubes must have four natural "
       "components");
     std::exit(1);
@@ -325,8 +325,8 @@ arma::Cube<double> filtered_pair_cpp_3pcf(
     spdlog::critical("3pcf notebook: filtered-pair inputs must be finite");
     std::exit(1);
   }
-  if (!(ell.min() >= 0.0
-        && radius.min() >= 0.0)) {
+  if (!(0.0 <= ell.min()
+        && 0.0 <= radius.min())) {
     spdlog::critical("3pcf notebook: multipoles and separations must be >=0");
     std::exit(1);
   }
@@ -370,7 +370,7 @@ arma::Mat<double> connected_gram_cpp_3pcf(
     spdlog::critical("3pcf notebook: response inputs must be finite");
     std::exit(1);
   }
-  if (!(weights.min() >= 0.0)) {
+  if (!(0.0 <= weights.min())) {
     spdlog::critical("3pcf notebook: Gram weights must be nonnegative");
     std::exit(1);
   }
@@ -408,7 +408,7 @@ arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
   const int nfield = count_3pcf(pair.n_rows, "field");
   const int nr = count_3pcf(pair.n_slices, "separation");
 
-  if (!(triplets.n_cols == 3
+  if (!(3 == triplets.n_cols
         && pair.n_cols == pair.n_rows
         && pair_zero.n_rows == pair.n_rows
         && pair_zero.n_cols == pair.n_rows
@@ -422,7 +422,7 @@ arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
     spdlog::critical("3pcf notebook: Gaussian inputs must be finite");
     std::exit(1);
   }
-  if (!(radial_weights.min() >= 0.0)) {
+  if (!(0.0 <= radial_weights.min())) {
     spdlog::critical("3pcf notebook: radial window weights must be "
       "nonnegative");
     std::exit(1);

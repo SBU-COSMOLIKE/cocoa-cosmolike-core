@@ -52,7 +52,7 @@ covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
 
   // Exact bin edges are optional in finite-band mode. Preserve absence as
   // a null pointer; do not manufacture an annulus from quadrature nodes.
-  if (input.theta_edges != nullptr) {
+  if (nullptr != input.theta_edges) {
     arma::Col<double> edges((size_t)input.nrow*2);
     std::copy_n(input.theta_edges, edges.n_elem, edges.memptr());
     real.emplace("theta_edges", std::move(edges));
@@ -136,7 +136,7 @@ std::pair<arma::Col<double>, arma::Cube<double>> covariance_physical_cpp_3pcf(
   // The C output is [term,row,column], with columns contiguous. An
   // Armadillo matrix instead stores rows contiguously within a column.
   // Naming all three indices makes the physical term order visible.
-  for (size_t term=0; term<6; term++) {
+  for (size_t term=0; 6 > term; term++) {
     for (size_t row=0; row<n; row++) {
       for (size_t column=0; column<n; column++) {
         terms(row, column, term) = packed[(term*n+row)*n+column];
@@ -173,7 +173,7 @@ std::vector<arma::Col<double>> covariance_halos_cpp_3pcf(
   const size_t count = z.n_elem*request.nmass;
 
   std::vector<arma::Col<double>> result;
-  for (int index=0; index<4; index++) {
+  for (int index=0; 4 > index; index++) {
     result.emplace_back(count);
   }
   result.emplace_back(count*k_profile.n_elem);

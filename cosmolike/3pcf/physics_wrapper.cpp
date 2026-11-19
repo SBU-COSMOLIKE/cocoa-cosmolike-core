@@ -20,7 +20,10 @@ namespace cosmolike_interface {
 
 
 // Build the immutable C model; physics_create_3pcf copies every input.
-physics_owner_3pcf::physics_owner_3pcf(const physics_input_3pcf& input)
+physics_owner_3pcf::physics_owner_3pcf(
+  // validated arrays and scalars copied into this owner
+  const physics_input_3pcf& input
+)
   : model(physics_create_3pcf(&input), physics_destroy_3pcf)
 {
 }
@@ -34,9 +37,12 @@ const physics_model_3pcf* physics_owner_3pcf::get() const
 
 
 physics_grid_owner_3pcf::physics_grid_owner_3pcf(
+  // physical model retained while the grid is prepared
   const std::shared_ptr<physics_owner_3pcf>& model,
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
-  const int* bins,
+  const int* bins, // ordered source-bin labels for the requested correlation
+  // physical-grid bounds, node counts and angular cutoffs
   const physics_grid_settings_3pcf& settings
 ) : grid(physics_grid_create_3pcf(model->get(), &parameters, bins, &settings),
       physics_grid_destroy_3pcf), maximum_order(settings.lmax)
@@ -49,8 +55,9 @@ physics_grid_owner_3pcf::physics_grid_owner_3pcf(
 // Adopt a table the batch factory already built; physics_wrapper.hpp
 // explains why lmax travels alongside it.
 physics_grid_owner_3pcf::physics_grid_owner_3pcf(
+  // prepared C grid whose ownership is transferred here
   physics_grid_3pcf* prepared,
-  const int lmax
+  const int lmax // largest retained Legendre degree L
 ) : grid(prepared, physics_grid_destroy_3pcf), maximum_order(lmax)
 {
 }
@@ -83,29 +90,37 @@ int physics_grid_owner_3pcf::lmax() const
 //   shared owner of the C model; Python keeps it alive
 // ---------------------------------------------------------------------------
 std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
-  const arma::Col<double>& k,
-  const arma::Col<double>& p_linear0,
-  const arma::Col<double>& z,
-  const arma::Mat<double>& p_nonlinear,
-  const arma::Col<double>& chi,
-  const arma::Col<double>& dz_dchi,
-  const arma::Col<double>& growth,
+  const arma::Col<double>& k, // wavenumbers in h/Mpc
+  const arma::Col<double>& p_linear0, // linear P(k,0), in (Mpc/h)^3
+  const arma::Col<double>& z, // redshift coordinates of the supplied values
+  const arma::Mat<double>& p_nonlinear, // nonlinear P [z,k], in (Mpc/h)^3
+  const arma::Col<double>& chi, // comoving distances at each z, in Mpc/h
+  const arma::Col<double>& dz_dchi, // background Jacobian at each z, in h/Mpc
+  const arma::Col<double>& growth, // linear growth D(z), normalized to D(0)=1
+  // source densities per unit z, [bin,source node]
   const arma::Mat<double>& sources,
-  const double omega_m,
-  const double omega_de,
-  const double w0,
-  const double wa,
-  const double ns,
-  const double sigma8,
-  const arma::Col<double>& los_z,
-  const int kernel_nz,
+  const double omega_m, // matter density parameter today
+  const double omega_de, // dark-energy density parameter today
+  const double w0, // dark-energy equation of state today
+  const double wa, // coefficient in w(a)=w0+wa*(1-a)
+  const double ns, // primordial scalar spectral index
+  const double sigma8, // linear rms amplitude at R=8 Mpc/h today
+  const arma::Col<double>& los_z, // line-of-sight integration redshifts
+  const int kernel_nz, // number of radial-kernel preparation nodes
+  // retain cubic input readers for source comparisons
   const bool source_readers,
+  // dense intervals per coarse interval; zero uses default
   const int table_boost,
-  const int fit_nz,
+  const int fit_nz, // BiHalofit anchor count; zero uses the default
+  // optional redshift axis of the source densities
   const arma::Col<double>& source_z,
+  // optional paired hydro/DMO power and bispectrum responses
   const physics_feedback_tables_cpp_3pcf* feedback,
+  // optional W(ell) samples at integer multipoles
   const arma::Col<double>* pixel_window,
+  // optional absolute matter-bispectrum table
   const physics_baseline_table_cpp_3pcf* baseline,
+  // matter fraction on z, required with an absolute baseline
   const arma::Col<double>* omega_m_z
 )
 {
@@ -115,11 +130,11 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   // nodes, four z nodes and four source-coordinate nodes; the line of
   // sight needs at least two nodes; at least one source bin must exist;
   // every count must fit the C int fields of physics_input_3pcf.
-  if (!(k.n_elem >= 4 && k.n_elem <= INT_MAX
-        && z.n_elem >= 4 && z.n_elem <= INT_MAX
-        && sources.n_rows > 0 && sources.n_rows <= INT_MAX
-        && los_z.n_elem >= 2 && los_z.n_elem <= INT_MAX
-        && nsource >= 4 && nsource <= INT_MAX)) {
+  if (!(4 <= k.n_elem && INT_MAX >= k.n_elem
+        && 4 <= z.n_elem && INT_MAX >= z.n_elem
+        && 0 < sources.n_rows && INT_MAX >= sources.n_rows
+        && 2 <= los_z.n_elem && INT_MAX >= los_z.n_elem
+        && 4 <= nsource && INT_MAX >= nsource)) {
     spdlog::critical("3pcf physics wrapper: invalid model dimensions");
     std::exit(1);
   }
@@ -186,13 +201,13 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   input.sigma8 = sigma8;
 
   feedback_input_3pcf response = {};
-  if (feedback != nullptr) {
+  if (nullptr != feedback) {
     // The four axis counts must fit the C int fields before any size_t
     // arithmetic uses them.
-    if (!(feedback->z.n_elem <= INT_MAX
-          && feedback->logk.n_elem <= INT_MAX
-          && feedback->logu.n_elem <= INT_MAX
-          && feedback->v.n_elem <= INT_MAX)) {
+    if (!(INT_MAX >= feedback->z.n_elem
+          && INT_MAX >= feedback->logk.n_elem
+          && INT_MAX >= feedback->logu.n_elem
+          && INT_MAX >= feedback->v.n_elem)) {
       spdlog::critical("3pcf physics wrapper: feedback axis sizes exceed C "
         "integer storage");
       std::exit(1);
@@ -207,7 +222,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     // preparation; each division guard proves the next multiplication
     // cannot wrap around SIZE_MAX; the flattened tables must then match
     // their axis products exactly.
-    if (!(nz >= 4 && nk >= 4 && nu >= 4 && nv >= 4
+    if (!(4 <= nz && 4 <= nk && 4 <= nu && 4 <= nv
           && nz <= SIZE_MAX/nk && nz*nk <= SIZE_MAX/nu
           && nz*nk*nu <= SIZE_MAX/nv
           && feedback->log_power.n_elem == nz*nk
@@ -232,11 +247,11 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     input.feedback = &response;
   }
 
-  if (pixel_window != nullptr) {
+  if (nullptr != pixel_window) {
     // The window reader interpolates linearly between integer
     // multipoles, so it needs at least two samples.
-    if (!(pixel_window->n_elem >= 2
-          && pixel_window->n_elem <= INT_MAX && pixel_window->is_finite())) {
+    if (!(2 <= pixel_window->n_elem
+          && INT_MAX >= pixel_window->n_elem && pixel_window->is_finite())) {
       spdlog::critical("3pcf physics wrapper: pixel window requires a "
         "finite vector with at least two samples");
       std::exit(1);
@@ -254,7 +269,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     const size_t counts[4] = {baseline->z.n_elem, baseline->logk.n_elem,
       baseline->logu.n_elem, baseline->v.n_elem};
     size_t size = 1;
-    for (int axis=0; axis<4; axis++) {
+    for (int axis=0; 4 > axis; axis++) {
       if (!(4 <= counts[axis])) { spdlog::critical(
         "3pcf: B axes need four nodes"); std::exit(1); }
       if (!(counts[axis] <= INT_MAX/size)) { spdlog::critical(
@@ -310,26 +325,32 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
 //   [point,ncomponent] matrix, checked finite
 // ---------------------------------------------------------------------------
 arma::Mat<double> physics_points_cpp_3pcf(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  // triangles [point,3], in h/Mpc or angular multipoles
   const arma::Mat<double>& sides,
+  // redshift for each physical query; empty after projection
   const arma::Col<double>& redshifts,
+  // ordered source-bin labels for the requested correlation
   const arma::Col<int>& bins,
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
+  // 0=matter, 1=IA, 2=projected, 3=shared-shape IA, 4=response
   const int operation,
-  const int component,
+  const int component, // matter-fit or projected split selected by operation
+  // omit the linear-alignment baseline from IA outputs
   const bool remove_alignment
 )
 {
-  if (!(sides.n_rows > 0 && sides.n_rows <= INT_MAX
-        && sides.n_cols == 3)) {
+  if (!(0 < sides.n_rows && INT_MAX >= sides.n_rows
+        && 3 == sides.n_cols)) {
     spdlog::critical("3pcf physics wrapper: sides must have shape [point,3]");
     std::exit(1);
   }
-  if (!(operation >= 0 && operation <= 4)) {
+  if (!(0 <= operation && 4 >= operation)) {
     spdlog::critical("3pcf physics wrapper: unknown point operation");
     std::exit(1);
   }
-  if (!(operation == 2 ? bins.n_elem == 3
+  if (!(2 == operation ? 3 == bins.n_elem
         : redshifts.n_elem == sides.n_rows)) {
     spdlog::critical("3pcf physics wrapper: point query shapes disagree");
     std::exit(1);
@@ -338,10 +359,10 @@ arma::Mat<double> physics_points_cpp_3pcf(
   // Operations 1 and 3 return the nineteen density/E/B leg combinations
   // that physics_ia_bispectra_3pcf lists in physics_3pcf.h; every other
   // operation returns one value per triangle.
-  const int ncomponent = operation == 1 || operation == 3 ? 19 : 1;
+  const int ncomponent = 1 == operation || 3 == operation ? 19 : 1;
   arma::Mat<double> result(sides.n_rows, ncomponent);
 
-  if (operation == 3) {
+  if (3 == operation) {
     // physics_ia_same_shape_3pcf takes every triangle in one C call,
     // so the adapter packs the sides into C layout first and unpacks
     // the results after the call returns.
@@ -351,7 +372,7 @@ arma::Mat<double> physics_points_cpp_3pcf(
     // pack: Armadillo [point,3] column-major (point index fastest) to
     // C row-major, where the leg index runs fastest
     for (arma::uword point=0; point<sides.n_rows; point++) {
-      for (arma::uword leg=0; leg<3; leg++) {
+      for (arma::uword leg=0; 3 > leg; leg++) {
         triangles[point*3 + leg] = sides(point, leg);
       }
     }
@@ -366,7 +387,7 @@ arma::Mat<double> physics_points_cpp_3pcf(
       // the function parameter component inside the loop body. The
       // parameter plays no role in operation 3, so the physics is
       // unchanged; keep the shadowing in mind when editing.
-      for (int component=0; component<19; component++) {
+      for (int component=0; 19 > component; component++) {
         result(point, component) = values[point*19 + component];
       }
     }
@@ -379,7 +400,7 @@ arma::Mat<double> physics_points_cpp_3pcf(
     return result;
   }
 
-  physics_projection_3pcf* projection = operation == 2
+  physics_projection_3pcf* projection = 2 == operation
     ? physics_projector_create_3pcf(owner.get(), &parameters, bins.memptr())
     : nullptr;
 
@@ -388,15 +409,15 @@ arma::Mat<double> physics_points_cpp_3pcf(
   // result row. The loop stays serial by design (see the header above).
   for (arma::uword point=0; point<sides.n_rows; point++) {
     double values[19]; // scratch row: up to the nineteen IA entries
-    if (operation == 0) { // matter bispectrum
+    if (0 == operation) { // matter bispectrum
       values[0] = physics_matter_3pcf(owner.get(), sides(point, 0),
         sides(point, 1), sides(point, 2), redshifts(point), component,
         parameters.fb);
-    } else if (operation == 1) { // nineteen IA bispectra
+    } else if (1 == operation) { // nineteen IA bispectra
       physics_ia_bispectra_3pcf(owner.get(), &parameters, sides(point, 0),
         sides(point, 1), sides(point, 2), redshifts(point),
         remove_alignment ? 1 : 0, values);
-    } else if (operation == 4) { // feedback bispectrum response
+    } else if (4 == operation) { // feedback bispectrum response
       const double triangle[3] = {sides(point, 0), sides(point, 1),
         sides(point, 2)};
       values[0] = physics_feedback_bispectrum_3pcf(owner.get(), triangle,
@@ -435,13 +456,13 @@ arma::Mat<double> physics_points_cpp_3pcf(
 //   [n] positive power-response values
 // ---------------------------------------------------------------------------
 arma::Col<double> physics_feedback_power_cpp_3pcf(
-  const physics_owner_3pcf& owner,
-  const arma::Col<double>& k,
-  const arma::Col<double>& z,
-  const double amplitude
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  const arma::Col<double>& k, // wavenumbers in h/Mpc
+  const arma::Col<double>& z, // redshift coordinates of the supplied values
+  const double amplitude // shared logarithmic feedback response; zero is DMO
 )
 {
-  if (!(k.n_elem == z.n_elem && k.n_elem > 0
+  if (!(k.n_elem == z.n_elem && 0 < k.n_elem
         && k.is_finite() && z.is_finite())) {
     spdlog::critical("3pcf physics wrapper: power response axes disagree");
     std::exit(1);
@@ -469,17 +490,19 @@ arma::Col<double> physics_feedback_power_cpp_3pcf(
 //   cube [lmax+1,nell,nell], checked finite entry by entry
 // ---------------------------------------------------------------------------
 arma::Cube<double> physics_multipoles_cpp_3pcf(
-  const physics_owner_3pcf& owner,
-  const arma::Col<double>& ell,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  const arma::Col<double>& ell, // angular-multipole nodes
+  // ordered source-bin labels for the requested correlation
   const arma::Col<int>& bins,
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
-  const int lmax,
-  const int nmu,
-  const int component
+  const int lmax, // largest retained Legendre degree L
+  const int nmu, // angular quadrature nodes per Legendre integral
+  const int component // 0=total, 1=NLA baseline, 2=residual IA
 )
 {
-  if (!(ell.n_elem > 0 && ell.n_elem <= INT_MAX
-        && bins.n_elem == 3 && lmax >= 0 && lmax < INT_MAX)) {
+  if (!(0 < ell.n_elem && INT_MAX >= ell.n_elem
+        && 3 == bins.n_elem && 0 <= lmax && INT_MAX > lmax)) {
     spdlog::critical("3pcf physics wrapper: invalid multipole dimensions");
     std::exit(1);
   }
@@ -543,20 +566,23 @@ arma::Cube<double> physics_multipoles_cpp_3pcf(
 //   [nfilter] aperture means, checked finite
 // ---------------------------------------------------------------------------
 arma::Col<double> physics_aperture_full_cpp_3pcf(
-  const physics_owner_3pcf& owner,
-  const arma::Col<double>& ell,
-  const arma::Col<double>& dell,
-  const arma::Col<double>& phi,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  const arma::Col<double>& ell, // angular-multipole nodes
+  const arma::Col<double>& dell, // weights for integration over ell
+  const arma::Col<double>& phi, // triangle opening-angle nodes, in radians
+  // opening-angle integration weights, in radians
   const arma::Col<double>& dphi,
-  const arma::Mat<double>& filters,
+  const arma::Mat<double>& filters, // aperture radii [filter,3], in radians
+  // ordered source-bin labels for the requested correlation
   const arma::Col<int>& bins,
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters
 )
 {
-  if (!(ell.n_elem > 0 && ell.n_elem <= INT_MAX
-        && phi.n_elem > 0 && phi.n_elem <= INT_MAX
-        && filters.n_rows > 0 && filters.n_rows <= INT_MAX
-        && filters.n_cols == 3 && bins.n_elem == 3
+  if (!(0 < ell.n_elem && INT_MAX >= ell.n_elem
+        && 0 < phi.n_elem && INT_MAX >= phi.n_elem
+        && 0 < filters.n_rows && INT_MAX >= filters.n_rows
+        && 3 == filters.n_cols && 3 == bins.n_elem
         && dell.n_elem == ell.n_elem && dphi.n_elem == phi.n_elem)) {
     spdlog::critical("3pcf physics wrapper: full-aperture input shapes "
       "disagree");
@@ -567,7 +593,7 @@ arma::Col<double> physics_aperture_full_cpp_3pcf(
   // row-major layout, where the leg index runs fastest
   std::vector<double> radii(filters.n_elem);
   for (arma::uword filter=0; filter<filters.n_rows; filter++) {
-    for (arma::uword leg=0; leg<3; leg++) {
+    for (arma::uword leg=0; 3 > leg; leg++) {
       radii[filter*3 + leg] = filters(filter, leg);
     }
   }
@@ -599,13 +625,14 @@ arma::Col<double> physics_aperture_full_cpp_3pcf(
 //   [point] interpolated values, checked finite
 // ---------------------------------------------------------------------------
 arma::Col<double> physics_grid_projected_cpp_3pcf(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
-  const arma::Mat<double>& sides,
-  const int component
+  const arma::Mat<double>& sides, // multipole triangles [point,3]
+  const int component // 0=total, 1=NLA baseline, 2=residual IA
 )
 {
-  if (!(sides.n_rows > 0 && sides.n_rows <= INT_MAX
-        && sides.n_cols == 3 && sides.is_finite())) {
+  if (!(0 < sides.n_rows && INT_MAX >= sides.n_rows
+        && 3 == sides.n_cols && sides.is_finite())) {
     spdlog::critical("3pcf physics wrapper: invalid grid-query sides");
     std::exit(1);
   }
@@ -637,12 +664,13 @@ arma::Col<double> physics_grid_projected_cpp_3pcf(
 //   cube [lmax+1,nell,nell], checked finite
 // ---------------------------------------------------------------------------
 arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
-  const arma::Col<double>& ell,
-  const int component
+  const arma::Col<double>& ell, // angular-multipole nodes
+  const int component // 0=total, 1=NLA baseline, 2=residual IA
 )
 {
-  if (!(ell.n_elem > 0 && ell.n_elem <= INT_MAX)) {
+  if (!(0 < ell.n_elem && INT_MAX >= ell.n_elem)) {
     spdlog::critical("3pcf physics wrapper: invalid interpolated-multipole "
       "dimensions");
     std::exit(1);
@@ -700,14 +728,17 @@ arma::Cube<double> physics_grid_multipoles_cpp_3pcf(
 // ---------------------------------------------------------------------------
 std::vector<std::shared_ptr<physics_grid_owner_3pcf>>
 physics_grids_cpp_3pcf(
-  const physics_owner_3pcf& owner,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  // ordered source-bin labels for the requested correlation
   const arma::Mat<int>& bins,
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters,
+  // physical-grid bounds, node counts and angular cutoffs
   const physics_grid_settings_3pcf& settings
 )
 {
-  if (!(bins.n_rows > 0 && bins.n_rows <= INT_MAX
-        && bins.n_cols == 3)) {
+  if (!(0 < bins.n_rows && INT_MAX >= bins.n_rows
+        && 3 == bins.n_cols)) {
     spdlog::critical("3pcf physics wrapper: batch bins must have shape "
       "[ntriplet,3]");
     std::exit(1);
@@ -717,7 +748,7 @@ physics_grids_cpp_3pcf(
   // row-major layout, where the leg index runs fastest
   std::vector<int> ordered(bins.n_elem);
   for (arma::uword row=0; row<bins.n_rows; row++) {
-    for (arma::uword leg=0; leg<3; leg++) {
+    for (arma::uword leg=0; 3 > leg; leg++) {
       ordered[row*3 + leg] = bins(row, leg);
     }
   }
@@ -751,21 +782,23 @@ physics_grids_cpp_3pcf(
 //   [nfilter] aperture means, checked finite
 // ---------------------------------------------------------------------------
 arma::Col<double> physics_grid_aperture_cpp_3pcf(
+  // owner of the immutable projected-bispectrum grid
   const physics_grid_owner_3pcf& owner,
-  const arma::Col<double>& ell,
-  const arma::Col<double>& dell,
-  const arma::Col<double>& phi,
+  const arma::Col<double>& ell, // angular-multipole nodes
+  const arma::Col<double>& dell, // weights for integration over ell
+  const arma::Col<double>& phi, // triangle opening-angle nodes, in radians
+  // opening-angle integration weights, in radians
   const arma::Col<double>& dphi,
-  const arma::Mat<double>& filters
+  const arma::Mat<double>& filters // aperture radii [filter,3], in radians
 )
 {
   // One chained check: both quadrature node arrays must be nonempty and
   // fit the C int counts; each filter row holds three radii; each
   // weight array matches its node array.
-  if (!(ell.n_elem > 0 && ell.n_elem <= INT_MAX
-        && phi.n_elem > 0 && phi.n_elem <= INT_MAX
-        && filters.n_rows > 0 && filters.n_rows <= INT_MAX
-        && filters.n_cols == 3 && dell.n_elem == ell.n_elem
+  if (!(0 < ell.n_elem && INT_MAX >= ell.n_elem
+        && 0 < phi.n_elem && INT_MAX >= phi.n_elem
+        && 0 < filters.n_rows && INT_MAX >= filters.n_rows
+        && 3 == filters.n_cols && dell.n_elem == ell.n_elem
         && dphi.n_elem == phi.n_elem)) {
     spdlog::critical("3pcf physics wrapper: grid aperture input shapes "
       "disagree");
@@ -776,7 +809,7 @@ arma::Col<double> physics_grid_aperture_cpp_3pcf(
   // row-major layout, where the leg index runs fastest
   std::vector<double> radii(filters.n_elem);
   for (arma::uword filter=0; filter<filters.n_rows; filter++) {
-    for (arma::uword leg=0; leg<3; leg++) {
+    for (arma::uword leg=0; 3 > leg; leg++) {
       radii[filter*3 + leg] = filters(filter, leg);
     }
   }
@@ -809,14 +842,16 @@ arma::Col<double> physics_grid_aperture_cpp_3pcf(
 //   [nell] C_ell values, checked finite
 // ---------------------------------------------------------------------------
 arma::Col<double> physics_nla_power_cpp_3pcf(
-  const physics_owner_3pcf& owner,
-  const arma::Col<double>& ell,
+  const physics_owner_3pcf& owner, // owner of the immutable physical model
+  const arma::Col<double>& ell, // angular-multipole nodes
+  // ordered source-bin labels for the requested correlation
   const arma::Col<int>& bins,
+  // intrinsic-alignment and feedback parameters
   const physics_ia_3pcf& parameters
 )
 {
-  if (!(ell.n_elem > 0 && ell.n_elem <= INT_MAX
-        && ell.is_finite() && bins.n_elem == 2)) {
+  if (!(0 < ell.n_elem && INT_MAX >= ell.n_elem
+        && ell.is_finite() && 2 == bins.n_elem)) {
     spdlog::critical("3pcf physics wrapper: invalid NLA power arrays");
     std::exit(1);
   }
