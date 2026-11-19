@@ -148,12 +148,34 @@ The combined pre-correction strict build passed 875 project and variance
 checks. The corresponding UBSan checks passed as 833 project and 42 variance
 checks in separate commands after correcting the external harness setup.
 The later endpoint and sampling suites above are distinct validation
-stages. These standalone builds exercise the standalone reset; the generic
-full-project reset call still needs a full-project rebuild. Acceptance of
+stages. A later private build of the ordinary LSST Y1 data-vector interface
+also passed in strict and UBSan modes. Its public setup, cosmology setter
+and variance query restored amplitude A/B/A exactly and reproduced the
+same result after reset. This checks the ordinary interface's linkage and
+reset ownership; it does not constitute a survey prediction or refreeze.
+Acceptance of
 shared variances also requires the full joint mean, every derivative and
 marginalized Fisher comparisons at fixed physical inputs. Evolving P(k,z)
 and factorized P(k,0)D(z)^2 must be tested as separate physical choices;
 component agreement alone cannot authorize changing that prescription.
+
+The full NLA joint comparison has not accepted the shared replacement.
+With 400 two-point and 80 aperture rows, 17 parameters and both derivative
+steps, shared sampling at twice the baseline gave a mean difference of
+2.16e-4 in delta chi-squared. Every two-point stencil row was bitwise
+unchanged. However, the largest whitened derivative change was 0.282%
+and the largest parameter-pair FoM change was 5.28%, above the respective
+0.1% and 0.5% criteria. Doubling shared sampling alone changed pair FoMs
+by as much as 0.595% at the smaller derivative step. Keep the local default
+and its reference calculation until this discrepancy is resolved.
+
+The old fit rescales the input spectrum to its separately supplied sigma8;
+the shared fit preserves the input spectrum's amplitude. At the tested
+fiducial point the old multiplier is approximately 0.999686. This is a
+prescription difference, not a cache failure. The old Fisher result also
+changes under derivative-step refinement. Neither observation by itself
+explains the failed comparison: compare converged smoothing and derivatives
+on identical archived input arrays before attributing it to normalization.
 
 ### Project consumers of shared variances
 
