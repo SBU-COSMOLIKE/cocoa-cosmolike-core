@@ -287,6 +287,48 @@ mass variance. Total-matter variance is also available for diagnostics.
 The [neutrino and halo guide](../README.md#neutrinos) explains the field
 choices, profile-mass convention and concentration prescription.
 
+### Smoothing variances and the FFTLog endpoint slopes
+
+Smoothing the density on radius $`R`$ gives
+
+```math
+\sigma^2(R)=\int d\ln k\,\Delta^2(k)W^2(kR),
+\qquad \Delta^2(k)=\frac{k^3P(k)}{2\pi^2}.
+```
+
+The window $`W`$ specifies the smoothing: a spherical top-hat supplies
+halo mass variances, while a Gaussian supplies quantities such as the
+nonlinear radius where $`\sigma_G^2(R)=1`$. The shared engines in
+`cosmo3D.c` evaluate these integrals with FFTLog. This calculation also
+serves callers outside the three-point module.
+
+FFTLog represents $`k^{-b}\Delta^2(k)`$ as periodic in $`\ln k`$, with
+fixed bias $`b=0.8`$. The power-law continuation at either input endpoint
+has the form $`\Delta^2(k)=Ak^s`$, where
+
+```math
+s=3+\frac{d\ln P}{d\ln k}
+ \simeq 3+\frac{\ln P_{\rm right}-\ln P_{\rm left}}
+ {\ln k_{\rm right}-\ln k_{\rm left}}.
+```
+
+The first two supplied k samples determine the low-k slope; the last two
+determine the high-k slope. Both are evaluated separately at each redshift
+used to build the tables. The amplitude is
+$`A=\Delta^2(k_{\rm end})/k_{\rm end}^{s}`$. Thus $`s`$ is measured from
+the supplied spectrum and can change with cosmology and redshift. It is
+neither the fixed FFTLog bias nor the primordial spectral index.
+
+For example, $`P\propto k^{-2}`$ gives $`s=1`$: the weighted spectrum
+grows as $`k^{0.2}`$ toward high k. Periodically repeating a growing tail
+can contaminate the computed variance. The engine subtracts that power
+law before the transform and restores its analytic smoothing integral
+afterward. This leaves the supplied power and its extrapolation unchanged.
+Low-k subtraction applies when $`s_{\rm low}<b`$; high-k subtraction also
+includes equality, using a slope tolerance of $`10^{-10}`$. The Gaussian
+analytic term requires $`s>0`$; the top-hat term requires $`0<s<4`$.
+Spectra whose weighted tails already decay retain the ordinary path.
+
 ## Physical scale cuts
 
 On small spatial scales (large wavenumber $`k`$), nonlinear clustering,

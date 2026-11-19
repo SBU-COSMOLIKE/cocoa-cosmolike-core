@@ -72,6 +72,27 @@ the same growing continuation does not cure that error. An unbroken
 and an 11.69% sigma8 error before the correction. Those are analytic test
 errors, not measured errors in a DES forecast.
 
+### The exponent is measured from the supplied power
+
+The exponent `s` belongs to `Delta^2 = A k^s`, rather than to P itself:
+
+```math
+s=\frac{d\ln\Delta^2}{d\ln k}=3+\frac{d\ln P}{d\ln k}.
+```
+
+At each scale-factor row, interpolate the supplied ln P values to that
+redshift. The first two k samples give `s_low`, and the last two give
+`s_high`, using `s = 3 + (ln P_right - ln P_left)/dlnk` on the uniform
+log-k axis. Each amplitude satisfies `A = Delta^2(k_end)/k_end^s`.
+Thus the two slopes need not agree and can vary with redshift and
+cosmology. They are not free numerical controls or the primordial index ns.
+
+For P proportional to k^-2, both slopes are s=1. With fixed FFTLog bias
+b=0.8, the weighted high-k tail grows as k^0.2. The implementation selects
+the low correction for `s_low < b - 1e-10` and the high correction for
+`s_high >= b - 1e-10`. Including the bias-matched constant on the high
+side prevents a discontinuity in numerical spectral-slope derivatives.
+
 ### Analytic subtraction
 
 For each problematic continuation, subtract `A k^s` at every wavenumber,

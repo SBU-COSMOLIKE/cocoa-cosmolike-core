@@ -1417,6 +1417,13 @@ static void sigma2_spline_coeffs(
 // Delta^2 = A k^s grows after this weighting, its distant periodic image
 // can contaminate an otherwise converged smoothing integral. For example,
 // P proportional to k^-2 has s = 1 > b = 0.8 and gave a 9.7% error in R_NL.
+// Here s is the endpoint slope of Delta^2, not of P and not the FFT bias:
+// s = 3 + dlnP/dlnk. At each scale-factor row, use the first two supplied
+// k nodes for s_low and the last two for s_high, after interpolating lnP
+// to that row's redshift. Each amplitude is A = Delta^2(k_end)/k_end^s.
+// These measured slopes can change with redshift and cosmology; b = 0.8
+// remains fixed. Low-k growth occurs when s_low < b; high-k growth when
+// s_high > b. The constant high-k case s_high = b is treated too below.
 // Extending the same growing tail to larger k does not cure that image.
 //
 // Subtract each growing endpoint power law at ALL k before the transform,
