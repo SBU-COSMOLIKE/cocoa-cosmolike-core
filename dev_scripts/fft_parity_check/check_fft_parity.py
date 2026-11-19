@@ -47,7 +47,24 @@ How the check works, stage by stage:
   6. run the refusal cases in child processes with a timeout: a request
      below 1 and a request above the largest representable admissible
      length must terminate the probe through log_fatal (exit code 1)
-     instead of hanging or returning an unusable 0.
+     instead of hanging or returning an unusable 0;
+  7. run the PRODUCTION kernel route. The selection probe of stages 4-6
+     replicates the call sites' retry loop, and a replica cannot guard
+     the code that actually runs, so a second probe
+     (fft_kernel_probe.c) compiles the live cfastpt/cfastpt.c (with
+     its utils files) and calls the real J_abl on the configuration
+     that formerly selected the odd length: 1306 input points, the
+     public internal-boost-1.187 setting, padded raw request 6056.
+     The driver asserts that the selected lengths are even and minimal
+     (derived through the live next_fft_size, since J_abl keeps its
+     length in function-local state with no read-out), that the two
+     in-process calls, a second fresh process and an OMP_NUM_THREADS=1
+     process all agree bitwise (the output prints in exact
+     hexadecimal-float form), and that the peak matches the repaired
+     kernel's reference value 42.849612101071031 - with an odd length
+     the kernel read an unwritten work-buffer entry and these
+     comparisons failed. The unboosted default route (1100 points)
+     runs once and must reproduce itself bitwise in-process.
 
 How to run it (from the Cocoa/ folder, cocoa environment active, so the
 compiler and the gsl/fftw headers of the environment are found):
@@ -98,6 +115,27 @@ LONG_MAX = 2 ** 63 - 1
 # converts a hang into a clear test failure instead of a stuck run.
 REFUSAL_TIMEOUT_SECONDS = 60
 
+# The kernel-route input sizes: 1306 points is the public
+# internal-boost-1.187 setting whose padded raw request 6056 formerly
+# selected the odd length 6125; 1100 points is the unboosted default,
+# whose selection was always even, kept as the no-regression control.
+KERNEL_BOOST_SIZE = 1306
+KERNEL_DEFAULT_SIZE = 1100
+
+# Peak absolute value of the repaired kernel's output at 1306 points
+# (measured on the repaired sources, IEEE-strict optimized build). The
+# odd-length defect produced peaks near 2098 or 1e298 that also varied
+# between runs, so a loose relative tolerance separates the two cases
+# cleanly while allowing the tiny floating-point drift between this
+# -O2 probe build and the projects' -O3 LTO builds.
+KERNEL_REFERENCE_PEAK = 42.849612101071031
+KERNEL_PEAK_TOLERANCE = 1.0e-9
+
+# Each kernel child plans FFTs and runs three terms; seconds suffice,
+# and the timeout only exists so a wedged child fails the check
+# instead of hanging it.
+KERNEL_TIMEOUT_SECONDS = 300
+
 
 def locate_repository():
     """Resolve the cosmolike_core paths this check compiles and validate them.
@@ -123,13 +161,20 @@ def locate_repository():
         "structs": os.path.join(core, "cosmolike", "structs.c"),
         "log": os.path.join(core, "log.c", "src", "log.c"),
         "probe": os.path.join(here, "fft_parity_probe.c"),
+        "kernel_probe": os.path.join(here, "fft_kernel_probe.c"),
+        "cfastpt": os.path.join(core, "cfastpt", "cfastpt.c"),
+        "cfastpt_utils": os.path.join(core, "cfastpt",
+                                      "utils_cfastpt.c"),
+        "cfastpt_complex": os.path.join(core, "cfastpt",
+                                        "utils_complex_cfastpt.c"),
         # basics.h includes "simde/x86/avx2.h"; in a Cocoa checkout the
         # simde package sits beside cosmolike_core in the same
         # external_modules/code folder, exactly where the project
         # makefiles point their include path.
         "simde_root": os.path.join(os.path.dirname(core), "simde"),
     }
-    for name in ("basics", "structs", "log", "probe"):
+    for name in ("basics", "structs", "log", "probe", "kernel_probe",
+                 "cfastpt", "cfastpt_utils", "cfastpt_complex"):
         assert os.path.isfile(paths[name]), (
             f"missing source file for the probe build: {paths[name]}; "
             "run this script from an intact cosmolike_core checkout")
@@ -170,6 +215,20 @@ def locate_toolchain():
     assert os.path.isdir(gsl_dir), (
         f"gsl headers not found at {gsl_dir}; the active environment "
         "does not provide the gsl the cosmolike sources include")
+    # The kernel probe links the fftw library itself (the project
+    # makefiles link -lfftw3 from this same environment); accept the
+    # platform spellings of the shared or static library.
+    fftw_library = None
+    for library_name in ("libfftw3.dylib", "libfftw3.so", "libfftw3.a"):
+        candidate = os.path.join(prefix, "lib", library_name)
+        if os.path.isfile(candidate):
+            fftw_library = candidate
+            break
+    assert fftw_library is not None, (
+        f"no fftw3 library found under {os.path.join(prefix, 'lib')} "
+        "(looked for libfftw3.dylib, libfftw3.so, libfftw3.a); the "
+        "cocoa environment provides it - activate it first "
+        "(conda activate cocoapy311; source start_cocoa.sh)")
     compiler = None
     for candidate in (os.path.join(prefix, "bin", "clang"),
                       os.path.join(prefix, "bin", "gcc")):
@@ -227,6 +286,195 @@ def build_probe(paths, toolchain, scratch):
         "probe build failed with exit code "
         f"{build.returncode}:\n{build.stderr}")
     return executable
+
+
+def build_kernel_probe(paths, toolchain, scratch):
+    """Compile the production-kernel probe against the live sources.
+
+    Same toolchain and flags as build_probe, with the live
+    cfastpt/cfastpt.c and its two utils files added (they hold the
+    window and complex-gamma helpers J_abl calls) and the fftw library
+    linked, since J_abl executes real transforms. Nothing on the
+    parity-sensitive path is replicated: the J_abl that runs is the
+    working tree's.
+
+    Arguments:
+      paths = the dict from locate_repository
+      toolchain = the dict from locate_toolchain
+      scratch = existing folder that receives the executable
+
+    Returns:
+      absolute path of the compiled kernel-probe executable.
+
+    Raises:
+      AssertionError with the compiler's output when the build fails.
+    """
+    executable = os.path.join(scratch, "fft_kernel_probe")
+    command = [
+        toolchain["compiler"], "-std=gnu99", "-O2", "-fopenmp",
+        "-DHAVE_INLINE", "-DGSLLIB",
+        "-I", paths["core"],
+        "-I", paths["simde_root"],
+        "-I", os.path.join(toolchain["prefix"], "include"),
+        paths["kernel_probe"], paths["cfastpt"],
+        paths["cfastpt_utils"], paths["cfastpt_complex"],
+        paths["basics"], paths["structs"], paths["log"],
+        "-o", executable,
+        "-L", os.path.join(toolchain["prefix"], "lib"),
+        "-Wl,-rpath," + os.path.join(toolchain["prefix"], "lib"),
+        "-lgsl", "-lgslcblas", "-lfftw3", "-lm",
+    ]
+    build = subprocess.run(command, capture_output=True, text=True)
+    assert build.returncode == 0, (
+        "kernel probe build failed with exit code "
+        f"{build.returncode}:\n{build.stderr}")
+    return executable
+
+
+def run_kernel_probe(executable, size, omp_threads):
+    """Run the kernel probe once and parse its output.
+
+    One run calls the production J_abl twice in the same process (the
+    first call builds the cached transform plans and grids, the second
+    exercises the cache) and prints the exact bits of every output
+    value in hexadecimal-float form.
+
+    Arguments:
+      executable = the compiled kernel probe
+      size = number of input k points (KERNEL_BOOST_SIZE or
+        KERNEL_DEFAULT_SIZE)
+      omp_threads = OMP_NUM_THREADS for the child process; the OpenMP
+        runtime reads it at startup, which is why the thread-count
+        comparison needs separate processes
+
+    Returns:
+      a dict with "sizes" = (raw, selected, ntotal) and "calls" = list
+      of two dicts, each with "finite" (bool), "peak" (float) and
+      "values" (the call's hexadecimal lines joined into one string,
+      compared verbatim for bitwise equality).
+
+    Raises:
+      AssertionError when the output does not have the expected shape.
+    """
+    child_env = dict(os.environ)
+    child_env["OMP_NUM_THREADS"] = str(omp_threads)
+    probe = subprocess.run(
+        [executable, str(size)],
+        capture_output=True, text=True, check=True,
+        timeout=KERNEL_TIMEOUT_SECONDS, env=child_env)
+    lines = probe.stdout.splitlines()
+    header = lines[0].split()
+    assert header[0] == "sizes" and len(header) == 8, (
+        f"malformed kernel header line: {lines[0]!r}")
+    assert int(header[1]) == size, (
+        f"kernel probe echoed size {header[1]}, expected {size}")
+    sizes = (int(header[3]), int(header[5]), int(header[7]))
+    # Each call contributes one summary line plus 3*size value lines.
+    values_per_call = 3 * size
+    expected_lines = 1 + 2 * (1 + values_per_call)
+    assert len(lines) == expected_lines, (
+        f"kernel probe printed {len(lines)} lines, expected "
+        f"{expected_lines}")
+    calls = []
+    cursor = 1
+    for call in range(2):
+        summary = lines[cursor].split()
+        assert summary[0] == "call" and int(summary[1]) == call, (
+            f"malformed call summary line: {lines[cursor]!r}")
+        block_start = cursor + 1
+        block_end = block_start + values_per_call
+        calls.append({
+            "finite": summary[3] == "1",
+            "peak": float(summary[5]),
+            "values": "\n".join(lines[block_start:block_end]),
+        })
+        cursor = block_end
+    return {"sizes": sizes, "calls": calls}
+
+
+def check_production_route(executable, even_lengths):
+    """Stage 7: the production J_abl on the formerly failing route.
+
+    Three child processes run the 1306-point configuration (the public
+    internal-boost-1.187 setting, padded raw request 6056): two at
+    4 OpenMP threads and one at 1 thread. Asserted, in order: the
+    selected transform length is even and is the minimal even
+    admissible length (derived through the live next_fft_size; J_abl
+    itself keeps the length in function-local state with no read-out);
+    every call is finite; the two calls inside each process agree
+    bitwise; the two 4-thread processes agree bitwise; the 1-thread
+    process agrees bitwise with them; and the peak matches
+    KERNEL_REFERENCE_PEAK within KERNEL_PEAK_TOLERANCE. Before the
+    repair this configuration selected the odd length 6125, J_abl read
+    an unwritten work-buffer entry, and the repeatability and peak
+    comparisons failed. One 1100-point run checks that the unboosted
+    default route reproduces itself bitwise in-process.
+
+    Arguments:
+      executable = the compiled kernel probe
+      even_lengths = the even admissible lengths from
+        enumerate_admissible
+
+    Returns:
+      nothing; prints one line per run and a PASS line.
+    """
+    boost_a = run_kernel_probe(executable=executable,
+                               size=KERNEL_BOOST_SIZE, omp_threads=4)
+    boost_b = run_kernel_probe(executable=executable,
+                               size=KERNEL_BOOST_SIZE, omp_threads=4)
+    boost_single = run_kernel_probe(executable=executable,
+                                    size=KERNEL_BOOST_SIZE,
+                                    omp_threads=1)
+    for label, run in (("4 threads, process a", boost_a),
+                       ("4 threads, process b", boost_b),
+                       ("1 thread", boost_single)):
+        raw, selected, ntotal = run["sizes"]
+        minimal_even = even_lengths[bisect.bisect_left(even_lengths,
+                                                       raw)]
+        assert selected % 2 == 0, (
+            f"kernel route selected the odd length {selected} for raw "
+            f"request {raw}")
+        assert selected == minimal_even, (
+            f"kernel route selected {selected} for raw request {raw}; "
+            f"the minimal even admissible length is {minimal_even}")
+        for call in run["calls"]:
+            assert call["finite"], (
+                f"kernel output not finite ({label})")
+            drift = abs(call["peak"] / KERNEL_REFERENCE_PEAK - 1.0)
+            assert drift < KERNEL_PEAK_TOLERANCE, (
+                f"kernel peak {call['peak']} differs from the "
+                f"reference {KERNEL_REFERENCE_PEAK} by a relative "
+                f"{drift} ({label}); the odd-length defect produced "
+                "peaks near 2098 or 1e298")
+        assert run["calls"][0]["values"] == run["calls"][1]["values"], (
+            f"the two in-process calls differ bitwise ({label}); "
+            "an uninitialized read on the transform buffers is the "
+            "known cause of exactly this failure")
+        print(f"  boost route ({label}): raw {raw} -> even {selected} "
+              f"(ntotal {ntotal}), two calls bitwise identical, peak "
+              f"{run['calls'][0]['peak']:.17g}")
+    assert (boost_a["calls"][0]["values"]
+            == boost_b["calls"][0]["values"]), (
+        "two fresh 4-thread processes disagree bitwise on the boost "
+        "route; the odd-length defect showed exactly this, because "
+        "the uninitialized value depends on allocation history")
+    assert (boost_a["calls"][0]["values"]
+            == boost_single["calls"][0]["values"]), (
+        "1-thread and 4-thread runs disagree bitwise on the boost "
+        "route")
+    default = run_kernel_probe(executable=executable,
+                               size=KERNEL_DEFAULT_SIZE, omp_threads=4)
+    raw, selected, ntotal = default["sizes"]
+    assert selected % 2 == 0, (
+        f"default route selected the odd length {selected}")
+    assert (default["calls"][0]["values"]
+            == default["calls"][1]["values"]), (
+        "the default route does not reproduce itself bitwise")
+    print(f"  default route: raw {raw} -> even {selected} "
+          f"(ntotal {ntotal}), two calls bitwise identical, peak "
+          f"{default['calls'][0]['peak']:.17g}")
+    print("PASS stage 7: production kernel route even, bitwise "
+          "repeatable across calls, processes and thread counts")
 
 
 def enumerate_admissible():
@@ -505,7 +753,11 @@ def main():
     try:
         executable = build_probe(paths=paths, toolchain=toolchain,
                                  scratch=scratch)
-        print("PASS stage 2: probe compiled against the live sources")
+        kernel_executable = build_kernel_probe(paths=paths,
+                                               toolchain=toolchain,
+                                               scratch=scratch)
+        print("PASS stage 2: both probes compiled against the live "
+              "sources")
         all_lengths, even_lengths = enumerate_admissible()
         print(f"PASS stage 3: enumerated {len(all_lengths)} admissible "
               f"lengths up to LONG_MAX ({len(even_lengths)} even)")
@@ -513,6 +765,7 @@ def main():
         check_named_cases(executable, all_lengths, even_lengths)
         check_int_boundary(executable, all_lengths, even_lengths)
         check_refusals(executable, all_lengths)
+        check_production_route(kernel_executable, even_lengths)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     print("fft parity check: PASS")
