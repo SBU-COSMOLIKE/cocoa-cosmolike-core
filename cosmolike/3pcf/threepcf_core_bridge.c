@@ -298,6 +298,13 @@ void threepcf_bridge_set_sources(
               "least one bin and at least two source nodes");
     exit(1);
   }
+  // The flat density count is an int in scans, copies and malloc1d.
+  // Check division first, before multiplying or reading either array.
+  if (INT_MAX/nsource < nbin) {
+    log_fatal("threepcf bridge: source table count %d x %d exceeds "
+              "INT_MAX; reduce the bin or source-node count", nbin, nsource);
+    exit(1);
+  }
   bridge_require_finite(source_z, nsource, "source_z");
   bridge_require_finite(sources, nbin*nsource, "sources");
   if (supplied.nbin != nbin || supplied.nsource != nsource ||
@@ -391,6 +398,17 @@ void threepcf_bridge_set_feedback(
       || nv < 4) {
     log_fatal("threepcf bridge: the paired feedback response needs six "
               "arrays with at least four nodes per axis (feedback_3pcf.h)");
+    exit(1);
+  }
+  // Each leading product must fit the int count used below. Short-circuit
+  // evaluation reaches a multiplication only after its factors passed the
+  // preceding bound; this prevents overflow before any array is inspected.
+  if (INT_MAX/nk < nz
+      || INT_MAX/nu < nz*nk
+      || INT_MAX/nv < nz*nk*nu) {
+    log_fatal("threepcf bridge: feedback table count %d x %d x %d x %d "
+              "exceeds INT_MAX; reduce the response-axis counts",
+              nz, nk, nu, nv);
     exit(1);
   }
   if (isnan(amplitude)) {
