@@ -10321,9 +10321,12 @@ static double** C_cl_tomo_core(
     // and do not affect the convolution result; the selection story lives
     // with next_even_fft_size_radix7 in basics.c. The selected length
     // must fit the int slot N[j][2], so reject a size beyond INT_MAX
-    // instead of truncating it in the cast.
+    // instead of truncating it in the cast. The 2L keeps the request
+    // arithmetic in long: N[j][0] and N[j][1] are int, and an int
+    // product would overflow - undefined behavior - before the
+    // widening assignment and before the INT_MAX guard could run.
     // -------------------------------------------------------------------------
-    long raw = 2*N[j][0] + N[j][1];
+    long raw = 2L*N[j][0] + N[j][1];
     long nfft = next_even_fft_size_radix7(raw);
     if (nfft > INT_MAX) {
       log_fatal("C_cl_tomo_core: even FFT length %ld exceeds INT_MAX", nfft);
@@ -11032,7 +11035,7 @@ static double** C_gs_tomo_core(
     // zero-padded in cfftlog_ells_p1 and do not affect the result.
     // Reject a length beyond INT_MAX instead of truncating it in the
     // int slot N[j][2]; C_cl_tomo_core tells the story
-    long raw = 2*N[j][0] + N[j][1];
+    long raw = 2L*N[j][0] + N[j][1];
     long nfft = next_even_fft_size_radix7(raw);
     if (nfft > INT_MAX) {
       log_fatal("C_gs_tomo_core: even FFT length %ld exceeds INT_MAX", nfft);
@@ -13153,7 +13156,7 @@ static double** C_cl_tomo_lowrank_core(
     // FFT-friendly even size (only prime factors 2, 3, 5, 7); the
     // derivation lives in C_cl_tomo_core. Reject a length beyond
     // INT_MAX instead of truncating it in the int slot N[j][2]
-    long raw = 2*N[j][0] + N[j][1];
+    long raw = 2L*N[j][0] + N[j][1];
     long nfft = next_even_fft_size_radix7(raw);
     if (nfft > INT_MAX) {
       log_fatal("C_cl_tomo_lowrank_core: even FFT length %ld exceeds "
@@ -15741,7 +15744,7 @@ static double** C_cl_tomo_fkem_pairs_core(
   for(int j=0; j<SIZE2; j++) {
     N[j][0] = cfg[j].N_pad;
     N[j][1] = nchi;
-    long raw = 2*N[j][0] + N[j][1];
+    long raw = 2L*N[j][0] + N[j][1];
     long nfft = next_even_fft_size_radix7(raw);
     if (nfft > INT_MAX) {
       log_fatal("C_cl_tomo_fkem_pairs_core: even FFT length %ld exceeds "

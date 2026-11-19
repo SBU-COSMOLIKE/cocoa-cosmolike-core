@@ -2752,7 +2752,11 @@ static void C_cluster_nonlimber_core(
   for (int s = 0; s < SIZE2; s++) {
     N[s][0] = cfg[s].N_pad;
     N[s][1] = nchi;
-    long raw = 2*N[s][0] + N[s][1];
+    // The 2L keeps the request arithmetic in long: N[s][0] and
+    // N[s][1] are int, and an int product would overflow - undefined
+    // behavior - before the widening assignment and before the
+    // INT_MAX guard below could run.
+    long raw = 2L*N[s][0] + N[s][1];
     // Even FFT-friendly size (prime factors 2, 3, 5 and 7 only); the
     // selection story lives with next_even_fft_size_radix7 in
     // basics.c. The selected length must fit the int slot N[s][2], so
