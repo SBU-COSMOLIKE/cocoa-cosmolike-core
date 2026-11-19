@@ -3535,66 +3535,6 @@ void physics_projection_batch_evaluate_3pcf(
 // [SECTION] MULTIPOLES, ACCESSORS AND NLA ANGULAR POWER
 // ===========================================================================
 
-// gauss_legendre_physics: Gauss-Legendre nodes and weights on the
-// open interval (-1, 1). The nodes avoid both endpoints, including
-// the degenerate mu = 1 triangle at ell1 = ell2 whose closing side
-// would vanish. Each node is a root of the Legendre polynomial of
-// degree count, refined by Newton iteration; mirror roots share
-// weights by symmetry. This helper runs before worker launch, and
-// afterwards nothing reads or writes a scientific table.
-static void gauss_legendre_physics(
-  const int count,
-  double* nodes,
-  double* weights
-)
-{
-  for (int root=0; root<(count + 1)/2; root++) {
-    // Tricomi's initial guess: the k-th root of the degree-n Legendre
-    // polynomial lies near cos(pi (k + 3/4)/(n + 1/2)), and Newton
-    // converges from it in a few steps for every order used here.
-    double coordinate = cos(3.14159265358979323846
-      *(root + 0.75)/(count + 0.5));
-    double derivative = 0.0;
-    for (int iteration=0; iteration<100; iteration++) {
-      // Evaluate P_count(coordinate) with the three-term recurrence
-      // order*P_order = (2 order - 1) x P_(order-1)
-      // - (order - 1) P_(order-2), keeping the previous polynomial
-      // for the derivative identity below.
-      double previous = 1.0;
-      double value = coordinate;
-      for (int order=2; order<=count; order++) {
-        const double next = ((2.0*order - 1.0)*coordinate*value
-          - (order - 1.0)*previous)/order;
-        previous = value;
-        value = next;
-      }
-      // P'_n(x) = n (x P_n - P_(n-1))/(x^2 - 1); one Newton step is
-      // P_n/P'_n.
-      derivative = count*(coordinate*value - previous)
-        /(coordinate*coordinate - 1.0);
-      const double step = value/derivative;
-      coordinate -= step;
-      if (fabs(step) <= 4.0*DBL_EPSILON) {
-        break;
-      }
-      if (!(iteration < 99)) {
-        log_fatal("physics_3pcf: Legendre root did not converge");
-        exit(1);
-      }
-    }
-
-    nodes[root] = -coordinate;
-    nodes[count - 1 - root] = coordinate;
-    // Gauss-Legendre weight w = 2/[(1 - x^2) P'_n(x)^2]; the mirrored
-    // root -x carries the same weight.
-    const double weight = 2.0/((1.0 - coordinate*coordinate)
-      *derivative*derivative);
-    weights[root] = weight;
-    weights[count - 1 - root] = weight;
-  }
-}
-
-
 // ---------------------------------------------------------------------------
 // physics_multipoles_3pcf: the Legendre coefficients b_L of the
 // projected E-mode bispectrum in mu, the cosine of the angle between
@@ -3650,7 +3590,14 @@ void physics_multipoles_3pcf(
   double* nodes = calloc1d(nmu);
   double* weights = calloc1d(nmu);
   double* legendre = calloc1d((int)((size_t)(lmax + 1)*nmu));
-  gauss_legendre_physics(nmu, nodes, weights);
+  // Prepare the house fixed-node rule before launching triangle workers.
+  // Copying the nodes keeps all worker reads independent of GSL storage.
+  gsl_integration_glfixed_table* rule = malloc_gslint_glfixed(nmu);
+  for (int node=0; node<nmu; node++) {
+    gsl_integration_glfixed_point(-1.0, 1.0, node,
+      &nodes[node], &weights[node], rule);
+  }
+  gsl_integration_glfixed_table_free(rule);
 
   // Tabulate the quadrature-ready Legendre factors: entry [L][node]
   // holds (L + 1/2) w_node P_L(mu_node), so each b_L below is a plain
