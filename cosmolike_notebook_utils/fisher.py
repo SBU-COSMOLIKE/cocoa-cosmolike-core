@@ -21,10 +21,12 @@ covariance. Two different errors follow for one parameter p:
 1/sqrt(F_pp) is the error with every other parameter held fixed,
 while sqrt((F^-1)_pp), from the diagonal of the inverse, is the
 marginalized error after every other parameter (nuisances included)
-is free to move; the second is what an analysis quotes. Everything in
-this module is pure numpy/getdist mathematics except the data vector
-itself, which needs a project's compiled cosmolike interface. That
-dependency arrives as an explicit argument, never by replacing a
+is free to move; the second is what an analysis quotes. The matrix
+and plotting calculations use numpy/getdist. Data-vector evaluation
+needs a project's compiled cosmolike interface, and
+nonlimber_derivative_mode temporarily changes that interface's galaxy
+projection tolerances, restoring the production bases on exit.
+These dependencies arrive as explicit arguments, never by replacing a
 function at run time (a monkey patch): get_ddv, get_ddv_dkit and
 get_Fisher2 take the notebook's data-vector function as their first
 argument (`dv`, called as dv(param=<1D parameter array>,
@@ -36,6 +38,10 @@ priors, and covariance in thin wrappers
 (interface/cosmolike_<project>_notebook_wrappers.py).
 
 Contents:
+  nonlimber_derivative_mode
+                      set galaxy early-exit tolerances to zero during
+                      derivative evaluation, then restore the supplied
+                      production bases even if evaluation raises
   get_ddv             five-point finite-difference derivative of dv
   get_ddv_dkit        the same derivative via the derivkit package
   get_Fisher          F = D^T C^-1 D from a derivative function
@@ -66,11 +72,64 @@ Contents:
                       w0 + wa), the excluded region shaded
 """
 
+from contextlib import contextmanager
 import itertools
 
 import numpy as np
 from getdist import plots
 from getdist.mcsamples import MCSamples, loadMCSamples
+
+
+@contextmanager
+def nonlimber_derivative_mode(interface, production_gg, production_gs):
+    """Disable galaxy early exits while evaluating numerical derivatives.
+
+    The real-space galaxy projections can stop their non-Limber calculation
+    when it agrees with Limber within a tolerance. The stopping multipole is
+    an integer that can change between nearby parameter values. Its jump can
+    enter a finite difference as false information. Zero tolerances keep the
+    non-Limber calculation through the configured multipole cap at every
+    stencil point, including when the global accuracy boost changes.
+
+    Arguments:
+      interface = the caller's compiled interface, providing
+                  init_nonlimber_tolerance(gg_tol=..., gs_tol=...).
+      production_gg, production_gs = finite, nonnegative BASE tolerances
+                  configured in the likelihood or notebook. Do not pass
+                  get_nonlimber_tolerance(): that getter returns the
+                  effective values after division by the accuracy factor.
+
+    Returns:
+      a context manager for a with block; it yields no value.
+
+    Side effects:
+      Sets both base tolerances to zero on entry and restores the supplied
+      production bases in finally, including when the evaluation raises.
+      It does not restore the accuracy boost or change the multipole cap.
+      Fourier galaxy spectra do not use this early exit. Cluster-specific
+      projection tolerances are separate and are not changed here.
+
+    Raises:
+      ValueError before mutation if either production tolerance is invalid.
+      This context must not contain initial_setup(), which resets C state,
+      or another explicit call that changes the non-Limber tolerances.
+    """
+    production_gg = float(production_gg)
+    production_gs = float(production_gs)
+    if not np.isfinite(production_gg) or production_gg < 0.0:
+        raise ValueError(
+            f"production_gg = {production_gg}; pass the finite, nonnegative "
+            "base tolerance from the likelihood configuration")
+    if not np.isfinite(production_gs) or production_gs < 0.0:
+        raise ValueError(
+            f"production_gs = {production_gs}; pass the finite, nonnegative "
+            "base tolerance from the likelihood configuration")
+    interface.init_nonlimber_tolerance(gg_tol=0.0, gs_tol=0.0)
+    try:
+        yield
+    finally:
+        interface.init_nonlimber_tolerance(
+            gg_tol=production_gg, gs_tol=production_gs)
 
 
 def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
