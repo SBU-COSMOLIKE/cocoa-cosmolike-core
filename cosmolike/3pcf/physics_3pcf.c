@@ -1093,14 +1093,21 @@ static void prepare_bihalofit(
     }
     // These copies belong to this model. No later cosmology update can
     // change them, and no Gaussian variance integral runs in this route.
-    model->radius = make_natural_spline(supplied->z,
-      supplied->rnl, supplied->nz);
-    model->neff = make_natural_spline(supplied->z,
-      supplied->neff, supplied->nz);
-    model->sigma8z = make_natural_spline(supplied->z,
-      supplied->sigma8, supplied->nz);
-    model->omega_m_z = make_natural_spline(supplied->z,
-      matter, supplied->nz);
+    // Production uses the house natural spline. The explicit upstream
+    // comparison retains its not-a-knot convention whether the fit values
+    // were prepared locally or supplied by the independent Python reference.
+    model->radius = model->source_readers
+      ? make_spline(supplied->z, supplied->rnl, supplied->nz)
+      : make_natural_spline(supplied->z, supplied->rnl, supplied->nz);
+    model->neff = model->source_readers
+      ? make_spline(supplied->z, supplied->neff, supplied->nz)
+      : make_natural_spline(supplied->z, supplied->neff, supplied->nz);
+    model->sigma8z = model->source_readers
+      ? make_spline(supplied->z, supplied->sigma8, supplied->nz)
+      : make_natural_spline(supplied->z, supplied->sigma8, supplied->nz);
+    model->omega_m_z = model->source_readers
+      ? make_spline(supplied->z, matter, supplied->nz)
+      : make_natural_spline(supplied->z, matter, supplied->nz);
     free(matter);
     return;
   }

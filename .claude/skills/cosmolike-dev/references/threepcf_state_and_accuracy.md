@@ -104,6 +104,17 @@ domain. Covariance snapshots require exact requested mass/redshift axes and
 the prescribed density. Their caller must establish that they belong to
 the same physical power state; matching dimensions alone is insufficient.
 
+Supplying fit anchors does not change their interpolation convention:
+production uses natural-cubic preparation, while `source_readers: true`
+retains the upstream not-a-knot comparison. C and the independent Python
+BiHalofit producer must select the same convention. The companion project's
+`ReferenceVariance` prepares the older finite-integral fit and its scalar
+power multiplier in Python. Its provider applies that multiplier only to
+the three-point reference, leaving the ordinary two-point power unchanged.
+Copied fit arrays and recorded normalization belong to the same input state.
+The native no-array compatibility path still computes its original fit;
+do not call the migration complete while that path remains.
+
 `core.set_variance` copies its arrays and stamps both `cosmology.random`
 and `Ntable.random`. A later bridge read refuses stale supplied variances
 before considering a model cache hit. Resupply or explicitly clear after
@@ -185,8 +196,15 @@ This is a diagnostic, not a normalization added to the shared production
 adapter. Without that multiplier the FoM discrepancy persisted. In nine
 fiducial/h/matter-density checks, CAMB AccuracyBoost 2, k_per_logint 50 and
 1025 uniform log-k output samples reduced the multiplier's deviation from
-unity below 1.5e-7. Full paired forecasts on those inputs remain necessary
-before claiming acceptance or removing the old calculation.
+unity below 1.5e-7. The subsequent full NLA comparison passes at four and
+eight times shared sampling: across both derivative steps, the largest
+pair-FoM difference from the refined local reference is 0.0651%. Refining
+four to eight changes a pair FoM by at most 0.0356%. All ordinary two-point
+stencil rows remain bitwise identical. These results establish method
+agreement for the tested NLA inputs; TATT acceptance is still pending.
+Some marginalized errors change by about 2.8% under derivative-step
+halving in both methods. Do not describe agreement between smoothing
+implementations as convergence of the entire forecast.
 
 The DES 3PCF Python producer now exposes `physics.camb_accuracy_boost`
 and `physics.camb_k_per_logint`, defaulting to one and zero. Zero means
