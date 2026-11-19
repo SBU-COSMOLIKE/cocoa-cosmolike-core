@@ -177,6 +177,28 @@ changes under derivative-step refinement. Neither observation by itself
 explains the failed comparison: compare converged smoothing and derivatives
 on identical archived input arrays before attributing it to normalization.
 
+Subsequent diagnostics separated the two effects. At four-times shared
+sampling with cold cubic input upsampling, explicitly retaining the old
+normalization gave agreement with the refined local calculation within
+0.014% per derivative and 0.172% per parameter-pair FoM at both steps.
+This is a diagnostic, not a normalization added to the shared production
+adapter. Without that multiplier the FoM discrepancy persisted. In nine
+fiducial/h/matter-density checks, CAMB AccuracyBoost 2, k_per_logint 50 and
+1025 uniform log-k output samples reduced the multiplier's deviation from
+unity below 1.5e-7. Full paired forecasts on those inputs remain necessary
+before claiming acceptance or removing the old calculation.
+
+The DES 3PCF Python producer now exposes `physics.camb_accuracy_boost`
+and `physics.camb_k_per_logint`, defaulting to one and zero. Zero means
+CAMB's automatic transfer spacing. These controls neither enlarge the
+solved k cutoff nor multiply CosmoLike's accuracy boost. They enter the
+provider/outer-mean keys, the timing-table reuse record and saved metadata.
+Changing precision rebuilds CAMB; A/B/A restores the original tables exactly.
+Reference metadata must match the declared precision. Older tables retain
+the historical one/zero settings, rather than silently acquiring a newer
+accuracy claim. The initial precision suite passes 53 tests, including
+actual CAMB calculations and notebook-style changes within one process.
+
 ### Project consumers of shared variances
 
 The DES 3PCF provider selects the optional route with
