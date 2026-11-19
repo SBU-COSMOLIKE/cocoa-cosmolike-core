@@ -122,7 +122,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const physics_baseline_table_cpp_3pcf* baseline,
   // matter fraction on z, required with an absolute baseline
   const arma::Col<double>* omega_m_z,
-  const physics_variance_tables_cpp_3pcf* variance // optional fit anchors
+  const physics_variance_tables_cpp_3pcf* variance, // optional fit anchors
+  const arma::Col<double>* omega_m_redshift // optional fraction axis
 )
 {
   const arma::uword nsource = source_z.n_elem ? source_z.n_elem : z.n_elem;
@@ -281,12 +282,26 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     input.window = pixel_window->memptr();
   }
 
+  if (nullptr != omega_m_redshift && nullptr == omega_m_z) {
+    throw std::invalid_argument("omega_m_redshift requires omega_m_z");
+  }
+  if (nullptr != omega_m_z) {
+    const arma::uword count = omega_m_redshift
+      ? omega_m_redshift->n_elem : z.n_elem;
+    if (count != omega_m_z->n_elem || INT_MAX < count) {
+      throw std::invalid_argument("Omega_m(z) must match its redshift axis");
+    }
+    input.omega_m_z = omega_m_z->memptr();
+    if (nullptr != omega_m_redshift) {
+      input.nomega = static_cast<int>(count);
+      input.omega_m_redshift = omega_m_redshift->memptr();
+    }
+  }
+
   baseline_input_3pcf supplied = {};
   if (nullptr != baseline) {
     if (!(nullptr != omega_m_z)) { spdlog::critical(
       "3pcf: supplied B needs Omega_m(z)"); std::exit(1); }
-    if (!(z.n_elem == omega_m_z->n_elem)) { spdlog::critical(
-      "3pcf: Omega_m(z) must match background z"); std::exit(1); }
     const size_t counts[4] = {baseline->z.n_elem, baseline->logk.n_elem,
       baseline->logu.n_elem, baseline->v.n_elem};
     size_t size = 1;
@@ -311,7 +326,6 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     supplied.boost = baseline->boost;
     supplied.clamp = baseline->clamp;
     input.baseline = &supplied;
-    input.omega_m_z = omega_m_z->memptr();
   }
 
   return std::make_shared<physics_owner_3pcf>(input);

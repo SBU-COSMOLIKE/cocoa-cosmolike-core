@@ -117,7 +117,8 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const arma::Col<double>* pixel_window = nullptr, // W(ell) at integer ell
   const physics_baseline_table_cpp_3pcf* baseline = nullptr, // absolute B
   const arma::Col<double>* omega_m_z = nullptr, // required with baseline
-  const physics_variance_tables_cpp_3pcf* variance = nullptr // fit anchors
+  const physics_variance_tables_cpp_3pcf* variance = nullptr, // fit anchors
+  const arma::Col<double>* omega_m_redshift = nullptr // optional fraction axis
 );
 
 arma::Mat<double> physics_points_cpp_3pcf(

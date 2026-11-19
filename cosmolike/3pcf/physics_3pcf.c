@@ -223,9 +223,6 @@ struct physics_model_3pcf {
   physics_axis power_axis; // direct indexing of the redshift rows
   physics_axis source_axis; // direct indexing of source redshifts
   double omega_m;     // matter density fraction today
-  double omega_de;    // dark-energy density fraction today
-  double w0;          // dark-energy equation of state today
-  double wa;          // its evolution, w(a) = w0 + wa (1 - a)
   double ns;          // primordial spectral index
   physics_spline linear;     // log P_linear(z=0) against log k
   physics_spline* nonlinear; // log P_nonlinear against log k [npower_z]
@@ -843,41 +840,6 @@ static double trapezoid(
 
 
 // ---------------------------------------------------------------------------
-// omega_m_physics: the matter density fraction at redshift z for a
-// w0-wa dark-energy background.
-//
-// Integrating the continuity equation with the equation of state
-// w(a) = w0 + wa (1 - a) gives the dark-energy density evolution
-//
-//   rho_de(a)/rho_de(1) = a^(-3 (1 + w0 + wa)) exp(-3 wa (1 - a)).
-//
-// Multiplying numerator and denominator of the usual a^-3 form of
-// Omega_m(a) by a^2 puts the exact fraction into the shape the code
-// uses,
-//
-//   Omega_m(a) = (Omega_m/a) / (Omega_m/a + Omega_de dark + Omega_k),
-//
-// where dark = a^2 rho_de(a)/rho_de(1) is the local variable below
-// and Omega_k = 1 - Omega_m - Omega_de. The input densities may miss
-// flatness by up to the 1e-8 rounding tolerance, so the code keeps
-// the Omega_k term, written as the factor total; exactly flat inputs
-// make total equal one exactly.
-static double omega_m_physics(
-  const physics_model_3pcf* model,
-  const double z
-)
-{
-  const double scale = 1.0/(1.0 + z);
-  const double dark = pow(scale, -1.0 - 3.0*(model->w0 + model->wa))
-    *exp(-3.0*(1.0 - scale)*model->wa);
-  const double total = 1.0 + (model->omega_m + model->omega_de - 1.0)
-    /(1.0 - model->omega_m - model->omega_de
-    + model->omega_de*dark + model->omega_m/scale);
-  return total*model->omega_m
-    /(model->omega_m + model->omega_de*scale*dark);
-}
-
-
 // ---------------------------------------------------------------------------
 // bh_coefficients: the redshift-dependent BiHalofit fit coefficients
 // of Takahashi et al. (arXiv:1911.07886). The paper expresses each
@@ -941,10 +903,6 @@ static void prepare_bihalofit(
   const physics_variance_input_3pcf* supplied // copied core fit quantities
 )
 {
-  double* matter = calloc1d(supplied->nz);
-  for (int index=0; index<supplied->nz; index++) {
-    matter[index] = omega_m_physics(model, supplied->z[index]);
-  }
   // These copies belong to this model. No later cosmology update can
   // change them, and no Gaussian variance integral runs in this route.
   // Production uses the house natural spline. The explicit upstream
@@ -959,10 +917,7 @@ static void prepare_bihalofit(
   model->sigma8z = model->source_readers
     ? make_spline(supplied->z, supplied->sigma8, supplied->nz)
     : make_natural_spline(supplied->z, supplied->sigma8, supplied->nz);
-  model->omega_m_z = model->source_readers
-    ? make_spline(supplied->z, matter, supplied->nz)
-    : make_natural_spline(supplied->z, matter, supplied->nz);
-  free(matter);
+
 }
 
 
@@ -1227,6 +1182,11 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     log_fatal("physics_3pcf: growth must be normalized to one at z=0");
     exit(1);
   }
+  if ((NULL != input->omega_m_redshift && NULL == input->omega_m_z)
+      || (NULL == input->omega_m_redshift && 0 != input->nomega)) {
+    log_fatal("physics_3pcf: an independent matter-fraction axis needs "
+      "both coordinates and fraction values"); exit(1);
+  }
   // The internal fit requires explicit smoothing quantities. They come
   // from the shared core or the independent Python reference; there is no
   // second variance integral or scalar amplitude normalization in this model.
@@ -1279,12 +1239,7 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
       "physics_3pcf: sigma8 must be positive"); exit(1); }
     if (!(NULL != input->omega_m_z)) { log_fatal(
       "physics_3pcf: supplied B requires tabulated Omega_m(z)"); exit(1); }
-    for (int node=0; node<input->nz; node++) {
-      if (!(isfinite(input->omega_m_z[node]))) { log_fatal(
-        "physics_3pcf: Omega_m(z) must be finite"); exit(1); }
-      if (!(0.0 < input->omega_m_z[node])) { log_fatal(
-        "physics_3pcf: Omega_m(z) must be positive"); exit(1); }
-    }
+
   } else {
     if (!(isfinite(input->omega_m) && input->omega_m > 0.0
           && isfinite(input->omega_de) && input->omega_de >= 0.0
@@ -1383,9 +1338,6 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
     source_axis->lower, source_axis->inverse, "3pcf source redshift");
   model->omega_m = input->omega_m;
   if (NULL == model->baseline) {
-    model->omega_de = input->omega_de;
-    model->w0 = input->w0;
-    model->wa = input->wa;
     model->ns = input->ns;
   }
 
@@ -1509,12 +1461,55 @@ physics_model_3pcf* physics_create_3pcf(const physics_input_3pcf* input)
   model->los_z = calloc1d(input->nlos);
   memcpy(model->los_z, input->los_z, (size_t)input->nlos*sizeof(double));
 
+  // An exact provider fraction may include non-pressureless massive
+  // neutrinos. Its optional axis allows comparison inputs to retain their
+  // original fit anchors without changing the power/background grids.
+  if (NULL != input->omega_m_z) {
+    const int count = input->omega_m_redshift ? input->nomega : input->nz;
+    const double* axis = input->omega_m_redshift
+      ? input->omega_m_redshift : input->z;
+    if (4 > count) { log_fatal(
+      "physics_3pcf: Omega_m(z) needs at least four nodes"); exit(1); }
+    increasing_physics(axis, count, 0);
+    if (0.0 != axis[0] || model->zmax > axis[count - 1]) { log_fatal(
+      "physics_3pcf: Omega_m(z) must cover [0,zmax]"); exit(1); }
+    physics_axis segments;
+    segments.count = detect_uniform_segments(axis, count, 1.0e-9,
+      MAX_GRID_SEGMENTS, segments.start, segments.length, segments.lower,
+      segments.inverse, "3pcf matter fraction");
+    for (int node=0; node<count; node++) {
+      if (!isfinite(input->omega_m_z[node])
+          || 0.0 >= input->omega_m_z[node]) { log_fatal(
+        "physics_3pcf: Omega_m(z) must be finite and positive"); exit(1); }
+    }
+    model->omega_m_z = model->source_readers
+      ? make_spline(axis, input->omega_m_z, count)
+      : make_natural_spline(axis, input->omega_m_z, count);
+  } else {
+    // For pressureless matter, rho_m(z)=rho_m0*(1+z)^3. dz/dchi is
+    // H(z)/c in h/Mpc, so multiplying by c/H0=2997.92458 Mpc/h gives
+    // E(z)=H(z)/H0. No dark-energy model is reconstructed here. This
+    // approximation must not replace an exact massive-neutrino fraction.
+    const physics_variance_input_3pcf* fit = input->variance;
+    double* matter = calloc1d(fit->nz);
+    for (int node=0; node<fit->nz; node++) {
+      const double z = fit->z[node];
+      const double expansion = 2997.92458*read_spline(&model->dz_dchi, z, 0);
+      if (!isfinite(expansion) || 0.0 >= expansion) { log_fatal(
+        "physics_3pcf: dz/dchi must imply positive finite H(z)/H0");
+        exit(1); }
+      matter[node] = model->omega_m*pow(1.0 + z, 3.0)
+        /(expansion*expansion);
+      if (!isfinite(matter[node]) || 0.0 >= matter[node]) { log_fatal(
+        "physics_3pcf: dz/dchi implies invalid Omega_m(z)"); exit(1); }
+    }
+    model->omega_m_z = model->source_readers
+      ? make_spline(fit->z, matter, fit->nz)
+      : make_natural_spline(fit->z, matter, fit->nz);
+    free(matter);
+  }
   if (NULL == model->baseline) {
     prepare_bihalofit(model, input->variance);
-  } else {
-    model->omega_m_z = model->source_readers
-      ? make_spline(input->z, input->omega_m_z, input->nz)
-      : make_natural_spline(input->z, input->omega_m_z, input->nz);
   }
   prepare_radial(model);
   prepare_uniform_readers(model);
@@ -3754,9 +3749,9 @@ double physics_omega_m_3pcf(const physics_model_3pcf* model)
 
 
 // ---------------------------------------------------------------------------
-// Matter fraction used by halo covariance. A supplied baseline takes this
-// from the supplied background array; the legacy route retains its w0-wa
-// formula (omega_m_physics). Neither route infers Omega_m(z) from B.
+// The halo collapse threshold and BiHalofit read the same owned fraction.
+// The constructor either copied the provider's values or derived them from
+// the supplied expansion history under the pressureless-matter assumption.
 double physics_omega_m_z_3pcf(
   const physics_model_3pcf* model,
   const double z
@@ -3766,18 +3761,13 @@ double physics_omega_m_z_3pcf(
     log_fatal("physics_3pcf: invalid background matter-fraction query");
     exit(1);
   }
-
-  if (NULL != model->baseline) {
-    if (!(z <= model->zmax)) { log_fatal(
-      "physics_3pcf: Omega_m(z) query exceeds supplied background"); exit(1); }
-    const double value = read_spline(&model->omega_m_z, z, 0);
-    if (!(isfinite(value))) { log_fatal(
-      "physics_3pcf: interpolated Omega_m(z) is nonfinite"); exit(1); }
-    if (!(0.0 < value)) { log_fatal(
-      "physics_3pcf: interpolated Omega_m(z) is not positive"); exit(1); }
-    return value;
-  }
-  return omega_m_physics(model, z);
+  if (!(z <= model->zmax)) { log_fatal(
+    "physics_3pcf: Omega_m(z) query exceeds supplied background"); exit(1); }
+  const double value = read_spline(&model->omega_m_z, z, 0);
+  if (!isfinite(value) || 0.0 >= value) { log_fatal(
+    "physics_3pcf: interpolated Omega_m(z) must be finite and positive");
+    exit(1); }
+  return value;
 }
 
 

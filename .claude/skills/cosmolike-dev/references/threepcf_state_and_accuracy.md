@@ -603,3 +603,31 @@ Keep comparison contracts distinct: the supplied-baseline setter compares
 array bytes, including signed zero. Older setters using `bridge_differs`
 compare exact numerical values without a tolerance, for which signed zeros
 are equal. Do not describe that older helper as a byte comparison.
+
+
+## Matter fraction ownership and quadrature
+
+The direct multipole projection uses `malloc_gslint_glfixed` and copies its
+Gauss-Legendre nodes and weights before starting workers. Its independent
+NumPy quadrature test covers NLA and TATT at 8, 33 and 128 nodes. The private
+Legendre-root solver is not part of the physics module.
+
+Internal BiHalofit does not reconstruct a CPL background. It either copies
+`omega_m_z` or derives the pressureless fraction
+`Omega_m0*(1+z)^3 / E(z)^2` from `E=2997.92458*dz_dchi`, in h/Mpc units.
+The bridge's Jacobian comes from the same distance interpolation as core
+`hoverh0`. BiHalofit's d_n and the optional halo collapse correction share
+this owned fraction table. The pressureless rule is not an exact treatment
+of massive-neutrino energy density: production CAMB inputs supply its exact
+CDM+baryon+massive-neutrino fraction. Explicit fractions can also use an
+independent piecewise-uniform `omega_m_redshift` axis in direct internal-fit
+constructors; both arrays are copied and must span [0,zmax].
+
+`core.set_matter_fraction` sets an internal-fit override on the installed
+background z grid. Its bytes and cosmology installation key determine
+reuse; power/cosmology changes require resupply or clearing. Reset releases
+the override, while retained model owners remain valid. An internal bridge
+fit with Omega_nu>0 refuses the pressureless default. Supplied absolute-B
+models retain their separately supplied background fraction. The original
+CPL relation exists only in the project Python reference adapter for
+identified upstream comparisons and frozen legacy checks.

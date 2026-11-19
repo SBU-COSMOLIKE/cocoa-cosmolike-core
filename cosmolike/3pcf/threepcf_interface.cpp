@@ -1018,6 +1018,21 @@ static void bind_threepcf_core_bridge(
       py::arg("gaussian_inverse_nodes").noconvert());
 
   // --- supplied tier -----------------------------------------------------
+  core.def("set_matter_fraction", [](const py::object& values) {
+    if (values.is_none()) {
+      threepcf_bridge_set_matter_fraction(NULL, 0);
+      return;
+    }
+    if (!array_3pcf::check_(values)) { throw py::value_error(
+      "Omega_m(z) must be a contiguous float64 array"); }
+    const auto fraction = py::reinterpret_borrow<array_3pcf>(values);
+    const double* data = bridge_vector_3pcf(fraction, "Omega_m(z)");
+    threepcf_bridge_set_matter_fraction(data,
+      static_cast<int>(fraction.size()));
+  }, py::arg("omega_m_z") = py::none(),
+    "Copy exact Omega_m(z) on the core background grid for internal fits. "
+    "Resupply after cosmology/power changes; None selects pressureless H(z).");
+
   core.def("set_variance", &bridge_variance_3pcf,
       py::arg("variance") = py::dict(),
       "Copy z, rnl, neff and sigma8 fit arrays for the installed core state. "

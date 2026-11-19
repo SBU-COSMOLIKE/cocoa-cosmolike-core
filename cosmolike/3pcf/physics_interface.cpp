@@ -509,7 +509,8 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   const py::object& pixel_window,
   const py::dict& baseline, // optional absolute B input
   const py::object& omega_m_z, // required background when baseline is active
-  const py::dict& variance // optional shared fit quantities
+  const py::dict& variance, // optional shared fit quantities
+  const py::object& omega_m_redshift = py::none() // optional fraction axis
 )
 {
   shape_physics(k, 1);
@@ -684,6 +685,33 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   baseline_input_3pcf supplied = {};
   std::vector<physics_array> baseline_arrays;
   physics_array matter_fraction;
+  physics_array matter_axis;
+  if (!omega_m_redshift.is_none() && omega_m_z.is_none()) {
+    throw py::value_error("omega_m_redshift requires omega_m_z");
+  }
+  if (!omega_m_z.is_none()) {
+    if (!physics_array::check_(omega_m_z)) { throw py::value_error(
+      "Omega_m(z) must be contiguous float64"); }
+    matter_fraction = py::reinterpret_borrow<physics_array>(omega_m_z);
+    shape_physics(matter_fraction, 1);
+    finite_physics(matter_fraction);
+    py::ssize_t count = z.size();
+    if (!omega_m_redshift.is_none()) {
+      if (!physics_array::check_(omega_m_redshift)) { throw py::value_error(
+        "omega_m_redshift must be contiguous float64"); }
+      matter_axis = py::reinterpret_borrow<physics_array>(omega_m_redshift);
+      shape_physics(matter_axis, 1);
+      finite_physics(matter_axis);
+      count = matter_axis.size();
+      if (INT_MAX < count) { throw py::value_error(
+        "omega_m_redshift exceeds C storage"); }
+      input.nomega = static_cast<int>(count);
+      input.omega_m_redshift = matter_axis.data();
+    }
+    if (count != matter_fraction.size()) { throw py::value_error(
+      "Omega_m(z) must match its redshift axis"); }
+    input.omega_m_z = matter_fraction.data();
+  }
   if (!baseline.empty()) {
     const char* names[5] = {"z", "logk", "logu", "v", "log_bispectrum"};
     if (!(7 == baseline.size())) { spdlog::critical(
@@ -715,13 +743,6 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
     if (!(size == static_cast<size_t>(baseline_arrays[4].size()))) {
       spdlog::critical(
       "3pcf: B table size disagrees with axes"); std::exit(1); }
-    if (!(physics_array::check_(omega_m_z))) { spdlog::critical(
-      "3pcf: Omega_m(z) must be contiguous float64"); std::exit(1); }
-    matter_fraction = py::reinterpret_borrow<physics_array>(omega_m_z);
-    shape_physics(matter_fraction, 1);
-    finite_physics(matter_fraction);
-    if (!(z.size() == matter_fraction.size())) { spdlog::critical(
-      "3pcf: Omega_m(z) must match background z"); std::exit(1); }
     supplied.nz = static_cast<int>(baseline_arrays[0].size());
     supplied.nk = static_cast<int>(baseline_arrays[1].size());
     supplied.nu = static_cast<int>(baseline_arrays[2].size());
@@ -734,7 +755,6 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
     supplied.boost = py::cast<int>(baseline["boost"]);
     supplied.clamp = py::cast<int>(baseline["clamp"]);
     input.baseline = &supplied;
-    input.omega_m_z = matter_fraction.data();
   }
 
   // Retain borrowed production arrays until the immutable C owner has
@@ -798,7 +818,9 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const py::object& source_z, // optional source z axis
   const py::dict& feedback, // optional paired responses
   const py::object& pixel_window, // optional integer-ell window
-  const py::dict& variance // optional shared fit quantities
+  const py::dict& variance, // optional shared fit quantities
+  const py::object& omega_m_z, // optional exact matter fraction
+  const py::object& omega_m_redshift // optional fraction axis
 )
 {
   return model_physics_common(k, p_linear0, z, p_nonlinear, chi, dz_dchi,
@@ -806,7 +828,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
     sources, omega_m, omega_de, w0, wa, ns, sigma8, los_z, kernel_nz,
     source_readers,
     table_boost, fit_nz, source_z, feedback, pixel_window,
-    py::dict(), py::none(), variance);
+    py::dict(), omega_m_z, variance, omega_m_redshift);
 }
 
 
@@ -890,7 +912,8 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
   const py::object& pixel_window,
   const py::dict& baseline, // optional absolute B input
   const py::object& omega_m_z, // required background when baseline is active
-  const py::dict& variance // optional shared fit quantities
+  const py::dict& variance, // optional shared fit quantities
+  const py::object& omega_m_redshift = py::none() // optional fraction axis
 )
 {
   const arma::Col<double> wave = copy_column_physics(k);
@@ -951,6 +974,18 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
 
   physics_baseline_table_cpp_3pcf supplied;
   arma::Col<double> matter_fraction;
+  arma::Col<double> matter_axis;
+  if (!omega_m_redshift.is_none() && omega_m_z.is_none()) {
+    throw py::value_error("omega_m_redshift requires omega_m_z");
+  }
+  if (!omega_m_z.is_none()) {
+    matter_fraction = copy_column_physics(
+      py::cast<physics_notebook_array>(omega_m_z));
+  }
+  if (!omega_m_redshift.is_none()) {
+    matter_axis = copy_column_physics(
+      py::cast<physics_notebook_array>(omega_m_redshift));
+  }
   if (!baseline.empty()) {
     const char* names[7] = {"z", "logk", "logu", "v", "log_bispectrum",
       "boost", "clamp"};
@@ -972,8 +1007,6 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
       py::cast<physics_notebook_array>(baseline["log_bispectrum"]));
     supplied.boost = py::cast<int>(baseline["boost"]);
     supplied.clamp = py::cast<int>(baseline["clamp"]);
-    matter_fraction = copy_column_physics(
-      py::cast<physics_notebook_array>(omega_m_z));
   }
 
   physics_variance_tables_cpp_3pcf fit;
@@ -1003,8 +1036,9 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
     feedback.empty() ? nullptr : &response,
     pixel_window.is_none() ? nullptr : &window,
     baseline.empty() ? nullptr : &supplied,
-    baseline.empty() ? nullptr : &matter_fraction,
-    variance.empty() ? nullptr : &fit);
+    omega_m_z.is_none() ? nullptr : &matter_fraction,
+    variance.empty() ? nullptr : &fit,
+    omega_m_redshift.is_none() ? nullptr : &matter_axis);
 }
 
 static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
@@ -1030,14 +1064,16 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const py::object& source_z, // optional source z axis
   const py::dict& feedback, // optional paired responses
   const py::object& pixel_window, // optional integer-ell window
-  const py::dict& variance // optional shared fit quantities
+  const py::dict& variance, // optional shared fit quantities
+  const py::object& omega_m_z, // optional exact matter fraction
+  const py::object& omega_m_redshift // optional fraction axis
 )
 {
   return model_notebook_physics_common(k, p_linear0, z, p_nonlinear, chi,
     dz_dchi,
     growth, sources, omega_m, omega_de, w0, wa, ns, sigma8, los_z, kernel_nz,
     source_readers, table_boost, fit_nz, source_z, feedback, pixel_window,
-    py::dict(), py::none(), variance);
+    py::dict(), omega_m_z, variance, omega_m_redshift);
 }
 
 
@@ -1889,7 +1925,9 @@ void bind_threepcf_physics(
     py::arg("fit_nz") = 33,
     py::arg("source_z") = py::none(), py::arg("feedback") = py::dict(),
     py::arg("pixel_window") = py::none(),
-    py::arg("variance") = py::dict());
+    py::arg("variance") = py::dict(),
+    py::arg("omega_m_z") = py::none(),
+    py::arg("omega_m_redshift") = py::none());
 
   module.def("physics_model_notebook", &model_notebook_physics,
     py::arg("k"),
@@ -1914,6 +1952,8 @@ void bind_threepcf_physics(
     py::arg("source_z") = py::none(), py::arg("feedback") = py::dict(),
     py::arg("pixel_window") = py::none(),
     py::arg("variance") = py::dict(),
+    py::arg("omega_m_z") = py::none(),
+    py::arg("omega_m_redshift") = py::none(),
     "Copy sliced or Fortran-order arrays through the Armadillo adapter.");
 
   module.def("physics_model_production_with_bispectrum",
@@ -2409,7 +2449,7 @@ void bind_threepcf_physics(
     return output;
   }, py::arg("redshifts").noconvert(),
     "Omega_m(z) used by halo covariance: supplied table when selected, "
-    "otherwise the legacy w0-wa background. This is a dimensionless fraction.");
+    "otherwise the pressureless fraction from H(z). Dimensionless.");
 
   model.def("radial", [](
     const physics_owner_3pcf& owner // owner of the immutable physical model

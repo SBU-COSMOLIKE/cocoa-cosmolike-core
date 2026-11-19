@@ -1384,3 +1384,39 @@ cross-covariance.
 Finite-simulation inference requires a raw sample covariance and stated
 Gaussian-mock and independence assumptions. It is a separate statistical
 choice from precision-matrix expansion.
+
+
+### Matter fraction and expansion history
+
+BiHalofit uses the redshift-dependent matter fraction in its coefficient
+`d_n`; the halo covariance can use it in the collapse-threshold correction.
+These are separate from the present-day `omega_m` prefactors in lensing and
+intrinsic alignment. Both consumers read the same immutable fraction table.
+
+For pressureless matter, mass conservation gives
+`Omega_m(z) = Omega_m0 * (1+z)^3 / E(z)^2`, where `E = H(z)/H0`.
+The direct constructor obtains `E` from the supplied `dz_dchi`, multiplying
+by `2997.92458 Mpc/h`. The core bridge supplies the Jacobian of the installed
+distance table, the same expansion history used by `hoverh0`. No separate
+CPL expansion model is evaluated inside the three-point fit. Errors in the
+expansion rate enter this fraction twice at first order, with the opposite
+sign, so distance/Jacobian sampling remains an accuracy control.
+
+The optional `omega_m_z` input overrides that pressureless relation. It is
+required for the exact total fraction when massive neutrinos do not scale
+as pressureless matter. CAMB preparation records the sum of its CDM, baryon
+and massive-neutrino fractions. By default these samples live on the
+background `z` grid. Direct internal-fit constructors also accept
+`omega_m_redshift`, a separate piecewise-uniform axis covering the entire
+background interval. This permits an upstream comparison to retain its
+original coefficient anchors without changing the power or distance grids.
+All samples and coordinates are copied; later input mutation cannot alter
+an existing model.
+
+For the core bridge, `core.set_matter_fraction(omega_m_z=values)` copies an
+exact table on the installed background nodes. Resupply it after cosmology
+or power changes; a stale table is refused. Identical resends reuse the
+model. Passing `None` clears the override, and reset releases its storage.
+An internal bridge fit with nonzero massive-neutrino density requires this
+override. A supplied absolute bispectrum continues to receive its fraction
+through `set_baseline_bispectrum`.

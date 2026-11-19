@@ -25,6 +25,13 @@ extern "C" {
 // creation and owns its interpolation data afterwards, so the caller
 // may free the inputs once physics_create_3pcf returns.
 //
+// Background matter fraction. Internal BiHalofit accepts an exact provider
+// omega_m_z table, optionally on omega_m_redshift. Otherwise it assumes
+// pressureless matter and computes Omega_m0*(1+z)^3/E(z)^2 using the supplied
+// dz_dchi: E(z)=(2997.92458 Mpc/h)*dz_dchi. This uses the supplied expansion
+// history, not w0/wa. Exact massive-neutrino fractions must be supplied.
+// BiHalofit and halo covariance read the same owned fraction table.
+//
 // Geometry. The lensing efficiency uses the flat-space source ratio,
 // so the internal-fit route requires |omega_m + omega_de - 1| <= 1e-8; the
 // tolerance absorbs floating-point rounding of the density scalars
@@ -87,7 +94,9 @@ typedef struct {
   // With a supplied baseline, omega_de/w0/wa/ns are unused; background
   // geometry is the caller's responsibility and remains flat in projection.
   const baseline_input_3pcf* baseline; // copied absolute matter B table
-  const double* omega_m_z; // required with baseline; Omega_m(z) on z [nz]
+  const double* omega_m_z; // optional exact fraction; required with baseline
+  int nomega; // zero reuses nz; otherwise independent matter-fraction nodes
+  const double* omega_m_redshift; // optional piecewise-uniform axis [nomega]
   // Required for internal BiHalofit; unused by a supplied absolute B table.
   const physics_variance_input_3pcf* variance; // copied fit anchors
 } physics_input_3pcf;

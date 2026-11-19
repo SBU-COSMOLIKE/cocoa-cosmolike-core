@@ -277,6 +277,9 @@ static struct {
   int nsource;        // supplied source nodes
   double* source_z;   // owned source redshifts [nsource]
   double* sources;    // owned densities [nbin*nsource], row-major
+  int nomega; // exact matter-fraction samples on the core background z
+  double* omega_m_z; // owned; NULL selects the pressureless H(z) relation
+  uint64_t omega_key; // cosmology state when the exact fraction was supplied
   int nwindow;        // pixel-window samples; zero = no window
   double* window;     // owned W(ell) samples [nwindow]
   struct {
@@ -349,6 +352,7 @@ static void supplied_clear(void)
 {
   baseline_clear_bridge();
   variance_clear_bridge();
+  free(supplied.omega_m_z);
   free(supplied.los);
   free(supplied.source_z);
   free(supplied.sources);
@@ -364,6 +368,9 @@ static void supplied_clear(void)
   supplied.source_readers = 0;
   supplied.table_boost = 8;
   supplied.fit_nz = 33;
+  supplied.nomega = 0;
+  supplied.omega_m_z = NULL;
+  supplied.omega_key = 0;
   supplied.power_mode = 1;
   supplied.ct_mode = 0;
   supplied.suppress_only = 0;
@@ -424,6 +431,41 @@ void threepcf_bridge_set_los(
     free(supplied.los);
     supplied.los = replacement;
     supplied.nlos = n;
+    supplied.nonce = bridge_draw();
+  }
+}
+
+// An exact provider fraction is independent of the bispectrum choice.
+// Copy before releasing old storage: a native caller may supply an owned view.
+void threepcf_bridge_set_matter_fraction(
+  const double* values, // Omega_m(z) on the installed background nodes
+  const int count // zero and NULL clear the exact provider override
+)
+{
+  if (NULL == values && 0 == count) {
+    if (NULL != supplied.omega_m_z) {
+      free(supplied.omega_m_z);
+      supplied.omega_m_z = NULL;
+      supplied.nomega = 0;
+      supplied.omega_key = 0;
+      supplied.nonce = bridge_draw();
+    }
+    return;
+  }
+  if (NULL == values || 4 > count) { log_fatal(
+    "threepcf bridge: matter fraction needs at least four values"); exit(1); }
+  for (int node=0; node<count; node++) {
+    if (!isfinite(values[node]) || 0.0 >= values[node]) { log_fatal(
+      "threepcf bridge: Omega_m(z) must be finite and positive"); exit(1); }
+  }
+  if (count != supplied.nomega
+      || supplied.omega_key != cosmology.random
+      || memcmp(values, supplied.omega_m_z, (size_t)count*sizeof(double))) {
+    double* copy = bridge_copy(values, count);
+    free(supplied.omega_m_z);
+    supplied.omega_m_z = copy;
+    supplied.nomega = count;
+    supplied.omega_key = cosmology.random;
     supplied.nonce = bridge_draw();
   }
 }
@@ -1063,6 +1105,14 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
       exit(1);
     }
   }
+  if (0 == supplied.baseline.input.nz && 0 < supplied.nomega
+      && supplied.omega_key != cosmology.random) { log_fatal(
+    "threepcf bridge: supplied Omega_m(z) is stale; resupply or clear "
+    "it after changing cosmology or power"); exit(1); }
+  if (0 == supplied.baseline.input.nz && 0 == supplied.nomega
+      && 0.0 < cosmology.Omega_nu) { log_fatal(
+    "threepcf bridge: massive neutrinos require provider Omega_m(z); "
+    "call set_matter_fraction after installing the cosmology"); exit(1); }
   int counts[BRIDGE_NCOUNT];
   uint64_t keys[BRIDGE_NKEY];
   guard_current(counts, keys);
@@ -1355,6 +1405,12 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   }
 
   scratch.input.omega_m = cosmology.Omega_m;
+  if (0 < supplied.nomega && 0 == supplied.baseline.input.nz) {
+    if (nz != supplied.nomega) { log_fatal(
+      "threepcf bridge: Omega_m(z) count differs from background z");
+      exit(1); }
+    scratch.input.omega_m_z = supplied.omega_m_z;
+  }
   if (0 < supplied.baseline.input.nz) {
     if (!(nz == supplied.baseline.nz)) { log_fatal(
       "threepcf bridge: Omega_m(z) count differs from the core "
