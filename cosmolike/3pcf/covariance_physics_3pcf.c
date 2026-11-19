@@ -393,18 +393,18 @@ void covariance_halos_3pcf(
 
   // Each (redshift, mass) pair owns its variance, abundance and profile
   // row, so the collapsed loop parallelizes with no shared writes.
-  /* PHYSICAL DERIVATION & LOGIC FLOW
-     1. Smoothing radius from the mass: R = (3M/(4 pi rho_m))^(1/3).
-     2. Top-hat variance and its logarithmic slope by quadrature:
-        sigma^2 = int k^2 dk P W^2(kR)/(2 pi^2) and
-        d sigma^2/d ln M = (2/3) int k^2 dk P W (dW/dln R)/(2 pi^2).
-     3. Squared peak height nu^2 = delta_c^2/sigma^2, with delta_c
-        optionally rescaled by the Omega_m(z) collapse correction.
-     4. Sheth-Tormen multiplicity f(nu) and the mass function
-        dn/dM = -(rho_m/M^2) f(nu) (d ln sigma^2/d ln M)/2.
-     5. Peak-background-split bias b_1(nu) of the same multiplicity.
-     6. Duffy concentration c(M,z) and, if requested, the truncated-NFW
-        transform u(k) at the profile wavenumbers. */
+  // PHYSICAL DERIVATION & LOGIC FLOW
+  // 1. Smoothing radius from the mass: R = (3M/(4 pi rho_m))^(1/3).
+  // 2. Top-hat variance and its logarithmic slope by quadrature:
+  //    sigma^2 = int k^2 dk P W^2(kR)/(2 pi^2) and
+  //    d sigma^2/d ln M = (2/3) int k^2 dk P W (dW/dln R)/(2 pi^2).
+  // 3. Squared peak height nu^2 = delta_c^2/sigma^2, with delta_c
+  //    optionally rescaled by the Omega_m(z) collapse correction.
+  // 4. Sheth-Tormen multiplicity f(nu) and the mass function
+  //    dn/dM = -(rho_m/M^2) f(nu) (d ln sigma^2/d ln M)/2.
+  // 5. Peak-background-split bias b_1(nu) of the same multiplicity.
+  // 6. Duffy concentration c(M,z) and, if requested, the truncated-NFW
+  //    transform u(k) at the profile wavenumbers.
   #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int iz=0; iz<nz; iz++) {
     for (int im=0; im<nm; im++) {
