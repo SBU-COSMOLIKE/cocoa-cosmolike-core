@@ -239,9 +239,14 @@ static double* dense_table(
 }
 
 
-// Validate the uniform coordinates and prepare arithmetic index constants.
-// Both physical baseline tables and response ratios use this grid machinery;
-// their statistical meanings and their owners remain separate.
+// prepare_axes validates the uniform coordinates and derives the
+// per-axis constants (dense count, first and last coordinate, inverse
+// spacing) that turn each later query into pure arithmetic. The paired
+// response ratios and the supplied absolute-B baseline below both run
+// their axes through this function because they share the same
+// uniform-grid machinery; each keeps its own owner object, and each
+// keeps its own meaning (a dimensionless ratio versus a bispectrum in
+// (Mpc/h)^6).
 static void prepare_axes(
   const int* counts, // source counts [4]
   const double* const* axes, // source coordinate vectors [4]
@@ -397,9 +402,11 @@ void feedback_destroy_3pcf(
 }
 
 
-// Read one logarithmic value from a prepared uniform table. The corner
-// order is shared by baseline B and paired responses and retains the
-// existing feedback arithmetic exactly.
+// read_log_table reads one logarithmic value from a prepared uniform
+// table by multilinear interpolation. The paired responses and the
+// supplied baseline B both call it, so both walk the cell corners in
+// the same order and reproduce the existing feedback arithmetic
+// exactly.
 static double read_log_table(
   const int* count, // prepared counts [dimensions]
   const double* lower, // first coordinates [dimensions]
@@ -603,9 +610,12 @@ double feedback_bispectrum_3pcf(
 }
 
 
-// A supplied baseline is B itself, in (Mpc/h)^6, rather than B_hydro/B_DMO.
-// It has no amplitude or power-response partner. The owner copies the input
-// and shares only interpolation machinery with feedback objects above.
+// A supplied baseline stores the matter bispectrum B itself, in
+// (Mpc/h)^6, where a feedback object stores the ratio B_hydro/B_DMO.
+// Because B is an absolute quantity, no amplitude scales it and no
+// power-response table accompanies it. Its owner copies the caller's
+// input, and what it shares with the feedback objects above is the
+// interpolation machinery alone.
 struct baseline_3pcf {
   int count[4]; // prepared z, log(k), log(u), v counts
   double lower[4]; // first coordinate on each axis

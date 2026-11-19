@@ -54,16 +54,17 @@ computing the cell index. Increasing `table_boost` preserves the original
 segment endpoints and their relative resolution. Natural end conditions
 set the second derivative to zero at both ends of each segment. Values
 remain continuous at a join, but first derivatives need not match across
-it. Refine the coarse input near joins as well as the dense reader when
-checking parameter derivatives.
+it. A check of parameter derivatives should therefore refine the coarse
+input near the joins as well as the dense reader.
 
 Lensing and alignment kernels are interpolated in redshift in production;
 their integration weights still describe a distance integral. Changing the
 lookup coordinate does not remove the Jacobian from a physical density or
-the distance factors in the projection. Explicit `source_readers=True`
-comparisons retain the original not-a-knot interpolation and kernel lookup
-in distance. That comparison path still contains the local irregular
-spline and binary search; it is not the production preparation path.
+the distance factors in the projection. A comparison run with explicit
+`source_readers=True` retains the original not-a-knot interpolation and
+the kernel lookup in distance. That path still contains the local
+irregular spline and the binary search, so it serves as a reference for
+comparisons and is not the production preparation path.
 
 ## Uniform coordinates and interpolation <a name="interpolation"></a>
 

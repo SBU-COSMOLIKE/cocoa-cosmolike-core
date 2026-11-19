@@ -108,11 +108,13 @@ B_m(k_1,k_2,k_3;z).
 The Dirac delta enforces translation invariance: the three wavevectors
 must close into a triangle. Their lengths $`k_1,k_2,k_3`$ therefore obey
 the triangle inequalities. A larger $`k`$ means a smaller spatial scale.
-The default BiHalofit calculation supplies a calibrated nonlinear fit to
-this bispectrum. An [optional supplied table](#supplied-bispectrum) gives
-the full matter bispectrum directly. A separate tree-level result supplies
-the lowest-order gravitational perturbation-theory reference. Increasing a
-numerical resolution does not make either physical approximation exact.
+By default, BiHalofit supplies a calibrated nonlinear fit to this
+bispectrum. A theory provider can instead pass the full matter bispectrum
+directly, through an [optional supplied table](#supplied-bispectrum). A
+separate tree-level result supplies the lowest-order gravitational
+perturbation-theory reference. Both the fit and the tree-level result are
+physical approximations, and increasing a numerical resolution does not
+make either of them exact.
 
 The model accepts $`k`$ in $`h/\mathrm{Mpc}`$, distances in
 $`\mathrm{Mpc}/h`$, power in $`(\mathrm{Mpc}/h)^3`$ and bispectra in
@@ -132,14 +134,18 @@ number density needed for shape noise is a separate survey input.
 ### Projecting along the line of sight
 
 The model uses spatially flat lensing geometry. The internal-fit route
-requires $`|\Omega_m+\Omega_{\rm de}-1|\leq10^{-8}`$, where $`\Omega_m`$ and
-$`\Omega_{\rm de}`$ are the present matter and dark-energy density
-fractions; the bound is a scalar-rounding tolerance, and the code does
-not change either value. A curved distance table would not replace the
-flat distance ratios in the lensing kernel. The project CAMB producer
-explicitly requests flat geometry. The supplied-bispectrum route takes its
-background from arrays and requires the caller to establish the same flat
-geometry; it does not reconstruct dark-energy scalars or density closure.
+checks this by requiring $`|\Omega_m+\Omega_{\rm de}-1|\leq10^{-8}`$,
+where $`\Omega_m`$ and $`\Omega_{\rm de}`$ are the present matter and
+dark-energy density fractions. The bound only absorbs scalar rounding,
+and the code never changes either value. Passing a distance table from a
+curved cosmology would not restore consistency, because the lensing
+kernel still forms its distance ratios with the flat-geometry rule. The
+project CAMB producer explicitly requests flat geometry. The
+supplied-bispectrum route reads its background from the caller's arrays
+and does not reconstruct scalars such as $`\Omega_{\rm de}`$ from them,
+so it cannot check that the density fractions sum to one. The caller
+must therefore establish the same flat geometry before building those
+arrays.
 
 Convergence $`\kappa`$ is the scalar lensing field obtained by weighting
 matter fluctuations along the line of sight. Its angular variations also
@@ -830,9 +836,9 @@ finite-sample tests are separate from the C covariance integral.
 
 | File | Responsibility |
 |---|---|
-| [physics_3pcf.c](physics_3pcf.c), [header](physics_3pcf.h) | Owned physical tables, internal or supplied matter B, TATT/velocity shear, projection and full-filter aperture mean |
+| [physics_3pcf.c](physics_3pcf.c), [header](physics_3pcf.h) | Owned physical tables, the matter bispectrum (internal fit or supplied table), TATT/velocity shear, projection and full-filter aperture mean |
 | [physics_grid_3pcf.c](physics_grid_3pcf.c), [header](physics_grid_3pcf.h) | Shared source-triplet preparation, uniform triangle/multipole tables and SIMD linear reads |
-| [feedback_3pcf.c](feedback_3pcf.c), [response header](feedback_3pcf.h), [baseline header](baseline_3pcf.h) | Separate response and absolute-B owners sharing uniform table preparation and reads (Sections 12–13) |
+| [feedback_3pcf.c](feedback_3pcf.c), [response header](feedback_3pcf.h), [baseline header](baseline_3pcf.h) | Baryonic response ratios (Section 12) and the supplied absolute bispectrum (Section 13); each table keeps its own owner, and both reuse the same uniform preparation and reads |
 | [coupling_3pcf.c](coupling_3pcf.c), [fftlog_3pcf.c](fftlog_3pcf.c), [transform_3pcf.c](transform_3pcf.c) | Angular coupling, two-Bessel transforms and natural-component reconstruction |
 | [aperture_3pcf.c](aperture_3pcf.c), [header](aperture_3pcf.h) | Finite aperture geometry and contractions |
 | [covariance_3pcf.c](covariance_3pcf.c), [header](covariance_3pcf.h) | Filtered pairs, Gaussian map contractions and response matrices |
@@ -1193,77 +1199,105 @@ from this mean calculation.
 
 ## A supplied matter bispectrum <a name="supplied-bispectrum"></a>
 
-A theory provider can supply the absolute matter bispectrum $`B_m`$ while
-C retains the projection and aperture calculations. This table describes
-the same matter field and cosmology as the supplied power and background
-arrays. It differs from the dimensionless feedback ratio
-$`R_B=B_{\rm hydro}/B_{\rm DMO}`$: a baseline value of
-$`10^6(\mathrm{Mpc}/h)^6`$ and a response of $`0.8`$ describe different
-quantities. Applying that response to that baseline gives
-$`8\times10^5(\mathrm{Mpc}/h)^6`$. Supplying B alone does not change P
-or calibrate a response ratio.
+A theory provider can supply the absolute matter bispectrum $`B_m`$
+itself, while the C code keeps the projection and aperture calculations.
+The supplied table must describe the same matter field and the same
+cosmology as the power and background arrays passed alongside it. It
+plays a different role from the baryonic feedback ratio of Section 12.
+The feedback table stores the dimensionless ratio
+$`R_B=B_{\rm hydro}/B_{\rm DMO}`$, while the supplied table stores B
+with its units. A short numerical example separates the two: a baseline
+value of $`10^6(\mathrm{Mpc}/h)^6`$ is a bispectrum, a response of
+$`0.8`$ is a pure number, and applying that response to that baseline
+multiplies them, giving $`8\times10^5(\mathrm{Mpc}/h)^6`$. Supplying B
+therefore leaves the matter power P unchanged and does not calibrate any
+response ratio from it.
 
-Both `production.PhysicsModelWithBispectrum` and
-`notebook.PhysicsModelWithBispectrum` take the ordinary physical arrays,
-`omega_m`, `sigma8`, a `baseline` dictionary, and `omega_m_z` on the
-background `z` axis. They do not take `omega_de`, `w0`, `wa`, or `ns`.
-The provider supplies the background matter fraction because the halo
-covariance uses it; C does not infer it from the B table. `omega_m` still
-sets lensing and intrinsic-alignment amplitudes, and `sigma8` retains the
-existing linear-power normalization. The ordinary `PhysicsModel`
-constructors retain the internal fit and their existing arguments.
+Two constructors accept the table, `production.PhysicsModelWithBispectrum`
+and `notebook.PhysicsModelWithBispectrum`. Each takes the ordinary
+physical arrays together with `omega_m`, `sigma8`, a `baseline`
+dictionary, and `omega_m_z`, the background matter fraction evaluated on
+the background `z` axis. Neither takes `omega_de`, `w0`, `wa`, or `ns`.
+The provider passes `omega_m_z` because the halo covariance needs the
+background matter fraction and the C code cannot infer it from a B
+table. `omega_m` keeps its usual role of setting the lensing and
+intrinsic-alignment amplitudes, and `sigma8` keeps the existing
+linear-power normalization. The ordinary `PhysicsModel` constructors are
+unchanged: they keep the internal fit and their existing arguments.
 
-The baseline dictionary contains `z`, `logk`, `logu`, `v`,
-`log_bispectrum`, `boost`, and `clamp`. With triangle sides sorted as
-$`a\leq b\leq c`$, the coordinates are $`k=b`$, $`u=a/b`$ and
-$`v=(c-b)/a`$. Each axis is uniform with at least four nodes; `logk` and
-`logu` are natural logarithms. `log_bispectrum` is the logarithm of the
-positive numerical B value in $`(\mathrm{Mpc}/h)^6`$, flattened from
-`[nz,nk,nu,nv]` with `v` varying fastest. Zero or negative B cannot be
-represented by taking an absolute value or clipping it. The provider must
-choose a representation that describes its physical model.
+The `baseline` dictionary contains `z`, `logk`, `logu`, `v`,
+`log_bispectrum`, `boost`, and `clamp`. The coordinates follow the
+sorted-triangle convention: with the triangle sides sorted as
+$`a\leq b\leq c`$, the table is indexed by $`k=b`$, $`u=a/b`$ and
+$`v=(c-b)/a`$. Each axis must be uniform and carry at least four nodes,
+and `logk` and `logu` are natural logarithms. `log_bispectrum` holds the
+logarithm of the positive numerical value of B in
+$`(\mathrm{Mpc}/h)^6`$, flattened from the shape `[nz,nk,nu,nv]` with
+`v` varying fastest. Because the table stores a logarithm, it can only
+represent a strictly positive B. A model whose bispectrum reaches zero
+or turns negative cannot be forced into the table by taking an absolute
+value or clipping; the provider must choose a representation that
+describes its physical model.
 
-Preparation copies the input, uses the same natural-cubic upsampling as
-the response tables, and leaves uniform arithmetic-index linear reads
-inside the repeated integrals. `boost` refines this dense table; it does
-not recover features missed by the input sampling. `clamp=0` rejects a
-query outside the table. `clamp=1` explicitly holds each boundary value,
-which is a continuation assumption requiring a separate accuracy check.
+Preparation works as it does for the response tables of Section 12. The
+code copies the input, upsamples it once with the same natural cubic
+splines, and leaves only uniform arithmetic-index linear reads inside
+the repeated integrals. The `boost` entry sets how much denser that
+prepared table is than the input; it refines the reading of the cubic
+curve and cannot recover a feature the input sampling missed. The
+`clamp` entry chooses the boundary behavior: `clamp=0` makes the code
+reject any query outside the table, while `clamp=1` holds each boundary
+value. Holding the boundary is a continuation assumption about B outside
+the declared domain, so it needs its own accuracy check.
 
-The full-B query supplies the projected NLA baseline and the covariance
-terms containing B. Tree-level diagnostic component 1 remains calculated
-from linear P. Components 2 and 3 request the internal fit's separate
-one-/three-halo pieces, which a general supplied full B does not determine,
-so those requests are refused. The perturbative IA residuals and the
-covariance's independent halo integrals retain their existing prescriptions.
-The caller must also avoid applying a feedback modifier already included
-in the supplied table.
+The supplied B feeds the projected NLA baseline and the covariance terms
+that contain B. The tree-level diagnostic components keep their own
+rules. Component 1 is still calculated from the linear power spectrum.
+Components 2 and 3 ask for the internal fit's separate one-halo and
+three-halo pieces, which a general supplied full B does not determine,
+so the code refuses those two requests. The perturbative
+IA residuals and the covariance's independent halo integrals keep their
+existing prescriptions. One responsibility stays with the caller: a
+supplied table that already contains a baryonic feedback effect must not
+receive a feedback modifier on top of it.
 
-`core.set_baseline_bispectrum(baseline, omega_m_z, sigma8)` installs owned
-copies for the core bridge. Every axis, table value, background fraction,
-size and preparation control participates in its change checks. The supplied
-baseline compares array bytes, including signed zeros; older bridge setters
-compare exact numerical values without a tolerance. Repeating identical
-input reuses the model; changed input constructs another model,
-and an older Python owner keeps its own arrays. Passing `None` clears only
-the supplied baseline; resetting the core clears the stored override.
-IA amplitudes, their query selectors and the feedback amplitude reuse the
-same model: they do not define its power, background or four-dimensional
-tables. After changing them, read `core.ia_parameters_from_core()` again
-and pass that dictionary into the next projection. A previously prepared
-projection grid retains its old parameters and values. Model generation
-counts only preparation of a new model, not changes to query parameters.
+On the core-bridge side, `core.set_baseline_bispectrum(baseline,
+omega_m_z, sigma8)` installs owned copies of these inputs. The bridge
+decides whether it can reuse a prepared model by checking every axis,
+every table value, the background fraction, the sizes and the
+preparation controls. For the supplied baseline that comparison is
+byte-for-byte on the arrays, so even a signed zero counts as a change;
+the older bridge setters compare exact numerical values without a
+tolerance. A repeated call with identical input reuses the model, a call
+with changed input constructs another model, and an older Python owner
+keeps its own arrays either way. Passing `None` clears only the supplied
+baseline, while resetting the core also clears the stored override.
 
-Calls to `core.set_*`, `core.model_from_core()`, native bridge refresh and
-core reset must run sequentially within one process. They share mutable
-bridge input and a cached model owner; model preparation releases Python's
-GIL, so another Python thread could otherwise change those inputs while
-they are being read. Retaining an older immutable owner and using internal
-OpenMP workers do not make concurrent entry to these bridge operations safe.
+IA amplitudes, their query selectors and the feedback amplitude do not
+define the model's power, background or four-dimensional tables, so
+changing them reuses the same prepared model. After changing them, the
+caller reads `core.ia_parameters_from_core()` again and passes that
+dictionary into the next projection; a projection grid prepared earlier
+keeps the parameters and values it was built with. The model generation
+counter advances only when a new model is prepared, never when a query
+parameter changes.
+
+The bridge operations are not safe to enter concurrently. Calls to
+`core.set_*`, `core.model_from_core()`, the native bridge refresh and
+the core reset share mutable bridge input and a cached model owner, and
+model preparation releases Python's global interpreter lock (GIL), the
+lock that normally serializes Python threads. Another Python thread
+could therefore change those shared inputs while they are being read, so
+these calls must run sequentially within one process. Retaining an older
+immutable owner does not make concurrent entry safe, and neither does
+the fact that the internal OpenMP workers run in parallel.
+
 The [Python producer guide](https://github.com/SBU-COSMOLIKE/cocoa_des_3pcf/blob/main/BIHALOFIT_PYTHON.md)
 (`Cocoa/projects/des_3pcf/BIHALOFIT_PYTHON.md`) explains the optional
-BiHalofit producer and separates equation agreement, interpolation
-refinement, and covariance-weighted changes of the final observable.
+BiHalofit producer. It separates three different questions: whether the
+producer agrees with the equations, how interpolation refinement
+behaves, and how much the final observable changes once the covariance
+weights the difference.
 
 ## Acknowledgements <a name="credits"></a>
 

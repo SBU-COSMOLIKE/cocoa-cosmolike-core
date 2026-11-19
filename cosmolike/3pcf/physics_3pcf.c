@@ -455,11 +455,15 @@ static void destroy_spline(physics_spline* spline)
 
 
 // ---------------------------------------------------------------------------
-// make_natural_spline: shared natural cubics on the declared uniform
-// segments. A common endpoint belongs to both segments and has zero
-// second derivative on either side. Values remain continuous there;
-// matching derivatives between independently sampled segments is not
-// assumed. Refinement tests must include these joining points.
+// make_natural_spline: natural cubic splines on the declared uniform
+// segments, one independent spline per segment. An endpoint that two
+// segments share belongs to both of them, and the natural end condition
+// puts a zero second derivative on either side of it. The interpolated
+// values stay continuous there, because both segments pass through the
+// same sample, but the segments are solved independently, so nothing
+// makes their first derivatives match across the join. A refinement
+// test therefore has to include these joining points, not only the
+// segment interiors.
 //
 // The production coefficient tables live on uniform anchors, and
 // fastnc fits them with a natural cubic spline. The shared solver in

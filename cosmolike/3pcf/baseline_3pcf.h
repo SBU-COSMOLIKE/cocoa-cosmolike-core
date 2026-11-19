@@ -5,15 +5,20 @@
 extern "C" {
 #endif
 
-// Supplied positive matter bispectrum B, in (Mpc/h)^6. The logarithm is
-// of its numerical value in these units. This is an absolute baseline,
-// not a feedback ratio: the caller must supply the same matter definition
-// and cosmology as the power and background tables of the physical model.
-// Sort triangle sides a<=b<=c and use k=b, u=a/b, v=(c-b)/a. Every axis
-// is uniform with at least four nodes. Preparation copies all arrays,
-// cubic-upsamples once and uses linear arithmetic-index reads afterwards.
-// No fitting formula, inferred background, or inferred extrapolation is
-// part of this table. clamp=1 explicitly chooses constant boundary values.
+// A supplied matter bispectrum B. The caller tabulates ln B, where B is
+// the positive numerical value in (Mpc/h)^6, and the table must describe
+// the same matter definition and cosmology as the power and background
+// tables of the physical model. This is an absolute baseline rather than
+// a feedback ratio: it stores B itself, not B relative to another model.
+// The coordinates follow the sorted-triangle convention: with the sides
+// sorted as a <= b <= c, the table is indexed by k = b, u = a/b and
+// v = (c - b)/a. Every axis is uniform and carries at least four nodes.
+// Preparation copies all arrays, upsamples them once with natural cubics
+// and afterwards reads them by linear arithmetic-index lookups, so every
+// query returns interpolated input and nothing else: no fitting formula
+// enters the table, and the code infers neither a background nor an
+// extrapolation from it. The one explicit boundary choice is clamp = 1,
+// which holds each boundary value constant outside the declared domain.
 typedef struct {
   int nz; // redshift count
   int nk; // log(k/[h/Mpc]) count
