@@ -411,8 +411,9 @@ def get_stencil_noise(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0,
     changes irregularly from one parameter value to the next. A finite
     difference divides that error by the step, and the Fisher matrix
     F = D^T C^-1 D built from noisy columns exceeds the true one on its
-    diagonal, on average: noise looks like information. This function
-    measures the error of one evaluation along the parameter
+    diagonal, on average, if these errors have zero mean: noise looks
+    like information. This function estimates the irregular error along
+    the parameter
     p = CV[index] from the five equally spaced points
 
         p0 + k eps,   k = -2, -1, 0, 1, 2,
@@ -427,10 +428,12 @@ def get_stencil_noise(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0,
     accuracy") takes three steps:
       - the fourth difference
             Delta4 m = m(-2) - 4 m(-1) + 6 m(0) - 4 m(1) + m(2)
-        removes the smooth part of the model: expanding each point in a
+        removes the terms through cubic order: expanding each point in a
         Taylor series, every derivative below the fourth cancels, so a
-        smooth vector leaves only eps^4 m''''(p0) + O(eps^6), which the
-        few-percent steps used here suppress to a negligible size.
+        smooth vector leaves eps^4 m''''(p0) + O(eps^6). Its size depends
+        on the model's fourth derivative; a few-percent step alone does
+        not make it negligible. A step-size comparison is needed before
+        interpreting the fourth difference as numerical jitter.
         Noise that is independent from point to point, with a common
         size, passes with 1 + 16 + 36 + 16 + 1 = 70 times the variance
         of one point;
@@ -445,17 +448,19 @@ def get_stencil_noise(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0,
         independent errors add through the squared weights
         1 + 64 + 64 + 1 = 130, so
             a = <e^T C^-1 e> = (130/144) (sigma/eps)^2.
-        Off the diagonal nothing is added on average, so the noise acts
-        exactly like a Gaussian prior of width a^-1/2 on p -- a prior
-        the data do not carry. predict_fom_noise turns a into a change
-        of a figure of merit.
+        If errors in different derivative columns are also uncorrelated,
+        the average addition is diagonal. In that approximation each
+        addition has the same Fisher information as a Gaussian prior of
+        width a^-1/2 on p, although the data carry no such prior.
+        predict_fom_noise propagates these additions to a figure of merit.
 
     What the estimate does not see: an error that varies smoothly
     across the five points, or that is odd about p0, cancels in
-    Delta4 m but can still bias the derivative; errors correlated
-    between neighbouring points partly cancel and are under-counted.
-    A small sigma therefore excludes the point-to-point jitter only,
-    not every numerical error.
+    Delta4 m but can still bias the derivative. Correlations between
+    neighbouring errors change the factors 70 and 130 above; correlations
+    between columns can give off-diagonal Fisher additions. Small sigma
+    means little estimated jitter under these assumptions, not a bound
+    on every numerical error.
 
     Arguments:
       dv    = the data-vector function, called as
@@ -647,11 +652,13 @@ def get_fom_noise_weights(F, i, j, eps=None):
 
         W_k = R_k^2 sigma_k^2 / eps_k^2 = R_k^2 (sigma_k/eps_k)^2.
 
-    The lever needs F and the steps only, so it ranks the columns
-    before any noise is measured: at each candidate accuracy setting,
-    only the columns with the largest levers need get_stencil_noise;
-    the rest cannot move the figure of merit even if their noise is
-    sizable.
+    The lever needs F and the steps only, so it ranks sensitivity before
+    any noise is measured. Start with the largest levers, but the actual
+    contribution also contains sigma_hat_k^2. A column with one hundredth
+    of another's lever and twenty times its jitter contributes four times
+    as much. Keeping 99 percent of the summed levers therefore does not
+    bound the omitted noise. Check omitted columns or establish a bound
+    on their jitter before treating a partial sum as a convergence test.
 
     F is symmetrized as get_FoM symmetrizes it, 0.5 (F + F^T), and
     must be positive definite, so that the forecast covariance F^-1
@@ -778,22 +785,26 @@ def predict_fom_noise(F, i, j, a):
     noise (the cross terms 2 d_k^T C^-1 e_k, the off-diagonal gains
     e_k^T C^-1 e_l) move one computed forecast by a random amount that
     is not predicted here. The estimate is a convergence diagnostic,
-    not a correction: a setting has settled when
-    sum_k R_k^2 a_k sigma_k^2 (= 2 dlnFoM) is below about 1e-2, which
-    keeps the figure of merit within about half a percent. And it sees
-    only the point-to-point jitter that get_stencil_noise measures:
-    numerical errors that vary smoothly with the parameters sit
-    outside it.
+    not a correction. Within the diagonal-addition approximation,
+    sum_k R_k^2 a_k sigma_k^2 (= 2 dlnFoM) below 1e-2 predicts a
+    logarithmic FoM shift below 0.005. This is not a half-percent bound
+    on one computed forecast. Unmeasured columns, correlated errors and
+    errors that vary smoothly with the parameters remain outside that
+    statement. FoM evaluated at the average Fisher matrix also need not
+    equal the average FoM of noisy matrices.
 
     Arguments:
-      F    = Fisher matrix, a 2D (n, n) array, priors included, at a
-             normal accuracy: R_k and sigma_k barely depend on the
-             accuracy setting, so one F serves every setting.
+      F    = Fisher matrix, a 2D (n, n) array, priors included. One matrix
+             at normal accuracy can supply weights for several settings;
+             this assumes its marginalized covariance is already a useful
+             local reference. Strongly changing degeneracies require a
+             further matrix comparison, not reuse of inaccurate weights.
       i, j = the indices of the pair (as in get_FoM).
       a    = 1D array (n,) of the diagonal additions, in one over the
              unit of p_k squared (the "a" of get_stencil_noise for each
              measured column), with zeros for the columns whose noise
-             was not measured; finite and >= 0.
+             was not measured; finite and >= 0. These zeros omit unknown
+             contributions rather than establishing that they vanish.
 
     Returns:
       dict with
