@@ -8,10 +8,10 @@
 #include <omp.h>
 #endif
 #include <gsl/gsl_sf_bessel.h>
-#include <gsl/gsl_sf_expint.h>
 #include "simde/x86/sse2.h"
 #include "covariance_physics_3pcf.h"
 #include "cosmolike/basics.h"
+#include "cosmolike/halo_profile.h"
 #include "log.c/src/log.h"
 
 // ---------------------------------------------------------------------------
@@ -64,11 +64,14 @@
 // aperture. A galaxy mask inside a filter, or a finite triangle
 // selection, defines a different estimator with its own covariance.
 //
-// No process-global state or lazy initialization occurs. The call owns
-// its temporary physical tables, prepares them before any parallel
-// reader starts, and releases them before returning. Each parallel task
-// owns complete rows or upper-triangle cells. Quadrature sums keep
-// their input order, so results do not depend on the thread count.
+// The one piece of lazily built process state is the shared NFW
+// transform table (its banner below): universal numbers that depend
+// only on their node count, built on one thread before any parallel
+// reader starts. Everything else is call-owned: the call prepares its
+// temporary physical tables before any parallel reader starts and
+// releases them before returning. Each parallel task owns complete
+// rows or upper-triangle cells. Quadrature sums keep their input
+// order, so results do not depend on the thread count.
 // ---------------------------------------------------------------------------
 
 // The planar Fourier measure d^2ell/(2*pi)^2 splits into
@@ -76,9 +79,9 @@
 // (0.5*M_1_PI) = 1/(2*pi). Halving M_1_PI, the nearest double to 1/pi,
 // is exact and gives the nearest double to 1/(2*pi).
 
-// A v2d packs two doubles into one 128-bit register (SSE2 through SIMDe,
-// so the same source also builds on NEON).
-typedef simde__m128d v2d;
+// A v2d packs two doubles into one 128-bit register (SSE2 through
+// SIMDe, so the same source also builds on NEON); the typedef comes
+// from halo_profile.h, included above for the shared NFW table.
 
 
 
@@ -250,6 +253,41 @@ static inline void covariance_tophat_3pcf(
 }
 
 
+// The shared NFW transform table of this module: one nfw_profile
+// descriptor (halo_profile.h owns the machinery) that
+// covariance_nfw_3pcf below reads. The three-point covariance holds
+// its own instance, separate from the ordinary halo code's, so a
+// resolution choice here can never resize the table that halo.c and
+// its intrinsic-alignment readers hold.
+//
+// 524288 ln t nodes, four times the ordinary halo default: the
+// module's radial-integral test compares u(k) against an independent
+// 256-node Gauss-Legendre integral of the real density at relative
+// tolerance 3e-10, which the 131072-node default misses (largest
+// relative error 3.5e-9) while this resolution passes (2e-10). The
+// table depends on nothing but the node count - no cosmology, mass or
+// redshift - so the descriptor's key slot stays 0 and the one rebuild
+// condition is the node count itself.
+//
+// Thread safety: covariance_nfw_table_3pcf must finish on one thread
+// before any parallel region reads the table (halo_profile.h). The
+// serial entries of covariance_halos_3pcf and
+// covariance_halo_terms_3pcf call it before their loops; once built,
+// later calls only compare the node count.
+static const int COVARIANCE_NFW_NODES_3PCF = 524288;
+
+static nfw_profile covariance_nfw_profile_3pcf = {0};
+
+static void covariance_nfw_table_3pcf(void)
+{
+  if (NULL == covariance_nfw_profile_3pcf.tab
+      || COVARIANCE_NFW_NODES_3PCF != covariance_nfw_profile_3pcf.n_nodes) {
+    nfw_profile_prepare(&covariance_nfw_profile_3pcf,
+      COVARIANCE_NFW_NODES_3PCF, 0);
+  }
+}
+
+
 // Fourier transform u(k) of an NFW halo density profile truncated at
 // the comoving radius r200. The NFW profile falls as
 // 1/[(r/r_s)(1 + r/r_s)^2], where the scale radius r_s = r200/c marks
@@ -260,15 +298,24 @@ static inline void covariance_tophat_3pcf(
 //   u(k) = int_0^c dy y/(1+y)^2 sinc(k r_s y) / [ln(1+c) - c/(1+c)],
 //
 // and that integral has a closed form in the sine and cosine integrals
-// Si(t) = int_0^t sin(s)/s ds and Ci(t) = -int_t^inf cos(s)/s ds, which
-// the general branch below evaluates with x = k*r_s.
+// Si(t) = int_0^t sin(s)/s ds and Ci(t) = -int_t^inf cos(s)/s ds. The
+// general branch reads their smooth Abramowitz & Stegun combinations
+// f, g from the shared table (nfw_um, halo_profile.h; the table banner
+// there derives the split) with x = k*r_s; nfw_um returns u times the
+// enclosed-mass factor m(c) = ln(1+c) - c/(1+c), divided out below.
 //
-// Accuracy of the small-argument branch: for k*r200 below 1e-4 the Ci
-// difference subtracts two nearly equal values close to the common
+// Accuracy of the small-argument branch: for k*r200 below 1e-4 the
+// closed form subtracts two nearly equal values close to the common
 // logarithmic divergence of Ci at zero. The branch instead expands
 // u(k) = 1 - k^2 <r^2>/6, with <r^2> the profile's mass-weighted second
 // radial moment; the first omitted term is of order (k*r200)^4, far
-// below double rounding at the threshold.
+// below double rounding at the threshold. The branch also owns k = 0
+// analytically - u = 1 exactly, the full enclosed mass - so the
+// logarithmic table axis is never asked for ln 0: every table read
+// sits at x > 0.
+//
+// covariance_nfw_table_3pcf must have run (the build is not
+// thread-safe; this read is).
 //
 // Parameters:
 //   k             - comoving wavenumber, h/Mpc
@@ -282,7 +329,8 @@ static inline double covariance_nfw_3pcf(
 {
   const double c = concentration;
   const double t = 1.0 + c;
-  const double normalization = log1p(c) - c/t;
+  const double ln1c = log1p(c);
+  const double normalization = ln1c - c/t;
   const double x = k*r200/c;
 
   if (k*r200 < 1.0e-4) {
@@ -290,9 +338,8 @@ static inline double covariance_nfw_3pcf(
     return 1.0 - x*x*moment/(6.0*normalization);
   }
 
-  const double y = x*t;
-  return (sin(x)*(gsl_sf_Si(y) - gsl_sf_Si(x))
-    + cos(x)*(gsl_sf_Ci(y) - gsl_sf_Ci(x)) - sin(x*c)/y)/normalization;
+  return nfw_um(&covariance_nfw_profile_3pcf, c, x, log(x), ln1c)
+    /normalization;
 }
 
 
@@ -371,6 +418,9 @@ void covariance_halos_3pcf(
   const size_t halo_count = covariance_product_3pcf(nz, nm);
   if (nk_profile > 0) {
     covariance_product_3pcf(halo_count, nk_profile);
+    // serial first build of the shared NFW table (its banner): the
+    // profile fills of the parallel loop below only read it
+    covariance_nfw_table_3pcf();
   }
   const size_t power_count = covariance_product_3pcf(nz, input->nk);
   double* power = calloc1d((int)power_count);
@@ -1896,6 +1946,10 @@ static void covariance_halo_terms_3pcf(
 
   covariance_halos_3pcf(work->model, in, work->nz, work->z, 0, NULL,
     work->sigma2, work->abundance, work->bias, work->concentration, NULL);
+
+  // serial first build of the shared NFW table (its banner): the halo
+  // traversal below reads it at every (redshift, mass) node
+  covariance_nfw_table_3pcf();
 
   // Deduplicate the aperture radii. Equality means equality of the
   // numerical radii the input carries; no tolerance ever merges two

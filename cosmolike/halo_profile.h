@@ -1,9 +1,13 @@
 #ifndef __COSMOLIKE_HALO_PROFILE_H
 #define __COSMOLIKE_HALO_PROFILE_H
 
+#include <gsl/gsl_sf.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "basics.h"
+
+#include "log.c/src/log.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,13 +28,22 @@ extern "C" {
 //   nfw_fg_read           f(t), g(t) by cubic Hermite (the IA kernel)
 //
 // Ownership: the descriptor belongs to the caller (halo.c holds the
-// instance of the ordinary halo and IA code). Preparation and the
-// slope build take a mutable descriptor; every reader takes a const
-// one. The caller decides when to rebuild: compare its own cache key
-// AND the node count itself against the built descriptor, then call
-// nfw_profile_prepare (halo.c's nfw_table shows the idiom). The table
-// depends only on the node count, never on cosmology or nuisance
-// parameters.
+// instance of the ordinary halo and IA code; the three-point
+// covariance holds its own). A new descriptor must start
+// zero-initialized - nfw_profile prof = {0} - so the first
+// preparation sees NULL rows: the builders free whatever row pointers
+// they find. Preparation and the slope build take a mutable
+// descriptor; every reader takes a const one. The caller decides when
+// to rebuild: compare its own cache key AND the node count itself
+// against the built descriptor, then call nfw_profile_prepare
+// (halo.c's nfw_table shows the idiom). The table depends only on the
+// node count, never on cosmology or nuisance parameters.
+//
+// The builders are defined inline in this header, so every target
+// that compiles a consumer links without a dedicated halo_profile
+// object (the standalone three-point covariance target among them);
+// halo_profile.c remains the one-line home that project build files
+// name.
 //
 // Thread safety: the builders are not thread-safe and must finish on
 // one thread before any parallel region reads the descriptor (prepare,
@@ -94,12 +107,63 @@ typedef struct {
 // its cache tag: frees any previous rows (the Hermite slope rows too,
 // which derive from the table), fills the new table (a parallel loop:
 // call outside any parallel region) and publishes it in prof. The
-// caller owns the rebuild condition (the file banner).
-void nfw_profile_prepare(
+// caller owns the rebuild condition (the file banner), hands in a
+// zero-initialized descriptor on the first call, and asks for at
+// least two nodes: the axis spacing divides by n_nodes - 1 and the
+// reads clamp onto the cell i = n_nodes - 2, so fewer than two nodes
+// defines no table (checked; a short request aborts).
+static inline void nfw_profile_prepare(
     nfw_profile* prof,   // the descriptor to (re)build
-    const int n_nodes,   // ln t nodes of the table
+    const int n_nodes,   // ln t nodes of the table, at least 2
     const uint64_t key   // the caller's cache tag, stored in prof
-  );
+  )
+{
+  if (2 > n_nodes) {
+    log_fatal("nfw_profile_prepare: n_nodes = %d < 2", n_nodes);
+    exit(1);
+  }
+
+  // f(t_i), G(t_i) from GSL Si, Ci (formulas in the table banner); the
+  // caller owns the rebuild condition. The slope rows derive from the
+  // table, so they go with it; nfw_profile_slopes rebuilds them on
+  // demand.
+  if (prof->tab != NULL) {
+    free(prof->tab);
+  }
+  if (prof->fg_slope != NULL) {
+    free(prof->fg_slope);
+    prof->fg_slope = NULL;
+  }
+
+  // --- 1. AXIS SETUP ---
+  double** tab = (double**) malloc2d(2, n_nodes);
+  double* lim  = prof->lim;
+  lim[0] = log(NFW_TMIN);
+  lim[1] = log(NFW_TASY);
+  lim[2] = (lim[1] - lim[0])/((double) n_nodes - 1.0);
+
+  // --- 2. TABLE FILL ---
+  /* PHYSICAL DERIVATION & LOGIC FLOW
+     1. node: ln t_i = lim[0] + i lim[2],   t_i = exp(ln t_i)
+     2. f(t) =  Ci(t) sin t + (pi/2 - Si(t)) cos t
+     3. G(t) = -Ci(t) cos t + (pi/2 - Si(t)) sin t + ln t = g(t) + ln t */
+  #pragma omp parallel for schedule(static)
+  for (int i=0; i<n_nodes; i++) {
+    const double lnt = lim[0] + i*lim[2];
+    const double t   = exp(lnt);
+    const double si  = gsl_sf_Si(t);
+    const double ci  = gsl_sf_Ci(t);
+    tab[0][i] = ci*sin(t) + (M_PI_2 - si)*cos(t);        // f(t)
+    tab[1][i] = -ci*cos(t) + (M_PI_2 - si)*sin(t) + lnt; // G(t)
+  }
+
+  // --- 3. PUBLISH ---
+  prof->n_nodes     = n_nodes;
+  prof->inv_spacing = 1.0/lim[2];
+  prof->tab         = tab;
+  prof->cache       = key;
+}
+
 
 // Build the cubic Hermite slope rows of nfw_fg_read from the table of
 // prof, if they are not built: at node ln t_i, h df/dln t = -h t g(t)
@@ -108,15 +172,42 @@ void nfw_profile_prepare(
 // frees the rows with the table, so a rebuilt table never keeps stale
 // slopes. nfw_profile_prepare must have run; single-threaded, as the
 // builders above.
-void nfw_profile_slopes(
+static inline void nfw_profile_slopes(
     nfw_profile* prof    // the descriptor to add slope rows to
-  );
+  )
+{
+  // NULL means "not built for this table" (the header above)
+  if (prof->fg_slope != NULL) {
+    return;
+  }
+
+  double** fg_slope = (double**) malloc2d(2, prof->n_nodes);
+  for (int i=0; i<prof->n_nodes; i++) {
+    const double lnt = prof->lim[0] + i*prof->lim[2];
+    const double t   = exp(lnt);
+    const double f_i = prof->tab[0][i];
+    const double g_i = prof->tab[1][i] - lnt;
+    fg_slope[0][i] = -t*g_i*prof->lim[2];
+    fg_slope[1][i] = t*f_i*prof->lim[2];
+  }
+  prof->fg_slope = fg_slope;
+}
+
 
 // Free every row of prof and zero the descriptor, so a later
 // nfw_profile_prepare starts from a clean state.
-void nfw_profile_reset(
+static inline void nfw_profile_reset(
     nfw_profile* prof    // the descriptor to release
-  );
+  )
+{
+  if (prof->tab != NULL) {
+    free(prof->tab);
+  }
+  if (prof->fg_slope != NULL) {
+    free(prof->fg_slope);
+  }
+  *prof = (nfw_profile) {0};
+}
 
 
 // Position of ln t on the table grid of prof: node index i and the
