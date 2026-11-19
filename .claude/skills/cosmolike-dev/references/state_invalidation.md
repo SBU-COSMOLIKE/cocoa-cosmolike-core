@@ -69,6 +69,22 @@ and a future cache whose author forgets a size key is caught by the
 safety-net bump. Either alone leaves one direction open, which is
 exactly how the audited gaps arose.
 
+## The radial endpoint
+
+The non-Limber upper redshift follows the same rule. The serial setter
+`init_nonlimber_zmax(zmax)` validates a finite value at least 4.0 before
+writing `Ntable.NL_zmax`. Only a changed value redraws `Ntable.random`.
+The existing grid and projected-vector cache keys then rebuild the FKEM,
+low-rank, cross-bin, galaxy-lensing and cluster calculations. The endpoint
+does not change `NL_Nchi`; it changes the spacing of those nodes.
+`initial_setup` restores 4.0, while sampling boosts leave it unchanged.
+Notebook wrappers apply their configured endpoint after `initial_setup`
+and in `_set_state`. `configure(nonlimber_zmax=...)` also calls the setter
+directly, covering helpers that prepare CAMB without `_set_state`. The
+next prediction then rebuilds. The shared `nonlimber_endpoint_suite` checks
+the 4 to 5 to 4.5 to 4 sequence against fresh processes for NLA and TATT,
+using both gg engines; cluster projects test their joint vector.
+
 ## The failure classes, with one example each
 
 Each example is written as the audit found it; the Status section

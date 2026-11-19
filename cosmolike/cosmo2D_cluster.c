@@ -2603,11 +2603,12 @@ static void C_cluster_nonlimber_core(
     nrad_built = nrad;
   }
 
-  // chi in Mpc (real_coverH0 = c/H0 in Mpc): the z = 0.002..4 window of
-  // C_cl_tomo, which covers every cluster and lens kernel
+  // Chi in Mpc (real_coverH0 = c/H0 in Mpc): the z = 0.002..NL_zmax
+  // window shared with C_cl_tomo. The endpoint is independent of nchi;
+  // its setter changes Ntable.random so these grids and outputs rebuild.
   const double real_coverH0 = cosmology.coverH0/cosmology.h0;
   const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0;
-  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;
+  const double chi_max = chi(1./(1.0 + Ntable.NL_zmax))*real_coverH0;
   const double dlnchi  = log(chi_max/chi_min)/((double) nchi - 1.0);
   const double dlnk    = dlnchi;
 

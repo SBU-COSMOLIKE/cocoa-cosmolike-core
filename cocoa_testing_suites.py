@@ -4603,6 +4603,190 @@ def cache_ladder_suite(u, name, example="example2",
 
 # ---- the setting-sequence checks --------------------------------------------
 
+def nonlimber_endpoint_suite(u, name, example, project_endpoint,
+                            tatt=True, cluster=False):
+    """Check endpoint validation, reset behavior and cached projections.
+
+    The endpoint sets the largest redshift of the FFTLog distance grid.
+    It does not set the number of nodes. Each numerical sequence starts
+    at zmax = 4, moves to 5, then 4.5, then returns to 4. The shared
+    sequence tests compare the intermediate and restored vectors against
+    fresh processes, bit for bit. Galaxy tests exercise FKEM and rank-5
+    SVD clustering, with NLA and, when supported, TATT. A cluster test
+    reads the joint cluster vector with both cluster projections enabled.
+
+    Arguments:
+      u = the project's cocoa_test_utils module.
+      name = name assigned to the returned unittest class.
+      example = frozen example containing the lens and source samples.
+      project_endpoint = endpoint explicitly selected by the project YAML.
+      tatt = whether this example has a TATT variant.
+      cluster = whether to read the joint cluster vector.
+    Returns:
+      A unittest.TestCase subclass. Invalid settings run in child processes
+      because the C++ initialization contract exits on invalid input.
+    """
+    sequences = []
+    variants = [False]
+    if tatt:
+        variants.append(True)
+    for use_tatt in variants:
+        for engine in [0, 1]:
+            suffix = "tatt" if use_tatt else "nla"
+            overrides = {
+                "nonlimber_zmax": 4.0,
+                "adopt_limber_gg": 0,
+                "adopt_limber_gs": 0,
+                "nonlimber_lowrank_gg": engine,
+                "nonlimber_lowrank_rank": 5,
+                "nonlimber_lowrank_lmax": 200,
+                "lmax_nonlimber": 200,
+                "nonlimber_tolerance_gg": 0.0,
+                "nonlimber_tolerance_gs": 0.0,
+            }
+            evaluator = "masked"
+            if cluster:
+                overrides["cluster_adopt_limber_cc"] = 0
+                overrides["cluster_adopt_limber_cg"] = 0
+                evaluator = "cluster"
+            steps = []
+            for endpoint in [5.0, 4.5, 4.0]:
+                operation = ("call", {
+                    "name": "init_nonlimber_zmax",
+                    "zmax": endpoint,
+                })
+                steps.append([operation])
+            sequences.append({
+                "name": f"endpoint_{suffix}_engine{engine}",
+                "base": example,
+                "tatt": use_tatt,
+                "overrides": overrides,
+                "steps": steps,
+                "evaluate": evaluator,
+                "compare": [1, 2, 3],
+                "expect": "bitwise",
+            })
+    numerical = setting_sequence_suite(u=u, name=name, sequences=sequences)
+
+    class TestEndpoint(numerical):
+        """The radial endpoint is a validated, resettable numerical setting."""
+
+        def test_default_and_accuracy_independence(self):
+            """Reset restores 4 and sampling boosts preserve an explicit endpoint."""
+            ci = _interface(u)
+            ci.initial_setup()
+            self.assertEqual(ci.get_nonlimber_zmax(), 4.0)
+            ci.init_nonlimber_zmax(zmax=5.0)
+            ci.init_accuracy_boost(accuracy_boost=2.0, integration_accuracy=3)
+            ci.init_nonlimber_accuracy_boost(nonlimber_boost=2.0)
+            self.assertEqual(ci.get_nonlimber_zmax(), 5.0)
+            ci.initial_setup()
+            self.assertEqual(ci.get_nonlimber_zmax(), 4.0)
+
+        def test_project_yaml_endpoint(self):
+            """An omitted example override receives the explicit project preset."""
+            info = u.load_frozen_info(example=example, tatt=False)
+            likelihood_name = u.EXAMPLES[example]["likelihood"]
+            # Remove any explicit value so this check tests the live YAML.
+            info["likelihood"][likelihood_name].pop("nonlimber_zmax", None)
+            model = u.make_model(info=info)
+            try:
+                endpoint = _interface(u).get_nonlimber_zmax()
+                self.assertEqual(endpoint, project_endpoint)
+            finally:
+                model.close()
+
+        def test_notebook_endpoint_validation(self):
+            """A rejected notebook setting preserves its previous configuration."""
+            import importlib.util
+            from pathlib import Path
+
+            native = _interface(u)
+            project = native.__name__[len("cosmolike_"):-len("_interface")]
+            module_name = "cosmolike_" + project + "_notebook_wrappers"
+            directory = Path(os.environ["ROOTDIR"]) / "projects" / project
+            filename = directory / "interface" / (module_name + ".py")
+            spec = importlib.util.spec_from_file_location(
+                name=module_name, location=filename)
+            wrapper = importlib.util.module_from_spec(spec=spec)
+            spec.loader.exec_module(module=wrapper)
+            for endpoint in [4.0, 4.5, 5.0]:
+                wrapper.configure(nonlimber_zmax=endpoint)
+                self.assertEqual(wrapper._CONFIG["nonlimber_zmax"], endpoint)
+                self.assertEqual(native.get_nonlimber_zmax(), endpoint)
+            for value in [3.999, 3.0, 0.0, -1.0,
+                          float("nan"), float("inf"), -float("inf")]:
+                with self.subTest(value=value):
+                    with self.assertRaisesRegex(ValueError, "finite value >= 4.0"):
+                        wrapper.configure(nonlimber_zmax=value)
+                    self.assertEqual(wrapper._CONFIG["nonlimber_zmax"], 5.0)
+                    self.assertEqual(native.get_nonlimber_zmax(), 5.0)
+
+        def test_endpoint_changes_projection(self):
+            """The two endpoints must produce different finite predictions."""
+            import numpy as np
+
+            info = u.load_frozen_info(example=example, tatt=False)
+            likelihood_name = u.EXAMPLES[example]["likelihood"]
+            block = info["likelihood"][likelihood_name]
+            block["nonlimber_zmax"] = 4.0
+            block["adopt_limber_gg"] = 0
+            block["adopt_limber_gs"] = 0
+            if cluster:
+                block["cluster_adopt_limber_cc"] = 0
+                block["cluster_adopt_limber_cg"] = 0
+            model = u.make_model(info=info)
+            try:
+                point = u.build_point(model=model, example=example, tatt=False)
+                u.evaluate_chi2(model=model, point=point)
+                ci = _interface(u)
+                evaluate = ci.compute_data_vector_masked
+                if cluster:
+                    evaluate = ci.compute_data_vector_cluster_masked
+                first = np.asarray(evaluate()).copy()
+                ci.init_nonlimber_zmax(zmax=5.0)
+                second = np.asarray(evaluate()).copy()
+                self.assertTrue(np.isfinite(first).all())
+                self.assertTrue(np.isfinite(second).all())
+                self.assertFalse(np.array_equal(first, second))
+                ci.init_nonlimber_zmax(zmax=4.0)
+                restored = np.asarray(evaluate()).copy()
+                self.assertTrue(np.array_equal(first, restored))
+            finally:
+                model.close()
+
+        def test_invalid_endpoints(self):
+            """Reject values below four, NaN and either infinity before prediction."""
+            import subprocess
+            import sys
+
+            ci = _interface(u)
+            directory = os.path.dirname(os.path.abspath(ci.__file__))
+            module = ci.__name__
+            code = (
+                "import importlib, sys\n"
+                "sys.path.insert(0, sys.argv[1])\n"
+                "ci = importlib.import_module(sys.argv[2])\n"
+                "ci.initial_setup()\n"
+                "ci.init_nonlimber_zmax(zmax=float(sys.argv[3]))\n"
+            )
+            for value in ["3.999", "3", "0", "-1", "nan", "inf", "-inf"]:
+                with self.subTest(value=value):
+                    command = [
+                        sys.executable, "-B", "-c", code,
+                        directory, module, value,
+                    ]
+                    result = subprocess.run(args=command, capture_output=True,
+                                            text=True, check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("must be finite and >= 4.0",
+                                  result.stdout + result.stderr)
+
+    TestEndpoint.__name__ = name
+    TestEndpoint.__qualname__ = name
+    return TestEndpoint
+
+
 def common_sequences(space, shear_example=None, lens_example=None,
                      nsource=0, nlens=0, tatt=False, rebuild_example=None,
                      baryons=None, lens_bins=True):

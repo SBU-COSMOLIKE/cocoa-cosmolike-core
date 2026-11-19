@@ -109,6 +109,8 @@ typedef struct
   int NL_Nchi;         // Cosmo2D - NL = NonLimber
   double NL_Nchi_boost; // NL_Nchi multiplier on top of the accuracy boost
                         // (init_nonlimber_accuracy_boost; 1 = none)
+  double NL_zmax;       // upper redshift of the non-Limber FFTLog chi grid;
+                        // finite and >= 4, independent of node counts
   double NL_tol_gg;     // early-exit tolerance of the non-Limber w(theta)
                         // C_l (w_gg_tomo; init_nonlimber_tolerance;
                         // 0 = no early exit), before the boost division

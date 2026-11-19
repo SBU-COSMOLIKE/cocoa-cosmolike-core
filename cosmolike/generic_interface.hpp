@@ -693,6 +693,14 @@ void init_nonlimber_accuracy_boost(
     const double nonlimber_boost
   );
 
+// Upper redshift of the galaxy and cluster non-Limber FFTLog grids.
+// Finite and >= 4; reset default 4. Changing it invalidates radial tables.
+void init_nonlimber_zmax(
+    const double zmax // maximum redshift, independent of the radial node count
+  );
+
+double get_nonlimber_zmax();
+
 void init_lmax_nonlimber(
     const int lmax
   );

@@ -501,6 +501,19 @@ The non-Limber chi grid spans fixed endpoints, so `set_nl_nchi` rounds a
 combined factor above 1 up to a power of two and multiplies `NL_Nchi - 1`
 by it: lower boosts' nodes stay a subset of higher ones, keeping boost
 comparisons node-by-node (`references/lowrank_gg_cross_pairs.md`).
+The endpoint is a separate interval control: YAML `nonlimber_zmax`,
+native `init_nonlimber_zmax`, stored in `Ntable.NL_zmax`. Reset/default
+is 4.0; values below 4.0 or nonfinite values stop initialization.
+Neither accuracy boost changes this endpoint. A changed value redraws
+`Ntable.random`; unchanged calls preserve caches. Galaxy FKEM, low-rank
+gg, cross-bin FKEM, gs and cluster grids share this setting. Project
+YAML presets are 5.0 for Roman Fourier, 4.5 for Roman real space and
+LSST Y1, and 4.0 for DES. Notebook wrappers apply it after reset and
+before each prediction, allowing live endpoint convergence studies.
+Endpoint extension changes node spacing at fixed count: refine the
+endpoint and radial sampling separately. Regression tests live in each
+project's `tests/data_vector/test_nonlimber_endpoint.py` and compare
+endpoint changes with fresh processes through the shared suite.
 For covariance interpolation, multiply interval
 counts, preserving existing interpolation nodes under doubling; divide
 finite-difference step sizes by the boost. Do not multiply fixed physical

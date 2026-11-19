@@ -307,6 +307,7 @@ void reset_Ntable_struct(void)
   Ntable.sigma_gauss_ninv = 256; // inverse-table nodes per a row
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.NL_Nchi_boost = 1.0; // init_nonlimber_accuracy_boost
+  Ntable.NL_zmax = 4.0; // init_nonlimber_zmax; independent of sampling boosts
   // the early-exit tolerances of the non-Limber real-space C_l
   // (init_nonlimber_tolerance; the reasons for the two values are in
   // w_gg_tomo and w_gammat_tomo of cosmo2D.c)

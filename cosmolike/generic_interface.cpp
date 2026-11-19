@@ -1110,6 +1110,55 @@ void init_nonlimber_accuracy_boost(const double nonlimber_boost)
 }
 
 // ---------------------------------------------------------------------------
+// Set the upper redshift of the non-Limber FFTLog distance grids.
+// The lower endpoint stays at z = 0.002. Galaxy clustering, galaxy-galaxy
+// lensing and cluster clustering read this same upper endpoint; the YAML
+// key nonlimber_zmax selects it for each project. The reset default is 4.
+//
+// Extending the interval at fixed NL_Nchi changes the node spacing too.
+// Test endpoint convergence and sampling convergence separately: this
+// setting changes the interval, while init_nonlimber_accuracy_boost
+// changes the node count. The global accuracy boost does not move either
+// endpoint. A minimum of 4 prevents a smaller interval from silently
+// cutting off the high-redshift kernels of the supplied source samples.
+// A larger value is still a numerical choice that needs convergence tests.
+//
+// Cache invalidation:
+// a changed endpoint redraws Ntable.random, rebuilding the radial grids,
+// transforms and cached projected vectors, including the cluster paths.
+// Call outside parallel regions, like the other numerical setters.
+//
+// Parameters:
+//   zmax - dimensionless upper redshift, finite and >= 4
+//
+// Returns:
+//   void; an invalid value stops initialization before changing state
+// ---------------------------------------------------------------------------
+void init_nonlimber_zmax(
+    const double zmax // upper redshift of the non-Limber distance grid
+  )
+{
+  static constexpr std::string_view fname = "init_nonlimber_zmax"sv;
+  debug("{}: {}", fname, errbegins);
+  if (!std::isfinite(zmax) ||
+      zmax < 4.0) {
+    critical("{}: zmax = {} must be finite and >= 4.0", fname, zmax);
+    exit(1);
+  }
+  if (Ntable.NL_zmax != zmax) {
+    Ntable.NL_zmax = zmax;
+    Ntable.random = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+}
+
+// Return the configured endpoint, including the default after a reset.
+double get_nonlimber_zmax()
+{
+  return Ntable.NL_zmax;
+}
+
+// ---------------------------------------------------------------------------
 // Set limits.LMAX_NOLIMBER, the multipole cap of the FKEM non-Limber
 // paths: below it C_gg is the FKEM split (autos, and the cross pairs of
 // a survey that installs them) and C_gs too; above it both are Limber.
