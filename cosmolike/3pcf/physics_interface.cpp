@@ -501,15 +501,15 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   const bool source_readers,
   // dense intervals per coarse interval; zero uses default
   const int table_boost,
-  const int fit_nz, // BiHalofit anchor count; zero uses the default
+  const int fit_nz, // legacy argument; theory owns fit resolution
   const py::object& source_z, // optional redshift axis of the source densities
   // optional paired hydro/DMO power and bispectrum responses
   const py::dict& feedback,
   // optional W(ell) samples at integer multipoles
   const py::object& pixel_window,
-  const py::dict& baseline, // optional absolute B input
-  const py::object& omega_m_z, // required background when baseline is active
-  const py::dict& variance, // optional shared fit quantities
+  const py::dict& baseline, // required theory-supplied absolute B
+  const py::object& omega_m_z, // required provider matter fraction
+  const py::dict& variance, // legacy fit inputs; unused by the projection model
   const py::object& omega_m_redshift = py::none() // optional fraction axis
 )
 {
@@ -817,11 +817,11 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
   const int kernel_nz, // radial-kernel sampling
   const bool source_readers, // cubic comparison mode
   const int table_boost, // dense-grid refinement
-  const int fit_nz, // internal-fit anchors
+  const int fit_nz, // legacy argument; theory owns fit resolution
   const py::object& source_z, // optional source z axis
   const py::dict& feedback, // optional paired responses
   const py::object& pixel_window, // optional integer-ell window
-  const py::dict& variance, // optional shared fit quantities
+  const py::dict& variance, // legacy fit inputs; unused by the projection model
   const py::object& omega_m_z, // optional exact matter fraction
   const py::object& omega_m_redshift, // optional fraction axis
   const py::dict& baseline // required theory-supplied matter bispectrum
@@ -857,7 +857,7 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_with_bispectrum(
   const py::object& source_z, // optional independent source redshift axis
   const py::dict& feedback, // optional independent hydro/DMO ratios
   const py::object& pixel_window, // optional integer-ell angular window
-  const py::dict& variance // optional shared fit quantities
+  const py::dict& variance // legacy fit inputs; unused by the projection model
 )
 {
   // Empty is never a request to reconstruct an internal fit here. The four
@@ -908,15 +908,15 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
   const bool source_readers,
   // dense intervals per coarse interval; zero uses default
   const int table_boost,
-  const int fit_nz, // BiHalofit anchor count; zero uses the default
+  const int fit_nz, // legacy argument; theory owns fit resolution
   const py::object& source_z, // optional redshift axis of the source densities
   // optional paired hydro/DMO power and bispectrum responses
   const py::dict& feedback,
   // optional W(ell) samples at integer multipoles
   const py::object& pixel_window,
-  const py::dict& baseline, // optional absolute B input
-  const py::object& omega_m_z, // required background when baseline is active
-  const py::dict& variance, // optional shared fit quantities
+  const py::dict& baseline, // required theory-supplied absolute B
+  const py::object& omega_m_z, // required provider matter fraction
+  const py::dict& variance, // legacy fit inputs; unused by the projection model
   const py::object& omega_m_redshift = py::none() // optional fraction axis
 )
 {
@@ -1067,11 +1067,11 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const int kernel_nz, // radial-kernel sampling
   const bool source_readers, // cubic comparison mode
   const int table_boost, // dense-grid refinement
-  const int fit_nz, // internal-fit anchors
+  const int fit_nz, // legacy argument; theory owns fit resolution
   const py::object& source_z, // optional source z axis
   const py::dict& feedback, // optional paired responses
   const py::object& pixel_window, // optional integer-ell window
-  const py::dict& variance, // optional shared fit quantities
+  const py::dict& variance, // legacy fit inputs; unused by the projection model
   const py::object& omega_m_z, // optional exact matter fraction
   const py::object& omega_m_redshift, // optional fraction axis
   const py::dict& baseline // required theory-supplied matter bispectrum
@@ -1107,7 +1107,7 @@ model_notebook_physics_with_bispectrum(
   const py::object& source_z, // optional independent source redshift axis
   const py::dict& feedback, // optional independent hydro/DMO ratios
   const py::object& pixel_window, // optional integer-ell angular window
-  const py::dict& variance // optional shared fit quantities
+  const py::dict& variance // legacy fit inputs; unused by the projection model
 )
 {
   // Empty is never a request to reconstruct an internal fit here. The four

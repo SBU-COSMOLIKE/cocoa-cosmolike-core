@@ -97,7 +97,7 @@ void threepcf_bridge_set_resolution(
   int kernel_nz,      // internal lensing-kernel redshift resolution
   int source_readers, // 1 keeps cubic source reads for comparisons
   int table_boost,    // dense-grid refinement factor; zero means eight
-  int fit_nz          // uniform BiHalofit anchor count; zero means 33
+  int fit_nz          // legacy field; theory owns fit resolution
 );
 
 // Shifted source densities on their own redshift axis. The project's

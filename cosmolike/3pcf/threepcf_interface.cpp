@@ -985,8 +985,8 @@ static void bind_threepcf_core_bridge(
 
   // --- supplied tier -----------------------------------------------------
   core.def("set_scalars", &threepcf_bridge_set_scalars,
-      "Supply ns, sigma8, w0 and wa; these scalars stay supplied "
-      "until a later stage retires them into the structs.",
+      "Legacy cosmological scalars; changing them invalidates supplied B. "
+      "Resupply the theory bispectrum after a change.",
       py::arg("ns"), py::arg("sigma8"), py::arg("w0"), py::arg("wa"));
 
   core.def("set_los", [](

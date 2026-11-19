@@ -111,7 +111,7 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   const bool source_readers,
   // dense intervals per coarse interval; zero uses default
   const int table_boost,
-  const int fit_nz, // BiHalofit anchor count; zero uses the default
+  const int fit_nz, // legacy argument; theory owns fit resolution
   // optional redshift axis of the source densities
   const arma::Col<double>& source_z,
   // optional paired hydro/DMO power and bispectrum responses
