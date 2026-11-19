@@ -109,10 +109,13 @@ Both ordinary and standalone `initial_setup` call `reset_variance_tables`,
 which frees both shared FFTLog workspaces and their plans serially.
 
 These inputs are an optional integration step, not an accepted replacement
-of the local variance prescription. The shared unbroken P(k) proportional
-to k^-2 discrepancy remains unresolved; do not remove the local path or
-select shared variances by default on the strength of the bias-matched
-power-law test. Read
+of the local variance prescription. The shared FFTLog endpoint correction
+passes five power-law slopes, curved spectra and smaller derivative steps;
+ordinary turnover and DES fiducial snapshots retain their exact values.
+The nearly saturated low-tail stress case requires Gaussian-table
+refinement. These component checks do not replace full joint mean,
+derivative and Fisher acceptance before selecting shared variances or
+removing the local path. Read
 [`dev_scripts/threepcf_variance_check/VALIDATION.md`](../../../../dev_scripts/threepcf_variance_check/VALIDATION.md)
 for the measured domain, state checks and outstanding scientific tests.
 

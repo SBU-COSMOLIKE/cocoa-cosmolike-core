@@ -37,14 +37,12 @@ differences of `2.55e-4` in the nonlinear radius and `1.45e-4` in the
 mass variance; the effective-index absolute difference was `4.01e-5`.
 These are component checks at controlled inputs, not survey acceptance.
 
-An unresolved shared-engine accuracy finding remains: an unbroken
-`P(k) proportional to k^-2` spectrum gives a nonlinear-radius discrepancy
-of 9.72% and a sigma8 discrepancy of 11.69% against its analytic infinite
-integral. No documented input-domain exclusion was established for this
-case. The bias-matched `k^-2.2` normalization test passes, but it does not
-resolve that finding. The original failed checks and slope probes remain
-in `/private/tmp/threepcf_variance_20261119/` alongside source hashes,
-binary identities and both successful logs.
+The power-law accuracy finding is addressed by the analytic endpoint
+correction documented in [FFTLOG_TAILS.md](FFTLOG_TAILS.md). Its expanded
+54-test strict and UBSan checks include smaller derivative steps and
+independent quadrature. The earlier failed checks remain part of the
+record; ordinary turnover and DES fiducial snapshots are byte-identical
+before and after the correction.
 
 The full joint mean, derivative and Fisher acceptance checks remain
 required before replacing the legacy variance calculation. The generic
@@ -80,8 +78,8 @@ are in `/private/tmp/threepcf_fit_variance_20261119/`.
 These checks do not adopt the new engine for forecasts. Shared variances
 read evolving linear power, whereas the model's tree and IA power legs still
 follow their existing selected growth prescriptions. The full mean,
-derivative and Fisher acceptance criteria and the unresolved power-law
-accuracy finding above remain applicable.
+derivative and Fisher acceptance criteria remain applicable. The separate FFTLog correction does not establish
+forecast acceptance or select the shared route by default.
 
 ## Combined validation
 

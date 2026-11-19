@@ -75,9 +75,10 @@ local variance or its scalar normalization in the project provider.
 
 A fixed NLA mean with factorized input power and the shared fit snapshot
 gave a squared displacement of 2.39e-4 from the original mean. That single
-point is not a derivative or Fisher acceptance test. In addition, an
-unbroken k^-2 spectrum exposes an unresolved shared FFTLog accuracy error.
-The successful curved-spectrum check does not resolve that finding.
+point is not a derivative or Fisher acceptance test. The separate
+[FFTLog endpoint correction](../threepcf_variance_check/FFTLOG_TAILS.md)
+addresses the earlier unbroken-power-law error with analytic and derivative
+checks. Those component checks do not replace the forecast comparison.
 
 ## Evidence locations
 

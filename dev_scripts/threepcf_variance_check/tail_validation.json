@@ -1,0 +1,18 @@
+{
+  "strict_passed": 54,
+  "debug_passed": 54,
+  "snapshot_fields_bitwise_equal": 18,
+  "post_test_change": "C explanatory comments only; non-comment tokens checked equal",
+  "files": {
+    "/private/tmp/threepcf_consolidation_20261119/tail_source/cosmolike/cosmo3D.c": "4817d06108d205cca140dc2c617aab73f9549d6aacad1d9a836698532f88898e",
+    "/Users/vivianmiranda/data/COCOA/november2026/sbu_cosmolike/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/cosmo3D.c": "b130aac99f15d39c47efe864680c4fcf53dc6e6ec6f0cf6763d470f53b9b6871",
+    "/private/tmp/threepcf_consolidation_20261119/tail_strict/cosmolike_des_3pcf_interface.so": "6fda4dc00d442d461743a8eb42fe577591f27709b5bbe6001cbc28df826c7327",
+    "/private/tmp/threepcf_consolidation_20261119/tail_debug/cosmolike_des_3pcf_interface.so": "7496bf6d4b2091a65ef89a0658b7bf065703b7e5d24aeb63e81a29bd35f6d791",
+    "/private/tmp/threepcf_consolidation_20261119/tail_strict_extended.log": "8f0660b04c8e41064e789b015a5b337b8bccbd27c8b9bc8ab536d0e2bc29624b",
+    "/private/tmp/threepcf_consolidation_20261119/tail_debug_extended.log": "22988f17d8e488aeeff914b0d4becb2f306de8870fde14ed5810289e11a80cf5",
+    "/private/tmp/threepcf_consolidation_20261119/variance_before_tail.npz": "ace31bef7122ee40f96a8e566199f213cd011b58159a0f920470b2ea14c82238",
+    "/private/tmp/threepcf_consolidation_20261119/variance_after_tail.npz": "ace31bef7122ee40f96a8e566199f213cd011b58159a0f920470b2ea14c82238",
+    "/private/tmp/threepcf_consolidation_20261119/variance_before_tail.json": "6764e3f2a828a163d74ef2b13c52e607eef0b1d41d7bbc5f919d252596c8a1b8",
+    "/private/tmp/threepcf_consolidation_20261119/variance_after_tail.json": "1957e6d9006bc353031a39d420254b7299701924adef3e293534b01691ae48de"
+  }
+}

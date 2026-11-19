@@ -1413,6 +1413,138 @@ static void sigma2_spline_coeffs(
 }
 
 
+// FFTLog makes g(k) = k^-b Delta^2(k) periodic. If an endpoint power law
+// Delta^2 = A k^s grows after this weighting, its distant periodic image
+// can contaminate an otherwise converged smoothing integral. For example,
+// P proportional to k^-2 has s = 1 > b = 0.8 and gave a 9.7% error in R_NL.
+// Extending the same growing tail to larger k does not cure that image.
+//
+// Subtract each growing endpoint power law at ALL k before the transform,
+// then add its analytic infinite integral A R^-s Mellin_W(s). Linearity
+// makes this an identity for the supplied spectrum, not a change of its
+// extrapolation. This removes the growing weighted endpoint terms.
+// Ordinary turnover spectra already decay after weighting and retain
+// the original path. The matched-bias constant is handled below too.
+// Each row owns this small descriptor; the shared FFT kernels and plans
+// still depend only on the fixed bias and geometry.
+struct sigma2_tails {
+  int use[2];          // low/high tails that need analytic subtraction
+  double exponent[2];  // s = d ln Delta^2 / d ln k at each endpoint
+  double ln_delta[2];  // ln Delta^2 at the corresponding input endpoint
+  double lnk[2];       // endpoint ln(k), with k in h/Mpc
+  double ln_mellin[2]; // logarithm of the window's real Mellin integral
+};
+
+static void sigma2_prepare_tails(
+  double* const* power, // supplied log-power table, including its axes
+  const int nk, // number of supplied wavenumbers
+  const int lower, // lower redshift index
+  const double fraction, // linear redshift interpolation weight
+  const double lnk0, // first supplied ln(k)
+  const double dlnk, // uniform ln(k) spacing
+  const double bias, // fixed FFTLog weighting exponent
+  const int gaussian, // one for Gaussian smoothing, zero for top-hat
+  struct sigma2_tails* tails // output owned by this scale-factor row
+)
+{
+  for (int end=0; end<2; end++) {
+    const int left = (0 == end) ? 0 : nk-2;
+    const double first = power[left][lower]
+        +fraction*(power[left][lower+1]-power[left][lower]);
+    const double second = power[left+1][lower]
+        +fraction*(power[left+1][lower+1]-power[left+1][lower]);
+    const double exponent = 3.0+(second-first)/dlnk;
+    tails->exponent[end] = exponent;
+    tails->lnk[end] = lnk0+(0 == end ? 0 : nk-1)*dlnk;
+    const double endpoint = (0 == end) ? first : second;
+    tails->ln_delta[end] = endpoint+3.0*tails->lnk[end]
+        -log(2.0*M_PI*M_PI);
+    // Assign a bias-matched tail to the high-k correction as well: its
+    // weighted amplitude is constant, and zero FFT padding would leave
+    // a small offset whose parameter derivative grows as the step shrinks.
+    // The small shared threshold keeps roundoff in a matched spectrum
+    // from selecting inconsistent low/high treatments in different rows.
+    tails->use[end] = (0 == end) ? exponent < bias-1.e-10
+                                : exponent >= bias-1.e-10;
+    if (0 == tails->use[end]) continue;
+    if (!(0.0 < exponent)) { log_fatal(
+      "sigma2: low-k power law has Delta^2 slope %g; the infinite "
+      "variance requires a positive slope", exponent); exit(1); }
+    if (0 == gaussian) {
+      if (!(exponent < 4.0)) { log_fatal(
+        "sigma2: high-k power law has Delta^2 slope %g; top-hat "
+        "variance requires a slope below four", exponent); exit(1); }
+      tails->ln_mellin[end] = log(4.5*M_PI)
+          +gsl_sf_lngamma(4.0-exponent)+gsl_sf_lngamma(exponent/2.0)
+          -(4.0-exponent)*log(2.0)
+          -2.0*gsl_sf_lngamma((5.0-exponent)/2.0)
+          -gsl_sf_lngamma(4.0-exponent/2.0);
+    } else {
+      tails->ln_mellin[end] = gsl_sf_lngamma(exponent/2.0)-log(2.0);
+    }
+  }
+}
+
+static inline double sigma2_tail_residual(
+  const double lnP, // interpolated or continued ln(P)
+  const double lnk, // requested ln(k)
+  const int source, // integer input-grid index, possibly outside the table
+  const int nk, // number of supplied k nodes
+  const double bias, // fixed FFTLog weighting exponent
+  const struct sigma2_tails* tails // this row's analytic endpoint terms
+)
+{
+  const double logvalue = lnP+(3.0-bias)*lnk-log(2.0*M_PI*M_PI);
+  int primary = 0;
+  if (0 == tails->use[0]) primary = 1;
+  if (source >= nk-1) {
+    if (0 != tails->use[1]) primary = 1;
+  }
+  double result = 0.0;
+  int continued = 0;
+  if (0 == primary) {
+    if (source <= 0) continued = 1;
+  } else {
+    if (source >= nk-1) continued = 1;
+  }
+  if (0 == continued) {
+    const double logtail = tails->ln_delta[primary]
+        +tails->exponent[primary]*(lnk-tails->lnk[primary])-bias*lnk;
+    result = -exp(logvalue)*expm1(logtail-logvalue);
+  }
+  // Beyond its own endpoint P is exactly that continued power law.
+  // The primary residual is zero there by algebra, not subtraction of
+  // huge rounded exponentials. A second tail is still subtracted.
+  const int other = 1-primary;
+  if (0 != tails->use[other]) {
+    result -= exp(tails->ln_delta[other]
+        +tails->exponent[other]*(lnk-tails->lnk[other])-bias*lnk);
+  }
+  return result;
+}
+
+static inline void sigma2_restore_tails(
+  double* variance, // unnormalized inverse FFT at this radius
+  double* derivative, // its unnormalized d/dlnR transform
+  const double lnR, // radius in Mpc/h
+  const double bias, // fixed FFTLog weighting exponent
+  const double lnnfft, // logarithm of the FFTW normalization
+  const struct sigma2_tails* tails // this row's analytic endpoint terms
+)
+{
+  for (int end=0; end<2; end++) {
+    if (0 == tails->use[end]) continue;
+    const double exponent = tails->exponent[end];
+    // Express the analytic term in the same nfft R^b units as the
+    // inverse FFT. Its derivative is -s times its variance contribution.
+    const double value = exp(tails->ln_delta[end]+tails->ln_mellin[end]
+        -exponent*tails->lnk[end]+(bias-exponent)*lnR+lnnfft);
+    *variance += value;
+    *derivative -= exponent*value;
+  }
+}
+
+
 // ---------------------------------------------------------------------------
 // Build both fields' variance and mass-slope tables at all scale factors.
 //
@@ -1765,6 +1897,11 @@ static void sigma2_fields_build(void)
         power = cosmology.lnPL_cb;
       }
 
+      struct sigma2_tails tails;
+      sigma2_prepare_tails(power, nk, lower, fraction_z, lnk0, dlnk,
+          bias, 0, &tails);
+      const int correct_tail = tails.use[0] || tails.use[1];
+
       // Each extended k node is an integer step from the supplied grid.
       // Use its two neighboring k nodes, or the first/last pair outside
       // the input range. Continuing lnP linearly in lnk is a power-law
@@ -1784,6 +1921,10 @@ static void sigma2_fields_build(void)
         const double lnP = left+(source-bracket)*(right-left);
         const double lnk = lnkin+node*dlnk;
         input[node] = exp(lnP+(3.0-bias)*lnk)/(2.0*M_PI*M_PI);
+        if (0 != correct_tail) {
+          input[node] = sigma2_tail_residual(lnP, lnk, source, nk,
+              bias, &tails);
+        }
       }
 
       // ninput covers the entire chosen physical k range. nfft may be
@@ -1839,6 +1980,10 @@ static void sigma2_fields_build(void)
       // d sigma^2/dlnR into dln sigma/dlnM (derivation above).
       for (int node=0; node<nradial; node++) {
         const double lnR = lnR0[field]+node*dlnk;
+        if (0 != correct_tail) {
+          sigma2_restore_tails(&radial[node], &derivative[node], lnR,
+              bias, log(nfft), &tails);
+        }
         if (!(radial[node] > 0.0)) {
           log_fatal("sigma2_field: nonpositive FFTLog variance at field=%d a=%g", field, a);
           exit(1);
@@ -2532,6 +2677,11 @@ static void sigma2_gauss_build(void)
     const double fraction_z = (redshift-cosmology.lnPL[nk][lower])
         /(cosmology.lnPL[nk][lower+1]-cosmology.lnPL[nk][lower]);
 
+    struct sigma2_tails tails;
+    sigma2_prepare_tails(cosmology.lnPL, nk, lower, fraction_z, lnk0,
+        dlnk, bias, 1, &tails);
+    const int correct_tail = tails.use[0] || tails.use[1];
+
     for (int node=0; node<ninput; node++) {
       const int source = node+first;
       const int bracket = (int) fmin(fmax(source, 0), nk-2);
@@ -2547,6 +2697,10 @@ static void sigma2_gauss_build(void)
       const double lnP = left+(source-bracket)*(right-left);
       const double lnk = lnkin+node*dlnk;
       input[node] = exp(lnP+(3.0-bias)*lnk)/(2.0*M_PI*M_PI);
+      if (0 != correct_tail) {
+        input[node] = sigma2_tail_residual(lnP, lnk, source, nk,
+            bias, &tails);
+      }
     }
 
     // Zero the padding appended to reach the FFT-friendly length; it
@@ -2596,6 +2750,10 @@ static void sigma2_gauss_build(void)
     // the early-time a interpolation accurate.
     for (int node=0; node<nradial; node++) {
       const double lnR = lnr0_fft+node*dlnk;
+      if (0 != correct_tail) {
+        sigma2_restore_tails(&radial[node], &derivative[node], lnR,
+            bias, log(nfft), &tails);
+      }
       if (!(radial[node] > 0.0)) {
         log_fatal("sigma2_gauss: nonpositive FFTLog variance at a=%g", a);
         exit(1);

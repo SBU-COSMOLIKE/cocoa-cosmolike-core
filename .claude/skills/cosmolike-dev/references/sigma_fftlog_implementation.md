@@ -20,6 +20,17 @@ without doubling the FFT workspace. A separately doubled FFT interval
 at bias 0.5 agrees within 1.32e-8 relatively down to 1e-40 Msun/h.
 See `wynn_validation_20261006.md` for the tail-stability validation.
 
+The shared smoothing engines subtract growing weighted endpoint power
+laws and restore their analytic Mellin integrals. This fixes periodic-image
+errors for spectra such as P proportional to k^-2 while retaining the
+fixed bias, cached kernels and retained plans. A bias-matched constant
+also needs this treatment for stable numerical derivatives. Ordinary
+turnover and DES fiducial snapshots are byte-identical across the change.
+See [the endpoint validation record](../../../../dev_scripts/threepcf_variance_check/FFTLOG_TAILS.md)
+for the analytic identity, convergence conditions, 54 strict/UBSan checks,
+and the low-radius case that needs finer Gaussian sampling. The same
+record distinguishes component accuracy from three-point forecast adoption.
+
 `cosmo3D.c` builds sigma_m^2(M,a), sigma_cb^2(M,a), and their logarithmic
 mass slopes from the evolving linear spectra. The measured 2026-10-03
 configuration used FFTLog bias 1.5,

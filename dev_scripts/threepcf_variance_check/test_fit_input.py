@@ -141,6 +141,12 @@ def accuracy_helper(tmp_path_factory):
         'void change_variance_accuracy(void) {\n'
         '  Ntable.sigma_gauss_nr *= 2;\n'
         '  Ntable.random += 1;\n'
+        '}\n'
+        'void refine_gaussian_tables(void) {\n'
+        '  Ntable.sigma_gauss_nr = 2*(Ntable.sigma_gauss_nr-1)+1;\n'
+        '  Ntable.sigma_gauss_na = 2*(Ntable.sigma_gauss_na-1)+1;\n'
+        '  Ntable.sigma_gauss_ninv = 2*(Ntable.sigma_gauss_ninv-1)+1;\n'
+        '  Ntable.random += 1;\n'
         '}\n')
     core = Path(os.environ["VARIANCE_CORE_SOURCE"])
     prefix = Path(os.environ["CONDA_PREFIX"])

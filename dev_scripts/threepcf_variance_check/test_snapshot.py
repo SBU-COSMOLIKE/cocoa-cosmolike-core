@@ -6,6 +6,7 @@ oracle and controlled arrays. They establish neither survey convergence
 nor equivalence of factorized growth and an evolving linear spectrum.
 """
 
+import ctypes
 from pathlib import Path
 import subprocess
 import sys
@@ -19,14 +20,16 @@ from scipy.special import gamma
 import cosmolike_des_3pcf_interface as compiled
 from covariance.test_physical_covariance import covariance_arguments
 from covariance.test_physical_covariance import make_covariance_model
+from test_fit_input import accuracy_helper
 
 
-def install_power(amplitude=30.0, reset=True):
-    """Install P(k,z)=A k^-2.2 a^2, with k in h/Mpc and no neutrinos.
+def install_power(amplitude=30.0, reset=True, slope=-2.2):
+    """Install P(k,z)=A k^slope a^2, with k in h/Mpc and no neutrinos.
 
-    This power-law slope matches FFTLog's bias and checks normalization.
-    It does not test the response to other slopes or spectral curvature;
-    the independent quadrature case below supplies the curved comparison.
+    The default power-law slope matches FFTLog's bias and checks
+    normalization. The parameterized oracle includes other slopes; the
+    independent quadrature cases supply curved comparisons with and
+    without a growing FFTLog tail.
     Dense redshift sampling limits interpolation of log power in redshift.
     """
     compiled.set_omp_threads(nthreads=1)
@@ -35,9 +38,10 @@ def install_power(amplitude=30.0, reset=True):
         core.initial_setup()
     core.set_cosmological_parameters(
         omega_matter=0.3, omega_baryon=0.05, hubble=70.0, omega_nu_h2=0.0)
-    wave = np.geomspace(start=1.0e-5, stop=1.0e3, num=257)
+    log10k = np.linspace(start=-5.0, stop=3.0, num=257)
+    wave = 10.0**log10k
     redshift = np.linspace(start=0.0, stop=40.0, num=4001)
-    power = amplitude * wave[:, None]**-2.2 / (1.0 + redshift[None, :])**2
+    power = amplitude * wave[:, None]**slope / (1.0 + redshift[None, :])**2
     core.set_linear_power_spectrum(
         log10k=np.log10(wave), z=redshift, lnP=np.log(power).ravel())
     return core
@@ -61,15 +65,16 @@ def attach_snapshot(arguments, snapshot):
     return result
 
 
-def test_power_law_oracle():
+@pytest.mark.parametrize("spectral_slope", [-2.5, -2.4, -2.2, -2.0, -1.5])
+def test_power_law_oracle(spectral_slope):
     """Compare Gaussian/top-hat quantities with analytic infinite integrals."""
-    core = install_power()
+    core = install_power(slope=spectral_slope)
     z = np.array(object=[0.0, 0.5, 1.0])
     mass = np.array(object=[1.0e11, 1.0e12, 1.0e14])
     result = request_snapshot(core=core, z=z, mass=mass)
     growth2 = (1.0 + z)**-2
     radius = np.cbrt(3.0 * mass / (4.0 * np.pi * result["reference_rho"]))
-    exponent = 0.8
+    exponent = 3.0 + spectral_slope
     # Integrating k^exponent against each window gives its Mellin
     # integral. These closed forms set the infinite-range reference.
     tophat = (4.5 * np.pi * gamma(4.0 - exponent) * gamma(exponent / 2.0)
@@ -82,14 +87,15 @@ def test_power_law_oracle():
     expected_sigma8 = np.sqrt(
         30.0 * tophat * growth2 / (2.0 * np.pi**2 * 8.0**exponent))
     np.testing.assert_allclose(result["rnl"], expected_rnl, rtol=1.0e-3)
-    np.testing.assert_allclose(result["neff"], -2.2, rtol=1.0e-3)
+    np.testing.assert_allclose(result["neff"], spectral_slope, rtol=1.0e-3)
     np.testing.assert_allclose(result["sigma8"], expected_sigma8, rtol=1.0e-3)
     np.testing.assert_allclose(result["halo_sigma2"], expected_sigma2, rtol=1.0e-3)
     np.testing.assert_allclose(result["halo_dlnsigma_dlnm"], -exponent / 6.0,
                                rtol=1.0e-3)
 
 
-def test_curved_spectrum_quadrature():
+@pytest.mark.parametrize("spectrum", ["ordinary", "high_tail", "low_tail", "both_tails"])
+def test_curved_spectrum_quadrature(spectrum, accuracy_helper):
     """Compare a turnover spectrum with direct smoothing integrals.
 
     The reference integrates the supplied log-linear reconstruction, with
@@ -97,18 +103,42 @@ def test_curved_spectrum_quadrature():
     coefficients or variance lookup with the C calculation.
     """
     core = install_power()
-    wave = np.geomspace(start=1.0e-5, stop=1.0e3, num=513)
+    log10k = np.linspace(start=-5.0, stop=3.0, num=513)
+    wave = 10.0**log10k
     redshift = np.linspace(start=0.0, stop=40.0, num=4001)
-    linear = 2.0e4 * wave / (1.0 + (wave / 0.15)**2)**1.8
+    if spectrum == "ordinary":
+        linear = 2.0e4 * wave / (1.0 + (wave / 0.15)**2)**1.8
+    elif spectrum == "high_tail":
+        linear = 2.0e4 * wave / (1.0 + (wave / 0.15)**2)**1.5
+    elif spectrum == "low_tail":
+        linear = 30.0 * wave**-2.5 / (1.0 + (wave / 0.15)**2)**0.3
+    else:
+        linear = 30.0 * (wave**-2.5 + wave**-1.5)
     power = linear[:, None] / (1.0 + redshift[None, :])**2
     core.set_linear_power_spectrum(
         log10k=np.log10(wave), z=redshift, lnP=np.log(power).ravel())
     z = np.array(object=[0.0, 0.5, 1.0])
     mass = np.array(object=[1.0e11, 1.0e12, 1.0e14])
     actual = request_snapshot(core=core, z=z, mass=mass)
+    coarse_rnl = actual["rnl"].copy()
+    if spectrum == "low_tail":
+        # Its z=1 crossing lies at R about 0.005 Mpc/h, where this
+        # nearly saturated variance makes the inverse radius sensitive
+        # to scale-factor sampling. Test the existing nested refinement
+        # rather than relaxing the independent accuracy requirement.
+        helper = ctypes.CDLL(name=str(accuracy_helper))
+        helper.refine_gaussian_tables.argtypes = []
+        helper.refine_gaussian_tables.restype = None
+        helper.refine_gaussian_tables()
+        helper.refine_gaussian_tables()
+        actual = request_snapshot(core=core, z=z, mass=mass)
     log_wave = np.log(wave)
     log_power = np.log(linear)
-    nodes = np.linspace(start=np.log(1.0e-7), stop=np.log(1.0e4), num=200001)
+    # The low-tail cases have Delta^2 proportional to sqrt(k). Cutting
+    # their independent integral at 1e-7 omits about 0.001 of variance,
+    # enough to move the unit-variance radius. Extend the reference well
+    # below that cutoff; this does not change the spectrum passed to C.
+    nodes = np.linspace(start=np.log(1.0e-16), stop=np.log(1.0e4), num=200001)
     values = np.interp(x=nodes, xp=log_wave, fp=log_power)
     low = nodes < log_wave[0]
     high = nodes > log_wave[-1]
@@ -142,6 +172,10 @@ def test_curved_spectrum_quadrature():
         window[~small] = 3.0 * (np.sin(large) - large * np.cos(large)) / large**3
         expected_variance.append(simpson(y=delta * window**2, x=nodes))
     expected_variance = np.asarray(expected_variance)[None, :] / (1.0 + z[:, None])**2
+    if spectrum == "low_tail":
+        coarse_error = np.max(np.abs(coarse_rnl / expected_rnl - 1.0))
+        fine_error = np.max(np.abs(actual["rnl"] / expected_rnl - 1.0))
+        assert fine_error < 0.3 * coarse_error
     np.testing.assert_allclose(actual["rnl"], expected_rnl, rtol=1.0e-3)
     np.testing.assert_allclose(actual["neff"], expected_neff, rtol=1.0e-3)
     np.testing.assert_allclose(actual["halo_sigma2"], expected_variance, rtol=1.0e-3)
@@ -171,19 +205,45 @@ def test_owned_snapshot_and_replacement():
     np.testing.assert_array_equal(first["mass"], [1.0e12, 1.0e14])
 
 
-def test_reset_and_thread_count():
+@pytest.mark.parametrize("spectral_slope", [-2.2, -2.0, -2.5])
+def test_reset_and_thread_count(spectral_slope):
     """Explicit reset and worker changes preserve results and owned snapshots."""
-    core = install_power()
+    core = install_power(slope=spectral_slope)
     z = np.array(object=[0.0, 1.0])
     mass = np.array(object=[1.0e12, 1.0e14])
     first = request_snapshot(core=core, z=z, mass=mass)
     compiled.set_omp_threads(nthreads=6)
     parallel = request_snapshot(core=core, z=z, mass=mass)
-    core = install_power()
+    core = install_power(slope=spectral_slope)
     reset = request_snapshot(core=core, z=z, mass=mass)
     for name in ("rnl", "neff", "sigma8", "halo_sigma2", "halo_dlnsigma_dlnm"):
         np.testing.assert_array_equal(parallel[name], first[name])
         np.testing.assert_array_equal(reset[name], first[name])
+
+
+@pytest.mark.parametrize("step", [0.001, 0.0005, 0.00025])
+def test_power_slope_derivative_at_bias_boundary(step):
+    """Changing a spectral slope must not expose the numerical FFT bias.
+
+    One stencil endpoint lies exactly at the bias-matched exponent 0.8.
+    Its analytic normalization is part of the derivative, so a special
+    uncorrected floor at that single spectrum cannot hide in a mean test.
+    """
+    mass = np.array(object=[1.0e11, 1.0e12, 1.0e14])
+    z = np.array(object=[0.0])
+    center = -2.2 + step
+    measured = []
+    exact = []
+    for slope in (center - step, center + step):
+        core = install_power(slope=slope)
+        result = request_snapshot(core=core, z=z, mass=mass)
+        measured.append(result["rnl"][0])
+        exponent = 3.0 + slope
+        exact.append((30.0 * gamma(exponent / 2.0)
+                      / (4.0 * np.pi**2))**(1.0 / exponent))
+    actual = (measured[1] - measured[0]) / (2.0 * step)
+    expected = (exact[1] - exact[0]) / (2.0 * step)
+    np.testing.assert_allclose(actual, expected, rtol=1.0e-3)
 
 
 def test_halo_only_and_fit_only():
