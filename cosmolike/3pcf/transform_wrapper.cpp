@@ -23,10 +23,11 @@ namespace cosmolike_interface {
 // meaning of each axis never changes; only the memory order does.
 //
 // Cache invalidation:
-// These wrappers keep no state. Every call owns its packed buffers and
-// its result, so a later call cannot replace values an earlier caller
-// still holds. The one borrowed object, the transform plan, belongs to
-// the notebook plan owner and carries only geometry and scratch.
+// Every result owns its values, so a later call cannot replace an earlier
+// result. The prepared adapters borrow workspaces owned by explicit Python
+// plan objects. A forward call replaces all input and coefficients; an
+// inverse reuses only those coefficients and immutable preparation. The
+// one-shot adapters construct and release their workspace within one call.
 // ---------------------------------------------------------------------------
 
 
@@ -158,40 +159,76 @@ arma::Mat<double> bessel_cpp_3pcf(
       std::max(order1, order2), 1, nu1, nu2, xy, dlnt, padding, window,
       window_width);
 
-  // Pack the integrand into the workspace's row-major input buffer:
-  // cell (first, second) lives at first*nell + second, the same rule
-  // pack_cube_3pcf spells out in threepcf_wrapper.cpp.
+  bessel_forward_cpp_3pcf(work, nell, integrand);
+  arma::Mat<double> result =
+      bessel_inverse_cpp_3pcf(work, nell, order1, order2);
+  fftlog_destroy_3pcf(work);
+  return result;
+}
+
+
+// ---------------------------------------------------------------------------
+// Replace a retained workspace's input and Fourier coefficients. Armadillo
+// stores its first index fastest; C stores its second index fastest. Pack
+// cell (first,second) at first*nell+second without changing the physical
+// axes. Copying every cell matters because an earlier inverse overwrites
+// the workspace's input buffer with its output. Nothing from that output
+// may enter the next forward transform.
+// ---------------------------------------------------------------------------
+void bessel_forward_cpp_3pcf(
+    fftlog_workspace_3pcf* work, // workspace owned by the caller
+    const int nell, // physical grid length recorded by its owner
+    const arma::Mat<double>& integrand // [nell,nell], notebook input
+  )
+{
+  if (!(nullptr != work
+        && nell >= 2
+        && integrand.n_rows == static_cast<arma::uword>(nell)
+        && integrand.n_cols == static_cast<arma::uword>(nell)
+        && integrand.is_finite())) {
+    spdlog::critical("3pcf transform wrapper: invalid retained input");
+    std::exit(1);
+  }
   double* packed = fftlog_input_3pcf(work, 0);
   for (int first=0; first<nell; first++) {
     for (int second=0; second<nell; second++) {
       packed[(size_t)first*nell+second] = integrand(first, second);
     }
   }
-
-  // Forward pass: compute the FFT coefficients of the biased integrand.
   fftlog_forward_3pcf(work, 0);
+}
 
-  // Inverse pass: contract those coefficients with the Bessel kernels
-  // of the requested orders and land on the theta grid.
+
+// ---------------------------------------------------------------------------
+// Use the latest forward coefficients for one pair of Bessel orders. The
+// inverse overwrites scratch and the workspace's output, but preserves
+// forward coefficients. The returned Armadillo matrix copies every value
+// before another inverse can overwrite that output. Its physical axes are
+// [theta1,theta2], the same order as the row-major C result.
+// ---------------------------------------------------------------------------
+arma::Mat<double> bessel_inverse_cpp_3pcf(
+    fftlog_workspace_3pcf* work, // workspace with a completed forward
+    const int nell, // physical grid length recorded by its owner
+    const int order1, // first cylindrical Bessel order
+    const int order2 // second cylindrical Bessel order
+  )
+{
+  if (!(nullptr != work
+        && nell >= 2)) {
+    spdlog::critical("3pcf transform wrapper: invalid retained workspace");
+    std::exit(1);
+  }
   const double* output = fftlog_inverse_3pcf(work, 0, order1, order2);
-
-  // Unpack the row-major [nell,nell] result into an Armadillo matrix,
-  // reversing the packing rule above cell by cell.
   arma::Mat<double> result(nell, nell);
   for (int first=0; first<nell; first++) {
     for (int second=0; second<nell; second++) {
       result(first, second) = output[(size_t)first*nell+second];
     }
   }
-
-  // Release the workspace before validating, so an abort cannot leak it.
-  fftlog_destroy_3pcf(work);
-
   if (!(result.is_finite())) {
     spdlog::critical("3pcf transform wrapper: nonfinite transform");
     std::exit(1);
   }
-
   return result;
 }
 

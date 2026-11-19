@@ -145,6 +145,11 @@ weights are applied. `projection_batch_size` bounds the number of prepared
 source tables held together; consume and release a batch before constructing
 the next one. Full-filter means do not require Legendre tables.
 
+The retained standalone `production.TwoBesselPlan` and its copied notebook
+adapters are documented in [FFT plan reuse](threepcf_fft_plan_reuse.md).
+That record distinguishes preparation from refreshed input coefficients,
+explains ownership and alignment, and points to private lifecycle tests.
+
 FFTW plan creation, memory allocation and initialization belong before
 OpenMP workers start. One parallel layer owns a phase. Transform workers
 execute serial FFTW plans through the new-array API on separate aligned

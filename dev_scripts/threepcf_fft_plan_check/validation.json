@@ -1,0 +1,37 @@
+{
+  "compiler": "Clang 19.1.7",
+  "core_start_revision": "f8a8054",
+  "project_test_revision": "df4af9acf1536a73ae04d3dc63519502b5b7f724",
+  "openmp_limit": 6,
+  "blas_threads": 1,
+  "production_sources_sha256": {
+    "cosmolike/3pcf/fftlog_3pcf.c": "ad442d91ec742940b77bb4d4c87629c96b934022f3e4d88997090ad373b34ee6",
+    "cosmolike/3pcf/transform_interface.cpp": "8cf0ffcfec49b5141665f3108220a8494e11abb6d211fb8c27dfb8cf442e0b8f",
+    "cosmolike/3pcf/transform_wrapper.cpp": "0473be0b09ddf16addeefa44f9a1aa969897e65ccb5965f12f078a8f58d4feb2",
+    "cosmolike/3pcf/transform_wrapper.hpp": "47f4b35c991b13625f0639d9fb583a2a8f3a70c3cfb657deb1e81e6a7685b1fe"
+  },
+  "runs": {
+    "strict": {
+      "tests": 94,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "build_return_code": 0,
+      "test_return_code": 0,
+      "full_source_manifest": "/private/tmp/fftw_retained_3pcf_20261118/strict/source_sha256.json",
+      "build_log": "/private/tmp/fftw_retained_3pcf_20261118/strict_build.log",
+      "test_log": "/private/tmp/fftw_retained_3pcf_20261118/strict_tests.log"
+    },
+    "debug": {
+      "tests": 94,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "build_return_code": 0,
+      "test_return_code": 0,
+      "full_source_manifest": "/private/tmp/fftw_retained_3pcf_20261118/debug/source_sha256.json",
+      "build_log": "/private/tmp/fftw_retained_3pcf_20261118/debug_build.log",
+      "test_log": "/private/tmp/fftw_retained_3pcf_20261118/debug_tests.log"
+    }
+  }
+}

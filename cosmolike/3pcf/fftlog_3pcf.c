@@ -414,6 +414,27 @@ fftlog_workspace_3pcf* fftlog_create_3pcf(
     exit(1);
   }
 
+  // FFTW's new-array execution requires the same alignment class as
+  // each array used to create the plan. The rounded strides are intended
+  // to preserve it; check the actual addresses so another allocator or
+  // vector-width build cannot silently violate that requirement. Each
+  // plan compares its own input/output slices with its own first slice.
+  const int real_alignment = fftw_alignment_of(work->real);
+  const int forward_alignment = fftw_alignment_of((double*)work->forward);
+  const int scratch_alignment = fftw_alignment_of((double*)work->scratch);
+  for (int worker=1; worker<workers; worker++) {
+    const size_t real_offset = (size_t)worker*work->real_stride;
+    const size_t complex_offset = (size_t)worker*work->complex_stride;
+    if (!(fftw_alignment_of(work->real+real_offset) == real_alignment
+          && fftw_alignment_of((double*)(work->forward+complex_offset))
+              == forward_alignment
+          && fftw_alignment_of((double*)(work->scratch+complex_offset))
+              == scratch_alignment)) {
+      log_fatal("fftlog_3pcf: worker arrays have incompatible FFTW alignment");
+      exit(1);
+    }
+  }
+
   // --- 3. BIAS TABLES ---
   // The bias rows divide the power-law tilt out of the input (file
   // head, step 1) and the output rows restore the matching powers

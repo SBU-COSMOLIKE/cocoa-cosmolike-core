@@ -2,6 +2,7 @@
 #define COSMOLIKE_TRANSFORM_WRAPPER_HPP
 #include <armadillo>
 #include "transform_3pcf.h"
+#include "fftlog_3pcf.h"
 
 namespace cosmolike_interface {
 
@@ -47,6 +48,23 @@ arma::Mat<double> bessel_cpp_3pcf(
     int padding, // zero cells added at both grid ends
     bool window, // enable the high-frequency taper
     double window_width // tapered coefficient fraction
+  );
+
+// Prepared notebook stages. The owner keeps this workspace alive; these
+// functions copy between Armadillo and its flat C buffers. A forward
+// replaces the input and coefficients. Repeated inverses reuse those
+// coefficients and return independent matrices, not borrowed scratch.
+void bessel_forward_cpp_3pcf(
+    fftlog_workspace_3pcf* work, // borrowed retained workspace
+    int nell, // owner's physical grid length
+    const arma::Mat<double>& integrand // [nell,nell], copied notebook input
+  );
+
+arma::Mat<double> bessel_inverse_cpp_3pcf(
+    fftlog_workspace_3pcf* work, // workspace with prepared coefficients
+    int nell, // owner's physical grid length
+    int order1, // first Bessel order within the prepared capacity
+    int order2 // second Bessel order within the prepared capacity
   );
 
 struct natural_result_cpp_3pcf {

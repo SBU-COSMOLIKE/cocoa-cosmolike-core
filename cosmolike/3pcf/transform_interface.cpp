@@ -213,6 +213,219 @@ static Array notebook_transform_input(
 
 
 
+// ---------------------------------------------------------------------------
+// Retained double-Bessel preparation for repeated integrands on one grid.
+// A workspace contains two FFTW recipes and the Mellin and bias tables.
+// Those depend on the fixed grid and settings, while the Fourier
+// coefficients depend on the latest input. Keeping the workspace therefore
+// avoids repeated preparation without treating old coefficients as new data.
+//
+// forward() copies the complete input and replaces its Fourier coefficients.
+// inverse() can then reuse those coefficients for several order pairs;
+// evaluate() performs both stages for a new input. The readiness flag prevents
+// reading uninitialized coefficients before the first forward transform.
+// Each returned array is an independent copy: another inverse may overwrite
+// workspace scratch but cannot overwrite an earlier Python result.
+//
+// One serial workspace slice is sufficient for a standalone double-Bessel
+// transform. Angular-mode OpenMP parallelism belongs to TransformPlan below.
+// Every Python entry retains the GIL, so two Python threads cannot enter this
+// owner's mutable scratch together. Different owners have separate storage.
+// The unique owner also releases the workspace if output allocation throws.
+//
+// Cache invalidation:
+// Geometry and order capacity stay fixed until this owner is destroyed.
+// forward() replaces the coefficients for every supplied input. Core resets
+// do not affect this independent workspace; no process-global cache is used.
+// ---------------------------------------------------------------------------
+class bessel_owner_3pcf {
+ public:
+  bessel_owner_3pcf(
+      const transform_array& ell, // positive logarithmic Fourier grid
+      const int max_order, // largest prepared cylindrical Bessel order
+      const double nu1, // first FFTLog bias
+      const double nu2, // second FFTLog bias
+      const double xy, // theta times reversed ell
+      const double dlnt, // logarithmic radial-bin width
+      const int padding, // zero cells at each end
+      const bool window, // coefficient taper enabled
+      const double window_width // tapered frequency fraction
+    )
+  {
+    shape_transform(ell, 1);
+    finite_transform(ell);
+    initialize(static_cast<int>(ell.size()), ell.data(), max_order,
+        nu1, nu2, xy, dlnt, padding, window, window_width);
+  }
+
+  bessel_owner_3pcf(const bessel_owner_3pcf&) = delete;
+  bessel_owner_3pcf& operator=(const bessel_owner_3pcf&) = delete;
+
+  // The notebook constructor copies arbitrary NumPy-compatible coordinates
+  // through Armadillo before the C workspace copies its immutable geometry.
+  static std::unique_ptr<bessel_owner_3pcf> notebook(
+      const py::object& ell, // copied notebook Fourier coordinates
+      const int max_order, // largest prepared Bessel order
+      const double nu1, // first bias
+      const double nu2, // second bias
+      const double xy, // output-grid alignment
+      const double dlnt, // radial-bin width
+      const int padding, // zero cells at each end
+      const bool window, // coefficient taper enabled
+      const double window_width // tapered frequency fraction
+    )
+  {
+    const auto copied =
+        notebook_transform_input<arma::Col<double>>(ell, 1);
+    auto owner = std::unique_ptr<bessel_owner_3pcf>(new bessel_owner_3pcf());
+    owner->initialize(static_cast<int>(copied.n_elem), copied.memptr(),
+        max_order, nu1, nu2, xy, dlnt, padding, window, window_width);
+    return owner;
+  }
+
+  void forward(
+      const transform_array& integrand // [nell,nell], dln ell integrand
+    )
+  {
+    shape_transform(integrand, 2);
+    if (!(integrand.shape(0) == nell_
+          && integrand.shape(1) == nell_)) {
+      spdlog::critical("3pcf two-Bessel plan: integrand shape mismatch");
+      std::exit(1);
+    }
+    finite_transform(integrand);
+    std::copy_n(integrand.data(), integrand.size(),
+        fftlog_input_3pcf(work_.get(), 0));
+    fftlog_forward_3pcf(work_.get(), 0);
+    ready_ = true;
+  }
+
+  transform_array inverse(
+      const int order1, // first cylindrical Bessel order
+      const int order2 // second cylindrical Bessel order
+    )
+  {
+    validate_inverse(order1, order2);
+    const double* values =
+        fftlog_inverse_3pcf(work_.get(), 0, order1, order2);
+    transform_array output({nell_, nell_});
+    std::copy_n(values, output.size(), output.mutable_data());
+    finite_transform(output);
+    return output;
+  }
+
+  transform_array evaluate(
+      const transform_array& integrand, // complete replacement input
+      const int order1, // first cylindrical Bessel order
+      const int order2 // second cylindrical Bessel order
+    )
+  {
+    validate_orders(order1, order2);
+    forward(integrand);
+    return inverse(order1, order2);
+  }
+
+  void forward_notebook(
+      const py::object& integrand // copied input with arbitrary strides
+    )
+  {
+    const auto copied =
+        notebook_transform_input<arma::Mat<double>>(integrand, 2);
+    bessel_forward_cpp_3pcf(work_.get(), nell_, copied);
+    ready_ = true;
+  }
+
+  py::object inverse_notebook(
+      const int order1, // first cylindrical Bessel order
+      const int order2 // second cylindrical Bessel order
+    )
+  {
+    validate_inverse(order1, order2);
+    return carma::mat_to_arr(
+        bessel_inverse_cpp_3pcf(work_.get(), nell_, order1, order2));
+  }
+
+  py::object evaluate_notebook(
+      const py::object& integrand, // complete copied replacement input
+      const int order1, // first cylindrical Bessel order
+      const int order2 // second cylindrical Bessel order
+    )
+  {
+    validate_orders(order1, order2);
+    forward_notebook(integrand);
+    return inverse_notebook(order1, order2);
+  }
+
+  transform_array theta() const
+  {
+    transform_array result(nell_);
+    std::copy_n(theta_.data(), nell_, result.mutable_data());
+    return result;
+  }
+
+ private:
+  bessel_owner_3pcf() = default;
+
+  void initialize(
+      const int nell, // physical grid length
+      const double* ell, // coordinates copied by the C workspace
+      const int max_order, // largest prepared Bessel order
+      const double nu1, // first bias
+      const double nu2, // second bias
+      const double xy, // output-grid alignment
+      const double dlnt, // radial-bin width
+      const int padding, // zero cells at each end
+      const bool window, // coefficient taper enabled
+      const double window_width // tapered frequency fraction
+    )
+  {
+    work_.reset(fftlog_create_3pcf(nell, ell, max_order, 1,
+        nu1, nu2, xy, dlnt, padding, window, window_width));
+    nell_ = nell;
+    max_order_ = max_order;
+    theta_ = transform_array(nell_);
+    for (int index=0; index<nell_; index++) {
+      theta_.mutable_data()[index] = xy/ell[nell_-1-index];
+    }
+  }
+
+  void validate_orders(
+      const int order1, // first requested Bessel order
+      const int order2 // second requested Bessel order
+    ) const
+  {
+    if (!(order1 >= 0
+          && order1 <= max_order_
+          && order2 >= 0
+          && order2 <= max_order_)) {
+      spdlog::critical("3pcf two-Bessel plan: orders must be in [0, {}]",
+          max_order_);
+      std::exit(1);
+    }
+  }
+
+  void validate_inverse(
+      const int order1, // first requested Bessel order
+      const int order2 // second requested Bessel order
+    ) const
+  {
+    validate_orders(order1, order2);
+    if (!ready_) {
+      spdlog::critical("3pcf two-Bessel plan: call forward before inverse");
+      std::exit(1);
+    }
+  }
+
+  std::unique_ptr<fftlog_workspace_3pcf,
+      decltype(&fftlog_destroy_3pcf)> work_{nullptr, fftlog_destroy_3pcf};
+  int nell_ = 0; // immutable physical-grid length
+  int max_order_ = 0; // immutable prepared-order capacity
+  bool ready_ = false; // coefficients belong to the last completed forward
+  transform_array theta_; // copied reversed reciprocal output grid
+};
+
+
+
 // ============================================================================
 // [SECTION] PRODUCTION TRANSFORM PLAN
 // ============================================================================
@@ -575,6 +788,51 @@ static void bind_transform_notebook_3pcf(
       py::arg("xy")=1.0, py::arg("dlnt")=0.0, py::arg("padding")=0,
       py::arg("window")=false, py::arg("window_width")=0.25);
 
+  notebook.def("two_bessel_plan", &bessel_owner_3pcf::notebook,
+      "Create a retained two-Bessel plan after copying ell through "
+      "Armadillo. Use the notebook.two_bessel_forward, "
+      "two_bessel_inverse and two_bessel_evaluate adapters for copied "
+      "integrands and independently owned outputs.",
+      py::arg("ell"), py::arg("max_order"), py::arg("nu1")=1.01,
+      py::arg("nu2")=1.01, py::arg("xy")=1.0, py::arg("dlnt")=0.0,
+      py::arg("padding")=0, py::arg("window")=false,
+      py::arg("window_width")=0.25);
+
+  notebook.def("two_bessel_forward", [](
+      bessel_owner_3pcf& plan, // retained geometry and coefficients
+      const py::object& integrand // copied notebook input
+    ) {
+    plan.forward_notebook(integrand);
+  },
+      "Copy a new [nell,nell] integrand and replace the retained "
+      "forward coefficients. Later inverse calls use this input.",
+      py::arg("plan"), py::arg("integrand"));
+
+  notebook.def("two_bessel_inverse", [](
+      bessel_owner_3pcf& plan, // owner with prepared coefficients
+      const int order1, // first Bessel order
+      const int order2 // second Bessel order
+    ) {
+    return plan.inverse_notebook(order1, order2);
+  },
+      "Transform the latest forward coefficients for an order pair. "
+      "Return an independent [nell,nell] array through Armadillo; "
+      "forward must have run first.",
+      py::arg("plan"), py::arg("order1"), py::arg("order2"));
+
+  notebook.def("two_bessel_evaluate", [](
+      bessel_owner_3pcf& plan, // retained geometry and scratch
+      const py::object& integrand, // complete replacement input
+      const int order1, // first Bessel order
+      const int order2 // second Bessel order
+    ) {
+    return plan.evaluate_notebook(integrand, order1, order2);
+  },
+      "Copy a new integrand, recompute its forward coefficients and "
+      "return one independent double-Bessel transform.",
+      py::arg("plan"), py::arg("integrand"), py::arg("order1"),
+      py::arg("order2"));
+
   notebook.def("natural_components", [](
       transform_owner_3pcf& plan, // already prepared geometry
       const py::object& multipoles // copied, arbitrary-stride b_L
@@ -778,6 +1036,35 @@ void bind_threepcf_transform(
       py::arg("nu2")=1.01, py::arg("xy")=1.0, py::arg("dlnt")=0.0,
       py::arg("padding")=0, py::arg("window")=false,
       py::arg("window_width")=0.25);
+
+  py::class_<bessel_owner_3pcf>(production, "TwoBesselPlan")
+      .def(py::init<const transform_array&, int, double, double, double,
+          double, int, bool, double>(),
+          "Immutable double-Bessel FFTLog geometry, kernels and FFTW "
+          "plans. max_order prepares every cylindrical Bessel order "
+          "from zero through that value. Each object owns separate "
+          "scratch; a new grid or numerical setting needs a new object.",
+          py::arg("ell").noconvert(), py::arg("max_order"),
+          py::arg("nu1")=1.01, py::arg("nu2")=1.01, py::arg("xy")=1.0,
+          py::arg("dlnt")=0.0, py::arg("padding")=0,
+          py::arg("window")=false, py::arg("window_width")=0.25)
+      .def("forward", &bessel_owner_3pcf::forward,
+          "Copy the complete [nell,nell] float64 integrand and replace "
+          "its forward coefficients. Reuses preparation, never old input.",
+          py::arg("integrand").noconvert())
+      .def("inverse", &bessel_owner_3pcf::inverse,
+          "Return the double-Bessel transform of the latest input for "
+          "orders in [0,max_order]. Requires a completed forward call. "
+          "The returned [nell,nell] array owns its values independently.",
+          py::arg("order1"), py::arg("order2"))
+      .def("evaluate", &bessel_owner_3pcf::evaluate,
+          "Replace the input, run its forward FFT and return one "
+          "double-Bessel transform on the retained geometry.",
+          py::arg("integrand").noconvert(), py::arg("order1"),
+          py::arg("order2"))
+      .def_property_readonly("theta", &bessel_owner_3pcf::theta,
+          "Independent copy of theta = xy/reversed(ell); with dlnt>0 "
+          "these are lower radial-bin edges.");
 
   py::class_<transform_owner_3pcf>(production, "TransformPlan")
       .def(py::init<const transform_array&, const transform_array&,

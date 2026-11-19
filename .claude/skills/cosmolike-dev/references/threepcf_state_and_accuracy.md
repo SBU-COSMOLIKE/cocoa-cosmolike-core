@@ -19,6 +19,7 @@ Neither failure is tested by constructing every case in a fresh process.
 | Physical model | k/z/LOS/kernel counts, source count, coarse/dense fit counts | All physical axes and arrays, cosmology, source-reader convention | Constructor copies input; destructor releases owned arrays |
 | Projection grid | Triangle/multipole axes, L cap, chart choice and dense ratios | Model, ordered bins, every IA/baryon selector, bounds and coordinates | New owner for a changed definition; a kept old grid stays valid |
 | Transform plan | FFT size/padding, radial selection, L/M caps, scratch capacity | ell/phi/selection values, biases, window, phase/projection convention | Constructor prepares serial FFTW plans; destructor releases plans/storage |
+| Standalone double-Bessel plan | Physical and padded grid lengths, maximum Bessel order; one workspace slice | Copied ell, both biases, xy, bin width, padding and taper; latest complete forward input | Explicit owner retains FFTW/Mellin preparation; core reset leaves live owners valid |
 | Multipole query map | Requested ell count, projected-grid axis counts and L cap | Exact copied log-ell, physical log-psi and internal PSI-coordinate axes; psi_scale and reference-mode selector; requested ell fixed by plan | Plan owns the map; recreate when the complete axis key differs |
 | Projection batch | LOS count, eight terms, number of triplets | Copied radial weights from projectors sharing one immutable model and exactly equal IA parameters | Call-local owner, destroyed before borrowed first projector/model |
 | Aperture weights | Side/opening-angle/filter counts | Bin widths, coordinates and ordered filter radii | Caller owns the returned numerical weights |
@@ -33,6 +34,9 @@ reset in the same change. A model-owned immutable table has those values
 fixed for its lifetime, so construction/destruction performs the corresponding
 allocation/refill/reset work. The C++ owner must preserve dependencies: a grid
 that borrows a physical model cannot outlive that model's storage.
+
+For the standalone FFTLog readiness flag, copied adapters and lifecycle
+checks, read [FFT plan reuse](threepcf_fft_plan_reuse.md).
 
 Production arrays are borrowed only for the duration stated by the C/C++
 entry point. The notebook adapter copies through Armadillo and converts
