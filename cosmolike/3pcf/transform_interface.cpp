@@ -1,4 +1,8 @@
 #include <algorithm>
+#include <array>
+#include <vector>
+#include "aperture_3pcf.h"
+#include "threepcf_interface.hpp"
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -491,6 +495,7 @@ class transform_owner_3pcf {
       std::exit(1);
     }
 
+    ell_.assign(ell.data(), ell.data()+ell.size());
     nell_ = static_cast<int>(ell.size());
     ntheta_ = static_cast<int>(indices.size());
     nphi_ = static_cast<int>(phi.size());
@@ -705,6 +710,304 @@ class transform_owner_3pcf {
     return result;
   }
 
+  // Prepare the aperture measurement on this plan's fixed triangle grid.
+  // Each output row names an ordered source triplet and three radii.
+  // Repeated triplets share a projection; repeated radii share weights.
+  void init_aperture_rows(
+    const transform_indices& bins, // [row,3], source-bin indices
+    const transform_array& filters, // [row,3], aperture radii in radians
+    const transform_array& lower, // original side-bin lower edges
+    const transform_array& phi, // [nphi], opening-angle representatives
+    const double dlnt, // logarithmic side-bin width
+    const double dphi, // opening-angle integration width
+    const py::object& side_keep, // optional Boolean mask on side bins
+    const std::string& representative_rule, // geometric or area_weighted
+    const double representative_offset, // fraction of the lower side edge
+    const py::dict& settings, // resolved projection controls
+    const int batch_size, // maximum simultaneous source projection grids
+    const bool prepared, // false selects direct reference quadrature
+    const int nmu // angular quadrature count for the direct reference
+  )
+  {
+    shape_transform(bins, 2);
+    shape_transform(filters, 2);
+    finite_transform(filters);
+    if (bins.shape(1) != 3 || filters.shape(1) != 3
+        || bins.shape(0) != filters.shape(0) || batch_size < 1
+        || nmu <= lmax_ || !std::isfinite(dlnt) || dlnt <= 0.0
+        || !std::isfinite(dphi) || dphi <= 0.0
+        || !std::isfinite(representative_offset)) {
+      throw py::value_error("Invalid aperture rows or angular quadrature.");
+    }
+    std::vector<int> keep(ntheta_, 1);
+    if (!side_keep.is_none()) {
+      auto raw = py::array::ensure(side_keep);
+      if (!raw || !raw.dtype().is(py::dtype::of<bool>())) {
+        throw py::value_error("side_keep must be a Boolean array.");
+      }
+      auto supplied = py::array_t<bool, py::array::c_style>::ensure(raw);
+      if (!supplied || supplied.ndim() != 1 || supplied.size() != ntheta_) {
+        throw py::value_error("side_keep must match the radial-bin count.");
+      }
+      for (int i=0; i<ntheta_; i++) {
+        keep[i] = supplied.data()[i];
+      }
+      if (std::count(keep.begin(), keep.end(), 1) == 0) {
+        throw py::value_error("side_keep must retain at least one radial bin.");
+      }
+    }
+    double factor = std::exp(0.5*dlnt);
+    if (representative_rule == "area_weighted") {
+      factor = (2.0/3.0)*std::expm1(3.0*dlnt)/std::expm1(2.0*dlnt);
+    } else if (representative_rule != "geometric") {
+      throw py::value_error("Unknown side representative rule.");
+    }
+    factor += representative_offset;
+    if (factor < 1.0-1.e-14 || factor > std::exp(dlnt)*(1.0+1.e-14)) {
+      throw py::value_error("Representative side lies outside its bin.");
+    }
+    std::vector<double> sides(ntheta_);
+    for (int i=0; i<ntheta_; i++) {
+      sides[i] = lower.data()[i]*factor;
+    }
+    std::vector<std::array<int,3>> triplets;
+    std::vector<std::array<double,3>> radii;
+    aperture_bins_.assign(bins.data(), bins.data()+bins.size());
+    aperture_filter_.clear();
+    aperture_triplet_.clear();
+    for (int row=0; row<bins.shape(0); row++) {
+      std::array<int,3> triplet;
+      std::array<double,3> radius;
+      for (int leg=0; leg<3; leg++) {
+        triplet[leg] = bins.data()[3*row+leg];
+        radius[leg] = filters.data()[3*row+leg];
+        if (triplet[leg] < 0 || radius[leg] <= 0.0) {
+          throw py::value_error("Aperture bins/radii must be nonnegative/positive.");
+        }
+      }
+      auto t = std::find(triplets.begin(), triplets.end(), triplet);
+      aperture_triplet_.push_back(t-triplets.begin());
+      if (t == triplets.end()) {
+        triplets.push_back(triplet);
+      }
+      auto r = std::find(radii.begin(), radii.end(), radius);
+      aperture_filter_.push_back(r-radii.begin());
+      if (r == radii.end()) {
+        radii.push_back(radius);
+      }
+    }
+    aperture_triplets_.clear();
+    for (const auto& triplet : triplets) {
+      aperture_triplets_.insert(aperture_triplets_.end(),
+        triplet.begin(), triplet.end());
+    }
+    std::vector<double> flat_filters;
+    for (const auto& radius : radii) {
+      flat_filters.insert(flat_filters.end(), radius.begin(), radius.end());
+    }
+    const size_t triangles = static_cast<size_t>(ntheta_)*ntheta_*nphi_;
+    aperture_nfilter_ = radii.size();
+    aperture_real_.resize(radii.size()*4*triangles);
+    aperture_imag_.resize(aperture_real_.size());
+    aperture_weights_3pcf(ntheta_, ntheta_, nphi_, aperture_nfilter_,
+      sides.data(), sides.data(), phi.data(), dlnt, dphi,
+      flat_filters.data(), aperture_real_.data(), aperture_imag_.data());
+    for (size_t f=0; f<radii.size()*4; f++) {
+      for (int i=0; i<ntheta_; i++) {
+        for (int j=0; j<ntheta_; j++) {
+          if (!keep[i] || !keep[j]) {
+            const size_t offset = f*triangles+(i*ntheta_+j)*nphi_;
+            std::fill_n(aperture_real_.data()+offset, nphi_, 0.0);
+            std::fill_n(aperture_imag_.data()+offset, nphi_, 0.0);
+          }
+        }
+      }
+    }
+    aperture_keep_ = keep;
+    aperture_sides_ = sides;
+    aperture_settings_ = settings_physics_grid(settings);
+    aperture_settings_record_ = py::dict(settings.attr("copy")());
+    aperture_batch_ = batch_size;
+    aperture_prepared_ = prepared;
+    aperture_nmu_ = nmu;
+  }
+
+  // Project each ordered source triplet once, then assign every requested
+  // aperture radius to its original output row. Physical grids are rebuilt
+  // on every call. Only geometry and FFT scratch persist in this plan.
+  transform_array aperture_vector(
+    const py::object& model, // immutable physical model for this evaluation
+    const py::dict& ia, // IA and feedback parameters in CosmoLike convention
+    const py::object& calibration, // optional source shear offsets
+    const int component // total=0, NLA baseline=1, IA residual=2
+  )
+  {
+    if (aperture_filter_.empty()) {
+      throw py::value_error("Initialize aperture rows before evaluating them.");
+    }
+    const auto* physical = borrow_physics_model_3pcf(model);
+    const auto parameters = parameters_physics(ia);
+    const int nrow = aperture_filter_.size();
+    std::vector<double> calibration_factors(nrow, 1.0);
+    if (!calibration.is_none()) {
+      auto shear = transform_array::ensure(calibration);
+      if (!shear || shear.ndim() != 1) {
+        throw py::value_error("Calibration must contain one offset per source.");
+      }
+      finite_transform(shear);
+      for (int row=0; row<nrow; row++) {
+        double factor = 1.0;
+        for (int leg=0; leg<3; leg++) {
+          const int source = aperture_bins_[3*row+leg];
+          if (source >= shear.size()) {
+            throw py::value_error("Calibration omits an aperture source bin.");
+          }
+          factor *= 1.0+shear.data()[source];
+        }
+        calibration_factors[row] = factor;
+      }
+    }
+    transform_array result(nrow);
+    const int ntriplet = aperture_triplets_.size()/3;
+    std::vector<double> values(aperture_nfilter_);
+    std::vector<double> multipoles;
+    if (!aperture_prepared_ || component != 0) {
+      multipoles.resize(static_cast<size_t>(lmax_+1)*nell_*nell_);
+    }
+    for (int start=0; start<ntriplet; start+=aperture_batch_) {
+      const int count = std::min(aperture_batch_, ntriplet-start);
+      std::vector<physics_grid_3pcf*> grids(count, nullptr);
+      if (aperture_prepared_) {
+        physics_grid_create_many_3pcf(physical, &parameters, count,
+          aperture_triplets_.data()+3*start, &aperture_settings_, grids.data());
+      }
+      for (int i=0; i<count; i++) {
+        const int triplet = start+i;
+        if (aperture_prepared_ && component == 0) {
+          transform_aperture_grid_3pcf(plan_, grids[i], aperture_nfilter_,
+            aperture_real_.data(), aperture_imag_.data(), values.data());
+        } else {
+          if (aperture_prepared_) {
+            physics_grid_multipoles_3pcf(grids[i], nell_, ell_.data(),
+              component, multipoles.data());
+          } else {
+            physics_multipoles_3pcf(physical, &parameters,
+              aperture_triplets_.data()+3*triplet, nell_, ell_.data(),
+              lmax_, aperture_nmu_, component, multipoles.data());
+          }
+          transform_aperture_3pcf(plan_, multipoles.data(), aperture_nfilter_,
+            aperture_real_.data(), aperture_imag_.data(), values.data());
+        }
+        for (int row=0; row<nrow; row++) {
+          if (aperture_triplet_[row] == triplet) {
+            result.mutable_data()[row] = values[aperture_filter_[row]];
+          }
+        }
+        physics_grid_destroy_3pcf(grids[i]);
+      }
+    }
+    for (int row=0; row<nrow; row++) {
+      result.mutable_data()[row] *= calibration_factors[row];
+    }
+    finite_transform(result);
+    return result;
+  }
+
+  // Decompose by physical operator AND by placement of intrinsic shapes.
+  // GGI puts I on the third leg; IIG puts I on the first two. Selecting
+  // vertices in C avoids obtaining a small IA term by subtracting totals.
+  py::dict aperture_components(
+    const py::object& model, // same physical input as the total prediction
+    const py::dict& ia, // full IA choice, without a preselected operator
+    const py::object& calibration // optional source shear offsets
+  )
+  {
+    const auto parameters = parameters_physics(ia);
+    if (parameters.operator_component != 0 || parameters.intrinsic_legs != -1
+        || (aperture_prepared_ && aperture_settings_.signed_baseline != 1)) {
+      throw py::value_error("Components require full IA and signed_baseline=1.");
+    }
+    const auto total = aperture_vector(model, ia, calibration, 0);
+    const int nrow = total.size();
+    transform_array values({5, 8, nrow});
+    std::fill_n(values.mutable_data(), values.size(), 0.0);
+    const int masks[8] = {0, 4, 2, 1, 6, 3, 5, 7};
+    for (int op=0; op<5; op++) {
+      for (int place=0; place<8; place++) {
+        if ((op == 0 && place != 0) || (op != 0 && place == 0)) {
+          continue;
+        }
+        py::dict selected(ia.attr("copy")());
+        selected["operator_component"] = std::max(1, op);
+        selected["intrinsic_legs"] = masks[place];
+        const auto part = aperture_vector(model, selected, calibration, 0);
+        std::copy_n(part.data(), nrow,
+          values.mutable_data()+(op*8+place)*nrow);
+      }
+    }
+    transform_array closure(nrow);
+    for (int row=0; row<nrow; row++) {
+      double sum = 0.0;
+      for (int term=0; term<40; term++) {
+        sum += values.data()[term*nrow+row];
+      }
+      closure.mutable_data()[row] = sum-total.data()[row];
+    }
+    py::dict result;
+    result["operators"] = py::make_tuple("gravity", "linear_alignment",
+      "density_weighting", "tidal_torque", "velocity_shear");
+    result["placements"] = py::make_tuple("GGG", "GGI", "GIG", "IGG",
+      "GII", "IIG", "IGI", "III");
+    result["values"] = values;
+    result["total"] = total;
+    result["closure"] = closure;
+    return result;
+  }
+
+  transform_array ell() const
+  {
+    transform_array result(nell_);
+    std::copy(ell_.begin(), ell_.end(), result.mutable_data());
+    return result;
+  }
+
+  // Diagnostic arrays are copies: notebook edits cannot change retained FFT
+  // geometry or the triangle selection used by later likelihood calls.
+  transform_array weights_real() const
+  {
+    transform_array result({aperture_nfilter_, 4, ntheta_*ntheta_*nphi_});
+    std::copy(aperture_real_.begin(), aperture_real_.end(), result.mutable_data());
+    return result;
+  }
+
+  transform_array weights_imag() const
+  {
+    transform_array result({aperture_nfilter_, 4, ntheta_*ntheta_*nphi_});
+    std::copy(aperture_imag_.begin(), aperture_imag_.end(), result.mutable_data());
+    return result;
+  }
+
+  py::array_t<bool> side_keep() const
+  {
+    py::array_t<bool> result(aperture_keep_.size());
+    for (size_t i=0; i<aperture_keep_.size(); i++) {
+      result.mutable_data()[i] = aperture_keep_[i];
+    }
+    return result;
+  }
+
+  transform_array representative_sides() const
+  {
+    transform_array result(aperture_sides_.size());
+    std::copy(aperture_sides_.begin(), aperture_sides_.end(), result.mutable_data());
+    return result;
+  }
+
+  py::dict projection_settings() const
+  {
+    return py::dict(aperture_settings_record_.attr("copy")());
+  }
+
  private:
   // Shared input contract of the production methods: b_L must match
   // this plan's [lmax+1, nell, nell] shape, aligned and finite.
@@ -722,6 +1025,16 @@ class transform_owner_3pcf {
     finite_transform(multipoles);
   }
 
+  std::vector<double> ell_; // owned physical Fourier coordinates
+  std::vector<int> aperture_keep_;
+  std::vector<double> aperture_sides_;
+  std::vector<int> aperture_bins_, aperture_triplets_;
+  std::vector<int> aperture_triplet_, aperture_filter_;
+  std::vector<double> aperture_real_, aperture_imag_;
+  physics_grid_settings_3pcf aperture_settings_;
+  py::dict aperture_settings_record_;
+  int aperture_nfilter_=0, aperture_batch_=1, aperture_nmu_=0;
+  bool aperture_prepared_=true;
   transform_plan_3pcf* plan_ = nullptr; // owned C plan and FFT scratch
   int nell_ = 0; // Fourier grid length
   int ntheta_ = 0; // radial bins the indices pick
@@ -732,6 +1045,174 @@ class transform_owner_3pcf {
 };
 
 
+
+// Align lower angular-bin edges exactly with FFTLog's reciprocal ell grid.
+// Refinement subdivides the logarithmic bin width by an integer; extending
+// the Fourier range therefore changes no requested measurement angle.
+static py::tuple aligned_fft_grid_3pcf(
+  const transform_array& theta, // lower side edges in radians
+  const double dlnt, // common logarithmic bin width
+  const double ell_min, // required smallest Fourier multipole
+  const double ell_max, // required largest Fourier multipole
+  const int minimum_size // minimum even FFT length
+)
+{
+  shape_transform(theta, 1);
+  finite_transform(theta);
+  if (!std::isfinite(dlnt) || dlnt <= 0.0
+      || !std::isfinite(ell_min) || ell_min <= 0.0
+      || !std::isfinite(ell_max) || ell_max <= ell_min || minimum_size < 4) {
+    throw py::value_error("Invalid angular/Fourier alignment bounds.");
+  }
+  for (int i=0; i<theta.size(); i++) {
+    if (theta.data()[i] <= 0.0 || (i > 0 &&
+        std::abs(std::log(theta.data()[i])-std::log(theta.data()[i-1])-dlnt)
+          > 1.e-13+1.e-11*std::abs(dlnt))) {
+      throw py::value_error("Theta edges must be equally log-spaced.");
+    }
+  }
+  const double subdivisions = std::max(1.0,
+    std::ceil(minimum_size*dlnt/std::log(ell_max/ell_min)));
+  const double step = dlnt/subdivisions;
+  const double first = std::max(0.0,
+    std::ceil(std::log(theta.data()[0]*ell_max)/step));
+  const double log_maximum = -std::log(theta.data()[0])+first*step;
+  const double required = std::max({double(minimum_size),
+    std::ceil((log_maximum-std::log(ell_min))/step)+1.0,
+    first+(theta.size()-1)*subdivisions+1.0});
+  if (!std::isfinite(required) || required > 65536.0) {
+    throw py::value_error("FFT length exceeds 65536; reduce its density.");
+  }
+  const int length = next_even_fft_size(static_cast<int>(required));
+  if (length > 65536) {
+    throw py::value_error("FFT length exceeds 65536; reduce its density.");
+  }
+  transform_array ell(length);
+  transform_indices indices(theta.size());
+  for (int i=0; i<length; i++) {
+    ell.mutable_data()[i] = std::exp(log_maximum-step*(length-1-i));
+  }
+  for (int i=0; i<theta.size(); i++) {
+    const int index = first+subdivisions*i;
+    indices.mutable_data()[i] = index;
+    if (std::abs(1.0/ell.data()[length-1-index]-theta.data()[i])
+        > 2.e-12*theta.data()[i]) {
+      throw py::value_error("FFT alignment lost angular precision.");
+    }
+  }
+  finite_transform(ell);
+  return py::make_tuple(ell, indices);
+}
+
+static std::unique_ptr<transform_owner_3pcf> aperture_plan_3pcf(
+  const transform_indices& bins, // [row,3], ordered source bins
+  const transform_array& filters, // [row,3], aperture radii in radians
+  const transform_array& theta_lower, // lower side edges in radians
+  const transform_array& phi, // opening-angle bin representatives
+  double dlnt, // logarithmic side-bin width
+  double dphi, // angular integration width
+  double ell_min, // required Fourier lower endpoint
+  double ell_max, // required Fourier upper endpoint
+  int minimum_size, // baseline minimum FFT length
+  int lmax, // largest Legendre degree
+  int mmax, // largest Fourier mode in the opening angle
+  int nmu, // baseline angular quadrature count
+  const py::dict& transform_options, // existing transform constructor controls
+  const std::string& projection_mode, // prepared or direct reference
+  const py::dict& projection_settings, // baseline physical interpolation controls
+  int projection_batch_size, // maximum concurrent source grids
+  const py::object& accuracy, // global and individual refinement multipliers
+  const py::object& side_keep, // optional Boolean mask on side bins
+  const std::string& representative_rule, // geometric or area_weighted
+  double representative_offset // displacement as fraction of a lower bin edge
+)
+{
+  const auto controls = init_accuracy_3pcf(accuracy);
+  minimum_size = accuracy_count_3pcf(controls, minimum_size,
+    "fft_boost", false, false);
+  nmu = accuracy_count_3pcf(controls, nmu, "angular_boost", true, false);
+  const auto aligned = aligned_fft_grid_3pcf(theta_lower, dlnt,
+    ell_min, ell_max, minimum_size);
+  const auto ell = aligned[0].cast<transform_array>();
+  const auto indices = aligned[1].cast<transform_indices>();
+  auto settings = accuracy_projection_3pcf(controls, projection_settings);
+  if (!settings.contains("ell_min")) {
+    settings["ell_min"] = ell.data()[0];
+  }
+  if (!settings.contains("ell_max")) {
+    settings["ell_max"] = ell.data()[ell.size()-1];
+  }
+  if (!settings.contains("lmax")) {
+    settings["lmax"] = lmax;
+  }
+  if (!settings.contains("prepare_multipoles")) {
+    settings["prepare_multipoles"] = 1;
+  }
+  if (py::cast<int>(settings["lmax"]) != lmax
+      || py::cast<int>(settings["prepare_multipoles"]) != 1
+      || py::cast<double>(settings["ell_min"]) > ell.data()[0]
+      || py::cast<double>(settings["ell_max"]) < ell.data()[ell.size()-1]
+      || (projection_mode != "prepared" && projection_mode != "direct")) {
+    throw py::value_error("Finite-SAS projection must cover its FFT multipoles.");
+  }
+  shape_transform(phi, 1);
+  finite_transform(phi);
+  for (int i=0; i<phi.size(); i++) {
+    if (phi.data()[i] <= 0.0 || phi.data()[i] >= M_PI
+        || (i > 0 && std::abs(phi.data()[i]-phi.data()[i-1]-dphi)
+          > 1.e-12*std::abs(dphi))) {
+      throw py::value_error("Require uniformly spaced 0<phi<pi.");
+    }
+  }
+  // Match the existing TransformPlan defaults. These FFT biases and taper
+  // controls are numerical choices, independent of the physical model.
+  double nu1=1.01, nu2=1.01, window_width=0.25, averaging=0.0;
+  int padding=0, npsi=200;
+  bool window=false, ordered=true;
+  std::string convention="fastnc";
+  for (const auto& item : transform_options) {
+    const std::string key = py::cast<std::string>(item.first);
+    if (key == "nu1") {
+      nu1 = py::cast<double>(item.second);
+    }
+    else if (key == "nu2") {
+      nu2 = py::cast<double>(item.second);
+    }
+    else if (key == "window_width") {
+      window_width = py::cast<double>(item.second);
+    }
+    else if (key == "dphi") {
+      averaging = py::cast<double>(item.second);
+    }
+    else if (key == "padding") {
+      padding = py::cast<int>(item.second);
+    }
+    else if (key == "npsi") {
+      npsi = py::cast<int>(item.second);
+    }
+    else if (key == "window") {
+      window = py::cast<bool>(item.second);
+    }
+    else if (key == "ordered_legs") {
+      ordered = py::cast<bool>(item.second);
+    }
+    else if (key == "convention") {
+      convention = py::cast<std::string>(item.second);
+    }
+    else if (key == "projection" && py::cast<std::string>(item.second) == "centroid") {}
+    else if (key == "xy" && py::cast<double>(item.second) == 1.0) {}
+    else {
+      throw py::value_error("Unsupported aperture transform option: "+key);
+    }
+  }
+  auto plan = std::make_unique<transform_owner_3pcf>(ell, phi, indices,
+    lmax, mmax, nu1, nu2, 1.0, dlnt, padding, window, window_width,
+    npsi, averaging, "centroid", convention, ordered);
+  plan->init_aperture_rows(bins, filters, theta_lower, phi, dlnt, dphi, side_keep,
+    representative_rule, representative_offset, settings,
+    projection_batch_size, projection_mode == "prepared", nmu);
+  return plan;
+}
 
 // ============================================================================
 // [SECTION] NOTEBOOK REGISTRATION
@@ -1066,6 +1547,10 @@ void bind_threepcf_transform(
           "Independent copy of theta = xy/reversed(ell); with dlnt>0 "
           "these are lower radial-bin edges.");
 
+  module.def("aligned_fft_grid", &aligned_fft_grid_3pcf,
+    py::arg("theta_lower"), py::arg("dlnt"), py::arg("ell_min"),
+    py::arg("ell_max"), py::arg("minimum_size"));
+
   py::class_<transform_owner_3pcf>(production, "TransformPlan")
       .def(py::init<const transform_array&, const transform_array&,
           const transform_indices&, int, int, double, double, double,
@@ -1092,6 +1577,32 @@ void bind_threepcf_transform(
           py::arg("npsi")=200, py::arg("dphi")=0.0,
           py::arg("projection")="centroid", py::arg("convention")="fastnc",
           py::arg("ordered_legs")=true)
+      .def_static("for_aperture", &aperture_plan_3pcf,
+          py::arg("bins"), py::arg("filters"), py::arg("theta_lower"),
+          py::arg("phi"), py::arg("dlnt"), py::arg("dphi"),
+          py::arg("ell_min"), py::arg("ell_max"), py::arg("minimum_size"),
+          py::arg("lmax"), py::arg("mmax"), py::arg("nmu"),
+          py::arg("transform_options")=py::dict(),
+          py::arg("projection_mode")="prepared",
+          py::arg("projection_settings")=py::dict(),
+          py::arg("projection_batch_size")=4,
+          py::arg("accuracy")=py::none(), py::arg("side_keep")=py::none(),
+          py::arg("representative_rule")="geometric",
+          py::arg("representative_offset")=0.0)
+      .def("aperture_vector", &transform_owner_3pcf::aperture_vector,
+          py::arg("model"), py::arg("ia"),
+          py::arg("calibration")=py::none(), py::arg("component")=0)
+      .def("aperture_components", &transform_owner_3pcf::aperture_components,
+          py::arg("model"), py::arg("ia"),
+          py::arg("calibration")=py::none())
+      .def_property_readonly("weights_real", &transform_owner_3pcf::weights_real)
+      .def_property_readonly("weights_imag", &transform_owner_3pcf::weights_imag)
+      .def_property_readonly("side_keep", &transform_owner_3pcf::side_keep)
+      .def_property_readonly("representative_sides",
+          &transform_owner_3pcf::representative_sides)
+      .def_property_readonly("ell", &transform_owner_3pcf::ell)
+      .def_property_readonly("projection_settings",
+          &transform_owner_3pcf::projection_settings)
       .def("natural_components", &transform_owner_3pcf::natural,
           "Natural components from bispectrum multipoles: return the "
           "pair (real, imag) of arrays [4, theta, theta, phi] holding "

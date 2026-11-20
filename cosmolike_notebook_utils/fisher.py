@@ -73,6 +73,8 @@ Contents:
 """
 
 from contextlib import contextmanager
+from types import MappingProxyType
+from scipy.linalg import solve_triangular
 import itertools
 
 import numpy as np
@@ -1487,3 +1489,573 @@ def plot_Fisher_prior_walls(F, names, fiducial, params, ranges, boxes=None,
         plt.show()
         return None
     return fig, axes
+
+
+# Dictionary-based forecasts and retained numerical stencils.
+# These functions accept arrays/callables and do not import survey code.
+
+
+def symmetric_matrix(values, name, positive=False):
+    """Check a covariance-like matrix before a statistical contraction.
+
+    Symmetry is tested relative to each matrix's own scale; this matters
+    when aperture covariances have very small numerical units. Averaging
+    the two triangles removes accepted floating-point asymmetry only.
+
+    Arguments:
+      values = finite square numerical array.
+      name = quantity named in failure messages.
+      positive = require a Cholesky factorization when True.
+    Returns:
+      owned symmetric float64 matrix, with the input's units.
+    Raises:
+      ValueError when shape, finiteness, symmetry or positivity fails.
+    """
+    matrix = np.array(values, dtype=np.float64, copy=True)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError(f"{name} must be square; received {matrix.shape}.")
+    if matrix.shape[0] == 0 or not np.all(np.isfinite(matrix)):
+        raise ValueError(f"{name} must contain finite values and at least one row.")
+    scale = np.max(np.abs(matrix))
+    tolerance = 64.0 * np.finfo(np.float64).eps * scale
+    if np.max(np.abs(matrix - matrix.T)) > tolerance:
+        raise ValueError(f"{name} is asymmetric; check its row ordering.")
+    matrix = 0.5 * (matrix + matrix.T)
+    if positive:
+        try:
+            np.linalg.cholesky(matrix)
+        except np.linalg.LinAlgError as error:
+            raise ValueError(
+                f"{name} is not positive definite; inspect its eigenmodes."
+            ) from error
+    return matrix
+
+
+class ExactMeanCache:
+    """Reuse predictions only for identical parameter dictionaries.
+
+    Every parameter, including nuisance parameters, is part of the key.
+    JointPrediction also supplies a cache_token for its mutable numerical
+    controls. Changing those controls discards old predictions before a
+    parameter lookup. Other callables must remain fixed, or their caller
+    must explicitly clear this cache when their hidden inputs change.
+
+    Arguments:
+      predict = callable taking one dictionary and returning a 1D vector.
+    Side effects:
+      Stores owned, read-only predictions until this object is released.
+    """
+
+    def __init__(self, predict):
+        """Keep the prediction callable and an initially empty table.
+
+        Arguments:
+          predict = deterministic callable for one fixed model and row order.
+        Returns:
+          nothing; initializes this instance without evaluating the model.
+        """
+        self.predict = predict
+        self._values = {}
+        self._state = None
+
+    @property
+    def values(self):
+        """Expose retained entries for inspection without allowing replacement."""
+        return MappingProxyType(self._values)
+
+    def clear(self):
+        """Forget predictions after changing hidden inputs of a custom callable."""
+        self._values.clear()
+        self._state = None
+
+    def __call__(self, parameters):
+        """Return an owned prediction for precisely these parameter values.
+
+        Hexadecimal float strings preserve every binary floating-point
+        bit relevant to a finite-difference step. No numerical tolerance
+        participates in deciding whether a stored calculation can be used.
+
+        Arguments:
+          parameters = dictionary of finite scalar parameter values.
+        Returns:
+          read-only 1D float64 prediction with the callable's units.
+        Raises:
+          ValueError for nonfinite parameters or a malformed prediction.
+        """
+        state = (id(self.predict),)
+        if hasattr(self.predict, "cache_token"):
+            state += (self.predict.cache_token(),)
+        if state != self._state:
+            self.clear()
+            self._state = state
+        entries = []
+        for name in sorted(parameters):
+            value = float(parameters[name])
+            if not np.isfinite(value):
+                raise ValueError(f"Parameter {name}={value} must be finite.")
+            entries.append((name, value.hex()))
+        key = tuple(entries)
+        if key not in self._values:
+            result = self.predict(dict(parameters))
+            value = np.array(result, dtype=np.float64, copy=True)
+            if value.ndim != 1 or not np.all(np.isfinite(value)):
+                raise ValueError("Mean prediction must be a finite 1D array.")
+            # A bytes-backed array cannot be made writeable by a notebook.
+            self._values[key] = np.frombuffer(value.tobytes(), dtype=np.float64)
+        return self._values[key]
+
+
+def differentiate(predict, parameters, steps, bounds=None):
+    """Differentiate every selected parameter with a fourth-order stencil.
+
+    Four displaced means give [-f(2h)+8f(h)-8f(-h)+f(-2h)]/(12h).
+    Repeating at h/2 exposes step sensitivity without treating agreement
+    as proof that the underlying integration has converged. Bounds are
+    checked before any model evaluation; no one-sided replacement is made.
+
+    Arguments:
+      predict = mean callable, normally ExactMeanCache.
+      parameters = all reference parameter values.
+      steps = ordered dictionary of positive absolute parameter steps.
+      bounds = optional dictionary mapping names to [minimum, maximum].
+    Returns:
+      names, reference mean, derivatives at h, derivatives at h/2;
+      derivative arrays have shape [ndata, nparameter].
+    Raises:
+      ValueError for invalid steps, bounds, names or changing vector size.
+    """
+    if not steps:
+        raise ValueError("At least one differentiated parameter is required.")
+    if bounds is None:
+        bounds = {}
+    names = list(steps)
+    for name in names:
+        if name not in parameters:
+            raise ValueError(f"Step {name} has no reference parameter value.")
+        step = float(steps[name])
+        value = float(parameters[name])
+        if not np.isfinite(step) or step <= 0.0 or not np.isfinite(value):
+            raise ValueError(f"{name} requires a finite value and positive step.")
+        # Both stencils use this union of coordinates. Comparing adjacent
+        # values detects an h/2 point rounded to the fiducial or to an h
+        # point, even when the original +/-h displacement was distinct.
+        previous = None
+        for offset in (-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0):
+            coordinate = value + offset * step
+            if not np.isfinite(coordinate):
+                raise ValueError(f"The stencil for {name} leaves finite values.")
+            if previous is not None and coordinate <= previous:
+                raise ValueError(
+                    f"Step {step} for {name} collapses the h or h/2 "
+                    "stencil at float resolution."
+                )
+            previous = coordinate
+        if name in bounds:
+            lower, upper = bounds[name]
+            if value - 2.0 * step < lower or value + 2.0 * step > upper:
+                raise ValueError(f"{name}'s stencil leaves its supplied bounds.")
+    reference = np.array(predict(dict(parameters)), dtype=np.float64, copy=True)
+    if reference.ndim != 1 or not np.all(np.isfinite(reference)):
+        raise ValueError("Reference prediction must be finite and one-dimensional.")
+    derivatives = np.empty((reference.size, len(names)), dtype=np.float64)
+    refined = np.empty_like(derivatives)
+    for column, name in enumerate(names):
+        for refinement in range(2):
+            step = float(steps[name]) / (2.0 ** refinement)
+            displaced = []
+            # Order is -2h,-h,+h,+2h, identical for both step choices.
+            for offset in (-2.0, -1.0, 1.0, 2.0):
+                point = dict(parameters)
+                point[name] = float(parameters[name]) + offset * step
+                value = np.asarray(predict(point), dtype=np.float64)
+                if value.shape != reference.shape or not np.all(np.isfinite(value)):
+                    raise ValueError(f"Prediction shape/values changed at {name}.")
+                displaced.append(value)
+            derivative = (
+                displaced[0] - 8.0 * displaced[1]
+                + 8.0 * displaced[2] - displaced[3]
+            ) / (12.0 * step)
+            if refinement == 0:
+                derivatives[:, column] = derivative
+            else:
+                refined[:, column] = derivative
+    return names, reference, derivatives, refined
+
+
+def fisher_matrix(derivatives, names, covariance=None, precision=None, priors=None):
+    """Calculate fixed-covariance Fisher information and Gaussian priors.
+
+    If C=L L^T, the whitened derivatives Z=L^-1 J give F=Z^T Z.
+    This avoids explicitly inverting a covariance. A supplied precision
+    is contracted directly, which also permits precision-matrix expansion.
+    Exactly one of covariance and precision is required.
+
+    Arguments:
+      derivatives = finite [ndata,nparameter] array in names order.
+      names = unique parameter names matching derivative columns.
+      covariance = optional positive definite [ndata,ndata] matrix.
+      precision = optional positive definite inverse-covariance matrix.
+      priors = optional dictionary of Gaussian standard deviations.
+    Returns:
+      [nparameter,nparameter] Fisher matrix; it may be singular.
+    Raises:
+      ValueError for inconsistent arrays, priors or matrix choices.
+    """
+    jacobian = np.asarray(derivatives, dtype=np.float64)
+    if (jacobian.ndim != 2 or jacobian.shape[1] != len(names)
+            or not np.all(np.isfinite(jacobian)) or len(set(names)) != len(names)):
+        raise ValueError("Derivative columns must match unique parameter names.")
+    if (covariance is None) == (precision is None):
+        raise ValueError("Supply exactly one covariance or precision matrix.")
+    if covariance is not None:
+        matrix = symmetric_matrix(covariance, name="Covariance", positive=True)
+        if matrix.shape[0] != jacobian.shape[0]:
+            raise ValueError("Covariance rows do not match derivative rows.")
+        factor = np.linalg.cholesky(matrix)
+        whitened = solve_triangular(factor, jacobian, lower=True)
+        fisher = whitened.T @ whitened
+    else:
+        matrix = symmetric_matrix(precision, name="Precision", positive=True)
+        if matrix.shape[0] != jacobian.shape[0]:
+            raise ValueError("Precision rows do not match derivative rows.")
+        fisher = jacobian.T @ matrix @ jacobian
+    if priors is not None:
+        for name, width in priors.items():
+            if name not in names or not np.isfinite(width) or width <= 0.0:
+                raise ValueError(f"Prior {name} requires a known name and sigma>0.")
+            index = names.index(name)
+            fisher[index, index] += 1.0 / width**2
+    return 0.5 * (fisher + fisher.T)
+
+
+def parameter_covariance(fisher, names):
+    """Invert parameter information only when every direction is constrained.
+
+    Parameters with zero derivatives, such as an IA redshift slope at
+    zero IA amplitude, need removal or an explicitly justified prior.
+    A pseudoinverse would hide that absence of information.
+
+    Arguments:
+      fisher = square information matrix in names order.
+      names = parameter labels for a useful failure message.
+    Returns:
+      marginalized parameter covariance, with squared parameter units.
+    Raises:
+      ValueError if the matrix has a numerically unresolved eigenmode.
+    """
+    matrix = symmetric_matrix(fisher, name="Fisher matrix")
+    if matrix.shape[0] != len(names):
+        raise ValueError("Fisher dimensions do not match parameter names.")
+    diagonal = np.diag(matrix)
+    if np.any(diagonal <= 0.0):
+        raise ValueError(f"Unconstrained Fisher direction among {names}.")
+    # Diagonal scaling makes the rank test independent of parameter units.
+    scales = np.sqrt(diagonal)
+    normalized = matrix / scales[:, None] / scales[None, :]
+    eigenvalues = np.linalg.eigvalsh(normalized)
+    limit = 128.0 * matrix.shape[0] * np.finfo(np.float64).eps
+    if eigenvalues[0] <= limit * eigenvalues[-1]:
+        raise ValueError(
+            f"Fisher matrix cannot resolve all of {names}; "
+            "remove a null parameter or specify a physical prior."
+        )
+    identity = np.eye(matrix.shape[0])
+    inverse_normalized = np.linalg.solve(normalized, identity)
+    return inverse_normalized / scales[:, None] / scales[None, :]
+
+
+def figure_of_merit(fisher, names, pair):
+    """Return the inverse area scale for a marginalized parameter pair.
+
+    The convention is FoM=1/sqrt(det(C_pair)); no contour-probability
+    multiplier is included. Marginalizing first retains the effect of
+    every other fitted parameter and its specified prior.
+
+    Arguments:
+      fisher = information matrix in names order.
+      names = unique parameter labels.
+      pair = two distinct names, for example ['w0','wa'].
+    Returns:
+      positive scalar in inverse product-parameter units.
+    Raises:
+      ValueError for an unknown/repeated pair or unresolved Fisher matrix.
+    """
+    if len(pair) != 2 or pair[0] == pair[1]:
+        raise ValueError("The FoM requires two distinct parameter names.")
+    indices = []
+    for name in pair:
+        if name not in names:
+            raise ValueError(f"FoM parameter {name} is absent from {names}.")
+        indices.append(names.index(name))
+    covariance = parameter_covariance(fisher=fisher, names=names)
+    selected = covariance[np.ix_(indices, indices)]
+    return 1.0 / np.sqrt(np.linalg.det(selected))
+
+
+def retained_stencil_noise(stencil_values, steps, invcov):
+    """Score saved five-point columns without evaluating a physical model.
+
+    Pass the h archive with h, or the h/2 archive with h/2. The two archives
+    share several physical points, so their inferred noise is correlated;
+    they are separate diagnostics, not independent observations to average.
+
+    Arguments:
+      stencil_values = finite [nparameter,5,ndata] vectors in the order
+                       [-2,-1,0,1,2]; every center must be identical.
+      steps = positive absolute parameter steps, shape [nparameter].
+      invcov = precision matrix for these same data rows, shape [ndata,ndata].
+    Returns:
+      dictionary with shared sigma, eps and a arrays [nparameter], and
+      shared ddv columns [ndata,nparameter]. These derivatives use the
+      shared helper's accumulation order, which can differ in roundoff
+      from forecast.differentiate. Keep the saved baseline Fisher matrix.
+    Raises:
+      ValueError for malformed arrays, inconsistent centers or collapsed
+      offset coordinates. The shared helper validates the precision input.
+    """
+    values = np.asarray(stencil_values, dtype=np.float64)
+    if (values.ndim != 3 or values.shape[0] == 0 or values.shape[1] != 5
+            or values.shape[2] == 0 or not np.all(np.isfinite(values))):
+        raise ValueError("Saved stencils must be finite [nparameter,5,ndata] arrays.")
+    nparameter = values.shape[0]
+    ndata = values.shape[2]
+    absolute_steps = np.asarray(steps, dtype=np.float64)
+    if (absolute_steps.shape != (nparameter,)
+            or not np.all(np.isfinite(absolute_steps))
+            or np.any(absolute_steps <= 0.0)):
+        raise ValueError("Saved stencils require one positive absolute step per column.")
+    precision = np.asarray(invcov, dtype=np.float64)
+    if precision.shape != (ndata, ndata):
+        raise ValueError("The precision matrix must describe the saved stencil rows.")
+    for column in range(nparameter):
+        if not np.array_equal(
+            a1=values[column, 2].view(dtype=np.uint64),
+            a2=values[0, 2].view(dtype=np.uint64),
+        ):
+            raise ValueError("Saved stencil centers must have identical float64 values.")
+    result = {
+        "sigma": np.empty(shape=nparameter, dtype=np.float64),
+        "eps": np.empty(shape=nparameter, dtype=np.float64),
+        "a": np.empty(shape=nparameter, dtype=np.float64),
+        "ddv": np.empty(shape=(ndata, nparameter), dtype=np.float64),
+    }
+    center = np.zeros(shape=nparameter, dtype=np.float64)
+    multiples = np.asarray([-2.0, -1.0, 0.0, 1.0, 2.0])
+    for column in range(nparameter):
+        coordinates = multiples * absolute_steps[column]
+        if not np.all(np.isfinite(coordinates)):
+            raise ValueError("The absolute step produces nonfinite stencil offsets.")
+        if np.any(np.diff(coordinates) <= 0.0):
+            raise ValueError("The absolute step collapses stencil offsets.")
+        rows = {}
+        for row in range(5):
+            rows[float(coordinates[row]).hex()] = row
+
+        def lookup(param, AccuracyBoost=1.0):
+            """Read the current saved column at an exact requested offset.
+
+            The shared call completes synchronously before the outer loop
+            advances to another column. There is no retained callable or
+            physical-model fallback for an unrecognized point.
+            """
+            if AccuracyBoost != 1.0:
+                raise ValueError("A retained stencil cannot change accuracy.")
+            offsets = np.asarray(param, dtype=np.float64)
+            if offsets.shape != (nparameter,) or not np.all(np.isfinite(offsets)):
+                raise ValueError("Retained lookup requires finite parameter offsets.")
+            for index in range(nparameter):
+                if index != column and offsets[index] != 0.0:
+                    raise ValueError("Retained lookup received a different column.")
+            key = float(offsets[column]).hex()
+            if key not in rows:
+                raise ValueError("Retained lookup received an unsaved stencil offset.")
+            return values[column, rows[key]].copy()
+
+        measured = get_stencil_noise(
+            dv=lookup,
+            index=column,
+            h=float(absolute_steps[column]),
+            CV=center,
+            AccuracyBoost=1.0,
+            invcov=precision,
+        )
+        for name in ("sigma", "eps", "a"):
+            result[name][column] = measured[name]
+        result["ddv"][:, column] = measured["ddv"]
+    return result
+
+
+def make_offset_predictor(predict, reference, names):
+    """Adapt absolute offsets to a configured dictionary-based prediction.
+
+    Call shared get_stencil_noise with CV=zeros(len(names)) and h equal to
+    the absolute YAML step. Then a negative or zero physical fiducial uses
+    exactly reference[name]+offset, as forecast.differentiate does. Other
+    parameters retain their reference values, including a signed-zero center.
+
+    Arguments:
+      predict = callable taking one physical parameter dictionary. Supply
+                ExactMeanCache when centers and repeated points should reuse
+                their vectors. Accuracy settings belong to this callable.
+      reference = finite scalar physical parameter dictionary, copied here.
+      names = distinct differentiated parameter names in Fisher-column order.
+    Returns:
+      dv(param, AccuracyBoost=1.0), compatible with the shared estimator.
+      Construction evaluates no mean. Each call invokes predict once.
+    Raises:
+      ValueError for malformed names/offsets or AccuracyBoost other than one.
+      Construct another configured predictor to examine another accuracy.
+    """
+    if not callable(predict):
+        raise ValueError("The physical prediction must be callable.")
+    if isinstance(names, str):
+        raise ValueError("Parameter names must be a sequence, not one string.")
+    ordered_names = tuple(names)
+    if not ordered_names or len(set(ordered_names)) != len(ordered_names):
+        raise ValueError("Differentiated parameter names must be nonempty and distinct.")
+    physical_reference = dict(reference)
+    for name, value in physical_reference.items():
+        if not np.isfinite(float(value)):
+            raise ValueError(f"Reference parameter {name} must be finite.")
+    for name in ordered_names:
+        if not isinstance(name, str) or name not in physical_reference:
+            raise ValueError(f"Missing differentiated reference parameter: {name}")
+
+    def evaluate(param, AccuracyBoost=1.0):
+        """Apply physical offsets without multiplying by the fiducial value."""
+        if AccuracyBoost != 1.0:
+            raise ValueError(
+                "Configure candidate accuracy in predict, not AccuracyBoost."
+            )
+        offsets = np.asarray(param, dtype=np.float64)
+        if (offsets.shape != (len(ordered_names),)
+                or not np.all(np.isfinite(offsets))):
+            raise ValueError("Provide one finite absolute offset per parameter name.")
+        point = dict(physical_reference)
+        for index, name in enumerate(ordered_names):
+            if offsets[index] == 0.0:
+                continue
+            reference_value = float(physical_reference[name])
+            coordinate = reference_value + float(offsets[index])
+            if not np.isfinite(coordinate):
+                raise ValueError(f"The offset for {name} leaves finite values.")
+            if coordinate == reference_value:
+                raise ValueError(f"The offset for {name} is below float resolution.")
+            point[name] = coordinate
+        return predict(point)
+
+    return evaluate
+
+
+
+
+def compare_information(derivatives, names, kind, covariance=None,
+                        precision=None, priors=None):
+    """Compare two-point and joint information with a common parameter basis.
+
+    Let D2 and D3 contain derivatives of xi and Map3. With C23 retained,
+    the new three-point covariance is S=C33-C32 C22^-1 C23 and its new
+    derivatives are E=D3-C32 C22^-1 D2. Then the likelihood information is
+    F_joint=F_2+E.T S^-1 E. This equality holds before adding priors.
+
+    Arguments:
+      derivatives = finite [nrow,nparameter] mean derivatives.
+      names = unique labels in derivative-column order.
+      kind = [nrow] labels xip, xim or map3; both probe groups must occur.
+      covariance, precision = exactly one positive definite full matrix.
+          A supplied precision defines an effective covariance by inversion;
+          its upper block is not the marginal two-point precision.
+      priors = optional Gaussian standard deviations by parameter name.
+    Returns:
+      dictionary of likelihood, prior and posterior Fisher matrices, plus
+      conditional derivatives/covariance and original row indices.
+    Raises:
+      ValueError for inconsistent rows, invalid priors or nonpositive matrices.
+    """
+    jacobian = np.asarray(derivatives, dtype=np.float64)
+    kinds = np.asarray(kind)
+    if (kinds.ndim != 1 or jacobian.ndim != 2
+            or kinds.size != jacobian.shape[0]
+            or np.any(~np.isin(kinds, ("xip", "xim", "map3")))):
+        raise ValueError("Each derivative row needs its xip, xim or map3 label.")
+    second = np.flatnonzero(kinds != "map3")
+    third = np.flatnonzero(kinds == "map3")
+    if second.size == 0 or third.size == 0:
+        raise ValueError("Information comparison requires both xi and Map3 rows.")
+    joint = fisher_matrix(
+        derivatives=jacobian, names=names, covariance=covariance,
+        precision=precision,
+    )
+    if covariance is not None:
+        matrix = symmetric_matrix(values=covariance, name="Covariance", positive=True)
+    else:
+        # PME supplies a precision, not a corrected covariance estimate.
+        # Inverting it here defines only the Gaussian model used for this
+        # decomposition; it makes no claim of unbiased covariance estimation.
+        inverse = symmetric_matrix(values=precision, name="Precision", positive=True)
+        factor = np.linalg.cholesky(inverse)
+        inverse_factor = solve_triangular(factor, np.eye(kinds.size), lower=True)
+        matrix = inverse_factor.T @ inverse_factor
+    block22 = matrix[np.ix_(second, second)]
+    block23 = matrix[np.ix_(second, third)]
+    block33 = matrix[np.ix_(third, third)]
+    factor22 = np.linalg.cholesky(block22)
+    whitened23 = solve_triangular(factor22, block23, lower=True)
+    whitened_d2 = solve_triangular(factor22, jacobian[second], lower=True)
+    conditional_covariance = block33 - whitened23.T @ whitened23
+    conditional_derivatives = jacobian[third] - whitened23.T @ whitened_d2
+    conditional = fisher_matrix(
+        derivatives=conditional_derivatives, names=names,
+        covariance=conditional_covariance,
+    )
+    two_point = whitened_d2.T @ whitened_d2
+    # A prior belongs to parameters, not to either data block. Form it once
+    # and add that same matrix once to each posterior being compared.
+    prior = fisher_matrix(
+        derivatives=np.zeros((1, len(names))), names=names,
+        covariance=np.ones((1, 1)), priors=priors,
+    )
+    return {
+        "fisher_joint_likelihood": joint,
+        "fisher_two_point_likelihood": two_point,
+        "fisher_conditional_three_point": conditional,
+        "fisher_prior": prior,
+        "fisher_joint": joint + prior,
+        "fisher_two_point": two_point + prior,
+        "conditional_covariance": conditional_covariance,
+        "conditional_derivatives": conditional_derivatives,
+        "two_point_indices": second,
+        "three_point_indices": third,
+    }
+
+def marginalized_errors(comparison, names):
+    """Return resolvable errors and explicit rank diagnostics for each probe.
+
+    A zero derivative or nearly unconstrained parameter combination cannot
+    be repaired by a pseudoinverse. The joint experiment may resolve a
+    direction which xi alone cannot; the two statuses are therefore separate.
+
+    Arguments:
+      comparison = dictionary returned by compare_information.
+      names = the same parameter-column labels.
+    Returns:
+      arrays dictionary containing only resolved parameter covariances and
+      sigmas, and a separate dictionary of human-readable rank statuses.
+    """
+    arrays = {}
+    statuses = {}
+    for probe in ("two_point", "joint"):
+        try:
+            covariance = parameter_covariance(
+                fisher=comparison[f"fisher_{probe}"], names=names,
+            )
+            arrays[f"parameter_covariance_{probe}"] = covariance
+            arrays[f"sigma_{probe}"] = np.sqrt(np.diag(covariance))
+            statuses[probe] = "resolved"
+        except ValueError as error:
+            statuses[probe] = str(error)
+    if "sigma_two_point" in arrays and "sigma_joint" in arrays:
+        arrays["sigma_ratio_two_point_over_joint"] = (
+            arrays["sigma_two_point"] / arrays["sigma_joint"]
+        )
+    return arrays, statuses

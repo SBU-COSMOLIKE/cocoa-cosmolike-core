@@ -44,6 +44,11 @@ quantity.
 - Production YAMLs and notebooks use CosmoLike's IA normalization and pivot
   directly: `c1rho = 0.01389` and `zpivot = 0.62`. A conversion from an
   upstream convention belongs only to the explicit code-comparison notebook.
+- Do not recreate a `cosmolike_3pcf` Python package. Fixed quadrature,
+  aperture row grouping, spectra packing and operator decomposition use the
+  existing native interfaces. Survey readers stay in project scripts;
+  matter prescriptions in `theory/`; Fisher and covariance statistics in
+  the existing notebook utilities. Numerical initialization is C++.
 - Repeated code is acceptable. Do not move an unwanted abstraction to
   another file and call that consistency. Implement the established pattern.
 
@@ -178,8 +183,9 @@ separate DES Y3 and Y6 reproduction and forecast configurations.
 Project integration must follow the existing LSST Y1 and DES Y3 layout and
 calling conventions. Keep survey likelihoods in `likelihood/`, generated
 products in ignored `chains/`, and project-specific scripts in `scripts/`.
-Reusable Python belongs in `cosmolike_3pcf/` and plotting in
-`cosmolike_notebook_utils/`. Do not introduce a separate project framework;
+Numerical preparation belongs in the existing C++ interfaces. Shared
+statistics and plotting belong in `cosmolike_notebook_utils/`; matter
+prescriptions belong in `theory/`. Do not introduce a separate project framework;
 straightforward repeated code is acceptable. Inspect the matching existing
 example before writing a launcher, YAML or notebook workflow.
 For numerical controls, cache invalidation or notebook reuse, also read
@@ -631,10 +637,10 @@ moved by only Delta chi2 = 0.015. DerivKit (Cocoa's `DERIVKIT_*` keys,
 `get_ddv_dkit` in `cosmolike_notebook_utils/fisher.py`) cross-checks
 the stencil.
 
-Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
-image size diagnosis, or container build failures — 
-read `references/docker-reference.md`. It contains 
-the methodology and conventions for editing Dockerfiles, 
+Before doing any Docker work — Dockerfile edits, GPU-container debugging,
+image size diagnosis, or container build failures —
+read `references/docker-reference.md`. It contains
+the methodology and conventions for editing Dockerfiles,
 the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
 
 ## Core principles

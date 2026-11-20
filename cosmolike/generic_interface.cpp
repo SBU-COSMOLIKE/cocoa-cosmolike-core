@@ -978,7 +978,7 @@ void init_fpt_internal_boost(const double internal_boost)
 {
   static constexpr std::string_view fname = "init_fpt_internal_boost"sv;
   debug("{}: {}", fname, errbegins);
-  if (!(internal_boost > 0)) {
+  if (!(std::isfinite(internal_boost) && internal_boost > 0)) {
     critical("{}: invalid internal_boost = {}", fname, internal_boost);
     exit(1);
   }
@@ -1570,6 +1570,17 @@ void init_accuracy_boost(
 {
   static constexpr std::string_view fname = "init_accuracy_boost"sv;
   debug("{}: {}", fname, errbegins);
+
+  if (!std::isfinite(accuracy_boost) || accuracy_boost <= 0.0) {
+    critical("{}: accuracy_boost = {} must be finite and positive",
+      fname, accuracy_boost);
+    exit(1);
+  }
+  if (integration_accuracy < 0 || integration_accuracy > 7) {
+    critical("{}: integration_accuracy = {} must be in [0, 7]",
+      fname, integration_accuracy);
+    exit(1);
+  }
 
   // N_a: the a grid of the lensing-efficiency tables (g_tomo and its
   // relatives in redshift_spline.c, read by linear interpolation) and of

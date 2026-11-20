@@ -1,4 +1,9 @@
 #include <climits>
+#include <memory>
+#include <algorithm>
+#include <pybind11/stl.h>
+#include "cosmolike/basics.h"
+#include "threepcf_interface.hpp"
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -10,6 +15,7 @@
 #include <vector>
 #include <pybind11/numpy.h>
 #include <spdlog/spdlog.h>
+#include "cosmolike/cosmo2D_wrapper.hpp"
 #include "physics_interface.hpp"
 #include "covariance_wrapper.hpp"
 
@@ -1211,10 +1217,346 @@ static py::array_t<double> xi_binding(
 // Returns:
 //   nothing; the three functions appear in both submodules
 // ---------------------------------------------------------------------------
+// Fixed Gauss-Legendre rules use the same GSL allocator as the rest of
+// CosmoLike. Weights include dx: for t=ln(x), dx=x dt exactly once.
+static py::tuple quadrature_3pcf(
+  double lower, // integration lower endpoint
+  double upper, // integration upper endpoint
+  int count, // quadrature order
+  bool logarithmic // integrate uniformly in ln(x)
+)
+{
+  if (!std::isfinite(lower) || !std::isfinite(upper) || lower >= upper
+      || count < 2 || (logarithmic && lower <= 0.0)) {
+    throw py::value_error("Quadrature requires ordered finite bounds and count>=2.");
+  }
+  const double left = logarithmic ? std::log(lower) : lower;
+  const double right = logarithmic ? std::log(upper) : upper;
+  std::unique_ptr<gsl_integration_glfixed_table,
+    decltype(&gsl_integration_glfixed_table_free)> rule(
+      malloc_gslint_glfixed(count), &gsl_integration_glfixed_table_free);
+  py::array_t<double> nodes(count), weights(count);
+  for (int i=0; i<count; i++) {
+    double x, w;
+    gsl_integration_glfixed_point(left, right, i, &x, &w, rule.get());
+    if (logarithmic) {
+      x = std::exp(x);
+      w *= x;
+    }
+    nodes.mutable_data()[i] = x;
+    weights.mutable_data()[i] = w;
+  }
+  return py::make_tuple(nodes, weights);
+}
+
+static py::array_t<double> shape_noise_3pcf(
+  const py::array_t<double>& density, // effective sources per square arcminute
+  const py::array_t<double>& dispersion // rms of ONE ellipticity component
+)
+{
+  const auto n = covariance_array<double>(density, 1, true);
+  const auto sigma = covariance_array<double>(dispersion, 1, true);
+  if (n.size() < 1 || sigma.size() != n.size()) {
+    throw py::value_error("Shape-noise arrays must have matching source bins.");
+  }
+  const int bins = n.size();
+  py::array_t<double> noise({bins, bins});
+  std::fill_n(noise.mutable_data(), noise.size(), 0.0);
+  const double arcmin = M_PI/(180.0*60.0);
+  for (int i=0; i<bins; i++) {
+    if (!(n.data()[i] > 0.0) || !(sigma.data()[i] > 0.0)) {
+      throw py::value_error("Density and component dispersion must be positive.");
+    }
+    noise.mutable_data()[i*bins+i] =
+      sigma.data()[i]*sigma.data()[i]/(n.data()[i]/(arcmin*arcmin));
+  }
+  return noise;
+}
+
+// Each xi row averages over its actual annulus. Uniform-area weights are
+// theta dtheta; measured weights replace the whole discrete rule. Map3
+// rows carry unused dummy theta entries for the combined covariance ABI.
+static py::tuple xi_bin_weights_3pcf(
+  const std::vector<std::string>& kind, // xip, xim, map3 per row
+  const py::array_t<double>& angles, // [row,3], xi lower/upper edges in radians
+  int count, // separation quadrature order
+  const py::object& pair_weight // uniform_area or [row,count] weights
+)
+{
+  const auto edges = covariance_array<double>(angles, 2, true);
+  const int nrow = kind.size();
+  if (count < 2 || edges.shape(0) != nrow || edges.shape(1) != 3) {
+    throw py::value_error("Xi bins require [row,3] edges and count>=2.");
+  }
+  const bool uniform = py::isinstance<py::str>(pair_weight);
+  py::array_t<double, py::array::c_style|py::array::forcecast> supplied;
+  if (uniform) {
+    if (py::cast<std::string>(pair_weight) != "uniform_area") {
+      throw py::value_error("Pair-weight name must be uniform_area.");
+    }
+  } else {
+    supplied = decltype(supplied)::ensure(pair_weight);
+    if (!supplied || supplied.ndim() != 2 || supplied.shape(0) != nrow
+        || supplied.shape(1) != count) {
+      throw py::value_error("Explicit pair weights must have shape [row,count].");
+    }
+    for (py::ssize_t i=0; i<supplied.size(); i++) {
+      const double value = supplied.data()[i];
+      if (!std::isfinite(value) || value < 0.0) {
+        throw py::value_error("Explicit pair weights must be finite and nonnegative.");
+      }
+    }
+  }
+  py::array_t<double> theta({nrow, count}), weights({nrow, count});
+  for (int row=0; row<nrow; row++) {
+    if (kind[row] == "map3") {
+      std::fill_n(theta.mutable_data()+row*count, count, 1.0);
+      std::fill_n(weights.mutable_data()+row*count, count, 1.0/count);
+      continue;
+    }
+    if (kind[row] != "xip" && kind[row] != "xim") {
+      throw py::value_error("Unknown measurement row kind.");
+    }
+    const auto rule = quadrature_3pcf(edges.data()[3*row],
+      edges.data()[3*row+1], count, false);
+    const auto x = rule[0].cast<py::array_t<double>>();
+    const auto w = rule[1].cast<py::array_t<double>>();
+    double norm = 0.0;
+    for (int i=0; i<count; i++) {
+      theta.mutable_data()[row*count+i] = x.data()[i];
+      const double weight = uniform ? w.data()[i]*x.data()[i] :
+        supplied.data()[row*count+i];
+      weights.mutable_data()[row*count+i] = weight;
+      norm += weight;
+    }
+    if (!(norm > 0.0) || !std::isfinite(norm)) {
+      throw py::value_error("Xi row has zero or nonfinite pair-weight normalization.");
+    }
+    for (int i=0; i<count; i++) {
+      weights.mutable_data()[row*count+i] /= norm;
+    }
+  }
+  return py::make_tuple(theta, weights);
+}
+
+// Prepare the existing C covariance input dictionary from explicit survey
+// arrays. Unique (source,radius) pairs identify filtered fields shared by
+// different rows. This changes no estimator and assumes no survey mask.
+static py::dict covariance_inputs_3pcf(
+  const std::vector<std::string>& kind, // measurement type per row
+  const py::array_t<int, py::array::c_style|py::array::forcecast>& bins, // source indices
+  const py::array_t<double>& angles, // [row,3], radians
+  const py::array_t<double>& noise, // [source,source], angular power
+  const py::dict& grids, // baseline quadratures and profile radii
+  const py::dict& physical, // physical covariance settings
+  int theta_count, // baseline xi separation quadrature order
+  const py::object& pair_weight, // uniform_area or measured discrete weights
+  const py::object& accuracy // global and individual refinement controls
+)
+{
+  const int nrow = kind.size();
+  const auto radii = covariance_array<double>(angles, 2, true);
+  if (bins.ndim() != 2 || bins.shape(0) != nrow || bins.shape(1) != 3
+      || radii.shape(0) != nrow || radii.shape(1) != 3 || nrow == 0) {
+    throw py::value_error("Covariance rows need [row,3] bins and angles.");
+  }
+  auto result = py::dict(physical.attr("copy")());
+  const auto controls = init_accuracy_3pcf(accuracy);
+  const char* names[] = {"ell", "phi", "radius", "k", "mass", "window_ell"};
+  const char* weights[] = {"dell", "dphi", "dr", "dk", "dmass", "window_dell"};
+  for (int i=0; i<6; i++) {
+    const std::string stage = i == 5 ? "covariance_window_boost" :
+      std::string("covariance_")+names[i]+"_boost";
+    if (!grids.contains(names[i])) {
+      throw py::value_error(std::string("Missing covariance quadrature: ")+names[i]);
+    }
+    const auto settings = accuracy_quadrature_3pcf(controls,
+      py::cast<py::dict>(grids[names[i]]), stage);
+    const auto rule = quadrature_3pcf(py::cast<double>(settings["lower"]),
+      py::cast<double>(settings["upper"]), py::cast<int>(settings["count"]),
+      settings.contains("logarithmic") && py::cast<bool>(settings["logarithmic"]));
+    result[names[i]] = rule[0];
+    result[weights[i]] = rule[1];
+  }
+  const auto profile = covariance_array<double>(grids["profile_radius"], 1, true);
+  if (profile.size() < 2 || profile.data()[0] != 0.0) {
+    throw py::value_error("Profile radius needs increasing nodes from zero.");
+  }
+  const double factor = py::cast<double>(controls["accuracy_boost"])*
+    py::cast<double>(controls["profile_boost"]);
+  if (!std::isfinite(factor) || factor > 1024.0) {
+    throw py::value_error("Profile subdivision exceeds 1024.");
+  }
+  const int subdivision = std::pow(2.0, std::ceil(std::log2(factor)));
+  py::array_t<double> refined((profile.size()-1)*subdivision+1);
+  for (int i=0; i<profile.size()-1; i++) {
+    const double width = profile.data()[i+1]-profile.data()[i];
+    if (!(width > 0.0)) {
+      throw py::value_error("Profile radius must be increasing.");
+    }
+    for (int j=0; j<subdivision; j++) {
+      refined.mutable_data()[i*subdivision+j] =
+        profile.data()[i]+width*(double(j)/subdivision);
+    }
+  }
+  refined.mutable_data()[refined.size()-1] = profile.data()[profile.size()-1];
+  result["profile_radius"] = refined;
+  result["profile_upsample"] = accuracy_count_3pcf(controls,
+    physical.contains("profile_upsample") ? py::cast<int>(physical["profile_upsample"]) : 8,
+    "profile_upsample_boost", false, false);
+  result["noise"] = py::array(noise.attr("copy")());
+  std::vector<std::pair<int,double>> fields;
+  py::array_t<int> row_fields({nrow, 3}), row_kind(nrow);
+  std::fill_n(row_fields.mutable_data(), row_fields.size(), 0);
+  for (int row=0; row<nrow; row++) {
+    const bool aperture = kind[row] == "map3";
+    if (!aperture && kind[row] != "xip" && kind[row] != "xim") {
+      throw py::value_error("Unsupported covariance row kind.");
+    }
+    row_kind.mutable_data()[row] = aperture ? 1 : (kind[row] == "xip" ? 2 : 3);
+    for (int leg=0; leg<(aperture ? 3 : 2); leg++) {
+      const int source = bins.data()[row*3+leg];
+      const double radius = aperture ? radii.data()[row*3+leg] : 0.0;
+      if (source < 0 || radius < 0.0) {
+        throw py::value_error("Covariance fields require nonnegative bins/radii.");
+      }
+      const std::pair<int,double> field(source, radius);
+      const auto found = std::find(fields.begin(), fields.end(), field);
+      row_fields.mutable_data()[row*3+leg] = found-fields.begin();
+      if (found == fields.end()) {
+        fields.push_back(field);
+      }
+    }
+  }
+  py::array_t<int> field_source(fields.size());
+  py::array_t<double> field_radius(fields.size());
+  for (size_t i=0; i<fields.size(); i++) {
+    field_source.mutable_data()[i] = fields[i].first;
+    field_radius.mutable_data()[i] = fields[i].second;
+  }
+  result["field_source"] = field_source;
+  result["field_radius"] = field_radius;
+  result["row_fields"] = row_fields;
+  result["row_kind"] = row_kind;
+  const int resolved = accuracy_count_3pcf(controls, theta_count,
+    "xi_theta_boost", true, false);
+  if (resolved != theta_count && !py::isinstance<py::str>(pair_weight)) {
+    throw py::value_error("Refining theta nodes requires new measured pair weights.");
+  }
+  const auto theta = xi_bin_weights_3pcf(kind, angles, resolved, pair_weight);
+  result["theta"] = theta[0];
+  result["theta_weight"] = theta[1];
+  if (physical.contains("noise_mode") && py::cast<int>(physical["noise_mode"]) == 1) {
+    if (!py::isinstance<py::str>(pair_weight)
+        || py::cast<std::string>(pair_weight) != "uniform_area"
+        || !physical.contains("large_area") || py::cast<int>(physical["large_area"]) != 1) {
+      throw py::value_error("Analytic xi NN requires uniform_area and large_area.");
+    }
+    py::array_t<double> edges({nrow,2});
+    std::fill_n(edges.mutable_data(), edges.size(), 0.0);
+    for (int row=0; row<nrow; row++) {
+      if (kind[row] != "map3") {
+        edges.mutable_data()[2*row] = radii.data()[3*row];
+        edges.mutable_data()[2*row+1] = radii.data()[3*row+1];
+      }
+    }
+    result["theta_edges"] = edges;
+  }
+  return result;
+}
+// Select the requested source pairs from the ordinary batch calculation.
+// The existing two-point wrapper prepares its tables serially before the
+// OpenMP read loops. No second TATT spectrum or IA convention is introduced.
+static py::tuple shear_power_rows_3pcf(
+  const py::array_t<double>& ell, // angular Fourier multipoles
+  const py::array_t<int, py::array::c_style|py::array::forcecast>& bins
+)
+{
+  const auto nodes = covariance_array<double>(ell, 1, true);
+  if (bins.ndim() != 2 || bins.shape(1) != 2 || bins.shape(0) == 0) {
+    throw py::value_error("Shear pairs require a nonempty [row,2] array.");
+  }
+  const arma::Col<double> copied(nodes.data(), nodes.size());
+  const auto cubes = C_ss_tomo_limber_cpp(copied);
+  const auto even = covariance_array<double>(cubes[0], 3, true);
+  const auto odd = covariance_array<double>(cubes[1], 3, true);
+  const int nrow = bins.shape(0), nell = nodes.size(), nbin = even.shape(1);
+  py::array_t<double> e({nrow,nell}), b({nrow,nell});
+  for (int row=0; row<nrow; row++) {
+    const int first = std::min(bins.data()[2*row], bins.data()[2*row+1]);
+    const int second = std::max(bins.data()[2*row], bins.data()[2*row+1]);
+    if (first < 0 || second >= nbin) {
+      throw py::value_error("Requested shear bin is outside the current sample.");
+    }
+    for (int l=0; l<nell; l++) {
+      e.mutable_data()[row*nell+l] = even.data()[(l*nbin+first)*nbin+second];
+      b.mutable_data()[row*nell+l] = odd.data()[(l*nbin+first)*nbin+second];
+    }
+  }
+  return py::make_tuple(e,b);
+}
+
+// The isolated NLA comparison uses exactly the same native source kernels
+// as Map3. Production joint TATT uses the ordinary-core batch above.
+static py::array_t<double> nla_power_rows_3pcf(
+  const py::object& model, // immutable physical input owner
+  const py::array_t<double>& ell, // Fourier multipoles
+  const py::array_t<int, py::array::c_style|py::array::forcecast>& bins,
+  const py::dict& ia // NLA parameters; nonlinear IA requires CFASTPT
+)
+{
+  const auto parameters = parameters_physics(ia);
+  if (parameters.a2 != 0.0 || parameters.bta != 0.0
+      || parameters.ct != 0.0 || parameters.fb != 0.0) {
+    throw py::value_error("Isolated NLA xi cannot include quadratic IA or fb.");
+  }
+  const auto nodes = covariance_array<double>(ell,1,true);
+  if (bins.ndim() != 2 || bins.shape(1) != 2 || bins.shape(0) == 0) {
+    throw py::value_error("NLA source pairs require [row,2].");
+  }
+  const auto* physical = borrow_physics_model_3pcf(model);
+  const int nrow=bins.shape(0), nell=nodes.size();
+  py::array_t<double> result({nrow,nell});
+  std::map<std::pair<int,int>, int> previous;
+  for (int row=0; row<nrow; row++) {
+    const int first = std::min(bins.data()[2*row], bins.data()[2*row+1]);
+    const int second = std::max(bins.data()[2*row], bins.data()[2*row+1]);
+    const std::pair<int,int> pair(first,second);
+    const auto found = previous.find(pair);
+    if (found == previous.end()) {
+      physics_nla_power_batch_3pcf(physical,&parameters,first,second,nell,
+        nodes.data(),result.mutable_data()+row*nell);
+      previous[pair]=row;
+    } else {
+      std::copy_n(result.data()+found->second*nell,nell,
+        result.mutable_data()+row*nell);
+    }
+  }
+  return result;
+}
+
 void bind_threepcf_covariance(
   py::module_& module // Python module receiving the bindings
 )
 {
+  module.def("quadrature", &quadrature_3pcf,
+    py::arg("lower"), py::arg("upper"), py::arg("count"),
+    py::arg("logarithmic")=false);
+  module.def("shape_noise", &shape_noise_3pcf,
+    py::arg("number_density"), py::arg("sigma_component"));
+  module.def("xi_bin_weights", &xi_bin_weights_3pcf,
+    py::arg("kind"), py::arg("angles"), py::arg("count"),
+    py::arg("pair_weight"));
+  module.def("covariance_inputs", &covariance_inputs_3pcf,
+    py::arg("kind"), py::arg("bins"), py::arg("angles"),
+    py::arg("noise"), py::arg("grids"), py::arg("physical"),
+    py::arg("theta_count"), py::arg("pair_weight"),
+    py::arg("accuracy")=py::none());
+  module.def("shear_power_rows", &shear_power_rows_3pcf,
+    py::arg("ell"), py::arg("bins"));
+  module.def("nla_power_rows", &nla_power_rows_3pcf,
+    py::arg("model"), py::arg("ell"), py::arg("bins"), py::arg("ia"));
+
   py::module_ production = module.attr("production").cast<py::module_>();
   py::module_ notebook = module.attr("notebook").cast<py::module_>();
 
@@ -1261,13 +1603,31 @@ void bind_threepcf_covariance(
         py::handle theta_weight, // normalized separation-bin weights [row,node]
         py::handle spectra_e, // E-mode angular power [row,ell]
         py::handle spectra_b, // B-mode angular power [row,ell]
-        py::handle sign // +1 for xi+, -1 for xi-
+        py::handle sign, // +1 for xi+, -1 for xi-
+        const py::object& bins, // [row,2], needed with calibration
+        const py::object& calibration // optional shear offsets
       ) {
-        return xi_binding(ell, dell, theta, theta_weight, spectra_e,
+        auto result = xi_binding(ell, dell, theta, theta_weight, spectra_e,
           spectra_b, sign, copying);
+        if (!calibration.is_none()) {
+          const auto sources = covariance_array<int>(bins, 2, true);
+          const auto shear = covariance_array<double>(calibration, 1, true);
+          if (sources.shape(0) != result.size() || sources.shape(1) != 2) {
+            throw py::value_error("Xi calibration needs [row,2] source bins.");
+          }
+          for (int row=0; row<result.size(); row++) {
+            const int first=sources.data()[2*row], second=sources.data()[2*row+1];
+            if (first < 0 || second < 0 || first >= shear.size() || second >= shear.size()) {
+              throw py::value_error("Calibration omits a xi source bin.");
+            }
+            result.mutable_data()[row] *= (1.0+shear.data()[first])*(1.0+shear.data()[second]);
+          }
+        }
+        return result;
       }, py::arg("ell"), py::arg("dell"), py::arg("theta"),
       py::arg("theta_weight"), py::arg("spectra_e"), py::arg("spectra_b"),
-      py::arg("sign"),
+      py::arg("sign"), py::arg("bins")=py::none(),
+      py::arg("calibration")=py::none(),
       "Bin-averaged shear correlations from the E/B-mode angular power "
       "spectra C_ell^E and C_ell^B: sign +1 returns xi+, the J0 "
       "transform of C_ell^E + C_ell^B; sign -1 returns xi-, the J4 "

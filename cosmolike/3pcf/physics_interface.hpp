@@ -7,6 +7,10 @@
 
 namespace cosmolike_interface {
 
+// Shared readers used by existing projection and transform bindings.
+physics_ia_3pcf parameters_physics(const pybind11::dict& values);
+physics_grid_settings_3pcf settings_physics_grid(const pybind11::dict& values);
+
 void bind_threepcf_physics(
   pybind11::module_& module // Python module receiving the bindings
 );

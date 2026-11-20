@@ -324,7 +324,7 @@ static arma::Mat<int> copy_matrix_physics(
 // Returns:
 //   the complete physics_ia_3pcf parameter struct, by value
 // ---------------------------------------------------------------------------
-static physics_ia_3pcf parameters_physics(
+physics_ia_3pcf parameters_physics(
   const py::dict& values // intrinsic-alignment and feedback settings
 )
 {
@@ -390,7 +390,7 @@ static physics_ia_3pcf parameters_physics(
 // Returns:
 //   the complete physics_grid_settings_3pcf struct, by value
 // ---------------------------------------------------------------------------
-static physics_grid_settings_3pcf settings_physics_grid(
+physics_grid_settings_3pcf settings_physics_grid(
   const py::dict& values // grid bounds, node counts and angular cutoffs
 )
 {

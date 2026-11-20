@@ -109,16 +109,20 @@ The Python producer owns that prescription and its sampling. Shared core
 variance snapshots remain available for theory preparation and covariance.
 C retains tree-level F2 and power readers because TATT uses them.
 
-In the companion DES project, `python/des3pcf/bihalofit_theory.py` defines
-the Cobaya `BiHalofitTheory` component. Its equations and cached table
-producer are in `python/des3pcf/bihalofit.py`. The CLI/Fisher
-`PhysicalProvider` calls the same producer directly. The current project
-Nautilus examples call `cocoa_hybrid_sampling.run(..., hybrid=False)`,
-following the LSST Y1 launcher. Cobaya loads
-`des3pcf.cobaya_likelihood.JointShear`, which owns the same physical
-provider; it does not instantiate `BiHalofitTheory`. Mandatory
-theory inputs to C do not mean every project driver uses Cobaya's theory
-dependency system.
+In the shared core, `theory/bihalofit/bihalofit.py` defines the Cobaya
+`bihalofit` component; `model.py` owns its fit equations. Production DES
+YAMLs select CAMB and this block independently. The likelihood requests
+`matter_bispectrum` and reads provider arrays; it never invokes CAMB or
+imports BiHalofit. Another theory block can supply the same table contract.
+Older explicit-table Fisher studies still use the direct producer.
+
+The DES base follows the LSST Y1 method sequence. Its single native module
+contains the ordinary two-point initializers/CFASTPT spectra and three-point
+kernels. `IP3PCF` owns the joint measurement, mask, covariance, optional
+compression and normalized Gaussian or Percival scoring. Production IA
+amplitudes use 0.01389 and pivot 0.62 directly. Upstream convention conversion
+belongs only in comparison notebooks. Numerical accuracy arithmetic is in
+`threepcf_interface.cpp`; there is no Python Accuracy class.
 
 Every factory needs B and its background fraction. Legacy ordinary factory
 keywords remain accepted but cannot select an internal fit. Missing inputs
@@ -375,42 +379,30 @@ the allocation key must cover all sizes, and the refill key must cover
 every value used. Exact parameter keys preserve small Fisher displacements;
 rounding a cosmology before comparison changes the derivative.
 
-The ordinary two-point module has one mutable calculation per process.
-`CoreTwoPoint` construction stores its choices without changing that state.
-Its public settings are immutable, so an outer mean cache cannot silently
-retain a vector after a numerical-control edit. Construct a new adapter for
-new controls; no kernel restart is needed. Its supported integration levels
-are 0 through 7, the eight distinct shear quadrature orders from 96 to 8192
-nodes. Larger raw-core values are not accepted by this adapter.
-Every `spectra` call performs `initial_setup()` and reinstalls its declared
-numerical resolution, worker count, nonlinear runmode, TATT selectors,
-source/lens counts, photo-z convention, zero internal nuisance shifts and
-inactive baryon contamination before installing the shared physical arrays.
-The reset is required even when the previous caller used the same adapter:
-a notebook cell may have changed a selector or left another model only
-partly configured. The existing API cannot read back all settings, and its
-common accuracy control retains hidden baseline node counts. Relying on a
-Python ownership flag or a manual reclaim call would miss those edits.
+The project extension links both the ordinary two-point core and 3pcf.
+The likelihood follows LSST Y1: `initialize` sets numerical choices and the
+native joint data/covariance singleton; `set_cosmo_related` and
+`set_source_related` install the current provider arrays and nuisance values.
+`internal_get_datavector` evaluates both probes; `compute_logp` calls the
+native score. CAMB and the matter-bispectrum producer are YAML theory blocks.
+No Python adapter resets/reclaims the core or starts CAMB inside a likelihood.
+Calls sharing one ordinary core remain sequential. Reinitialize for changed
+numerical settings, as in other projects; update cosmology and nuisance state
+on every evaluation. Native setters own their cache invalidation.
 
-The adapter already calls `init_ntomo_powerspectra()` on each request; that
-function changes `Ntable.random` unconditionally. The reset therefore does
-not introduce an additional numerical table evaluation before the requested
-spectra, although it reconstructs the input splines. No cost or speed claim
-follows from this correctness choice. The independent 3pcf objects retain
-their own immutable state. Calls into the same ordinary module must remain
-sequential: neither another adapter nor a raw notebook call may change its
-state between restoration and evaluation. This is a process-state ownership
-contract, not a promise of simultaneous Python-call safety.
+`TransformPlan.for_aperture` prepares Fourier/bin geometry and exact row
+maps. `aperture_vector` builds fresh physical projection grids in bounded
+batches; only geometry and FFT scratch persist. `aperture_components` applies
+native operator/leg selectors and returns the signed terms and their closure
+against the ordinary total. It requires signed-baseline interpolation. This
+optional diagnostic performs many projections and is absent from the sampler.
+Returned geometry arrays are copies, so notebook edits cannot alter the plan.
 
-`tests/test_core_two_point_sequences.py` exercises the actual existing DES Y3
-extension against separate clean interpreters. It retains old adapters
-through two-/three-bin changes, different declared numerical resolutions,
-raw selector and nuisance changes, partial source/accuracy configurations,
-and loading then removing a baryon suppression table. Require bitwise E/B
-agreement after restoration and demonstrate that the raw IA/baryon edits
-changed a spectrum before restoration; merely invoking a setter does not
-prove that a test reached the affected calculation. These small checks test
-state restoration, not survey convergence or physical feedback validation.
+The small state tests include the existing two-point module and the unified
+project extension. Require A/B/A restoration after cosmology, source and IA
+changes. The real Cobaya study also checks provider unit conversion and
+normalization against the fixed synthetic input. These are regression and
+state checks; they do not establish survey convergence.
 
 The covariance instead shares preparation within one offline call. It
 allocates Bessel/filter/window geometry before mass/redshift loops, then
@@ -428,14 +420,14 @@ a persistent global cache is not required without subsequent reuse.
 The companion project is `Cocoa/projects/des_3pcf/`, outside a standalone
 core checkout. Its main files are:
 
-| Project path | Responsibility |
+| Location | Responsibility |
 |---|---|
 | `interface/` | Isolated build and registration of the core adapters |
-| `python/des3pcf/inputs.py`, `survey.py` | Physical NPZ/CAMB tables, actual source curves, row identities and bin edges |
-| `python/des3pcf/mean.py`, `pipeline.py` | Geometry plans, bounded projection batches, exact cosmology/source/IA keys and final calibration factors |
-| `python/des3pcf/core_two_point.py` | Existing CFASTPT TATT E/B spectra with explicit normalization/pivot and growth conversion |
-| `python/des3pcf/covariance.py` | Fixed quadrature and physical covariance input arrays |
-| `python/des3pcf/forecast.py`, `precision.py` | Full-vector finite differences, fixed covariance, Gaussian priors, marginalized FoM and optional precision-matrix expansion |
+| Project `scripts/des3pcf/survey.py` | Source curves, row identities and bin edges |
+| Core `transform_interface.cpp` | Geometry plans, bounded projection batches, aperture rows, calibration and IA decomposition |
+| Project likelihood base and native interface | Provider power, source and IA setters; existing CFASTPT TATT E/B spectra |
+| Core `covariance_interface.cpp` | Fixed quadrature and physical covariance input arrays |
+| Core `cosmolike_notebook_utils/fisher.py`, `cosmolike_notebook_utils/covariance/precision.py` | Full-vector finite differences, fixed covariance, Gaussian priors, marginalized FoM and optional precision-matrix expansion |
 | `scripts/run_3pcf.py`, `configs/` | Versioned prepare/evaluate/covariance/fisher commands and separate Y3/Y6 examples |
 
 Fisher output retains every declared xi and aperture row and their cross

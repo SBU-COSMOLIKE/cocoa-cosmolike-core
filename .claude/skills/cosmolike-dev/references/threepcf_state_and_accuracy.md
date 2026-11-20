@@ -249,7 +249,7 @@ parameters remain covariance inputs. The CLI saves separate fit and halo
 variance records. A declared single_fluid_effective_growth approximation
 cannot silently use evolving halo variances.
 
-The optional Cobaya BiHalofitTheory accepts the same source/growth selectors
+The optional Cobaya `bihalofit` theory block accepts the same source/growth selectors
 and a variance_accuracy mapping. Its background still comes from provider
 density fractions, and its D remains sigma8(z)/sigma8(0). Evolving fit
 variances do not automatically change the perturbative tree and IA growth
@@ -460,8 +460,9 @@ reproduce their old outputs after a newer object is evaluated.
 
 ## Global and individual controls
 
-`python/des3pcf/accuracy.py` in the Cocoa project resolves counts through an
-immutable `Accuracy` object. Defaults are multiplicative one, including
+`cosmolike/3pcf/threepcf_interface.cpp` resolves counts through
+`init_3pcf_accuracy` and the native `accuracy_*` functions. The returned
+dictionary contains explicit controls, not a Python accuracy class. Defaults are multiplicative one, including
 `integration_accuracy_boost`. This differs from the ordinary core's integer
 integration-level selector; do not pass one to the other as if they had the
 same meaning. The C constructors continue receiving explicit resolved counts
@@ -478,9 +479,8 @@ All controls resolve from unboosted baselines, never from their previous result.
 Individual controls separate kernel sampling, fit-z anchors, physical dense
 readers, projected triangle/multipole grids, angular quadrature, FFT density,
 xi/aperture quadratures, covariance ell/window/angle/radius/k/mass rules and
-coarse/dense halo profiles. The physical model's reader ratio also affects its
-dense fit table. A global sampling increase can refine both that ratio and the
-fit anchors. One-stage tests distinguish these errors before a global run.
+coarse/dense halo profiles. The supplied-bispectrum producer owns its fit anchors separately from
+the projection model's dense readers. One-stage tests distinguish these errors before a global run.
 
 Input Boltzmann k/z samples, external source measurements, integration bounds,
 L/M truncations, FFT padding/window choices and survey bins remain separate

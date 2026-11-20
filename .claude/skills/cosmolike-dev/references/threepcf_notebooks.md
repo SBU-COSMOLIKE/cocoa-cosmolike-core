@@ -13,7 +13,11 @@ core changes and commit only the paths owned by this work.
 |---|---|
 | `cosmolike/3pcf/` | Physical C calculations and production/notebook C++ adapters |
 | `cosmolike_notebook_utils/3pcf/` | Pure-array figures, shared between projects |
-| Project `python/des3pcf/` | Physical input preparation, survey rows, comparison workers and Fisher algebra |
+| Core C++ interfaces | Numerical preparation, transforms and covariance |
+| Project `scripts/des3pcf/` | Survey inputs and offline studies |
+| Core notebook utilities | Shared Fisher and covariance statistics |
+| Project `scripts/des3pcf/` | DES input choices, original-code comparison and timing workers |
+| Project `likelihood/` | Cobaya likelihood and YAML defaults |
 | Project `interface/*_notebook_wrappers.py` | Small callable interfaces used by notebook cells |
 | Project `interface/cosmolike_des_3pcf_fisher_wrappers.py` | YAML workflow and bounded IA teaching calculation |
 | Project `EXAMPLE_COMPARE_CODES.ipynb` | Live original-source comparisons and separate stored physical references |
@@ -40,7 +44,7 @@ The DES project's `EXAMPLE_FEEDBACK_SCENARIOS.ipynb` and
 `interface/cosmolike_des_3pcf_feedback_wrappers.py` follow the LSST Y1/Roman
 `EXAMPLE_EVALUATE3` workflow. `configs/feedback_scenarios.yaml` declares
 seven bfmt points: three SP(k) relations, BCEmu, FLAMINGO, BACCO and
-BCemu2025. `python/des3pcf/baryon_scenarios.py` requests the existing
+BCemu2025. `scripts/des3pcf/baryon_scenarios.py in the DES project` requests the existing
 `baryon_suppression` product, converting k from h/Mpc to 1/Mpc with h*k.
 It uses the saved CAMB As and exact neutrino density and refuses changed
 cosmology with stale metadata. These are physical power responses; the
@@ -238,11 +242,11 @@ are computed once at default accuracy. Use the existing shared functions
 `get_stencil_noise`, `get_fom_noise_weights`, and `predict_fom_noise` in
 `cosmolike_notebook_utils/fisher.py`. Do not implement a second version of the
 formula in this project or in a notebook. The project adapter
-`python/des3pcf/fisher_accuracy.py` supplies saved vectors and absolute
+`cosmolike_notebook_utils/fisher.py` supplies saved vectors and absolute
 parameter offsets only; `scripts/run_fisher_accuracy.py` owns candidate inputs
 and output provenance.
 
-`python/des3pcf/provenance.py` shares file and implementation fingerprints
+`scripts/des3pcf/provenance.py in the DES project` shares file and implementation fingerprints
 with inference. A new Fisher archive records physical input bytes, project
 Python files, both used native extensions and the CAMB implementation when
 cosmology is varied. The CLI checks these identities before derivatives
@@ -456,15 +460,10 @@ official recalibration. Use the separately paired joint covariance. Extra
 headers in the observed two-point file's own covariance do not define a
 joint matrix with the aperture vector.
 
-`python/des3pcf/likelihood.py` selects matching data/mean rows and both
-covariance axes before a Cholesky factorization. It includes the Gaussian
-normalization and no prior penalties. The inference YAML supplies normalized
-priors to Nautilus once. A synthetic example generates its data with the exact
-declared fiducial model; it does not relabel a different public simulated
-mean as its own prediction. An observed example remains a declared Gaussian
-demonstration until estimator, cuts, compression and finite-mock likelihood
-choices match the publication. The shared sampler refuses existing output prefixes. It has no
-project-specific resume command.
+The native joint-data singleton selects matching data/mean rows and both
+covariance axes, then applies optional compression. It retains the Cholesky
+factor and normalization used by `compute_joint_loglike`. The project
+likelihood supplies the provider mean and calls this score directly.
 
 The optional project `compression.py` owns a fixed matrix and exact input
 labels. Selection precedes T; data and every mean use T, and covariance
@@ -507,7 +506,7 @@ reproduce that convention. The 63-angle description in the paper and the
 100-angle active pinned configuration remain different choices. State
 each one rather than infer it from the 80 packed aperture labels.
 
-`Map3Engine.side_keep` masks both side axes of the aperture weights while
+`TransformPlan.side_keep` masks both side axes of the aperture weights while
 retaining the original FFT grid. `side_min_arcmin` in the driver uses
 lower_edge>=minimum; 0.5–80 in 20 logarithmic bins with minimum 8 keeps
 indices 11..19. `representative_rule` chooses geometric or area-weighted
@@ -632,6 +631,6 @@ Released measurements, intentional mock inputs, source distributions and
 released covariance matrices belong in `data/`. The processed demonstration
 source stays there with its clipping record. Generated theory tables,
 artificial feedback responses and trained compression matrices belong in
-`runs/`; `run_3pcf.py prepare` recreates the fiducial theory tables. Frozen
+`chains/`; `run_3pcf.py prepare` recreates the fiducial theory tables. Frozen
 regression predictions and archived timing vectors belong in `tests/`.
 Notebook path edits preserve historical outputs and do not count as reruns.

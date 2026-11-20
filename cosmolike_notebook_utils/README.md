@@ -661,3 +661,9 @@ The options `--boost` and `--integration-accuracy` change the numerical
 accuracy; the preparation factors remain 3, 5 and 7. The saved records
 (comparison, defaults, refined, probability, and their adjacent NPZ
 arrays) land in each survey's `tests/studies/results/`.
+
+The Fisher module also supplies `fisher_matrix`, `compare_information` and
+`marginalized_errors`. These accept derivative and covariance arrays; no
+survey interface is imported. For joint xi/Map3 comparisons, the conditional
+calculation retains the cross-covariance before measuring the additional
+information. Project scripts own the input files and the model evaluations.

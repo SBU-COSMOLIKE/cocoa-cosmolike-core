@@ -1235,8 +1235,8 @@ void physics_destroy_3pcf(physics_model_3pcf* model)
 
 // ---------------------------------------------------------------------------
 // physics_default_ia_3pcf: zero every IA parameter, then set the
-// defaults the fastnc comparison uses: the pivot redshift
-// zpivot = 0.62; the normalization c1rho = 0.0134, the C_1 rho_crit
+// CosmoLike defaults: the pivot redshift
+// zpivot = 0.62; the normalization c1rho = 0.01389, the C_1 rho_crit
 // value of the tidal-alignment literature; power_mode = 1, the z = 0
 // nonlinear power scaled by the squared growth factor; and
 // intrinsic_legs = -1, keeping every field placement. All amplitudes
@@ -1250,7 +1250,7 @@ void physics_default_ia_3pcf(physics_ia_3pcf* parameters)
 
   memset(parameters, 0, sizeof(*parameters));
   parameters->zpivot = 0.62;
-  parameters->c1rho = 0.0134;
+  parameters->c1rho = 0.01389;
   parameters->power_mode = 1;
   parameters->intrinsic_legs = -1;
 }

@@ -102,7 +102,7 @@ typedef struct {
   double bta;    // density-weighting amplitude b_TA
   double ct;     // velocity-shear amplitude C_t (see ct_mode)
   double zpivot; // pivot redshift of the (1 + z) power laws
-  double c1rho;  // C_1 rho_crit normalization; 0.0134 by default
+  double c1rho;  // C_1 rho_crit normalization; 0.01389 by default
   double fb;     // fraction interpolating DMO to the baryon-fit ratio
   int power_mode; // 0: linear D^2; 1: nonlinear(z=0) D^2; 2: nonlinear(z)
   int ct_mode; // 0: physical Ct=C1*ct (fastnc); 1: physical Ct=ct

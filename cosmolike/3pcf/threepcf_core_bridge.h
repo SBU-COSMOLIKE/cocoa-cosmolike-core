@@ -53,7 +53,7 @@ extern "C" {
 // ln P with P in (Mpc/h)^3, and chi in Mpc/h, which are already the
 // model's units, so the only numeric conversions are pow(10, log10 k),
 // exp(ln P), the dz/dchi finite difference, the D = G * a growth
-// conversion and the IA amplitude translation. No c/H0 (coverH0)
+// conversion. IA amplitudes use the same convention. No c/H0 (coverH0)
 // rescaling enters: the power and distance structs never store those
 // units.
 //
@@ -175,17 +175,9 @@ void threepcf_bridge_set_prescriptions(
 // Struct-read conversions and the cached-input factory.
 // ---------------------------------------------------------------------------
 
-// Translate the IA amplitudes the ordinary core stores into the
-// module's fastnc convention. This is the single conversion site: the
-// amplitude mapping, the pivot mapping and every guard live here and
-// nowhere else. threepcf_core_bridge.c carries the didactic
-// derivation; in brief, both conventions use
-// C_1 = -A_1 c1rho Omega_m / D times a redshift power law, the core
-// fixes c1rho = nuisance.c1rhocrit_ia = 0.01389 with pivot
-// 1 + z_pivot = nuisance.oneplusz0_ia = 1.62, the module defaults to
-// c1rho = 0.0134 with its own pivot, and matching the physical C_1
-// divides each incoming amplitude by
-// (c1rho / 0.01389) * ((1 + 0.62)/(1 + z_pivot))^eta.
+// Copy the ordinary core's IA amplitudes, normalization and pivot.
+// Both probes use c1rho=0.01389 and z_pivot=0.62 by default; no
+// normalization conversion takes place at the production boundary.
 //
 // Guards: requires nuisance.IA == IA_REDSHIFT_EVOLUTION and
 // nuisance.IA_MODEL == IA_MODEL_TATT. Under IA_REDSHIFT_BINNING the

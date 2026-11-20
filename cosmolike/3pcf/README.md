@@ -1169,7 +1169,7 @@ evidence.
 
 ### Global multipliers <a name="accuracy-global"></a>
 
-`des3pcf.Accuracy` has two global multiplicative controls. Their defaults are
+The C++ `init_3pcf_accuracy` controls have two global multipliers. Defaults are
 both one. `accuracy_boost` increases prepared sampling grids, while
 `integration_accuracy_boost` increases the node counts of fixed quadratures.
 An integration boost does not select an adaptive routine or change a tolerance
@@ -1188,7 +1188,7 @@ The resolver refuses a subdivision above 1024. A boost of three requests
 four subintervals; the resolved node count records that distinction.
 
 The counts passed into the constructor remain the unboosted baseline. Applying
-the same Accuracy object again to that baseline gives identical counts. It
+the same controls again to that baseline gives identical counts. It
 never multiplies previously boosted values. Returning the controls to one
 restores the baseline without restarting Python. As in the ordinary core's
 accuracy controls, this rule prevents a notebook cell run twice from silently
@@ -1237,7 +1237,7 @@ Coarse covariance-profile samples and their dense interpolation ratio
 also refine different approximations. Test them individually before
 increasing all controls together.
 
-For the [supplied BiHalofit route](../../../../../projects/des_3pcf/python/des3pcf/README.md), the coarse baseline
+For the [supplied BiHalofit route](../../theory/bihalofit/README.md), the coarse baseline
 intervals grow by `accuracy_boost * bispectrum_boost`. Its explicit
 `physics.bispectrum_table.boost` stays fixed. Doubling the coarse intervals
 on all four axes therefore multiplies the stored table size by roughly
@@ -1333,7 +1333,7 @@ separate fit and halo variance records. A declared
 `single_fluid_effective_growth` neutrino approximation requires factorized
 growth; an evolving halo prescription needs its own physical validation.
 
-The optional Cobaya `BiHalofitTheory` uses the same `variance_source` and
+The optional Cobaya `bihalofit` theory block uses the same `variance_source` and
 `variance_growth` selectors. Its `variance_accuracy` mapping supplies the
 shared smoothing controls. The project setup must make the compiled 3PCF
 interface importable when this route is selected. The local Python
@@ -1618,11 +1618,41 @@ CosmoLike, but their finite-grid normalization and endpoint rules differ.
 Replacing them by `W_kappa` or `W_source` requires the comparisons described
 above. Those functions cannot replace the current kernels unchanged.
 
-The companion project's Cobaya adapter is `des3pcf.bihalofit_theory.BiHalofitTheory`.
-The underlying `des3pcf.bihalofit.BiHalofitProducer` is also called directly
-by its CLI/Fisher provider. The Nautilus examples use the same shared
-`cocoa_hybrid_sampling.run` as LSST Y1, with `hybrid=False`. Cobaya loads
-`des3pcf.cobaya_likelihood.JointShear`, which calls that physical provider.
-It does not instantiate the separate `BiHalofitTheory` component. Inputs
-live in the project's `data/`; generated theory tables and forecasts live
-in `runs/`, and frozen numerical comparisons live in `tests/`.
+The shared Cobaya theory component is `bihalofit`, selected in the YAML
+`theory:` block alongside CAMB. `des_3pcf.joint_shear` reads the provider's
+`matter_bispectrum`, power, background and growth. It does not start either
+theory calculation itself. An alternative theory block may supply the same
+bispectrum arrays without depending on BiHalofit. The direct producer is
+also available to older explicit-table CLI/Fisher studies.
+
+The project extension contains both ordinary shear spectra and three-point
+operations. Its likelihood follows the LSST Y1 initialization and evaluation
+methods. The native joint-data singleton owns the selected data, covariance,
+optional compression, Cholesky factor and normalized score. Inputs live in
+`data/`, generated products in ignored `chains/`, and frozen comparisons in
+`tests/`.
+
+## Python and native responsibilities
+
+There is no separate `cosmolike_3pcf` Python package. Survey readers belong
+in the project's `scripts/`; matter-response formulas belong in `theory/`;
+shared Fisher and precision-matrix calculations belong in the existing
+`cosmolike_notebook_utils/` modules. Numerical preparation uses the same C++
+interfaces as the calculation it serves.
+
+`TransformPlan.for_aperture` prepares the Fourier grid, finite-triangle
+weights and source-triplet row map once. `aperture_vector` projects the
+current physical model in bounded batches and evaluates the requested rows.
+No cosmology-dependent projection survives that call. Its optional
+`aperture_components` method separates gravity, linear alignment, density
+weighting, tidal torque and velocity shear across the eight G/I placements.
+It applies the selectors before projection, then reports the sum-minus-total
+closure. Signed-baseline interpolation is required so all terms use the same
+reference scale; subtracting complete predictions would obscure small terms.
+This diagnostic is deliberately separate from a normal likelihood evaluation.
+
+The covariance interface prepares fixed quadrature, shape noise, xi-bin
+weights and physical covariance arrays. `shear_power_rows` uses the ordinary
+core's existing TATT E/B spectra; `xi_from_power` integrates the supplied
+spectra and applies optional shear calibration once per leg. None of these
+functions selects CAMB or a matter-bispectrum fitting formula.

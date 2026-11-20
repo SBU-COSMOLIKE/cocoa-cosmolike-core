@@ -507,3 +507,9 @@ The low-level `covariance_spectra` exposes the same model for diagnostics.
 The joint selected-cluster forecast still requires Limber and zero IA;
 it rejects unsupported Gaussian model requests. Its separate galaxy/shear
 adapter supports the choices described here.
+
+The shared `precision.py` module implements sample-covariance corrections
+and the precision-matrix expansion. It consumes arrays supplied by the
+project; it neither loads DES data nor calls a physical model. The DES
+`EXAMPLE_COVARIANCE_PME.ipynb` illustrates the analytic-plus-simulation
+calculation with an explicitly synthetic covariance ensemble.

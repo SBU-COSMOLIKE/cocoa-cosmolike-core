@@ -1227,6 +1227,415 @@ static void bind_threepcf_core_bridge(
 
 
 
+// Measurement state follows the ordinary IP singleton: one active dataset
+// per process. The full vector is [two-point rows, three-point rows] in the
+// supplied order. Select BOTH covariance axes before inversion; selecting
+// an inverse would condition on the discarded measurements instead.
+class IP3PCF
+{
+public:
+  static IP3PCF& get_instance()
+  {
+    static IP3PCF instance;
+    return instance;
+  }
+
+  void reset()
+  {
+    ready_ = false;
+    data_.reset();
+    covariance_.reset();
+    cholesky_.reset();
+    compression_.reset();
+    selected_.reset();
+    mask_.reset();
+    full_size_ = 0;
+  }
+
+  void set_data(
+    const array_3pcf& data, // measured joint vector before selection
+    const array_3pcf& covariance, // full C22, C23, C32 and C33 blocks
+    const int_array_3pcf& indices, // retained row indices, in requested order
+    const array_3pcf& compression, // optional [Ncompressed,Nselected] matrix
+    const int mock_count, // zero: Gaussian; otherwise raw sample covariance
+    const int parameter_count // varied mean parameters for Percival exponent
+  )
+  {
+    if (data.ndim() != 1 || covariance.ndim() != 2 || indices.ndim() != 1
+        || covariance.shape(0) != data.size()
+        || covariance.shape(1) != data.size() || indices.size() == 0) {
+      throw py::value_error("Joint data, covariance and selected rows disagree.");
+    }
+    const auto values = data.unchecked<1>();
+    const auto matrix = covariance.unchecked<2>();
+    const auto rows = indices.unchecked<1>();
+    arma::uvec selected(indices.size());
+    arma::ivec mask(data.size(), arma::fill::zeros);
+    arma::vec observed(indices.size());
+    arma::mat reduced(indices.size(), indices.size());
+    for (py::ssize_t i=0; i<indices.size(); i++) {
+      if (rows(i) < 0 || rows(i) >= data.size() || mask(rows(i)) != 0) {
+        throw py::value_error("Joint indices must be distinct valid rows.");
+      }
+      mask(rows(i)) = 1;
+      selected(i) = rows(i);
+      observed(i) = values(rows(i));
+    }
+    for (arma::uword i=0; i<selected.n_elem; i++) {
+      for (arma::uword j=0; j<selected.n_elem; j++) {
+        reduced(i,j) = matrix(selected(i),selected(j));
+      }
+    }
+    if (!observed.is_finite() || !reduced.is_finite()
+        || !arma::approx_equal(reduced, reduced.t(), "both", 1.e-13, 1.e-10)) {
+      throw py::value_error("Selected joint data need finite symmetric covariance.");
+    }
+    arma::mat transform;
+    if (compression.size() != 0) {
+      if (compression.ndim() != 2 || compression.shape(0) < 1
+          || compression.shape(1) != indices.size()) {
+        throw py::value_error("Compression columns must match selected data.");
+      }
+      const auto input = compression.unchecked<2>();
+      transform.set_size(compression.shape(0), compression.shape(1));
+      for (arma::uword i=0; i<transform.n_rows; i++) {
+        for (arma::uword j=0; j<transform.n_cols; j++) {
+          transform(i,j) = input(i,j);
+        }
+      }
+      if (!transform.is_finite()) {
+        throw py::value_error("Compression matrix must be finite.");
+      }
+      observed = transform*observed;
+      reduced = transform*reduced*transform.t();
+    }
+    arma::mat lower;
+    if (!arma::chol(lower, reduced, "lower")) {
+      throw py::value_error("Selected covariance must be positive definite.");
+    }
+    const double dimension = observed.n_elem;
+    const double logdet = 2.0*arma::sum(arma::log(lower.diag()));
+    const double pi = std::acos(-1.0);
+    double exponent = 0.0;
+    double normalization = -0.5*(dimension*std::log(2.0*pi) + logdet);
+    if (mock_count != 0) {
+      if (mock_count <= dimension+4 || parameter_count < 1
+          || parameter_count > dimension) {
+        throw py::value_error("Percival needs Ns>Nd+4 and 1<=Np<=Nd.");
+      }
+      const double difference = mock_count-dimension;
+      const double correction = (difference-2.0)/
+        ((difference-1.0)*(difference-4.0));
+      const double product = correction*(dimension-parameter_count);
+      exponent = parameter_count+2.0+(mock_count-1.0+product)/(1.0+product);
+      if (exponent <= dimension) {
+        throw py::value_error("Percival requires m>Nd for a normalized density.");
+      }
+      normalization = std::lgamma(0.5*exponent) -
+        std::lgamma(0.5*(exponent-dimension)) -
+        0.5*dimension*std::log(pi*(mock_count-1.0)) - 0.5*logdet;
+    }
+    // Publish only a fully checked replacement. A failed setup leaves the
+    // previous data usable; changing any mask or compression refactors C.
+    full_size_ = data.size();
+    selected_ = std::move(selected);
+    mask_ = std::move(mask);
+    data_ = std::move(observed);
+    covariance_ = std::move(reduced);
+    cholesky_ = std::move(lower);
+    compression_ = std::move(transform);
+    mock_count_ = mock_count;
+    exponent_ = exponent;
+    log_normalization_ = normalization;
+    ready_ = true;
+  }
+
+  arma::vec select(
+    const array_3pcf& prediction // full joint theory vector
+  ) const
+  {
+    require_data();
+    if (prediction.ndim() != 1 || prediction.size() != full_size_) {
+      throw py::value_error("Joint theory vector has the wrong full length.");
+    }
+    const auto values = prediction.unchecked<1>();
+    arma::vec selected(selected_.n_elem);
+    for (arma::uword i=0; i<selected_.n_elem; i++) {
+      selected(i) = values(selected_(i));
+    }
+    if (!selected.is_finite()) {
+      throw py::value_error("Selected joint theory must be finite.");
+    }
+    if (compression_.n_elem != 0) { selected = compression_*selected; }
+    return selected;
+  }
+
+  double get_chi2(
+    const arma::vec& prediction // selected and optionally compressed mean
+  ) const
+  {
+    require_data();
+    if (prediction.n_elem != data_.n_elem || !prediction.is_finite()) {
+      throw py::value_error("Selected mean must have the finite shape of data.");
+    }
+    const arma::vec residual = prediction-data_;
+    const arma::vec whitened = arma::solve(arma::trimatl(cholesky_), residual,
+      arma::solve_opts::fast);
+    return arma::dot(whitened, whitened);
+  }
+
+  double get_loglike(
+    const double chi2 // residual contraction, without parameter priors
+  ) const
+  {
+    require_data();
+    if (mock_count_ == 0) { return log_normalization_ - 0.5*chi2; }
+    return log_normalization_ - 0.5*exponent_*std::log1p(chi2/(mock_count_-1.0));
+  }
+
+  void require_data() const
+  {
+    if (!ready_) { throw py::value_error("Initialize joint data before chi2."); }
+  }
+
+  arma::vec data() const { require_data(); return data_; }
+  arma::mat covariance() const { require_data(); return covariance_; }
+  double exponent() const { require_data(); return exponent_; }
+  double normalization() const { require_data(); return log_normalization_; }
+
+private:
+  IP3PCF() = default;
+  IP3PCF(const IP3PCF&) = delete;
+  IP3PCF& operator=(const IP3PCF&) = delete;
+  bool ready_ = false;
+  py::ssize_t full_size_ = 0;
+  int mock_count_ = 0;
+  double exponent_ = 0.0;
+  double log_normalization_ = 0.0;
+  arma::uvec selected_;
+  arma::ivec mask_;
+  arma::vec data_;
+  arma::mat covariance_;
+  arma::mat cholesky_;
+  arma::mat compression_;
+};
+
+// Numerical controls are resolved in the interface, as in the two-point
+// library. Python keeps ordinary dictionaries. Every count below is derived
+// from its original baseline, so repeating initialization cannot square a
+// boost. These helpers do not change physical ranges or model parameters.
+py::dict init_accuracy_3pcf(
+  const py::object& value // optional dictionary of global and stage boosts
+)
+{
+  py::dict result;
+  const char* names[] = {"accuracy_boost",
+    "integration_accuracy_boost",
+    "chi_boost",
+    "kernel_boost",
+    "source_boost",
+    "power_table_boost",
+    "bispectrum_boost",
+    "feedback_table_boost",
+    "feedback_z_boost",
+    "feedback_k_boost",
+    "feedback_u_boost",
+    "feedback_v_boost",
+    "fit_z_boost",
+    "variance_mass_boost",
+    "variance_a_boost",
+    "variance_radius_boost",
+    "variance_inverse_boost",
+    "triangle_boost",
+    "multipole_boost",
+    "angular_boost",
+    "fft_boost",
+    "profile_boost",
+    "profile_upsample_boost",
+    "aperture_ell_boost",
+    "aperture_phi_boost",
+    "xi_ell_boost",
+    "xi_theta_boost",
+    "covariance_ell_boost",
+    "covariance_window_boost",
+    "covariance_phi_boost",
+    "covariance_radius_boost",
+    "covariance_k_boost",
+    "covariance_mass_boost"};
+  for (const char* name : names) { result[name] = 1.0; }
+  if (value.is_none()) { return result; }
+  if (!py::isinstance<py::dict>(value)) {
+    throw py::value_error("Accuracy controls must be a dictionary.");
+  }
+  const auto supplied = py::cast<py::dict>(value);
+  for (auto item : supplied) {
+    if (!result.contains(item.first)) {
+      throw py::value_error("Unknown accuracy control: " +
+        py::cast<std::string>(py::str(item.first)));
+    }
+    const double factor = py::cast<double>(item.second);
+    if (py::isinstance<py::bool_>(item.second) || !std::isfinite(factor)
+        || factor < 1.0) {
+      throw py::value_error(py::cast<std::string>(item.first) +
+        " must be finite and >=1.");
+    }
+    result[item.first] = factor;
+  }
+  return result;
+}
+
+int accuracy_count_3pcf(
+  const py::dict& accuracy, // global and stage multipliers
+  const double baseline, // original count, before any refinement
+  const std::string& stage, // individual multiplier name
+  const bool integration, // choose integration rather than sampling boost
+  const bool endpoints // refine N-1 intervals while retaining both endpoints
+)
+{
+  const auto controls = init_accuracy_3pcf(accuracy);
+  if (!controls.contains(stage.c_str())) {
+    throw py::value_error("Unknown accuracy stage: " + stage);
+  }
+  if (!std::isfinite(baseline) || baseline < 1.0
+      || std::floor(baseline) != baseline) {
+    throw py::value_error("Baseline count must be a positive integer.");
+  }
+  const char* global = integration ? "integration_accuracy_boost" :
+    "accuracy_boost";
+  const double factor = py::cast<double>(controls[global]) *
+    py::cast<double>(controls[stage.c_str()]);
+  const double offset = endpoints ? 1.0 : 0.0;
+  const double count = std::ceil((baseline-offset)*factor + offset);
+  if (!std::isfinite(count) || count > INT_MAX) {
+    throw py::value_error("Resolved count exceeds the C int range.");
+  }
+  return static_cast<int>(count);
+}
+
+static array_3pcf accuracy_los_3pcf(
+  const py::dict& accuracy, // global and chi multipliers
+  const array_3pcf& baseline // supplied positive increasing LOS redshifts
+)
+{
+  const auto controls = init_accuracy_3pcf(accuracy);
+  if (baseline.ndim() != 1 || baseline.size() < 2) {
+    throw py::value_error("LOS baseline needs two increasing nodes.");
+  }
+  const double factor = py::cast<double>(controls["accuracy_boost"]) *
+    py::cast<double>(controls["integration_accuracy_boost"]) *
+    py::cast<double>(controls["chi_boost"]);
+  if (!std::isfinite(factor) || factor > 1024.0) {
+    throw py::value_error("LOS subdivision exceeds 1024.");
+  }
+  int subdivision = 1;
+  while (subdivision < factor) { subdivision *= 2; }
+  const auto nodes = baseline.unchecked<1>();
+  for (py::ssize_t i=0; i<baseline.size(); i++) {
+    if (!std::isfinite(nodes(i)) || nodes(i) <= 0.0
+        || (i > 0 && nodes(i) <= nodes(i-1))) {
+      throw py::value_error("LOS baseline needs increasing positive nodes.");
+    }
+  }
+  if ((baseline.size()-1) > (INT_MAX-1)/subdivision) {
+    throw py::value_error("LOS node count exceeds the C int range.");
+  }
+  array_3pcf result((baseline.size()-1)*subdivision + 1);
+  auto output = result.mutable_unchecked<1>();
+  for (py::ssize_t i=0; i<baseline.size()-1; i++) {
+    for (int j=0; j<subdivision; j++) {
+      output(i*subdivision+j) = nodes(i) +
+        (static_cast<double>(j)/subdivision)*(nodes(i+1)-nodes(i));
+    }
+  }
+  output(result.size()-1) = nodes(baseline.size()-1);
+  return result;
+}
+
+static py::dict accuracy_model_3pcf(
+  const py::dict& accuracy, // multipliers applied to the supplied baselines
+  const int kernel_nz, // source-window nodes
+  const int table_boost, // dense-reader interpolation ratio
+  const int fit_nz // requested external fit anchors
+)
+{
+  py::dict result;
+  result["kernel_nz"] = accuracy_count_3pcf(accuracy, kernel_nz,
+    "kernel_boost", false, true);
+  result["table_boost"] = accuracy_count_3pcf(accuracy, table_boost,
+    "power_table_boost", false, false);
+  result["fit_nz"] = accuracy_count_3pcf(accuracy, fit_nz,
+    "fit_z_boost", false, true);
+  return result;
+}
+
+static py::dict accuracy_variance_3pcf(
+  const py::dict& accuracy, // shared variance sampling multipliers
+  const py::dict& baseline // original five variance counts
+)
+{
+  const auto controls = init_accuracy_3pcf(accuracy);
+  const char* names[] = {"mass_nodes", "scale_factor_nodes",
+    "gaussian_radius_nodes", "gaussian_scale_factor_nodes",
+    "gaussian_inverse_nodes"};
+  const char* stages[] = {"variance_mass_boost", "variance_a_boost",
+    "variance_radius_boost", "variance_a_boost", "variance_inverse_boost"};
+  if (baseline.size() != 5) {
+    throw py::value_error("Variance baseline requires five sampling counts.");
+  }
+  py::dict result;
+  for (int i=0; i<5; i++) {
+    const double count = py::cast<double>(baseline[names[i]]);
+    const double factor = py::cast<double>(controls["accuracy_boost"]) *
+      py::cast<double>(controls[stages[i]]);
+    if (!std::isfinite(count) || count < 2 || count != std::floor(count)
+        || !std::isfinite(factor) || factor > 16.0) {
+      throw py::value_error("Variance counts need N>=2 and boost<=16.");
+    }
+    int multiplier = 1;
+    while (multiplier < factor) { multiplier *= 2; }
+    const double resolved = (count-1)*multiplier + 1;
+    if (resolved > INT_MAX) {
+      throw py::value_error("Resolved variance count exceeds the C range.");
+    }
+    result[names[i]] = static_cast<int>(resolved);
+  }
+  return result;
+}
+
+py::dict accuracy_projection_3pcf(
+  const py::dict& accuracy, // interpolation and angular-integration multipliers
+  const py::dict& baseline // original projection settings and physical ranges
+)
+{
+  py::dict result(baseline.attr("copy")());
+  const char* names[] = {"nr", "nu", "nv", "np", "npu_log",
+    "npu_linear", "nshape", "nell", "npsi_log", "npsi_linear",
+    "npsi", "nmu_log", "nmu_linear"};
+  const int defaults[] = {35, 35, 25, 35, 8, 22, 80, 100, 50, 80, 80, 30, 50};
+  for (int i=0; i<13; i++) {
+    const double count = result.contains(names[i]) ?
+      py::cast<double>(result[names[i]]) : defaults[i];
+    if (i == 8 && count == 0.0) { continue; }
+    const char* stage = i < 7 ? "triangle_boost" :
+      (i < 11 ? "multipole_boost" : "angular_boost");
+    result[names[i]] = accuracy_count_3pcf(accuracy, count, stage,
+      i >= 11, i < 11);
+  }
+  return result;
+}
+
+py::dict accuracy_quadrature_3pcf(
+  const py::dict& accuracy, // integration multiplier and individual stage
+  const py::dict& baseline, // original count, bounds and quadrature convention
+  const std::string& stage // selected integration control
+)
+{
+  py::dict result(baseline.attr("copy")());
+  result["count"] = accuracy_count_3pcf(accuracy,
+    py::cast<double>(baseline["count"]), stage, true, false);
+  return result;
+}
+
 // ============================================================================
 // [SECTION] MODULE REGISTRATION
 // ============================================================================
@@ -1235,10 +1644,77 @@ static void bind_threepcf_core_bridge(
 // only ownership and storage conversion differ between them. Results
 // keep the documented physical axes, and the notebook route exports
 // matrices and cubes in Fortran storage order.
+void reset_threepcf_joint_data()
+{
+  IP3PCF::get_instance().reset();
+}
+
 void bind_threepcf(
     py::module_& module // project extension receiving both interfaces
   )
 {
+  module.def("init_joint_data", [](const array_3pcf& data,
+      const array_3pcf& covariance, const int_array_3pcf& indices,
+      const array_3pcf& compression, const int mock_count,
+      const int parameter_count) {
+    IP3PCF::get_instance().set_data(data, covariance, indices, compression,
+      mock_count, parameter_count);
+  }, py::arg("data"), py::arg("covariance"), py::arg("indices"),
+    py::arg("compression"), py::arg("mock_count") = 0,
+    py::arg("parameter_count") = 0);
+  module.def("reset_joint_data", &reset_threepcf_joint_data);
+  module.def("select_joint_data_vector", [](const array_3pcf& prediction) {
+    auto result = carma::col_to_arr(IP3PCF::get_instance().select(prediction));
+    return result.reshape({result.size()});
+  }, py::arg("prediction"));
+  module.def("compute_joint_chi2", [](const array_3pcf& prediction) {
+    const auto& ip = IP3PCF::get_instance();
+    return ip.get_chi2(ip.select(prediction));
+  }, py::arg("prediction"));
+  module.def("compute_joint_loglike", [](const array_3pcf& prediction) {
+    const auto& ip = IP3PCF::get_instance();
+    return ip.get_loglike(ip.get_chi2(ip.select(prediction)));
+  }, py::arg("prediction"));
+  module.def("score_joint_mean", [](const array_3pcf& mean) {
+    if (mean.ndim() != 1) {
+      throw py::value_error("Selected mean must be one-dimensional.");
+    }
+    const arma::vec prediction(mean.data(), mean.size());
+    const auto& ip = IP3PCF::get_instance();
+    const double chi2 = ip.get_chi2(prediction);
+    return py::make_tuple(ip.get_loglike(chi2), chi2);
+  }, py::arg("mean"));
+  module.def("get_joint_data", []() {
+    auto result = carma::col_to_arr(IP3PCF::get_instance().data());
+    return result.reshape({result.size()});
+  });
+  module.def("get_joint_covariance", []() {
+    return carma::mat_to_arr(IP3PCF::get_instance().covariance());
+  });
+  module.def("get_joint_exponent", []() {
+    return IP3PCF::get_instance().exponent();
+  });
+  module.def("get_joint_log_normalization", []() {
+    return IP3PCF::get_instance().normalization();
+  });
+
+  module.def("init_3pcf_accuracy", &init_accuracy_3pcf,
+    py::arg("value") = py::none());
+  module.def("accuracy_count", &accuracy_count_3pcf,
+    py::arg("accuracy"), py::arg("baseline"), py::arg("stage"),
+    py::arg("integration") = false, py::arg("endpoints") = false);
+  module.def("accuracy_los_nodes", &accuracy_los_3pcf,
+    py::arg("accuracy"), py::arg("baseline"));
+  module.def("accuracy_model_settings", &accuracy_model_3pcf,
+    py::arg("accuracy"), py::arg("kernel_nz") = 101,
+    py::arg("table_boost") = 8, py::arg("fit_nz") = 33);
+  module.def("accuracy_variance_settings", &accuracy_variance_3pcf,
+    py::arg("accuracy"), py::arg("baseline"));
+  module.def("accuracy_projection_settings", &accuracy_projection_3pcf,
+    py::arg("accuracy"), py::arg("baseline"));
+  module.def("accuracy_quadrature_settings", &accuracy_quadrature_3pcf,
+    py::arg("accuracy"), py::arg("baseline"), py::arg("stage"));
+
   // Triplet labels cross the Python/C boundary as 32-bit C int.
   static_assert(4 == sizeof(int), "triplets require 32-bit C int");
 
@@ -1246,6 +1722,7 @@ void bind_threepcf(
   // (set_threads_3pcf explains why).
   openblas_set_num_threads(1);
 
+  module.def("set_omp_threads", &set_threads_3pcf, py::arg("n"));
   module.def("set_omp_threads", &set_threads_3pcf,
       "Set the positive OpenMP worker count; BLAS remains serial.",
       py::arg("nthreads"));

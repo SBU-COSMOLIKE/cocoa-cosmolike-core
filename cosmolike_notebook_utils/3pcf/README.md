@@ -507,4 +507,5 @@ Its left panel divides operator sums by gravity; the right groups only
 higher-order TATT placements, excluding linear alignment and VS. Negative
 values retain their physical sign. Each legend lies outside the data axes
 and has a programmatic clearance check. The calculation lives in the
-project's `ia_components.py`, not in this plotting module.
+native `TransformPlan.aperture_components` method. This module only plots
+its signed terms and closure.

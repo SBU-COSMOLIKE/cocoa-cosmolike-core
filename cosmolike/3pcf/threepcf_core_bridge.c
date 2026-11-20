@@ -742,31 +742,15 @@ void threepcf_bridge_set_prescriptions(
 }
 
 // ---------------------------------------------------------------------------
-// IA parameter translation: the single conversion site.
+// IA parameters use the same convention in both probes.
 //
-// Both the ordinary two-point core and the three-point module write
-// the tidal-alignment weight as
-//
-//   C_1(z) = -A_1 ((1+z)/(1+z_pivot))^eta_1 c1rho Omega_m / D(z),
-//
-// with D the linear growth factor and c1rho the C_1 rho_crit
-// normalization; the tidal-torque weight C_2 carries the same
-// structure with its own amplitude, exponent and an extra factor
-// present in both codes. The two conventions differ only in their
-// fixed constants: the core stores nuisance.c1rhocrit_ia = 0.01389
-// and the pivot nuisance.oneplusz0_ia = 1.62 (set_nuisance_IA pins
-// both), while the module defaults to c1rho = 0.0134 with a free
-// pivot (physics_default_ia_3pcf). Matching the physical C_1 at every
-// redshift therefore means, with z_pivot taken from the core's pivot,
-//
-//   a1_module = A1_core / [ (c1rho/0.01389)
-//                           * ((1 + 0.62)/(1 + z_pivot))^eta_1 ],
-//
-// the exact inverse of the module-to-core translation the project's
-// des3pcf.core_two_point.core_ia_parameters applies; a2 follows with
-// eta_2. With z_pivot = oneplusz0_ia - 1 the power-law base is one,
-// so only the c1rho ratio acts, but the formula keeps the general
-// pivot term so the two translation sites stay inverses line by line.
+// Both cores write C_1(z) = -A_1 c1rho Omega_m / D(z) times
+// ((1+z)/(1+z_pivot))^eta_1. C_2 has its own amplitude, exponent
+// and the common factor of five. The module copies c1rho, pivot,
+// amplitudes and exponents directly from the ordinary core.
+// Production defaults are c1rho=0.01389 and z_pivot=0.62.
+// Conversion from fastnc's older normalization is confined to
+// explicit upstream-comparison notebooks.
 //
 // The remaining slots translate without factors: b_TA (ia[2][0]) and
 // the velocity-shear amplitude C_t (ia[1][2]) are dimensionless
@@ -835,13 +819,11 @@ void threepcf_bridge_ia_from_core(
   parameters->zpivot = nuisance.oneplusz0_ia - 1.0;
   parameters->eta1 = nuisance.ia[0][1];
   parameters->eta2 = nuisance.ia[1][1];
-  // the documented factor; its base is exactly one for the pivot
-  // chosen above, but the general form keeps this site the line-by-
-  // line inverse of core_ia_parameters in des3pcf.core_two_point
-  const double ratio = parameters->c1rho/nuisance.c1rhocrit_ia;
-  const double base = nuisance.oneplusz0_ia/(1.0 + parameters->zpivot);
-  parameters->a1 = nuisance.ia[0][0]/(ratio*pow(base, parameters->eta1));
-  parameters->a2 = nuisance.ia[1][0]/(ratio*pow(base, parameters->eta2));
+  // Both calculations use the same CosmoLike convention. Copy amplitudes
+  // and the normalization directly; comparison-only conversions stay out.
+  parameters->c1rho = nuisance.c1rhocrit_ia;
+  parameters->a1 = nuisance.ia[0][0];
+  parameters->a2 = nuisance.ia[1][0];
   parameters->bta = nuisance.ia[2][0];
   parameters->ct = nuisance.ia[1][2];
   parameters->power_mode = supplied.power_mode;
