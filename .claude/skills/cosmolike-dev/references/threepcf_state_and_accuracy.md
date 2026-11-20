@@ -658,3 +658,20 @@ kernels, independent source/kernel/LOS refinements, all projected placements,
 aperture means, six covariance families and survey-weighted derivatives. Warm
 shared caches serially and copy outputs. Test reset, old owners, A/B/A and
 one/six-worker equality. This radial replacement has not been implemented.
+
+## Fine fixed quadrature in the Python-facing interface
+
+The native `quadrature` function uses GSL's `gsl_integration_fixed_legendre`
+workspace, with alpha=beta=0, and returns weights for dx. Logarithmic rules
+multiply by x once when converting from dln(x). This is fixed-order
+Gauss–Legendre integration, with no adaptive sampling and no local root
+solver. Preparation belongs outside repeated physical projections.
+
+The installed GSL `glfixed_table_alloc` rule missed the constant-integral
+check by 3.23e-10 at 4096 nodes and 2.29e-10 at 8192. The fixed Legendre
+workspace reduced the polynomial-moment errors below 3e-15; the oscillatory
+cos(1000x) integral at these orders differed by less than 4e-14. Keep the
+independent moment, logarithmic-Jacobian and oscillatory checks. Do not
+loosen them to accommodate a less accurate preparation algorithm. This
+change is confined to the 3pcf interface; other core GSL allocations retain
+their existing behavior.

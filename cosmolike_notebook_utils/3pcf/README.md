@@ -442,7 +442,7 @@ error at a new setting, and replacing selected columns does not calculate
 a full finer-grid Fisher matrix. The
 [project accuracy notebook](../../../../../projects/des_3pcf/EXAMPLE_FISHER_ACCURACY.ipynb)
 reads those distinctions from saved results; the
-[accuracy guide](../../../../../projects/des_3pcf/ACCURACY.md)
+[accuracy guide](../../cosmolike/3pcf/README.md#accuracy-controls)
 explains the estimator and its assumptions. None of these plotters imports
 a compiled physical model or estimates an unmeasured FoM.
 

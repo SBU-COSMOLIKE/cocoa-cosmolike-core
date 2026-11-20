@@ -4,7 +4,7 @@ BACCO predicts cold-matter (CDM+baryon) power and bispectrum responses.
 This module declares how they are used for lensing with massive neutrinos
 and beyond the trained Fourier/redshift domain. It is a response model,
 not a hydrodynamic calibration of mixed neutrino or intrinsic-shape terms.
-The derivation and alternatives are in the project's BACCO.md.
+The derivation and alternatives are in this theory module's README.
 
 Every cosmology or physical feedback parameter change produces a new
 paired response. Python evaluates the installed neural networks only while

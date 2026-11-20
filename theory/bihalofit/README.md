@@ -352,4 +352,3 @@ Python equations with identical anchors, exercise both covariance adapters,
 and check unchanged power when only the redundant sigma8 scalar changes.
 These tests establish the interface contract; they do not establish survey
 forecast convergence or a new neutrino halo prescription.
-

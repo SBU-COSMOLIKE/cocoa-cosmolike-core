@@ -1656,3 +1656,9 @@ weights and physical covariance arrays. `shear_power_rows` uses the ordinary
 core's existing TATT E/B spectra; `xi_from_power` integrates the supplied
 spectra and applies optional shear calibration once per leg. None of these
 functions selects CAMB or a matter-bispectrum fitting formula.
+
+Its Python-facing fixed quadrature uses GSL's fixed Legendre workspace.
+The ordinary `glfixed` table missed the existing normalization test at
+4096/8192 nodes by roughly 3e-10; the fixed workspace passes the polynomial
+and oscillatory checks without relaxing their tolerances. Logarithmic
+rules include the dx=x dln(x) Jacobian in their returned weights.

@@ -1,6 +1,4 @@
-## BACCO response producer <a name="bacco"></a>
-
-# BACCO feedback in a joint shear forecast
+# BACCO feedback in a joint shear forecast <a name="bacco"></a>
 
 1. [Physical inputs and parameter meanings](#bacco-inputs)
 2. [Converting the power response](#bacco-power)
@@ -14,6 +12,10 @@ changes in the power spectrum and bispectrum using the same baryonic
 correction model. The joint calculation needs both predictions: the power
 spectrum determines the shear correlations $`\xi_+`$ and $`\xi_-`$, while
 the bispectrum determines the third-order aperture statistic Map3.
+
+The routines here currently serve the explicit-table forecast scripts.
+They are separate from the power-only `bfmt` block; a chained Cobaya
+Theory class is not yet registered for this response producer.
 
 The emulators describe cold dark matter and baryons together. Lensing
 also responds to massive neutrinos. This note defines the approximation
