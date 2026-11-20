@@ -60,6 +60,25 @@ keeps its paired BACCO figure as a cold-matter diagnostic. Matter
 conversion, triangle-domain extensions and cosmology-dependent preparation
 remain separate requirements for a calibrated joint forecast.
 
+The bundled `theory/bacco_bispectrum/bacco_bispectrum.py` is also a registered
+Cobaya Theory class. It supplies `baryon_response`, independently of the
+absolute `matter_bispectrum` supplied by BiHalofit or another model. The
+DES likelihood's `external_baryon_response` requests the pair; its default
+is false. The numbered evaluate, MCMC and Nautilus YAMLs teach this setup with
+commented theory, feedback-parameter and likelihood entries, following
+LSST Y1. Do not create a separate named BACCO example. The fiducial is
+inside the training domain; the broad default cosmological priors are not. Keep the five feedback coordinates
+with the theory component, not the likelihood's input parameter list.
+The response component requests CAMBdata and uses its exact cold sigma8 at
+8 Mpc/h and its neutrino density. No private CAMB run occurs. Feedback-only
+changes must reuse the CAMB and absolute-bispectrum states; cosmology changes
+must rebuild all affected products. Test A/B/A and retain old table arrays.
+The likelihood installs nonlinear P times the native R_P exactly once;
+its owned three-point model keeps DMO power for quadratic IA. The native
+power setter invalidates ordinary two-point caches. Do not apply bfmt again.
+`IGNORE_BACCO_BISPECTRUM_CODE` governs the Cocoa start/stop symlink and is
+removed by the normal stop key cleanup. No new numerical engine was added.
+
 For the BACCO bispectrum API, pass omega_cold and sigma8_cold explicitly:
 its generic kwargs path does not propagate the derived cosmology inputs
 correctly. Use identical cold coordinates and five logarithmic feedback

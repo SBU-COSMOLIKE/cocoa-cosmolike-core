@@ -5,6 +5,7 @@
 3. [Converting the bispectrum response](#bacco-bispectrum)
 4. [Continuing beyond the emulator domain](#bacco-continuation)
 5. [Changing parameters in a Fisher calculation](#bacco-fisher)
+6. [Using the Cobaya theory block](#cobaya)
 
 Gas ejection and cooling change the distribution of matter inside and
 around halos. BACCO's Burger2025 emulators predict the corresponding
@@ -13,9 +14,9 @@ correction model. The joint calculation needs both predictions: the power
 spectrum determines the shear correlations $`\xi_+`$ and $`\xi_-`$, while
 the bispectrum determines the third-order aperture statistic Map3.
 
-The routines here currently serve the explicit-table forecast scripts.
-They are separate from the power-only `bfmt` block; a chained Cobaya
-Theory class is not yet registered for this response producer.
+The routines here serve both the explicit-table forecast scripts and the
+`bacco_bispectrum` Cobaya theory block. Both use the same response producer.
+This component is separate from the power-only `bfmt` block.
 
 The emulators describe cold dark matter and baryons together. Lensing
 also responds to massive neutrinos. This note defines the approximation
@@ -454,3 +455,63 @@ uses a nonlinear matter spectrum. The quadratic terms of the tidal
 alignment and tidal torquing model, TATT, and the covariance keep their
 DMO reference; the [paired-response guide](../../cosmolike/3pcf/README.md#paired-feedback) explains
 that convention.
+
+## Using the Cobaya theory block <a name="cobaya"></a>
+
+Use `camb` and an absolute matter-bispectrum producer, such as `bihalofit`,
+for a gravity-only prediction. Add `bacco_bispectrum` for baryonic feedback.
+BACCO supplies dimensionless ratios, not an absolute bispectrum:
+$`P_H=R_P P_D`$ and $`B_H=R_B B_D`$. Replacing BiHalofit with the response
+block alone would leave $`B_D`$ unspecified. Another gravity-only bispectrum
+producer can replace BiHalofit without changing this response component.
+
+```yaml
+theory:
+  camb: {}                 # Background and DMO spectra; configure as usual.
+  bihalofit: {}            # Absolute DMO matter bispectrum.
+  bacco_bispectrum: {}     # Paired P and B responses from Burger2025.
+likelihood:
+  des_3pcf.joint_shear:
+    external_baryon_response: true
+```
+
+This fragment omits the cosmological, nuisance and five feedback parameters.
+The numbered DES evaluate, MCMC and Nautilus YAMLs contain the complete
+setup as commented options: enable the likelihood switch, five feedback
+parameters and response block together. These options retain the existing
+simulation covariance; they are not a measurement of feedback parameters.
+The supplied fiducial is inside the training domain. Before sampling, choose
+priors that respect the installed emulator bounds; out-of-domain responses
+fail rather than silently becoming unity. Do not also enable `bfmt` for this
+paired route: the power response is already included.
+
+Cocoa's start/stop scripts link and unlink this bundled directory under
+`cobaya/theories/bacco_bispectrum`. `IGNORE_BACCO_BISPECTRUM_CODE` skips that
+registration and is unset by `stop_cocoa.sh`. The existing BACCO installation
+must supply both Burger2025 weight files; this component downloads nothing.
+
+The component requests the current `CAMBdata` plus power interpolators
+through Cobaya. It reads cold sigma8 at exactly 8 Mpc/h from those transfer
+functions, preserving the provider's primordial amplitude and massive
+neutrinos. It does not start a private CAMB calculation. Its `baryon_response`
+product contains `native` (uniform response arrays, boost and boundary
+choice) and `metadata` (coordinates, neutrino fraction, continuation choices
+and installed weight hashes). It does not overwrite `matter_bispectrum`.
+Cobaya therefore reuses the DMO bispectrum and CAMB state on feedback-only
+changes, while rebuilding the response when feedback or cosmology changes.
+
+`response_settings.nz/nk/nu/nv` control the coarse response grids;
+`response_settings.boost` sets their dense-reader preparation factor. The
+likelihood's usual `feedback_table_boost` can further refine that reader.
+`background_nz` and `power_nk` control the spectra used in the neutrino
+conversion. Their log-k range can extend to 1000 h/Mpc while the actual
+CAMB transfer calculation ends at `kmax_boltzmann=5` in 1/Mpc. Continuation
+and coarse-grid refinement must be checked separately.
+
+The DES likelihood passes DMO power and the paired response into its owned
+three-point model. For two-point shear it installs $`P_D R_P`$ using the
+existing nonlinear-power setter and its cache invalidation. This leaves
+linear power unchanged. In three-point terms the matter/NLA baseline gets
+$`R_B`$; quadratic IA retains DMO inputs. The fixed covariance also remains
+unchanged. These are declared model assumptions, not a complete baryonic
+calibration of IA or covariance.

@@ -1,5 +1,11 @@
 # BiHalofit theory block
 
+For gravity-only predictions, use this block with CAMB. For BACCO feedback,
+keep this block and add `bacco_bispectrum`: BiHalofit supplies absolute
+$`B_D`$, while BACCO supplies the ratios $`R_B`$ and $`R_P`$. The response
+alone cannot replace the absolute bispectrum. See the
+[BACCO theory guide](../bacco_bispectrum/README.md#cobaya).
+
 BiHalofit is one producer for the supplied-bispectrum interface. Its fit
 and calibration belong to this theory component; they are not requirements
 on an alternative matter-bispectrum model.
