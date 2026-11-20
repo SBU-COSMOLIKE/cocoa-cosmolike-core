@@ -111,7 +111,10 @@ class bacco_bispectrum(Theory):
         producer's existing content cache also checks spectra and sampling.
         """
         results = self.provider.get_CAMBdata()
-        hubble = self.provider.get_Hubble(z=[0.0], units="km/s/Mpc")
+        hubble = self.provider.get_Hubble(
+            z=[0.0],
+            units="km/s/Mpc",
+        )
         little_h = float(hubble[0]) / 100.0
         omega_b = float(self.provider.get_Omega_b(z=[0.0])[0])
         omega_cdm = float(self.provider.get_Omega_cdm(z=[0.0])[0])
@@ -153,10 +156,14 @@ class bacco_bispectrum(Theory):
             extrap_kmin=float(physical_k[0]),
             extrap_kmax=max(self.kmax_boltzmann, 1.01 * physical_k[-1]),
         )
+        nonlinear_power = nonlinear.P(
+            z=self.z,
+            k=physical_k,
+        ) * little_h**3
         tables = {
             "k": self.k,
             "z": self.z,
-            "p_nonlinear": nonlinear.P(z=self.z, k=physical_k) * little_h**3,
+            "p_nonlinear": nonlinear_power,
         }
         # With no massive neutrinos their transfer spectrum is zero, so it
         # must not enter the logarithmic interpolation of a positive power.
