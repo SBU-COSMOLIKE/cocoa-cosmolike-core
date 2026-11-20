@@ -718,6 +718,89 @@ double Pdelta_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ONE-LOOP BIAS TEMPLATES FROM pt_cfastpt.c
+//
+// These are not part of the halo model. They are the perturbative
+// one-loop templates that the nonlinear galaxy-bias model of cosmo2D.c
+// reads. They sit here, next to p_lin and Pdelta, because they are 3D
+// spectra in the same code units.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The one-loop galaxy-bias templates of C-FAST-PT at many k, one a.
+//
+// Calls FPT_bias_tables (pt_cfastpt.c). It builds the tables for the
+// cosmology the last set_cosmology installed, or keeps them when they
+// are current; with nuisance.IA_code = 1 they are the Python FAST-PT
+// tables that set_bias_PS installed. The tables are then read the way
+// the Limber gg integrand of cosmo2D.c reads them: linear interpolation
+// in ln k, zero outside the table's k range, and the factor D(a)^4,
+// because the tables hold the templates at a = 1. Nothing is changed:
+// this is a read-only view of the likelihood's own tables.
+//
+// The names follow pt_cfastpt.c: d1 is the density, d2 its square, s2
+// the squared tidal field and p3 the third-order operator of b3.
+// P_d1p3 comes from a fixed table that does not change with cosmology.
+//
+// sigma4 sets the low-k plateaus of the quadratic templates: it is half
+// of P_d2d2 at the first table node. The likelihood subtracts 2, 4/3 and
+// 8/9 times sigma4 from P_d2d2, P_d2s2 and P_s2s2, so the one-loop terms
+// add no constant power on large scales. The templates returned here are
+// the unsubtracted ones, and the caller decides.
+//
+// Parameters:
+//   k - wavenumbers in (c/H0)^-1; an empty array or any k(i) <= 0 aborts
+//   a - scale factor; outside 0 < a <= 1 aborts
+//
+// Returns:
+//   dict with the numpy arrays "P_d1d2", "P_d2d2", "P_d1s2", "P_d2s2",
+//   "P_s2s2" and "P_d1p3" (same length and order as k) and the float
+//   "sigma4", all in (c/H0)^3 at scale factor a
+// ---------------------------------------------------------------------------
+py::dict FPT_bias_templates_cpp(
+    const arma::Col<double> k,   // wavenumbers in (c/H0)^-1
+    const double a               // scale factor
+  )
+{
+  check_wavenumbers("FPT_bias_templates_cpp", k);
+  if (!(a > 0.0 && a <= 1.0)) {
+    spdlog::critical("{}: a = {} outside 0 < a <= 1",
+                     "FPT_bias_templates_cpp", a);
+    exit(1);
+  }
+  FPT_bias_tables();
+
+  // the ln k grid of the tables, as cosmo2D.c sets it up
+  const double lnkmin = log(FPTbias.krange[RANGE_MIN]);
+  const double lnkmax = log(FPTbias.krange[RANGE_MAX]);
+  const double dlnk = (lnkmax - lnkmin)/FPTbias.N;
+  const double D = growfac(a);
+  const double D4 = D*D*D*D;
+
+  // rows 0 to 5 of FPTbias.tab, in their order
+  const char* names[6] = {"P_d1d2", "P_d2d2", "P_d1s2",
+                          "P_d2s2", "P_s2s2", "P_d1p3"};
+  py::dict res;
+  for (int t=0; t<6; t++) {
+    arma::Col<double> P(k.n_elem, arma::fill::zeros);
+    for (arma::uword i=0; i<k.n_elem; i++) {
+      const double lnk = log(k(i));
+      if (lnk >= lnkmin && lnk <= lnkmax) {
+        P(i) = D4*interpol1d(FPTbias.tab[t], FPTbias.N, lnkmin, lnkmax,
+                             dlnk, lnk);
+      }
+    }
+    res[names[t]] = carma::col_to_arr(P);
+  }
+  res["sigma4"] = D4*FPTbias.sigma4;
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // HOD PARAMETER SETTERS
 //
 // halo.c reads its galaxy parameters from the nuisance struct, and its
