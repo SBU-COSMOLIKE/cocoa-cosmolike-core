@@ -149,40 +149,6 @@ void power_rows_cov(
 
 
 // ---------------------------------------------------------------------------
-// Locate the z bracket on the core's piecewise-uniform redshift grid.
-//
-// Verbatim copy of the core's piecewise_index (cosmo3D.c): that helper is
-// file-local (static) there, so it cannot be linked from this module.
-// Keep the two copies identical.
-//
-// Returns:
-//   bracket index j with grid[j] <= q < grid[j+1], clamped to
-//   [0, n_total-2]
-// ---------------------------------------------------------------------------
-static inline int piecewise_index(double q,
-                                  int nseg,
-                                  const int *start,
-                                  const int *len,
-                                  const double *xmin,
-                                  const double *inv_dx,
-                                  int n_total)
-{
-  // Pick the segment: q is in segment s if q is in [xmin[s], xmin[s+1]).
-  // Linear scan is fine for nseg <= ~10 (branch-predicted, all in L1).
-  int s = 0;
-  while (s < nseg - 1 && q >= xmin[s+1]) s++;
-
-  // Direct index within segment s.
-  int j = start[s] + (int)((q - xmin[s]) * inv_dx[s]);
-
-  // Clamp to valid bilinear bracket range.
-  if (j < 0)             j = 0;
-  if (j > n_total - 2)   j = n_total - 2;
-  return j;
-}
-
-
-// ---------------------------------------------------------------------------
 // Read linear matter power for rows of base-10 LOG wavenumbers plus a shift.
 //
 // The connected-covariance angle integrals read P_lin at the internal
