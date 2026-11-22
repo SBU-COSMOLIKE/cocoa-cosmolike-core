@@ -2,6 +2,7 @@
 #define COSMOLIKE_COVARIANCE_WRAPPER_3PCF_HPP
 
 #include <armadillo>
+#include "threepcf_wrapper.hpp"
 #include <map>
 #include <string>
 #include <utility>
@@ -56,15 +57,7 @@ std::vector<arma::Col<double>> covariance_halos_cpp_3pcf(
 );
 
 // Returns the bin-averaged xi of each row, as a column of length nrow.
-arma::Col<double> covariance_xi_cpp_3pcf(
-  const arma::Col<double>& ell,          // multipole nodes
-  const arma::Col<double>& dell,         // dell quadrature weights
-  const arma::Mat<double>& theta,        // separations [row,node], radians
-  const arma::Mat<double>& theta_weight, // normalized bin weights
-  const arma::Mat<double>& spectra_e,    // E-mode power [row,ell]
-  const arma::Mat<double>& spectra_b,    // B-mode power [row,ell]
-  const arma::Col<int>& sign             // +1 for xi+, -1 for xi-
-);
+
 
 }
 #endif

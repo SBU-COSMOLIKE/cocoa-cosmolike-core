@@ -203,57 +203,5 @@ std::vector<arma::Col<double>> covariance_halos_cpp_3pcf(
 }
 
 
-// ---------------------------------------------------------------------------
-// Notebook bin-averaged xi from E/B angular power spectra.
-//
-// Parameters:
-//   ell, dell            - multipole nodes and their dell weights
-//   theta                - separation nodes [row,separation], radians
-//   theta_weight         - normalized bin weights, same shape
-//   spectra_e, spectra_b - E- and B-mode signal power [row,ell]
-//   sign                 - +1 selects xi+ (J0), -1 selects xi- (J4)
-//
-// Returns:
-//   arma::Col of length nrow: the bin-averaged xi of each row
-// ---------------------------------------------------------------------------
-arma::Col<double> covariance_xi_cpp_3pcf(
-  const arma::Col<double>& ell, // multipoles
-  const arma::Col<double>& dell, // integration weights in dell
-  const arma::Mat<double>& theta, // [row,separation] in radians
-  const arma::Mat<double>& theta_weight, // normalized bin weights
-  const arma::Mat<double>& spectra_e, // [row,ell] signal E power
-  const arma::Mat<double>& spectra_b, // [row,ell] signal B power
-  const arma::Col<int>& sign // +1 for xi+, -1 for xi-
-)
-{
-  const size_t nrow = theta.n_rows;
-  const size_t ntheta = theta.n_cols;
-  const size_t nell = ell.n_elem;
-
-  arma::Col<double> angles(nrow*ntheta);
-  arma::Col<double> weights(nrow*ntheta);
-  arma::Col<double> even(nrow*nell);
-  arma::Col<double> odd(nrow*nell);
-
-  // Packing changes memory order only. Each physical row keeps its
-  // separation weights and E/B spectra together before entering C.
-  for (size_t row=0; row<nrow; row++) {
-    for (size_t point=0; point<ntheta; point++) {
-      angles[row*ntheta+point] = theta(row, point);
-      weights[row*ntheta+point] = theta_weight(row, point);
-    }
-    for (size_t point=0; point<nell; point++) {
-      even[row*nell+point] = spectra_e(row, point);
-      odd[row*nell+point] = spectra_b(row, point);
-    }
-  }
-
-  arma::Col<double> result(nrow);
-  covariance_xi_from_power_3pcf((int)nrow, (int)nell, (int)ntheta,
-      ell.memptr(), dell.memptr(), angles.memptr(), weights.memptr(),
-      even.memptr(), odd.memptr(), sign.memptr(), result.memptr());
-
-  return result;
-}
 
 }

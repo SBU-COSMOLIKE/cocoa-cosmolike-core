@@ -841,7 +841,7 @@ finite-sample tests are separate from the C covariance integral.
 | [physics_grid_3pcf.c](physics_grid_3pcf.c), [header](physics_grid_3pcf.h) | Shared source-triplet preparation, uniform triangle/multipole tables and SIMD linear reads |
 | [feedback_3pcf.c](feedback_3pcf.c), [response header](feedback_3pcf.h), [baseline header](baseline_3pcf.h) | Baryonic response ratios (Section 12) and the supplied absolute bispectrum (Section 13); each table keeps its own owner, and both reuse the same uniform preparation and reads |
 | [coupling_3pcf.c](coupling_3pcf.c), [fftlog_3pcf.c](fftlog_3pcf.c), [transform_3pcf.c](transform_3pcf.c) | Angular coupling, two-Bessel transforms and natural-component reconstruction |
-| [aperture_3pcf.c](aperture_3pcf.c), [header](aperture_3pcf.h) | Finite aperture geometry and contractions |
+| [aperture_3pcf.c](aperture_3pcf.c), [header](aperture_3pcf.h) | Finite aperture geometry, contractions and the bin-averaged xi mean |
 | [covariance_3pcf.c](covariance_3pcf.c), [header](covariance_3pcf.h) | Filtered pairs, Gaussian map contractions and response matrices |
 | [covariance_physics_3pcf.c](covariance_physics_3pcf.c), [header](covariance_physics_3pcf.h) | Halo preparation and physical joint covariance, including actual xi-bin spin weights |
 | [threepcf_interface.cpp](threepcf_interface.cpp), [header](threepcf_interface.hpp) | Creates the `production` and `notebook` pybind submodules and registers the aperture and covariance contraction functions in both; the notebook entries copy inputs and delegate to the wrapper |
@@ -853,6 +853,13 @@ finite-sample tests are separate from the C covariance integral.
 | [covariance_interface.cpp](covariance_interface.cpp), [header](covariance_interface.hpp) | Registers the covariance engines in both submodules |
 | [covariance_wrapper.cpp](covariance_wrapper.cpp), [header](covariance_wrapper.hpp) | Notebook copies into Armadillo for the covariance engines |
 | [CREDITS.md](CREDITS.md) | Scientific attribution, exact source revisions and license scope, with [LICENSE.fastnc-TreeCorr.txt](LICENSE.fastnc-TreeCorr.txt) holding the ported-code license notices |
+
+Fixed quadrature, xi-bin weights, source-pair shear spectra and `xi_from_power`
+compute the data-vector mean. They are registered in `threepcf_interface.cpp`
+and remain available when `COSMOLIKE_NO_COVARIANCE` excludes covariance
+generation. The xi kernel lives in `aperture_3pcf.c`; its Armadillo adapter
+lives in `threepcf_wrapper.cpp`. Reading a supplied covariance for the joint
+likelihood is also independent of compiling a covariance generator.
 
 The project registers these adapters under `production` and `notebook`.
 Both call the same C functions. The production path requires C-contiguous

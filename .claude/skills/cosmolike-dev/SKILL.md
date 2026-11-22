@@ -46,7 +46,7 @@ quantity.
   upstream convention belongs only to the explicit code-comparison notebook.
 - Do not recreate a `cosmolike_3pcf` Python package. Fixed quadrature,
   aperture row grouping, spectra packing and operator decomposition use the
-  existing native interfaces. Survey readers stay in project scripts;
+  existing native interfaces. Survey input loading follows the project likelihood;
   matter prescriptions in `theory/`; Fisher and covariance statistics in
   the existing notebook utilities. Numerical initialization is C++.
 - Repeated code is acceptable. Do not move an unwanted abstraction to
@@ -1487,3 +1487,13 @@ exact fix. If the author explicitly decides to keep something as-is, note it
 "for the record" and move on — do not re-litigate. When the reviewer (human or
 Claude) makes an error, say so plainly and correct the record. No hedging, no
 filler: code and numbers over prose.
+
+### Data-vector-only 3PCF builds
+
+The quadrature, xi-bin weights, shear/NLA power-row and xi_from_power bindings
+belong to threepcf_interface.cpp, not covariance_interface.cpp. The xi mean
+kernel belongs to aperture_3pcf.c and its Armadillo adapter to
+threepcf_wrapper.cpp. Keep these available under COSMOLIKE_NO_COVARIANCE.
+The shared typed array preparation is in threepcf_interface.hpp. Verify a
+real project likelihood initialization and an actual joint prediction with
+covariance disabled; an import plus aperture-only test misses this boundary.

@@ -57,6 +57,26 @@ void aperture_apply_3pcf(
   double* out                    // real aperture moments [nsample,nfilter]
 );
 
+// Bin-averaged xi mean from the E/B angular spectra the caller
+// evaluates on the quadrature nodes. sign = +1
+// selects xi+, which uses the J0 kernel and the sum C_E + C_B;
+// sign = -1 selects xi-, which uses J4 and the difference C_E - C_B.
+// The weights on each separation bin sum to one. The additive noise
+// bias is not removed.
+void covariance_xi_from_power_3pcf(
+  int nrow,                    // number of xi rows
+  int nell,                    // Fourier quadrature nodes
+  int ntheta,                  // separation samples per row
+  const double* ell,           // multipoles [nell]
+  const double* dell,          // dell weights [nell]
+  const double* theta,         // radians [nrow,ntheta]
+  const double* theta_weight,  // normalized weights [nrow,ntheta]
+  const double* spectra_e,     // E angular spectra [nrow,nell]
+  const double* spectra_b,     // B angular spectra [nrow,nell]
+  const int* sign,             // +1 or -1 [nrow]
+  double* out                  // bin-averaged xi [nrow]
+);
+
 #ifdef __cplusplus
 }
 #endif
