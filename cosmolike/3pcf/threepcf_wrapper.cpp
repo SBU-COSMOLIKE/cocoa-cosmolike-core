@@ -297,6 +297,7 @@ arma::Mat<double> aperture_apply_cpp_3pcf(
 // caller's filtered angular power with J0, the cylindrical Bessel
 // function of the first kind and order zero. The caller supplies the
 // d ell quadrature weights; C inserts the factor ell/(2 pi).
+#ifndef COSMOLIKE_NO_COVARIANCE
 arma::Cube<double> filtered_pair_cpp_3pcf(
     const arma::Col<double>& ell, // [nell], angular multipoles
     const arma::Col<double>& ell_weights, // [nell], d ell weights
@@ -463,5 +464,6 @@ arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
 
   return unpack_matrix_3pcf(output, nrow, nrow);
 }
+#endif
 
 }

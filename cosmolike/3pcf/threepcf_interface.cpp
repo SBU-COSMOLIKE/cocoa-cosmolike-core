@@ -340,6 +340,7 @@ static array_3pcf aperture_apply_production_3pcf(
 // quadrature weights; the kernel inserts the factor ell J0(ell r) and
 // the 1/(2 pi).
 // ---------------------------------------------------------------------------
+#ifndef COSMOLIKE_NO_COVARIANCE
 static array_3pcf filtered_pair_production_3pcf(
     const array_3pcf& ell, // [nell], nonnegative multipoles
     const array_3pcf& ell_weights, // [nell], d ell quadrature weights
@@ -497,6 +498,7 @@ static array_3pcf gaussian_covariance_production_3pcf(
 
   return output;
 }
+#endif
 
 
 
@@ -1759,6 +1761,7 @@ void bind_threepcf(
       py::arg("wr").noconvert(), py::arg("wi").noconvert(),
       py::arg("gr").noconvert(), py::arg("gi").noconvert());
 
+#ifndef COSMOLIKE_NO_COVARIANCE
   production.def("filtered_pair", &filtered_pair_production_3pcf,
       "Filtered pair correlations K[field, field, r] from the "
       "caller's angular spectra: K_ij(r) = integral dell ell/(2 pi) "
@@ -1787,6 +1790,8 @@ void bind_threepcf(
       py::arg("triplets").noconvert(), py::arg("pair").noconvert(),
       py::arg("pair_zero").noconvert(),
       py::arg("radial_weights").noconvert());
+
+#endif
 
   py::module_ notebook = module.def_submodule("notebook",
       "Armadillo-owned copies of every input, over the same C kernels.");
@@ -1835,6 +1840,7 @@ void bind_threepcf(
       "return the real moments [sample, filter].",
       py::arg("wr"), py::arg("wi"), py::arg("gr"), py::arg("gi"));
 
+#ifndef COSMOLIKE_NO_COVARIANCE
   notebook.def("filtered_pair", [](
       const py::object& ell, // [nell], angular multipoles
       const py::object& ell_weights, // [nell], d ell quadrature
@@ -1899,6 +1905,8 @@ void bind_threepcf(
       "epsilons.",
       py::arg("triplets"), py::arg("pair"), py::arg("pair_zero"),
       py::arg("radial_weights"));
+
+#endif
 
   // The core-struct bridge registers last: its factory returns the
   // PhysicsModel owner type that bind_threepcf_physics registers at
