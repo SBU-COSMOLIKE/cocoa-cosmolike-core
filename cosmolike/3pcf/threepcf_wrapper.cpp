@@ -467,7 +467,12 @@ arma::Mat<double> gaussian_aperture_covariance_cpp_3pcf(
 #endif
 
 // ---------------------------------------------------------------------------
-// Notebook bin-averaged xi from E/B angular power spectra.
+// Notebook bin-averaged xi from E/B angular power spectra. The pybind
+// layer (xi_binding in threepcf_interface.cpp) has already validated
+// every shape and domain before this adapter runs, so the work here
+// is the storage-order repack and the C call alone. J0 and J4 are
+// Bessel functions of the first kind: xi+ is the J0 transform of
+// C_ell^E + C_ell^B and xi- the J4 transform of C_ell^E - C_ell^B.
 //
 // Parameters:
 //   ell, dell            - multipole nodes and their dell weights

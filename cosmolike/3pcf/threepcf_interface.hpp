@@ -157,14 +157,14 @@ pybind11::array_t<Number, pybind11::array::c_style> input_array_3pcf(
 
 
 
-// bind_threepcf registers two Python submodules whose entry points run
-// the same C kernels: production borrows NumPy arrays without copying
-// them, while notebook copies every input through Armadillo first. The
-// project extension calls this function once, during module import.
-// Clear the joint measurement when the project resets native state.
+// Clear the joint measurement singleton; the project calls this when
+// it resets native state.
 void reset_threepcf_joint_data();
 
-// Native preparation stages share the same refinement arithmetic.
+// The native preparation stages share one refinement arithmetic:
+// these helpers resolve the accuracy dictionaries that scale every
+// sampling and integration count from its saved baseline
+// (threepcf_interface.cpp documents the rules).
 pybind11::dict init_accuracy_3pcf(
   const pybind11::object& value // None or explicit global/stage multipliers
 );
@@ -200,6 +200,10 @@ pybind11::tuple xi_bin_weights_3pcf(
   const pybind11::object& pair_weight // uniform_area or explicit weights
 );
 
+// bind_threepcf registers two Python submodules whose entry points run
+// the same C kernels: production borrows NumPy arrays without copying
+// them, while notebook copies every input through Armadillo first. The
+// project extension calls this function once, during module import.
 void bind_threepcf(
     pybind11::module_& module // owning Python extension module
   );

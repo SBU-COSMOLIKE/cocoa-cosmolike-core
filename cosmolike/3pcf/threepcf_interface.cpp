@@ -51,12 +51,25 @@ namespace cosmolike_interface {
 // allocates its own NumPy results; noconvert() on every argument stops
 // pybind from copying a different dtype or layout silently. The
 // notebook route copies every input into Armadillo instead, so sliced
-// and Fortran-order arrays work unchanged.
+// and Fortran-order arrays work unchanged. A borrowed array stays
+// owned by the caller - the binding only holds a Python reference that
+// keeps the buffer alive during the call - while a copied array is
+// owned by the binding and outlives the caller's buffer.
+//
+// Beyond the aperture and covariance kernels, this file registers the
+// core-struct bridge submodule (threepcf_core_bridge.h), the joint
+// two-point plus three-point measurement state with its chi-squared
+// and log-likelihood, and the accuracy-resolution helpers that the
+// native preparation stages share.
 //
 // Cache invalidation:
-// These bindings keep no array or model state. Prepared aperture
-// weights belong to the caller, who must rebuild them after changing
-// bins or filters.
+// The aperture and covariance bindings keep no array or model state;
+// prepared aperture weights belong to the caller, who must rebuild
+// them after changing bins or filters. The two stateful pieces guard
+// themselves: the cached core-bridge model rebuilds when the bridge's
+// two-tier guard reports a change, and the joint measurement singleton
+// replaces its contents only through init_joint_data and
+// reset_joint_data.
 // ---------------------------------------------------------------------------
 using array_3pcf = py::array_t<double, py::array::c_style>;
 using int_array_3pcf = py::array_t<int, py::array::c_style>;
@@ -651,9 +664,12 @@ static const double* bridge_vector_3pcf(
 // Cache invalidation:
 // threepcf_bridge_refresh decides; reset_threepcf_core_bridge clears
 // its snapshot, so the first factory call after a reset rebuilds.
-// Keep the Python GIL through refresh and copying: setters use that same
-// lock, so no Python thread can replace the shared power or scratch arrays
-// halfway through preparation. C OpenMP workers do not need the GIL.
+// This factory keeps the GIL - Python's global interpreter lock, the
+// one lock a thread must hold to run Python code - through refresh and
+// copying: the setters run under that same lock, so no Python thread
+// can replace the shared power or scratch arrays halfway through
+// preparation. The C OpenMP workers never touch Python objects and do
+// not need the GIL.
 // ---------------------------------------------------------------------------
 static std::shared_ptr<physics_owner_3pcf> model_from_core_3pcf()
 {
@@ -738,8 +754,10 @@ static void bridge_sources_3pcf(
       static_cast<int>(axis.size()));
 }
 
-// Paired feedback response: the dictionary uses the same eight keys
-// as the PhysicsModel factory (feedback_3pcf.h documents each), with
+// Paired baryonic-feedback response: the hydro/DMO tables (hydro, a
+// hydrodynamic simulation with baryons; DMO, its dark-matter-only
+// twin) arrive under the same eight dictionary keys as the
+// PhysicsModel factory uses (feedback_3pcf.h documents each), with
 // the shared log-response amplitude alongside. An empty dictionary
 // with amplitude zero clears the stored response.
 static void bridge_feedback_3pcf(
@@ -803,8 +821,33 @@ static void bridge_feedback_3pcf(
       py::cast<int>(feedback["clamp"]), amplitude);
 }
 
-// The core bridge owns copies just as the direct model factories do.
-// Clearing this override never changes the stored legacy fit scalars.
+// ---------------------------------------------------------------------------
+// Supplied baseline bispectrum. The matter bispectrum
+// B(k_1, k_2, k_3; z) enters the model as a table over four axes in
+// the sorted-triangle convention of baseline_3pcf.h: with the sides
+// sorted as a <= b <= c, the axes are the redshift z, logk for the
+// middle side k = b, logu for the side ratio u = a/b, and the shape
+// coordinate v = (c - b)/a. The dictionary carries those four axis
+// arrays, the flattened table log_bispectrum, and the two switches
+// boost (dense intervals per loaded interval) and clamp (1 clamps an
+// out-of-domain evaluation to the table edge instead of refusing it).
+// omega_m_z supplies the matter fraction Omega_m(z) on the core
+// background redshift grid, and sigma8 - the rms linear fluctuation
+// in spheres of 8 Mpc/h at z = 0 - is the legacy normalization scalar
+// the bridge stores alongside the table.
+//
+// The C bridge copies every array before returning, exactly as the
+// direct model factories do, so the caller may free or reuse its
+// NumPy buffers afterwards. Passing None clears only the bispectrum
+// override; the stored legacy fit scalars keep their values, and
+// model owners built earlier stay valid.
+//
+// Refuses: a dictionary without omega_m_z and sigma8, missing or
+// extra dictionary keys, non-contiguous or nonfinite arrays, an axis
+// with fewer than four nodes (cubic interpolation needs four), and a
+// flattened table whose length is not the product of the axis
+// lengths.
+// ---------------------------------------------------------------------------
 static void bridge_baseline_3pcf(
   const py::object& baseline, // five arrays plus boost and clamp; None clears
   const py::object& omega_m_z, // matter fraction on core background z
@@ -828,6 +871,11 @@ static void bridge_baseline_3pcf(
     "baseline boost is missing"); }
   if (!(dictionary.contains("clamp"))) { throw py::value_error(
     "baseline clamp is missing"); }
+
+  // Validate each array in turn while accumulating the product of the
+  // four axis lengths under an overflow guard: the flattened table
+  // must hold exactly nz*nk*nu*nv values, and that product must fit
+  // the C int storage bound before the bridge allocates anything.
   std::vector<array_3pcf> arrays;
   size_t size = 1;
   for (int axis=0; 5 > axis; axis++) {
@@ -854,6 +902,10 @@ static void bridge_baseline_3pcf(
     "omega_m_z must be a contiguous float64 vector"); }
   const auto matter_fraction = py::reinterpret_borrow<array_3pcf>(omega_m_z);
   const double* fractions = bridge_vector_3pcf(matter_fraction, "omega_m_z");
+
+  // Assemble the plain C view of the validated arrays. The bridge
+  // copies through this view before the call returns, so the view may
+  // point at borrowed NumPy storage.
   baseline_input_3pcf input = {};
   input.nz = static_cast<int>(arrays[0].size());
   input.nk = static_cast<int>(arrays[1].size());
@@ -870,10 +922,39 @@ static void bridge_baseline_3pcf(
     static_cast<int>(matter_fraction.size()), py::cast<double>(sigma8));
 }
 
-// Prepare owned variance arrays from the current core state. Keep the GIL
-// during this serial entry: another Python thread must not replace the
-// global power tables while the lazy shared builders read them. The
-// builders themselves may use their usual OpenMP workers.
+// ---------------------------------------------------------------------------
+// Owned variance snapshot from the installed linear power. The matter
+// variance sigma^2(R, z) - the variance of the density field smoothed
+// on the scale R - drives both the halo model and the bispectrum fit.
+// This adapter copies the derived quantities out of the shared core
+// tables into arrays the caller owns, so a later cosmology change can
+// never alter a snapshot the caller already holds.
+//
+// At each requested redshift the fit block holds R_nl, the radius
+// where the Gaussian-smoothed variance reaches one; n_eff, the
+// effective spectral slope at that radius; and sigma8, the top-hat
+// rms in spheres of 8 Mpc/h. The halo block holds, for every
+// (z, mass) pair, the top-hat variance sigma^2(M) and its logarithmic
+// slope d ln sigma / d ln M, with the mass mapped to a smoothing
+// radius through R^3 = 3 M / (4 pi reference_rho). A reference_rho of
+// zero selects the core matter density, which the result reports as
+// core_rho either way.
+//
+// This serial entry keeps the GIL: the lazy shared builders read the
+// global power tables, and another Python thread must not replace
+// those tables halfway through. The builders themselves still use
+// their usual OpenMP workers.
+//
+// Parameters: on the signature below.
+//
+// Returns:
+//   a dictionary of owned arrays - z, mass, rnl, neff, sigma8,
+//   halo_sigma2, halo_dlnsigma_dlnm - plus the scalars core_rho and
+//   reference_rho
+//
+// Refuses: non-contiguous or nonfinite inputs, a mass table that is
+// not one vector, and node counts whose product exceeds INT_MAX.
+// ---------------------------------------------------------------------------
 static py::dict bridge_variance_snapshot_3pcf(
   const array_3pcf& z, // requested increasing redshifts [nz]
   const py::object& mass_values, // mass nodes [nmass], or None
@@ -905,6 +986,9 @@ static py::dict bridge_variance_snapshot_3pcf(
     std::exit(1);
   }
 
+  // Allocate the outputs the C snapshot fills. Skipping the fit block
+  // shrinks its three arrays to length zero rather than omitting
+  // dictionary keys, so callers always read one fixed layout.
   const py::ssize_t fit_count = include_fit ? z.size() : 0;
   array_3pcf rnl(fit_count);
   array_3pcf neff(fit_count);
@@ -922,6 +1006,8 @@ static py::dict bridge_variance_snapshot_3pcf(
   finite_3pcf(halo_sigma2, "halo variances");
   finite_3pcf(halo_slope, "halo logarithmic slopes");
 
+  // Copy the request axes as well, so the returned dictionary stands
+  // alone even when the caller later mutates its input arrays.
   array_3pcf owned_z(z.size());
   array_3pcf owned_mass(mass.size());
   std::copy_n(z.data(), z.size(), owned_z.mutable_data());
@@ -953,10 +1039,12 @@ static void bind_threepcf_core_bridge(
   core.def("variance_snapshot", &bridge_variance_snapshot_3pcf,
       py::arg("z").noconvert(), py::arg("mass") = py::none(),
       py::arg("reference_rho") = 0.0, py::arg("include_fit") = true,
-      "Owned total-matter variance arrays from the installed linear power. "
-      "No cosmology is installed or changed. reference_rho fixes the "
-      "mass-to-radius convention; zero uses core rho_m. include_fit=False "
-      "skips Gaussian preparation. Halo slopes are d ln sigma/d ln M.");
+      "Copy owned total-matter variance arrays from the installed "
+      "linear power; no cosmology is installed or changed. "
+      "reference_rho fixes the mass-to-radius convention "
+      "R^3 = 3 M/(4 pi rho); zero selects the core matter density. "
+      "include_fit=False skips the Gaussian fit outputs. Halo slopes "
+      "are d ln sigma/d ln M.");
 
   core.def("variance_sampling", []() {
     const auto sampling = threepcf_core_variance_sampling();
@@ -968,7 +1056,9 @@ static void bind_threepcf_core_bridge(
         sampling.gaussian_scale_factor_nodes;
     result["gaussian_inverse_nodes"] = sampling.gaussian_inverse_nodes;
     return result;
-  }, "Copy the five current shared variance table counts after initial_setup.");
+  }, "Return the five current shared variance table counts. Read "
+     "them once after initial_setup as the baseline, refine that "
+     "baseline, and install the result with set_variance_sampling.");
 
   core.def("set_variance_sampling", [](
     const int mass_nodes, // top-hat ln(M) sampling
@@ -982,8 +1072,10 @@ static void bind_threepcf_core_bridge(
       gaussian_scale_factor_nodes, gaussian_inverse_nodes
     };
     threepcf_core_set_variance_sampling(&sampling);
-  }, "Install complete shared variance counts; unchanged counts retain caches. "
-     "Derive refinements from a saved baseline, not the previous result.",
+  }, "Install all five shared variance node counts together; "
+     "reinstalling unchanged counts keeps the caches. Derive a "
+     "refinement from a saved baseline, never from an already refined "
+     "result, so repeated initialization cannot compound a boost.",
       py::arg("mass_nodes").noconvert(),
       py::arg("scale_factor_nodes").noconvert(),
       py::arg("gaussian_radius_nodes").noconvert(),
@@ -992,8 +1084,11 @@ static void bind_threepcf_core_bridge(
 
   // --- supplied tier -----------------------------------------------------
   core.def("set_scalars", &threepcf_bridge_set_scalars,
-      "Legacy cosmological scalars; changing them invalidates supplied B. "
-      "Resupply the theory bispectrum after a change.",
+      "Supply the background scalars the global structs do not hold: "
+      "the spectral index n_s, sigma8 at z = 0, and the dark-energy "
+      "equation of state w(a) = w0 + wa (1 - a). Changing them "
+      "invalidates a supplied baseline bispectrum, so resupply that "
+      "table after a change.",
       py::arg("ns"), py::arg("sigma8"), py::arg("w0"), py::arg("wa"));
 
   core.def("set_los", [](
@@ -1001,7 +1096,9 @@ static void bind_threepcf_core_bridge(
   ) {
     threepcf_bridge_set_los(bridge_vector_3pcf(z, "los_z"),
         static_cast<int>(z.size()));
-  }, "Supply the line-of-sight node redshifts.",
+  }, "Supply the line-of-sight projection nodes: positive, strictly "
+     "increasing redshifts, at least two. The model refuses to build "
+     "before this setter has run.",
       py::arg("z").noconvert());
 
   core.def("set_resolution", &threepcf_bridge_set_resolution,
@@ -1033,17 +1130,22 @@ static void bind_threepcf_core_bridge(
     threepcf_bridge_set_pixel_window(
         bridge_vector_3pcf(values, "pixel window"),
         static_cast<int>(values.size()));
-  }, "Supply W(ell) at integer ell (None clears).",
+  }, "Supply the angular pixel window W(ell), sampled at the integer "
+     "multipoles ell = 0..n-1. None clears it; no window is a valid "
+     "state.",
       py::arg("window") = py::none());
 
   core.def("set_feedback", &bridge_feedback_3pcf,
-      "Supply the paired hydro/DMO response tables and the shared "
-      "log-response amplitude (empty dict with amplitude 0 clears).",
+      "Supply the paired hydro/DMO (dark-matter-only) baryonic "
+      "response tables and the shared log-response amplitude; an "
+      "empty dict with amplitude 0 clears the stored response.",
       py::arg("feedback") = py::dict(), py::arg("amplitude") = 0.0);
 
   core.def("set_baseline_bispectrum", &bridge_baseline_3pcf,
-      "Supply absolute B, Omega_m(z) on the core background grid, and sigma8. "
-      "None clears only the B override; existing model owners stay valid.",
+      "Supply the absolute matter bispectrum table B(k_1, k_2, k_3; z) "
+      "together with Omega_m(z) on the core background grid and "
+      "sigma8. None clears only the bispectrum override; existing "
+      "model owners stay valid.",
       py::arg("baseline") = py::none(),
       py::arg("omega_m_z") = py::none(),
       py::arg("sigma8") = py::none());
@@ -1228,16 +1330,37 @@ static void bind_threepcf_core_bridge(
 
   core.def("model_generation", []() {
     return threepcf_bridge_generation();
-  }, "Build generation of the cached model; advances on every "
-      "rebuild.");
+  }, "Return the build generation of the cached model: it starts at "
+     "zero and advances on every rebuild, so a caller can observe "
+     "rebuilds without comparing model objects.");
 }
 
 
 
-// Measurement state follows the ordinary IP singleton: one active dataset
-// per process. The full vector is [two-point rows, three-point rows] in the
-// supplied order. Select BOTH covariance axes before inversion; selecting
-// an inverse would condition on the discarded measurements instead.
+// ---------------------------------------------------------------------------
+// IP3PCF: the joint measurement state for the combined two-point plus
+// three-point likelihood. It follows the ordinary IP singleton of
+// generic_interface.cpp: one active dataset per process, replaced as
+// a whole or not at all. The full vector stacks the rows as
+// [two-point rows, three-point rows] in the supplied order, and the
+// caller selects the rows that enter the likelihood by index.
+//
+// Row selection happens on BOTH covariance axes before any inversion.
+// The order matters: cutting rows and columns out of the covariance
+// and then inverting gives the likelihood of the kept measurements
+// alone, while cutting an already inverted matrix would condition on
+// the discarded measurements instead - a different, wrong,
+// distribution.
+//
+// After selection an optional compression matrix T maps the kept
+// vector to a shorter one, with covariance T C T^T; everything
+// downstream (Cholesky, chi-squared, likelihood) sees only the
+// compressed quantities. The likelihood is Gaussian when the
+// covariance is analytic (mock_count = 0) and the Percival et al.
+// t-distribution (arXiv:2108.10402) when it is estimated from
+// mock_count simulated catalogues, which widens the tails to account
+// for the noise in that estimate.
+// ---------------------------------------------------------------------------
 class IP3PCF
 {
 public:
@@ -1273,6 +1396,12 @@ public:
         || covariance.shape(1) != data.size() || indices.size() == 0) {
       throw py::value_error("Joint data, covariance and selected rows disagree.");
     }
+    // Row selection. unchecked<N> hands back a raw typed view without
+    // per-element bounds checks; the shape guard above already proved
+    // the dimensions. Each requested index must name a distinct row of
+    // the full vector: the mask records membership, observed gathers
+    // the kept data values, and reduced gathers the kept covariance
+    // block on both axes.
     const auto values = data.unchecked<1>();
     const auto matrix = covariance.unchecked<2>();
     const auto rows = indices.unchecked<1>();
@@ -1297,6 +1426,10 @@ public:
         || !arma::approx_equal(reduced, reduced.t(), "both", 1.e-13, 1.e-10)) {
       throw py::value_error("Selected joint data need finite symmetric covariance.");
     }
+    // Optional compression. A [Ncompressed, Nselected] matrix T
+    // replaces the selected vector by T d and its covariance by
+    // T C T^T. An empty array means no compression; the empty
+    // transform_ later tells select() to skip this step.
     arma::mat transform;
     if (compression.size() != 0) {
       if (compression.ndim() != 2 || compression.shape(0) < 1
@@ -1316,15 +1449,32 @@ public:
       observed = transform*observed;
       reduced = transform*reduced*transform.t();
     }
+    // Cholesky factorization: chol finds the lower-triangular L with
+    // L L^T = C. Only a positive-definite C has such a factor, so a
+    // failed call doubles as the definiteness check. The chi-squared
+    // later solves one triangular system with L instead of ever
+    // forming C^{-1}.
     arma::mat lower;
     if (!arma::chol(lower, reduced, "lower")) {
       throw py::value_error("Selected covariance must be positive definite.");
     }
+
+    // Likelihood normalization. The log-determinant follows from the
+    // factor: |C| = |L|^2 and the determinant of a triangular matrix
+    // is the product of its diagonal. The Gaussian case uses
+    // -(Nd ln(2 pi) + ln|C|)/2.
     const double dimension = observed.n_elem;
     const double logdet = 2.0*arma::sum(arma::log(lower.diag()));
     const double pi = std::acos(-1.0);
     double exponent = 0.0;
     double normalization = -0.5*(dimension*std::log(2.0*pi) + logdet);
+    // A covariance estimated from mock_count simulated catalogues is
+    // itself noisy. Percival et al. (arXiv:2108.10402) account for
+    // that noise by replacing the Gaussian with a t-distribution
+    // whose power m (exponent_ here) is set by the mock, data and
+    // parameter counts; its normalization needs the log-Gamma
+    // function. The guards keep m in the range where the density is
+    // normalizable.
     if (mock_count != 0) {
       if (mock_count <= dimension+4 || parameter_count < 1
           || parameter_count > dimension) {
@@ -1385,6 +1535,11 @@ public:
     if (prediction.n_elem != data_.n_elem || !prediction.is_finite()) {
       throw py::value_error("Selected mean must have the finite shape of data.");
     }
+    // Whitening: solving the triangular system L y = r maps the
+    // residual r to a vector y whose covariance is the identity
+    // (L is the lower Cholesky factor of C), so the chi-squared
+    // r^T C^{-1} r becomes the plain dot product y^T y. One
+    // triangular solve replaces every explicit use of C^{-1}.
     const arma::vec residual = prediction-data_;
     const arma::vec whitened = arma::solve(arma::trimatl(cholesky_), residual,
       arma::solve_opts::fast);
@@ -1396,6 +1551,9 @@ public:
   ) const
   {
     require_data();
+    // Gaussian likelihood for an analytic covariance; the Percival
+    // t-distribution otherwise, whose log1p tail falls more slowly
+    // than the Gaussian's -chi2/2 and so widens the posterior.
     if (mock_count_ == 0) { return log_normalization_ - 0.5*chi2; }
     return log_normalization_ - 0.5*exponent_*std::log1p(chi2/(mock_count_-1.0));
   }
@@ -1427,10 +1585,33 @@ private:
   arma::mat compression_;
 };
 
-// Numerical controls are resolved in the interface, as in the two-point
-// library. Python keeps ordinary dictionaries. Every count below is derived
-// from its original baseline, so repeating initialization cannot square a
-// boost. These helpers do not change physical ranges or model parameters.
+// ============================================================================
+// [SECTION] ACCURACY RESOLUTION
+// ============================================================================
+// Numerical controls are resolved here in the interface, as in the
+// two-point library, so Python keeps only ordinary dictionaries. A
+// boost is a refinement multiplier of at least one: it scales a
+// sampling or integration count above its baseline without touching
+// any physical range or model parameter. Two global factors
+// (accuracy_boost for sampling grids, integration_accuracy_boost for
+// quadratures) multiply with one individual factor per stage, so one
+// knob can refine everything while a single stage stays tunable on
+// its own. Every helper below derives its count from the original
+// baseline, never from a previously refined count, so repeating
+// initialization cannot square a boost.
+
+// ---------------------------------------------------------------------------
+// Validated accuracy dictionary. The result holds every recognized
+// control with its default of 1.0, overwritten by the caller's
+// entries. Starting from the complete default dictionary makes a
+// typo fail loudly instead of silently leaving a stage unrefined.
+//
+// Returns:
+//   a dictionary with one entry per control, each finite and >= 1
+//
+// Refuses: a non-dictionary argument, an unknown control name, and a
+// boolean, nonfinite or sub-unity factor.
+// ---------------------------------------------------------------------------
 py::dict init_accuracy_3pcf(
   const py::object& value // optional dictionary of global and stage boosts
 )
@@ -1491,6 +1672,20 @@ py::dict init_accuracy_3pcf(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// One resolved count. The applied factor is the product of the
+// matching global boost and the stage's individual boost. With
+// endpoints = true the count describes a closed grid of N nodes and
+// N - 1 intervals, so the refinement scales the intervals and adds
+// the shared endpoint back: ceil((N - 1)*factor) + 1 keeps both
+// edges in place. With endpoints = false the count itself scales.
+//
+// Returns:
+//   the refined count as a C int
+//
+// Refuses: an unknown stage name, a baseline that is not a positive
+// integer, and a resolved count beyond the C int range.
+// ---------------------------------------------------------------------------
 int accuracy_count_3pcf(
   const py::dict& accuracy, // global and stage multipliers
   const double baseline, // original count, before any refinement
@@ -1519,6 +1714,22 @@ int accuracy_count_3pcf(
   return static_cast<int>(count);
 }
 
+// ---------------------------------------------------------------------------
+// Refined line-of-sight nodes. Instead of scaling a count, this
+// helper subdivides the supplied node list itself: each interval
+// splits into the next power of two at or above the combined boost,
+// so every original node survives at its exact position and a
+// refined grid remains comparable to its baseline node by node. The
+// last node is written directly rather than through the interval
+// arithmetic, so it matches the supplied endpoint exactly.
+//
+// Returns:
+//   the subdivided node array, (N - 1)*subdivision + 1 long
+//
+// Refuses: fewer than two nodes, non-increasing or nonpositive
+// nodes, a combined boost above 1024, and a node count beyond the C
+// int range.
+// ---------------------------------------------------------------------------
 static array_3pcf accuracy_los_3pcf(
   const py::dict& accuracy, // global and chi multipliers
   const array_3pcf& baseline // supplied positive increasing LOS redshifts
@@ -1558,6 +1769,12 @@ static array_3pcf accuracy_los_3pcf(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Resolved model preparation settings: the three PhysicsModel
+// constructor counts, each refined by its own stage. kernel_nz and
+// fit_nz describe closed grids, so their refinement keeps both
+// endpoints; table_boost is a plain ratio and scales directly.
+// ---------------------------------------------------------------------------
 static py::dict accuracy_model_3pcf(
   const py::dict& accuracy, // multipliers applied to the supplied baselines
   const int kernel_nz, // source-window nodes
@@ -1575,6 +1792,18 @@ static py::dict accuracy_model_3pcf(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Resolved shared variance sampling. The five counts feed
+// set_variance_sampling, whose tables interpolate on closed grids,
+// so each count refines as (N - 1)*multiplier + 1 with the
+// multiplier rounded up to a power of two: original nodes survive at
+// their positions, which keeps a refined table comparable to its
+// baseline. The boost is capped at 16 so a mistyped global factor
+// cannot allocate runaway shared tables.
+//
+// Refuses: a baseline without exactly the five counts, a count below
+// two or non-integer, and a boost above 16.
+// ---------------------------------------------------------------------------
 static py::dict accuracy_variance_3pcf(
   const py::dict& accuracy, // shared variance sampling multipliers
   const py::dict& baseline // original five variance counts
@@ -1609,6 +1838,17 @@ static py::dict accuracy_variance_3pcf(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Resolved projection-grid controls. The baseline dictionary carries
+// the physical ranges untouched; only the thirteen known counts are
+// refined, each through the stage that matches its role: the seven
+// triangle-grid counts through triangle_boost, the four multipole
+// counts through multipole_boost, and the two angular-integration
+// counts through angular_boost (an integration stage, so the global
+// integration factor applies there). A missing count starts from the
+// documented default, and npsi_log = 0 is a valid switch-off that no
+// boost may turn back on.
+// ---------------------------------------------------------------------------
 py::dict accuracy_projection_3pcf(
   const py::dict& accuracy, // interpolation and angular-integration multipliers
   const py::dict& baseline // original projection settings and physical ranges
@@ -1631,6 +1871,12 @@ py::dict accuracy_projection_3pcf(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// One resolved quadrature dictionary: the baseline passes through
+// unchanged except for its count, which refines through the named
+// stage as an integration boost. The bounds and the quadrature
+// convention are physical choices, not accuracy knobs.
+// ---------------------------------------------------------------------------
 py::dict accuracy_quadrature_3pcf(
   const py::dict& accuracy, // integration multiplier and individual stage
   const py::dict& baseline, // original count, bounds and quadrature convention
@@ -1647,10 +1893,9 @@ py::dict accuracy_quadrature_3pcf(
 // [SECTION] MODULE REGISTRATION
 // ============================================================================
 
-// Register both submodules. Python names repeat across the two routes;
-// only ownership and storage conversion differ between them. Results
-// keep the documented physical axes, and the notebook route exports
-// matrices and cubes in Fortran storage order.
+// Clear the joint measurement singleton. The project calls this when
+// it resets native state; the reset_joint_data binding exposes the
+// same entry to Python.
 void reset_threepcf_joint_data()
 {
   IP3PCF::get_instance().reset();
@@ -1804,12 +2049,26 @@ static py::array_t<double> xi_binding(
 
 
 
-// Fixed Gauss-Legendre integration, with nodes and weights supplied by GSL.
-// Use GSL's fixed Legendre workspace: glfixed_table_alloc loses about 3e-10
-// in the weight sum at order 4096 in our installed GSL. The fixed workspace
-// passes the independent polynomial and oscillatory integral tests to 2e-11.
-// Preparation occurs once per requested rule, outside physical integration.
-// Weights include dx: for t=ln(x), dx=x dt exactly once.
+// ---------------------------------------------------------------------------
+// Fixed Gauss-Legendre rule, with nodes and weights supplied by GSL.
+// The rule comes from GSL's fixed Legendre workspace rather than from
+// glfixed_table_alloc, because the latter loses about 3e-10 of the
+// weight sum at order 4096 in the installed GSL, while the fixed
+// workspace reproduces independent polynomial and oscillatory
+// reference integrals to 2e-11. Preparation happens once per
+// requested rule, outside any physical integration loop.
+//
+// With logarithmic = true the rule integrates uniformly in t = ln(x):
+// the returned nodes are x = exp(t), and each weight absorbs the
+// Jacobian dx = x dt exactly once, so a caller sums
+// weight*f(node) with no further factor in either convention.
+//
+// Returns:
+//   (nodes, weights), each of length count
+//
+// Refuses: nonfinite or unordered bounds, count below two, and a
+// logarithmic rule with a nonpositive lower bound.
+// ---------------------------------------------------------------------------
 py::tuple quadrature_3pcf(
   double lower, // integration lower endpoint
   double upper, // integration upper endpoint
@@ -1847,9 +2106,32 @@ py::tuple quadrature_3pcf(
 }
 
 
-// Each xi row averages over its actual annulus. Uniform-area weights are
-// theta dtheta; measured weights replace the whole discrete rule. Map3
-// rows carry unused dummy theta entries for the combined covariance ABI.
+// ---------------------------------------------------------------------------
+// Separation nodes and normalized weights for bin-averaged xi rows.
+// A measured xi+ or xi- value averages the correlation function over
+// its angular bin, so each row receives quadrature nodes across
+// [lower, upper] and weights that perform that average. The name
+// uniform_area weights each node by theta dtheta, the area measure
+// of a thin annulus: every piece of sky area in the bin then counts
+// equally, which is the average an ideal uniform catalogue measures.
+// An explicit [row, count] table instead replaces the weights at
+// those same quadrature nodes, for example with weights built from
+// measured pair counts. Either way each row's weights are
+// renormalized to sum to one.
+//
+// map3 rows take part only in the combined covariance call, whose
+// fixed argument layout still expects a theta row, so they carry
+// dummy nodes and uniform weights that no aperture calculation ever
+// reads.
+//
+// Returns:
+//   (theta, weights), each [row, count]
+//
+// Refuses: edges not shaped [row, 3], count below two, an unknown
+// row kind, a pair-weight name other than uniform_area, explicit
+// weights of the wrong shape or sign, and a row whose weights sum to
+// zero.
+// ---------------------------------------------------------------------------
 py::tuple xi_bin_weights_3pcf(
   const std::vector<std::string>& kind, // xip, xim, map3 per row
   const py::array_t<double>& angles, // [row,3], xi lower/upper edges in radians
@@ -1913,13 +2195,23 @@ py::tuple xi_bin_weights_3pcf(
   return py::make_tuple(theta, weights);
 }
 
-// Prepare the existing C covariance input dictionary from explicit survey
-// arrays. Unique (source,radius) pairs identify filtered fields shared by
-// different rows. This changes no estimator and assumes no survey mask.
-
-// Select the requested source pairs from the ordinary batch calculation.
-// The existing two-point wrapper prepares its tables serially before the
-// OpenMP read loops. No second TATT spectrum or IA convention is introduced.
+// ---------------------------------------------------------------------------
+// Shear angular power for the requested source-bin pairs. The
+// ordinary two-point batch C_ss_tomo_limber_cpp evaluates every
+// tomographic E/B-mode spectrum at the supplied multipoles -
+// preparing its interpolation tables serially before its OpenMP read
+// loops - and this binding copies out the rows the joint covariance
+// needs. Reusing that batch keeps one TATT spectrum (TATT: the tidal
+// alignment and tidal torquing intrinsic-alignment model of the
+// ordinary core) and one IA convention in the process. Bin pairs are
+// symmetrized through (min, max) because C_ij equals C_ji for shear.
+//
+// Returns:
+//   (E, B) spectra, each [row, ell]
+//
+// Refuses: a pair table not shaped [row, 2] and a bin outside the
+// current source sample.
+// ---------------------------------------------------------------------------
 static py::tuple shear_power_rows_3pcf(
   const py::array_t<double>& ell, // angular Fourier multipoles
   const py::array_t<int, py::array::c_style|py::array::forcecast>& bins
@@ -1949,8 +2241,23 @@ static py::tuple shear_power_rows_3pcf(
   return py::make_tuple(e,b);
 }
 
-// The isolated NLA comparison uses exactly the same native source kernels
-// as Map3. Production joint TATT uses the ordinary-core batch above.
+// ---------------------------------------------------------------------------
+// Isolated NLA shear power for validation notebooks. NLA, the
+// nonlinear linear-alignment intrinsic-alignment model, keeps only
+// the linear alignment amplitude A_1. This route evaluates that case
+// through the same native source kernels the aperture-moment (Map3)
+// pipeline uses, so a notebook can compare a xi built here with one
+// built from the Map3 machinery node by node. Production joint TATT
+// goes through shear_power_rows above instead. A repeated (bin, bin)
+// pair copies the first computed row rather than recomputing it.
+//
+// Returns:
+//   spectra [row, ell]
+//
+// Refuses: IA parameters beyond NLA (a2, bta, ct or fb nonzero),
+// which would require the CFASTPT machinery of the ordinary core,
+// and a pair table not shaped [row, 2].
+// ---------------------------------------------------------------------------
 static py::array_t<double> nla_power_rows_3pcf(
   const py::object& model, // immutable physical input owner
   const py::array_t<double>& ell, // Fourier multipoles
@@ -1989,10 +2296,19 @@ static py::array_t<double> nla_power_rows_3pcf(
 }
 
 
+// ---------------------------------------------------------------------------
+// Register every binding of this stage. Python names repeat across
+// the production and notebook submodules; only ownership and storage
+// conversion differ between the two routes. Results keep the
+// documented physical axes, and the notebook route exports matrices
+// and cubes in Fortran storage order (first index fastest).
+// ---------------------------------------------------------------------------
 void bind_threepcf(
     py::module_& module // project extension receiving both interfaces
   )
 {
+  // Shared integration rules and spectrum selectors. Each function's
+  // header above documents its contract.
   module.def("quadrature", &quadrature_3pcf,
     py::arg("lower"), py::arg("upper"), py::arg("count"),
     py::arg("logarithmic")=false);
@@ -2005,6 +2321,11 @@ void bind_threepcf(
     py::arg("model"), py::arg("ell"), py::arg("bins"), py::arg("ia"));
 
 
+  // Joint measurement state. These bindings publish the IP3PCF
+  // singleton documented above: init_joint_data installs a fully
+  // validated dataset, reset_joint_data clears it, and the remaining
+  // entries select rows, score a theory vector and expose the stored
+  // quantities.
   module.def("init_joint_data", [](const array_3pcf& data,
       const array_3pcf& covariance, const int_array_3pcf& indices,
       const array_3pcf& compression, const int mock_count,
@@ -2050,6 +2371,9 @@ void bind_threepcf(
     return IP3PCF::get_instance().normalization();
   });
 
+  // Accuracy resolution. The helpers in the section above turn a
+  // boost dictionary and a saved baseline into resolved counts that
+  // Python passes on to the native setters during initialization.
   module.def("init_3pcf_accuracy", &init_accuracy_3pcf,
     py::arg("value") = py::none());
   module.def("accuracy_count", &accuracy_count_3pcf,
@@ -2074,6 +2398,9 @@ void bind_threepcf(
   // (set_threads_3pcf explains why).
   openblas_set_num_threads(1);
 
+  // Registering the same function twice makes set_omp_threads accept
+  // either keyword, n or nthreads: pybind treats the second def as an
+  // overload of the first.
   module.def("set_omp_threads", &set_threads_3pcf, py::arg("n"));
   module.def("set_omp_threads", &set_threads_3pcf,
       "Set the positive OpenMP worker count; BLAS remains serial.",
@@ -2146,7 +2473,10 @@ void bind_threepcf(
   py::module_ notebook = module.def_submodule("notebook",
       "Armadillo-owned copies of every input, over the same C kernels.");
 
-  // Both adapters compute a mean and stay available without covariance.
+  // One lambda registers xi_from_power on both routes: copying false
+  // binds the production borrow, copying true the notebook copy. Both
+  // compute a signal mean, so they stay available when covariance
+  // generation is compiled out.
   for (const bool copying : {false, true}) {
     py::module_ target = copying ? notebook : production;
     target.def("xi_from_power",
@@ -2163,6 +2493,9 @@ void bind_threepcf(
       ) {
         auto result = xi_binding(ell, dell, theta, theta_weight, spectra_e,
           spectra_b, sign, copying);
+        // Multiplicative shear calibration: each xi row scales by
+        // (1 + m_i)(1 + m_j), with m_i the calibration offset of each
+        // of its two source bins.
         if (!calibration.is_none()) {
           const auto sources = input_array_3pcf<int>(bins, 2, true);
           const auto shear = input_array_3pcf<double>(calibration, 1, true);
