@@ -81,6 +81,18 @@ import numpy as np
 from getdist import plots
 from getdist.mcsamples import MCSamples, loadMCSamples
 
+# The five-point stencil, the one definition every derivative of this
+# package (get_ddv, get_stencil_noise, five_point) and of the projects
+# uses. With d the step,
+#
+#   dm/dp = sum_k FIVE_POINT_WEIGHTS[k] m(p + FIVE_POINT_OFFSETS[k] d)/d
+#         = [-m(p + 2d) + 8 m(p + d) - 8 m(p - d) + m(p - 2d)]/(12 d),
+#
+# which is exact for a vector up to quartic in p. The center point has
+# weight zero and is never evaluated.
+FIVE_POINT_OFFSETS = (2.0, 1.0, -1.0, -2.0)
+FIVE_POINT_WEIGHTS = (-1.0/12.0, 8.0/12.0, -8.0/12.0, 1.0/12.0)
+
 
 @contextmanager
 def nonlimber_derivative_mode(interface, production_gg, production_gs):
@@ -165,10 +177,11 @@ def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
     """
     assert h > 0.0, "h must be > 0"
     # the five-point-stencil weights (-1, 8, -8, 1)/12 paired with
-    # the steps (2h, h, -h, -2h); zip walks the two arrays in step,
-    # handing one (step, weight) pair per loop turn
-    coeffs = np.array([-1.0/12.0, 8.0/12.0, -8.0/12.0, +1.0/12.0], dtype=np.float64)
-    steps  = np.array([2*h, h, -h, -2*h], dtype=np.float64)
+    # the steps (2h, h, -h, -2h) (FIVE_POINT_WEIGHTS, FIVE_POINT_OFFSETS);
+    # zip walks the two arrays in step, handing one (step, weight) pair
+    # per loop turn
+    coeffs = np.array(FIVE_POINT_WEIGHTS, dtype=np.float64)
+    steps  = np.array(FIVE_POINT_OFFSETS, dtype=np.float64)*h
     p0 = float(CV[index])
     absolute_step = np.isclose(p0, 0.0, atol=1e-12)
     result = None
@@ -574,9 +587,8 @@ def get_stencil_noise(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0,
     # bit: steps (2h, h, -h, -2h), derivative weights (-1, 8, -8, 1)/12.
     # The fourth difference takes the same four vectors with the weights
     # (1, -4, -4, 1); the center enters it alone, with weight 6.
-    coeffs = np.array([-1.0/12.0, 8.0/12.0, -8.0/12.0, +1.0/12.0],
-                      dtype=np.float64)
-    steps  = np.array([2*h, h, -h, -2*h], dtype=np.float64)
+    coeffs = np.array(FIVE_POINT_WEIGHTS, dtype=np.float64)
+    steps  = np.array(FIVE_POINT_OFFSETS, dtype=np.float64)*h
     fourth_weights = np.array([1.0, -4.0, -4.0, 1.0], dtype=np.float64)
     p0 = float(fiducial[index])
     absolute_step = np.isclose(p0, 0.0, atol=1e-12)
@@ -1947,8 +1959,6 @@ def make_offset_predictor(predict, reference, names):
     return evaluate
 
 
-
-
 def compare_information(derivatives, names, kind, covariance=None,
                         precision=None, priors=None):
     """Compare two-point and joint information with a common parameter basis.
@@ -2064,20 +2074,6 @@ def marginalized_errors(comparison, names):
 # ---------------------------------------------------------------------------
 # The five-point stencil and the Fisher algebra of a forecast
 # ---------------------------------------------------------------------------
-
-# The five-point stencil of get_ddv, for the derivatives the notebooks
-# take outside it (the per-bin bias columns). With d the step,
-#
-#   dm/dp = sum_k FIVE_POINT_WEIGHTS[k] m(p + FIVE_POINT_OFFSETS[k] d)/d
-#         = [-m(p + 2d) + 8 m(p + d) - 8 m(p - d) + m(p - 2d)]/(12 d),
-#
-# which is exact for a vector up to quartic in p. The center point has
-# weight zero and is never evaluated.
-FIVE_POINT_OFFSETS = (2.0, 1.0, -1.0, -2.0)
-
-
-FIVE_POINT_WEIGHTS = (-1.0/12.0, 8.0/12.0, -8.0/12.0, 1.0/12.0)
-
 
 def five_point(vectors, step):
     """Combine the four stencil vectors into a five-point derivative.
