@@ -2059,3 +2059,168 @@ def marginalized_errors(comparison, names):
             arrays["sigma_two_point"] / arrays["sigma_joint"]
         )
     return arrays, statuses
+
+
+# ---------------------------------------------------------------------------
+# The five-point stencil and the Fisher algebra of a forecast
+# ---------------------------------------------------------------------------
+
+# The five-point stencil of get_ddv, for the derivatives the notebooks
+# take outside it (the per-bin bias columns). With d the step,
+#
+#   dm/dp = sum_k FIVE_POINT_WEIGHTS[k] m(p + FIVE_POINT_OFFSETS[k] d)/d
+#         = [-m(p + 2d) + 8 m(p + d) - 8 m(p - d) + m(p - 2d)]/(12 d),
+#
+# which is exact for a vector up to quartic in p. The center point has
+# weight zero and is never evaluated.
+FIVE_POINT_OFFSETS = (2.0, 1.0, -1.0, -2.0)
+
+
+FIVE_POINT_WEIGHTS = (-1.0/12.0, 8.0/12.0, -8.0/12.0, 1.0/12.0)
+
+
+def five_point(vectors, step):
+    """Combine the four stencil vectors into a five-point derivative.
+
+    The result is sum_k FIVE_POINT_WEIGHTS[k] vectors[k]/step (see the
+    constants above).
+
+    Arguments:
+      vectors = the vectors at p + FIVE_POINT_OFFSETS[k]*step, in that order:
+                four 1D arrays of one length.
+      step    = the step d, in the units of the parameter.
+
+    Returns:
+      1D float64 array: dm/dp at p.
+
+    Raises:
+      ValueError when four vectors are not given or the step is not positive.
+    """
+    if len(vectors) != len(FIVE_POINT_OFFSETS):
+        raise ValueError(f"five_point needs {len(FIVE_POINT_OFFSETS)} "
+                         f"vectors (offsets {FIVE_POINT_OFFSETS}); got "
+                         f"{len(vectors)}")
+
+    # "not step > 0" also rejects a NaN step, which fails every comparison.
+    if not step > 0.0:
+        raise ValueError(f"five_point: the step must be positive; got {step}")
+
+    total = np.zeros(len(vectors[0]), dtype=np.float64)
+    for k in range(len(FIVE_POINT_WEIGHTS)):
+        vector = np.asarray(vectors[k], dtype=np.float64)
+        total += FIVE_POINT_WEIGHTS[k]*vector
+
+    return total/step
+
+
+def fisher_bias(F, names, *shifts):
+    """Return the parameter shifts from fitting a model to another model's vector.
+
+    Fitting this module's model to data drawn from an alternative model (a
+    different non-Limber engine, Limber instead of non-Limber) moves the best
+    fit. To linear order in the vector difference delta = m_alt - m_ref, the
+    move is
+
+        delta_p = F^-1 B,   B = D^T C^-1 delta
+
+    (Huterer et al. 2006; Amara & Refregier 2008), with F the Fisher matrix of
+    the fitted model. The nuisance parameters are part of F, so they absorb
+    what they can of delta, and the shift of each cosmological parameter is
+    the marginalized one. Gaussian priors centered on the fiducial enter F but
+    not B. The linear order holds while delta_p stays well inside the 1-sigma
+    errors. A larger shift signals that the alternative is excluded, with a
+    size that is only indicative.
+
+    Arguments:
+      F       = Fisher matrix over names (one block, or the sum from combine).
+      names   = its parameter names.
+      *shifts = any number of (B, block_names) pairs from
+                ModelFisher.bias_vector. With a block-diagonal covariance, the
+                blocks' numerators add, as their information does.
+
+    Returns:
+      {name: delta_p} over names.
+    """
+    # The row of each name in F.
+    index = {}
+    for k in range(len(names)):
+        index[names[k]] = k
+
+    # Add each block's numerator into the rows of its parameters.
+    B = np.zeros(len(names))
+    for b, block_names in shifts:
+        rows = []
+        for name in block_names:
+            rows.append(index[name])
+        B[rows] += b
+
+    # Solve with the symmetric part of F, which removes round-off asymmetry.
+    shift = np.linalg.solve(0.5*(F + F.T), B)
+
+    out = {}
+    for k in range(len(names)):
+        out[names[k]] = float(shift[k])
+    return out
+
+
+def combine(*blocks):
+    """Sum the Fisher matrices of independent datasets on their shared names.
+
+    With a block-diagonal covariance the joint Fisher matrix is the sum of the
+    separate ones. A parameter that several blocks vary (cosmology) collects
+    every block's information. A parameter that only one block varies (its
+    nuisances) keeps that block's rows. A Gaussian prior belongs in exactly one
+    block, or it is counted twice.
+
+    Arguments:
+      *blocks = any number of (F, names) pairs.
+
+    Returns:
+      (F, names): the joint matrix over the union of the names, in order of
+      first appearance.
+    """
+    names = []
+    for F, block_names in blocks:
+        for name in block_names:
+            if name not in names:
+                names.append(name)
+
+    index = {}
+    for k in range(len(names)):
+        index[names[k]] = k
+
+    total = np.zeros((len(names), len(names)))
+    for F, block_names in blocks:
+        where = []
+        for name in block_names:
+            where.append(index[name])
+
+        # np.ix_(where, where) selects the sub-matrix of those rows and
+        # columns, so the block adds into its own parameters' entries.
+        total[np.ix_(where, where)] += F
+
+    return total, names
+
+
+def marginalized_sigma(F, names, keep):
+    """Return the 1-sigma errors of the parameters keep, marginalized over the rest.
+
+    The error of parameter p is sqrt((F^-1)_pp), the square root of the
+    diagonal entry of the inverse.
+
+    Arguments:
+      F     = Fisher matrix over names.
+      names = its parameter names.
+      keep  = the names whose errors are returned.
+
+    Returns:
+      {name: sigma} over keep.
+    """
+    # The inverse of the symmetric part of F, which removes round-off asymmetry.
+    cov = np.linalg.inv(0.5*(F + F.T))
+
+    out = {}
+    for name in keep:
+        k = names.index(name)
+        out[name] = float(np.sqrt(cov[k, k]))
+    return out
