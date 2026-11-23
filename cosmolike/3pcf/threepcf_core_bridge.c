@@ -17,10 +17,49 @@
 #include <omp.h>
 #endif
 
-// The shared variance builders read the installed linear spectrum. This
-// entry point only copies their results: it never installs a cosmology or
-// returns a pointer into a mutable cache. In particular, halo callers can
-// request their own redshift/mass nodes without another interpolation.
+// ===========================================================================
+// CORE-STRUCT BRIDGE OF THE THREE-POINT PHYSICS MODEL
+// ===========================================================================
+// threepcf_core_bridge.h states the contract: this file reads the
+// global Cosmolike structs, adapts units and layout once at the
+// boundary, and assembles the physics_input_3pcf that the immutable
+// three-point model is created from. The model's own files stay
+// untouched; everything specific to the struct world lives here.
+//
+// The file has five parts, in order: the variance snapshot, the small
+// local helpers together with the variance-sampling controls, the
+// supplied-tier setters, the struct-read conversions with the cached
+// input factory, and the core struct installers the standalone module
+// uses in place of generic_interface.cpp.
+
+// ---------------------------------------------------------------------------
+// Variance snapshot: copy smoothing quantities out of the shared
+// variance tables that cosmo3D.c builds from the installed linear
+// power spectrum.
+//
+// The first read of each quantity on this thread builds its table
+// once; this function then copies the requested values and returns.
+// It never installs a cosmology and never returns a pointer into a
+// mutable cache, so the copied values stay valid after the global
+// cosmology moves on, and halo callers can request their own redshift
+// and mass nodes without a second interpolation layer.
+//
+// reference_rho fixes the smoothing-radius convention R^3 =
+// 3 M / (4 pi reference_rho): each query mass is rescaled by
+// core_rho / reference_rho so that sigma(M) is evaluated at the
+// radius the caller's convention implies. Zero selects the core
+// matter density itself, which makes the rescaling factor one.
+//
+// Refuses (log_fatal + exit): a call inside an OpenMP parallel
+// region, a request with no output at all, missing output buffers for
+// a requested block, a missing linear power table, non-increasing
+// node arrays, redshifts outside [0, 1/a_min - 1], and masses whose
+// density-adjusted values leave the shared table range.
+//
+// Returns the core matter density rho_crit * Omega_m in
+// (Msun/h) / (Mpc/h)^3, so a caller can convert between mass
+// conventions with the same factor the rescaling used.
+// ---------------------------------------------------------------------------
 double threepcf_core_variance_snapshot(
   const int nz, // redshift count
   const double* z, // increasing nonnegative redshifts [nz]
@@ -121,30 +160,19 @@ double threepcf_core_variance_snapshot(
   return core_rho;
 }
 
-// ===========================================================================
-// CORE-STRUCT BRIDGE OF THE THREE-POINT PHYSICS MODEL
-// ===========================================================================
-// threepcf_core_bridge.h states the contract: this file reads the
-// global Cosmolike structs, adapts units and layout once at the
-// boundary, and assembles the physics_input_3pcf that the immutable
-// three-point model is created from. The model's own files stay
-// untouched; everything specific to the struct world lives here.
-//
-// The file has four parts, in order: small local helpers, the
-// supplied-tier setters, the struct-read conversions with the cached
-// input factory, and the core struct installers the standalone module
-// uses in place of generic_interface.cpp.
-
 // ---------------------------------------------------------------------------
 // Local helpers.
 // ---------------------------------------------------------------------------
 
-// Process-unique cache keys. The full core draws its keys from the
-// C++ RandomNumber singleton in generic_interface.cpp; this C file
-// cannot reach it, so a monotonic counter stands in. Uniqueness is
-// the only property the cache guards need: a key must never repeat a
-// value a consumer may still hold. The counter therefore never
-// resets, not even in reset_threepcf_core_bridge.
+// Process-unique cache keys and nonces. A nonce is a fresh unique
+// number drawn whenever an input changes, so a cache that still holds
+// the previous number can tell, by one comparison, that its input
+// moved. The full core draws its keys from the C++ RandomNumber
+// singleton in generic_interface.cpp; this C file cannot reach it, so
+// a monotonic counter stands in. Uniqueness is the only property the
+// cache guards need: a key must never repeat a value a consumer may
+// still hold. The counter therefore never resets, not even in
+// reset_threepcf_core_bridge.
 static uint64_t bridge_draw(void)
 {
   static uint64_t counter = 0;
@@ -152,11 +180,14 @@ static uint64_t bridge_draw(void)
   return counter;
 }
 
-// These are the same Ntable counts used by the ordinary core's accuracy
-// initializer. The standalone adapter exposes exact counts so a notebook
-// can refine one interpolation axis without multiplying a previous boost.
-// Read a baseline after initial_setup, derive counts from that saved value,
-// and install them before requesting a copied variance snapshot.
+// The current node counts of the shared variance tables, read from
+// Ntable. They are the same counts the ordinary core's accuracy
+// initializer sets. A caller that wants a finer table should read a
+// baseline right after initial_setup, derive new counts from that
+// saved value, and install the complete set with the setter below
+// before requesting a variance snapshot: deriving from a saved
+// baseline keeps repeated refinements of one axis from multiplying
+// each other.
 threepcf_variance_sampling threepcf_core_variance_sampling(void)
 {
   const threepcf_variance_sampling sampling = {
@@ -193,9 +224,11 @@ void threepcf_core_set_variance_sampling(
       && Ntable.sigma_gauss_ninv == sampling->gaussian_inverse_nodes) {
     return;
   }
-  // Validate every count before mutating any field. Changing this key
-  // invalidates shared tables and refuses previously supplied bridge
-  // snapshots; immutable model owners already returned remain valid.
+  // Every count was validated above, so the five fields change
+  // together or not at all. The fresh Ntable.random tells every
+  // consumer keyed on it - the shared variance tables and the bridge
+  // guard - that the sampling moved; model owners already returned
+  // keep their immutable copies and stay valid.
   Ntable.N_M[NODES_DENSE] = sampling->mass_nodes;
   Ntable.N_a = sampling->scale_factor_nodes;
   Ntable.sigma_gauss_nr = sampling->gaussian_radius_nodes;
@@ -240,8 +273,10 @@ static void bridge_require_finite(
   }
 }
 
-// Owned copy of a caller array; the bridge frees it on replacement
-// and on reset. malloc1d (basics.c) aborts on allocation failure.
+// Owned copy of a caller array. Owned means the bridge alone frees
+// it, on replacement and on reset; the caller's array is borrowed
+// only for the duration of the call, and its pointer is never
+// stored. malloc1d (basics.c) aborts on allocation failure.
 static double* bridge_copy(
   const double* values, // [n] caller values
   const int n // entry count
@@ -254,7 +289,7 @@ static double* bridge_copy(
 
 // ---------------------------------------------------------------------------
 // Supplied-tier storage. One struct holds every owned copy and scalar
-// the structs do not provide, plus the model-input change counter. The
+// the global structs do not provide, plus the model-input nonce. The
 // resolution and prescription defaults repeat the Python
 // constructor's and physics_default_ia_3pcf's defaults, so a caller
 // who never touches a setter gets the same model the Python route
@@ -298,9 +333,9 @@ static struct {
     baseline_input_3pcf input; // required owned B; nz=0 means not installed
     int nz; // number of supplied background matter fractions
     double* omega_m_z; // matter fraction on the core background z
-    double sigma8; // legacy scalar retained in the supplied-state key
+    double sigma8; // retained interface scalar, part of the change test
     uint64_t cosmology_key; // power/background state supplied with this B
-    int stale; // a changed legacy cosmological scalar requires resupply
+    int stale; // set when a background scalar changes; B must be resupplied
   } baseline;
   int power_mode;     // physics_ia_3pcf.power_mode
   int ct_mode;        // physics_ia_3pcf.ct_mode
@@ -315,8 +350,10 @@ static struct {
   .suppress_only = 0,
 };
 
-// Reset just the supplied absolute B owner. Existing Python model owners
-// retain their private C copies after this storage is changed or released.
+// Release only the supplied matter-bispectrum storage: the B table,
+// its axes and the matter fraction. Model owners that already
+// received these values hold their own private copies, so clearing
+// or replacing this storage never invalidates them.
 static void baseline_clear_bridge(void)
 {
   free((void*)supplied.baseline.input.z);
@@ -327,9 +364,6 @@ static void baseline_clear_bridge(void)
   free(supplied.baseline.omega_m_z);
   memset(&supplied.baseline, 0, sizeof(supplied.baseline));
 }
-
-// Fit snapshots are copied, so retained model owners never read this
-// mutable bridge storage after their constructor returns.
 
 // Free every owned supplied-tier array and restore the defaults the
 // initializer above states. free(NULL) is a no-op, so a fresh bridge
@@ -357,9 +391,12 @@ static void supplied_clear(void)
   supplied.suppress_only = 0;
 }
 
-// The bin count the stored table was saved with; a table saved with
-// another count is reloaded without an entry-by-entry comparison, as
-// in generic_interface.cpp.
+// The bin count redshift.shear_zdist_table was allocated with. The
+// table holds one n(z) row per bin plus the z row, so reading it
+// under a larger redshift.shear_nbin would run past the allocation;
+// the model refresh refuses that mismatch. A table installed under
+// another count is also reloaded without an entry-by-entry
+// comparison, as in generic_interface.cpp.
 static int bridge_stored_shear_nbin = 0;
 
 // ---------------------------------------------------------------------------
@@ -369,6 +406,11 @@ static int bridge_stored_shear_nbin = 0;
 // Query-only selectors and amplitudes are read afresh by the IA adapter.
 // ---------------------------------------------------------------------------
 
+// The four background scalars. sigma8 must be positive; all four
+// must be finite. A change also flags the supplied matter bispectrum
+// as out of date (the refresh then demands a resupply): that table
+// is computed outside the bridge for one specific background, so new
+// scalars silently kept with the old table would mix two cosmologies.
 void threepcf_bridge_set_scalars(
   const double ns, // primordial spectral index
   const double sigma8, // linear fluctuation amplitude at z = 0
@@ -395,6 +437,9 @@ void threepcf_bridge_set_scalars(
   }
 }
 
+// Line-of-sight projection nodes. The model validates their full
+// contract (positive, strictly increasing, inside the tabulated
+// range) at creation; the bridge checks only what a safe copy needs.
 void threepcf_bridge_set_los(
   const double* z, // node redshifts [n]
   const int n // node count
@@ -408,7 +453,9 @@ void threepcf_bridge_set_los(
   }
   bridge_require_finite(z, n, "los_z");
   if (supplied.nlos != n || bridge_differs(supplied.los, z, n)) {
-    // z may be a shorter prefix of the current borrowed bridge view.
+    // The incoming array may alias the stored copy (a caller can
+    // resend a prefix of the bridge's own view), so the replacement
+    // is built before the old storage is freed.
     double* replacement = bridge_copy(z, n);
     free(supplied.los);
     supplied.los = replacement;
@@ -417,11 +464,12 @@ void threepcf_bridge_set_los(
   }
 }
 
+// Model preparation resolution (physics_3pcf.h documents each knob).
 void threepcf_bridge_set_resolution(
   const int kernel_nz, // internal lensing-kernel redshift resolution
   const int source_readers, // 1 keeps cubic source reads for comparisons
   const int table_boost, // dense-grid refinement factor; zero means eight
-  const int fit_nz // uniform BiHalofit anchor count; zero means 33
+  const int fit_nz // retained interface field (physics_3pcf.h)
 )
 {
   // The model validates each knob's range itself (physics_3pcf.h);
@@ -438,6 +486,9 @@ void threepcf_bridge_set_resolution(
   }
 }
 
+// Shifted source densities on their own redshift axis.
+// threepcf_core_bridge.h explains why shifted sources are supplied by
+// Python rather than recomputed here; this setter only stores them.
 void threepcf_bridge_set_sources(
   const double* source_z, // source redshifts [nsource], increasing
   const double* sources, // densities per unit z [nbin, nsource]
@@ -446,7 +497,7 @@ void threepcf_bridge_set_sources(
 )
 {
   if (NULL == source_z && NULL == sources && 0 == nbin && 0 == nsource) {
-    // clear the override; the struct-read path takes over
+    // Clearing the override returns the model to the struct-read path.
     if (0 != supplied.nbin) {
       free(supplied.source_z);
       free(supplied.sources);
@@ -466,8 +517,10 @@ void threepcf_bridge_set_sources(
               "least one bin and at least two source nodes");
     exit(1);
   }
-  // The flat density count is an int in scans, copies and malloc1d.
-  // Check division first, before multiplying or reading either array.
+  // The flat density count nbin * nsource is an int in the scans,
+  // copies and malloc1d below, so the product must fit one. The
+  // division test catches the overflow before the product is formed
+  // and before either array is read.
   if (INT_MAX/nsource < nbin) {
     log_fatal("threepcf bridge: source table count %d x %d exceeds "
               "INT_MAX; reduce the bin or source-node count", nbin, nsource);
@@ -478,7 +531,8 @@ void threepcf_bridge_set_sources(
   if (supplied.nbin != nbin || supplied.nsource != nsource ||
       bridge_differs(supplied.source_z, source_z, nsource) ||
       bridge_differs(supplied.sources, sources, nbin*nsource)) {
-    // Either incoming array may still point into the stored source view.
+    // Either incoming array may alias the stored copies, so both
+    // replacements are built before the old storage is freed.
     double* replacement_z = bridge_copy(source_z, nsource);
     double* replacement_sources = bridge_copy(sources, nbin*nsource);
     free(supplied.source_z);
@@ -491,6 +545,8 @@ void threepcf_bridge_set_sources(
   }
 }
 
+// Angular pixel window W(ell) at integer ell. No window is a valid
+// state, so (NULL, 0) clears the stored samples.
 void threepcf_bridge_set_pixel_window(
   const double* window, // W(ell) samples [n], or NULL
   const int n // sample count, or zero
@@ -513,7 +569,8 @@ void threepcf_bridge_set_pixel_window(
   }
   bridge_require_finite(window, n, "pixel window");
   if (supplied.nwindow != n || bridge_differs(supplied.window, window, n)) {
-    // window may be a shorter prefix of the current borrowed bridge view.
+    // The incoming array may alias the stored copy, so the
+    // replacement is built before the old storage is freed.
     double* replacement = bridge_copy(window, n);
     free(supplied.window);
     supplied.window = replacement;
@@ -522,6 +579,12 @@ void threepcf_bridge_set_pixel_window(
   }
 }
 
+// Paired hydro/DMO (dark-matter-only) feedback response tables plus
+// the shared log-response amplitude the IA dictionary carries
+// (feedback_3pcf.h documents every axis). The amplitude is a query
+// quantity: it travels into threepcf_bridge_ia_from_core's output and
+// never rebuilds the immutable model, so it is stored outside the
+// change test below.
 void threepcf_bridge_set_feedback(
   const double* z, // redshift nodes [nz]
   const int nz, // redshift count
@@ -553,7 +616,8 @@ void threepcf_bridge_set_feedback(
     return;
   }
   // feedback_create_3pcf requires at least four nodes per axis for
-  // its cubic preparation; refuse earlier with the same bound
+  // its cubic preparation; the bridge refuses earlier with the same
+  // bound so a bad table never reaches the model factory
   if (NULL == z
       || NULL == logk
       || NULL == logu
@@ -636,17 +700,19 @@ void threepcf_bridge_set_feedback(
   supplied.feedback.amplitude = amplitude;
 }
 
-// Install a snapshot belonging to the current global power state. Repeating
-// values in a new state renews validity but never changes an existing owner.
-// Copy all four arrays before releasing old storage; the input may alias it.
-// Install immutable B input without deriving a cosmological background.
-// Validation precedes replacement; every scalar, size and array participates
-// in the exact-change test, so resending identical tables preserves reuse.
+// Install the theory-supplied absolute matter bispectrum B and the
+// matter fraction Omega_m(z), and certify them against the current
+// power/background state (cosmology.random). Every scalar, size and
+// array participates in the exact change test, so a caller that
+// resends identical tables keeps the cached model while still
+// renewing the certification for a new state; the bridge never
+// derives a cosmological background from B itself. A NULL baseline
+// clears the stored table, and the model then refuses to build.
 void threepcf_bridge_set_baseline_bispectrum(
   const baseline_input_3pcf* baseline, // borrowed absolute B, NULL clears
   const double* omega_m_z, // matter fraction on background z [nz]
   const int nz, // background count
-  const double sigma8 // positive power-normalization amplitude
+  const double sigma8 // positive retained interface scalar (physics_3pcf.h)
 )
 {
   if (NULL == baseline) {
@@ -673,9 +739,10 @@ void threepcf_bridge_set_baseline_bispectrum(
   }
   const baseline_input_3pcf* old = &supplied.baseline.input;
   const int size = baseline->nz*baseline->nk*baseline->nu*baseline->nv;
-  // Byte comparisons include signed zero in logarithmic arrays. A new
-  // array representation always invalidates this supplied table, even
-  // when its current physical query happens to return the same number.
+  // memcmp compares bytes, so even a sign change of zero in a
+  // logarithmic array counts as a new table: a changed representation
+  // invalidates the supplied table even when every physical query
+  // would still return the same number.
   if (old->nz != baseline->nz
       || old->nk != baseline->nk
       || old->nu != baseline->nu
@@ -709,10 +776,14 @@ void threepcf_bridge_set_baseline_bispectrum(
     supplied.baseline.sigma8 = sigma8;
     supplied.nonce = bridge_draw();
   }
+  // Certification runs even on an exact resend: the stored table now
+  // belongs to the current power/background state, and the
+  // out-of-date flag a scalar change raised is cleared.
   supplied.baseline.cosmology_key = cosmology.random;
   supplied.baseline.stale = 0;
 }
 
+// IA prescription selectors (physics_3pcf.h documents each integer).
 void threepcf_bridge_set_prescriptions(
   const int power_mode, // 0 linear D^2; 1 nonlinear(z=0) D^2; 2 full table
   const int ct_mode, // 0 physical Ct = C1*ct (fastnc); 1 Ct = ct
@@ -733,8 +804,10 @@ void threepcf_bridge_set_prescriptions(
   if (supplied.power_mode != power_mode ||
       supplied.ct_mode != ct_mode ||
       supplied.suppress_only != suppress_only) {
-    // The model prepares every power mode. These selectors choose among
-    // those inputs only when the projection's IA parameters are copied.
+    // The immutable model prepares inputs for every power mode, so
+    // these selectors never rebuild it and no nonce is redrawn: they
+    // only steer which prepared input a query reads, through the
+    // copies the IA translation makes.
     supplied.power_mode = power_mode;
     supplied.ct_mode = ct_mode;
     supplied.suppress_only = suppress_only;
@@ -742,15 +815,18 @@ void threepcf_bridge_set_prescriptions(
 }
 
 // ---------------------------------------------------------------------------
-// IA parameters use the same convention in both probes.
+// IA (intrinsic alignment) parameters use the same convention in the
+// two-point core and the three-point module.
 //
-// Both cores write C_1(z) = -A_1 c1rho Omega_m / D(z) times
-// ((1+z)/(1+z_pivot))^eta_1. C_2 has its own amplitude, exponent
-// and the common factor of five. The module copies c1rho, pivot,
-// amplitudes and exponents directly from the ordinary core.
-// Production defaults are c1rho=0.01389 and z_pivot=0.62.
-// Conversion from fastnc's older normalization is confined to
-// explicit upstream-comparison notebooks.
+// Both codes write C_1(z) = -A_1 c1rho Omega_m / D(z) times
+// ((1+z)/(1+z_pivot))^eta_1, with A_1 the tidal-alignment amplitude,
+// D(z) the growth factor and eta_1 the redshift exponent. C_2 has
+// its own amplitude A_2, exponent eta_2 and the common factor of
+// five. The module copies c1rho, pivot, amplitudes and exponents
+// directly from the ordinary core; production defaults are
+// c1rho = 0.01389 and z_pivot = 0.62. Conversion from fastnc's older
+// normalization is confined to explicit upstream-comparison
+// notebooks.
 //
 // The remaining slots translate without factors: b_TA (ia[2][0]) and
 // the velocity-shear amplitude C_t (ia[1][2]) are dimensionless
@@ -766,11 +842,11 @@ void threepcf_bridge_ia_from_core(
     exit(1);
   }
   // Registry guard (structs.h): under IA_REDSHIFT_BINNING the slot
-  // ia[1][2] holds the per-bin tidal-torque amplitude A2 of shear
+  // ia[1][2] holds the per-bin tidal-torque amplitude A_2 of shear
   // bin 2, so reading it as C_t would run the wrong physics. The
-  // translation above is the power-law (IA_REDSHIFT_EVOLUTION) map,
-  // and the module implements TATT operators, so both flags must
-  // say so.
+  // translation below is the power-law (IA_REDSHIFT_EVOLUTION) map,
+  // and the module implements TATT (tidal alignment and tidal
+  // torquing) operators, so both flags must say so.
   if (IA_REDSHIFT_BINNING == nuisance.IA) {
     log_fatal("threepcf bridge: nuisance.IA = IA_REDSHIFT_BINNING is "
               "refused: ia[1][2] holds the bin-2 A2 amplitude there, "
@@ -910,7 +986,7 @@ static void guard_current(
   counts[22] = supplied.baseline.input.nu;
   counts[23] = supplied.baseline.input.nv;
   counts[24] = supplied.baseline.nz;
-  counts[25] = 0; // reserved former fit-input allocation slot
+  counts[25] = 0; // reserved slot, kept so the snapshot layout stays fixed
   keys[0] = cosmology.random;
   keys[1] = redshift.random_shear;
   keys[2] = nuisance.random_photoz_shear;
@@ -950,17 +1026,29 @@ static double bridge_dzdchi_node(
   return 1.0/(down + dy*(up - down));
 }
 
+// Build generation: a plain counter of committed assemblies, so
+// callers and tests can observe rebuilds without comparing pointers.
 uint64_t threepcf_bridge_generation(void)
 {
   return guard.generation;
 }
 
+// ---------------------------------------------------------------------------
+// The cached-input factory. While the guard snapshot still matches
+// every table count and cache key, it returns NULL and the caller
+// keeps its current model. Otherwise it validates everything the
+// assembly reads, assembles a fresh physics_input_3pcf in the scratch
+// buffers, commits the new snapshot and returns the input; the caller
+// must create the model from it before touching the bridge again
+// (threepcf_core_bridge.h states the ownership and threading rules).
+// ---------------------------------------------------------------------------
 const physics_input_3pcf* threepcf_bridge_refresh(void)
 {
-  // A new power/background state needs a matching theory B. Shape or
-  // source changes can reuse it; a cosmology update cannot silently retain
-  // the old matter prescription. Resending an identical table certifies it
-  // against the new state without forcing an unnecessary table allocation.
+  // A new power/background state needs a matching theory-supplied
+  // matter bispectrum B. Shape or source changes can reuse the stored
+  // one; a cosmology update cannot silently retain the old matter
+  // prescription. Resending an identical table certifies it against
+  // the new state without forcing a new table allocation.
   if (0 == supplied.baseline.input.nz) { log_fatal(
     "threepcf bridge: install a theory-supplied matter bispectrum before "
     "building the model"); exit(1); }
@@ -1300,6 +1388,8 @@ void reset_threepcf_core_bridge(void)
 // In a full-core build the original installers run instead and these
 // stay unused.
 
+// set_cosmological_parameters equivalent: the background densities
+// and H0, with the same fdiff change test as the original.
 void threepcf_core_set_cosmological_parameters(
   const double omega_matter, // Omega_m today
   const double omega_baryon, // Omega_b today
@@ -1307,7 +1397,8 @@ void threepcf_core_set_cosmological_parameters(
   const double omega_nu_h2 // omega_nu h^2 of the massive neutrinos
 )
 {
-  // the negated comparisons also reject NaN
+  // The negated form !(x > 0) is NaN-proof: every comparison with
+  // NaN is false, so a NaN input fails the guard as well.
   if (!(hubble > 0.0)) {
     log_fatal("threepcf bridge: H0 = %e km/s/Mpc must be > 0", hubble);
     exit(1);
@@ -1344,6 +1435,7 @@ void threepcf_core_set_cosmological_parameters(
   }
 }
 
+// set_distances equivalent: chi(z) in Mpc/h on its redshift grid.
 void threepcf_core_set_distances(
   const double* z, // redshift grid [n], at least five nodes
   const double* chi, // comoving distance at z in Mpc/h [n]
@@ -1392,6 +1484,7 @@ void threepcf_core_set_distances(
   }
 }
 
+// set_growth equivalent: G(z) with D = G * a on its redshift grid.
 void threepcf_core_set_growth(
   const double* z, // redshift grid [n], at least five nodes
   const double* G, // growth G at z, D = G * a [n]
@@ -1498,9 +1591,9 @@ static void bridge_install_power(
     return;
   }
 
-  // the log10 k axis must be one uniform segment (the full core's
-  // direct-index readers require it; keeping the requirement here
-  // means a table accepted by this module is accepted everywhere)
+  // The log10 k axis must be one uniform segment: the full core's
+  // direct-index readers require it, and keeping the requirement
+  // here means a table this module accepts is accepted everywhere.
   {
     int s_start[MAX_GRID_SEGMENTS];
     int s_len[MAX_GRID_SEGMENTS];
@@ -1603,6 +1696,7 @@ void threepcf_core_set_non_linear_power_spectrum(
   bridge_install_power(log10k, nk, z, nz, lnP, 0);
 }
 
+// set_source_sample_size equivalent: declare the source tomography.
 void threepcf_core_set_source_sample_size(
   const int ntomo // number of source tomographic bins
 )
@@ -1613,11 +1707,15 @@ void threepcf_core_set_source_sample_size(
               MAX_SIZE_ARRAYS);
     exit(1);
   }
-  // photo-z mode flag; no code in cosmolike_core reads it
+  // The photo-z mode flag: nothing in cosmolike_core reads it; the
+  // assignment mirrors the full core's set_source_sample_size.
   redshift.shear_photoz = 4;
   redshift.shear_nbin = ntomo;
 }
 
+// set_source_sample equivalent: install the n(z) table in the file
+// layout read_nz_sample loads (threepcf_core_bridge.h documents the
+// columns and the allocation metadata this installer records).
 void threepcf_core_set_source_sample(
   const double* table, // row-major n(z) table [nzbins][ntomo+1]
   const int nzbins, // redshift rows
@@ -1681,13 +1779,17 @@ void threepcf_core_set_source_sample(
     }
   }
 
+  // The overall support mirrors the full core's set_source_sample:
+  // the lower edge is floored at 1e-5 to keep redshift strictly
+  // positive, and the upper edge extends one grid spacing past the
+  // last node.
   redshift.shear_zdist_zall[RANGE_MIN] = fmax(z_v[0], 1.e-5);
   redshift.shear_zdist_zall[RANGE_MAX] =
       z_v[nzbins-1] + (z_v[nzbins-1] - z_v[0])/((double) nzbins - 1.);
 
-  for (int k=0; k<Ntomo; k++) { // set tomography bin boundaries
-    // the bin support is where n(z) exceeds 0.999e-8 of its maximum,
-    // exactly as set_source_sample bounds it
+  for (int k=0; k<Ntomo; k++) { // tomography bin boundaries
+    // The bin support is where n(z) exceeds 0.999e-8 of its maximum,
+    // exactly as set_source_sample bounds it.
     double nzmax = tab[k][0];
     for (int i=1; i<nzbins; i++) {
       nzmax = fmax(nzmax, tab[k][i]);
@@ -1707,6 +1809,9 @@ void threepcf_core_set_source_sample(
                 "entry", k);
       exit(1);
     }
+    // The per-bin floor sits just above the overall 1e-5 floor, so a
+    // bin's lower edge can never undercut the table support checked
+    // right below (both values mirror the full core).
     redshift.shear_zdist_z[RANGE_MIN][k] = fmax(z_v[first], 1.001e-5);
     redshift.shear_zdist_z[RANGE_MAX][k] = z_v[last];
   }
@@ -1725,6 +1830,9 @@ void threepcf_core_set_source_sample(
   redshift.random_shear = bridge_draw();
 }
 
+// set_nuisance_shear_photoz equivalent: per-bin source photo-z
+// shifts. The bridge only stores them; the refresh requires every
+// stored shift to be exactly zero on the struct-read source path.
 void threepcf_core_set_nuisance_shear_photoz(
   const double* shifts, // per-bin shifts [n]
   const int n // must equal redshift.shear_nbin
@@ -1757,6 +1865,9 @@ void threepcf_core_set_nuisance_shear_photoz(
   }
 }
 
+// init_IA equivalent: the IA model registry flags. IA_MODEL_NLA is
+// the nonlinear linear alignment model; IA_MODEL_TATT adds the tidal
+// torque and density-weighting operators.
 void threepcf_core_init_ia(
   const int ia_model, // 0 = IA_MODEL_NLA, 1 = IA_MODEL_TATT
   const int ia_redshift_evolution // NO_IA .. IA_REDSHIFT_EVOLUTION (IA.h)
@@ -1768,7 +1879,7 @@ void threepcf_core_init_ia(
       nuisance.IA != ia_redshift_evolution) {
     nuisance.random_ia = bridge_draw();
     // The meaning of the ia[][] rows depends on the redshift mode
-    // (structs.h): under IA_REDSHIFT_BINNING, ia[1][2] is the A2
+    // (structs.h): under IA_REDSHIFT_BINNING, ia[1][2] is the A_2
     // amplitude of bin 2, while under IA_REDSHIFT_EVOLUTION it is the
     // velocity-shear amplitude C_t. A value left by the old mode would
     // be read with the new meaning. The rule is therefore: a mode
@@ -1802,9 +1913,13 @@ void threepcf_core_init_ia(
               ia_redshift_evolution);
     exit(1);
   }
-  nuisance.IA_code = 0; // CFASTPT; no python FAST-PT path here
+  // CFASTPT, the C FAST-PT implementation: the Python FAST-PT
+  // dispatch of the full core does not exist in this module.
+  nuisance.IA_code = 0;
 }
 
+// set_nuisance_IA equivalent: amplitudes for the active nuisance.IA
+// mode (structs.h documents the ia[][] registry rows).
 void threepcf_core_set_nuisance_ia(
   const double* A1, // tidal alignment [n]: binned, one per source bin;
                     // power law, [0] amplitude and [1] z exponent
@@ -1831,6 +1946,11 @@ void threepcf_core_set_nuisance_ia(
     exit(1);
   }
   int cache_update = 0;
+  // The normalization C_1 rho_crit = 0.01389 is the dimensionless
+  // product of the tidal-alignment constant C_1 = 5e-14 in
+  // h^-2 Msun^-1 Mpc^3 and the critical density rho_crit =
+  // 2.77536627e11 in h^2 Msun/Mpc^3. Every call writes it, exactly
+  // as the full core's installer does.
   nuisance.c1rhocrit_ia = 0.01389;
   if (IA_REDSHIFT_BINNING == nuisance.IA) {
     for (int i=0; i<redshift.shear_nbin; i++) {
@@ -1865,6 +1985,8 @@ void threepcf_core_set_nuisance_ia(
       log_fatal("threepcf bridge: an IA power-law entry is NaN");
       exit(1);
     }
+    // The pivot of the (1 + z) power laws: 1 + z_pivot with
+    // z_pivot = 0.62, the fixed IA pivot redshift of the full core.
     nuisance.oneplusz0_ia = 1.62;
     if (fdiff(nuisance.ia[0][0], A1[0]) ||
         fdiff(nuisance.ia[0][1], A1[1]) ||
@@ -1884,6 +2006,7 @@ void threepcf_core_set_nuisance_ia(
   }
 }
 
+// set_nuisance_IA_ct equivalent: the velocity-shear amplitude C_t.
 void threepcf_core_set_nuisance_ia_ct(
   const double ct // velocity-shear alignment amplitude
 )
@@ -1912,6 +2035,7 @@ void threepcf_core_set_nuisance_ia_ct(
   }
 }
 
+// initial_setup equivalent for the standalone module.
 void threepcf_core_initial_setup(void)
 {
   // Reset the shared 3D state as well as the copied bridge inputs. The

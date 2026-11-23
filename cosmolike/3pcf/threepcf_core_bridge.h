@@ -27,16 +27,19 @@ extern "C" {
 //     (redshift.shear_zdist_table) and the intrinsic-alignment (IA)
 //     amplitudes (nuisance.ia).
 //
-//   supplied tier - quantities no global struct holds yet: the
+//   supplied tier - quantities no global struct holds: the
 //     line-of-sight nodes, the model resolution controls, the scalars
-//     ns / sigma8 / w0 / wa (these stay supplied until a later stage
-//     retires them into the structs), the pixel window, the paired
+//     ns / sigma8 / w0 / wa, the pixel window, the paired
 //     baryonic-feedback response, the shifted source densities when
 //     photo-z shifts are active, and the IA prescription selectors.
-//     Each setter below stores an owned copy, compares the incoming
-//     values against the stored ones exactly (without a tolerance)
-//     and redraws the bridge nonce when a model input changed.
-//     Query-only IA choices do not rebuild the model.
+//     Each setter below stores an owned copy (owned meaning the
+//     bridge alone frees it, on replacement and on reset), compares
+//     the incoming values against the stored ones exactly (without a
+//     tolerance) and redraws the bridge nonce when a model input
+//     changed. A nonce is a fresh unique number drawn whenever an
+//     input changes, so a cache that still holds the previous number
+//     can tell, by one comparison, that its input moved. Query-only
+//     IA choices do not rebuild the model.
 //
 // Cache invalidation:
 // threepcf_bridge_refresh guards the assembled input with two tiers:
@@ -66,9 +69,13 @@ extern "C" {
 // abort through log_fatal), stores an owned copy, and redraws the
 // model-input nonce only when a model input actually changed, so an MCMC
 // that resends identical arrays never invalidates the cached model.
-// IA amplitudes, feedback amplitude and IA prescription selectors belong
-// to queries. Read ia_parameters_from_core again after changing them;
-// model_from_core deliberately retains its immutable tables and owner.
+// IA amplitudes, the feedback amplitude and the IA prescription
+// selectors belong to queries: after changing them, translate the IA
+// state again (threepcf_bridge_ia_from_core), while
+// threepcf_bridge_refresh keeps returning NULL because the immutable
+// model's inputs are unchanged. The standalone module's Python
+// bindings expose the pair as ia_parameters_from_core and
+// model_from_core.
 // ---------------------------------------------------------------------------
 
 // Background scalars the structs do not hold: the spectral index ns,
@@ -97,7 +104,7 @@ void threepcf_bridge_set_resolution(
   int kernel_nz,      // internal lensing-kernel redshift resolution
   int source_readers, // 1 keeps cubic source reads for comparisons
   int table_boost,    // dense-grid refinement factor; zero means eight
-  int fit_nz          // legacy field; theory owns fit resolution
+  int fit_nz          // retained interface field (physics_3pcf.h)
 );
 
 // Shifted source densities on their own redshift axis. The project's
@@ -150,15 +157,16 @@ void threepcf_bridge_set_feedback(
   double amplitude              // shared log-response amplitude
 );
 
-// Install an absolute matter B table and the matter-fraction background
-// on the core nonlinear-power redshift axis. Copies every input. sigma8
-// is a legacy interface value and never rescales P; ns/w0/wa are unused
-// by the model. A NULL baseline clears B and leaves the bridge incomplete.
+// Install an absolute matter bispectrum B table and the matter
+// fraction Omega_m(z) on the core nonlinear-power redshift axis.
+// Every input is copied. sigma8 is a retained interface scalar that
+// never rescales P (physics_3pcf.h); ns/w0/wa are unused by the
+// model. A NULL baseline clears B and leaves the bridge incomplete.
 void threepcf_bridge_set_baseline_bispectrum(
   const baseline_input_3pcf* baseline, // supplied absolute B, or NULL
   const double* omega_m_z, // Omega_m(z) on the core background z [nz]
   int nz, // background count; zero when clearing
-  double sigma8 // positive legacy scalar; unused when clearing
+  double sigma8 // positive retained scalar; unused when clearing
 );
 
 // IA prescription selectors of physics_ia_3pcf (physics_3pcf.h
@@ -180,7 +188,9 @@ void threepcf_bridge_set_prescriptions(
 // normalization conversion takes place at the production boundary.
 //
 // Guards: requires nuisance.IA == IA_REDSHIFT_EVOLUTION and
-// nuisance.IA_MODEL == IA_MODEL_TATT. Under IA_REDSHIFT_BINNING the
+// nuisance.IA_MODEL == IA_MODEL_TATT (TATT: the tidal alignment and
+// tidal torquing model; NLA, the nonlinear linear alignment model,
+// is its tidal-alignment-only limit). Under IA_REDSHIFT_BINNING the
 // slot nuisance.ia[1][2] holds the per-bin tidal-torque amplitude A_2
 // of shear bin 2, not the velocity-shear amplitude C_t, so that mode
 // is refused rather than silently misread. A leftover per-bin b_TA
@@ -208,9 +218,12 @@ const physics_input_3pcf* threepcf_bridge_refresh(void);
 // rebuilds without comparing pointers.
 uint64_t threepcf_bridge_generation(void);
 
-// Counts of the shared tables, independent of the requested output anchors.
-// A caller can copy these baseline counts, refine selected intervals and
-// install all five together. Reinstalling the same counts is a cache hit.
+// Node counts of the shared variance tables. They are independent of
+// the redshifts and masses a snapshot later requests: the tables
+// cover fixed ranges and the snapshot interpolates on them. A caller
+// can copy these baseline counts, refine the axes it cares about and
+// install all five together. Reinstalling the same counts is a cache
+// hit.
 typedef struct {
   int mass_nodes; // top-hat ln(M) nodes over the ordinary halo mass range
   int scale_factor_nodes; // top-hat scale-factor rows, Ntable.N_a
@@ -252,8 +265,8 @@ double threepcf_core_variance_snapshot(
 // builds through a weak reference, so a setup that never loads the
 // bridge is unaffected; the standalone 3PCF module calls it from its
 // own initial_setup binding. Without this call a second setup in the
-// same process would reuse the previous model through a stale
-// snapshot - the classic missed-reset trap.
+// same process would reuse the previous model through an out-of-date
+// guard snapshot.
 void reset_threepcf_core_bridge(void);
 
 // ---------------------------------------------------------------------------
