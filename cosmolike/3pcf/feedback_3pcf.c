@@ -625,10 +625,28 @@ struct baseline_3pcf {
   int clamp; // explicit boundary holding policy
 };
 
+
+// ---------------------------------------------------------------------------
+// Check a supplied table without allocating or upsampling anything.
+// The checks are the ones baseline_create_3pcf applies before it
+// builds: a complete descriptor, uniform axes of at least four nodes,
+// physical sorted-triangle ranges and a finite ln B at every node. A
+// loader calls this to refuse a bad file at read time, before any
+// expensive preparation runs.
+//
+// Parameters:
+//   input - description of the loaded table; baseline_3pcf.h defines
+//           every field. The call borrows the arrays and keeps
+//           nothing. Unlike creation, a NULL input is refused here:
+//           validation is only ever asked about a table that exists.
+// Returns: nothing on success; any violated requirement stops the
+// program with a message naming it.
+// ---------------------------------------------------------------------------
 void baseline_validate_3pcf(
   const baseline_input_3pcf* input // required borrowed table
 )
 {
+  // Refuse an incomplete descriptor before touching any array.
   if (!(NULL != input)) { log_fatal("baseline_3pcf: missing table"); exit(1); }
   if (!(1 <= input->boost)) { log_fatal(
     "baseline_3pcf: boost must be >=1"); exit(1); }
@@ -637,6 +655,12 @@ void baseline_validate_3pcf(
     "baseline_3pcf: clamp must be 0 or 1"); exit(1); }
   if (!(NULL != input->log_bispectrum)) { log_fatal(
     "baseline_3pcf: missing ln B table"); exit(1); }
+
+  // prepare_axes repeats the axis checks of creation - uniform,
+  // strictly increasing, at least four nodes, representable dense
+  // sizes. This check-only path discards its outputs, keeping the
+  // dense counts just long enough to prove below that the dense table
+  // would fit the core allocator.
   const int counts[4] = {input->nz, input->nk, input->nu, input->nv};
   const double* axes[4] = {input->z, input->logk, input->logu, input->v};
   int dense_count[4];
@@ -644,6 +668,11 @@ void baseline_validate_3pcf(
   double upper[4];
   double inverse[4];
   prepare_axes(counts, axes, input->boost, dense_count, lower, upper, inverse);
+
+  // The physical ranges of the sorted-triangle coordinates: redshift
+  // z >= 0, the side ratio u = a/b of sorted sides a <= b never
+  // exceeds one so log(u) <= 0, and the folding parameter
+  // v = (c - b)/a lies in [0, 1].
   if (!(0.0 <= input->z[0])) { log_fatal(
     "baseline_3pcf: negative redshift axis"); exit(1); }
   if (!(0.0 >= input->logu[input->nu - 1])) { log_fatal(
@@ -652,6 +681,10 @@ void baseline_validate_3pcf(
     "baseline_3pcf: v must be >=0"); exit(1); }
   if (!(1.0 >= input->v[input->nv - 1])) { log_fatal(
     "baseline_3pcf: v must be <=1"); exit(1); }
+
+  // Every loaded ln B must be finite. Creation would stop on the same
+  // value inside the spline passes, but a loader wants the refusal
+  // before it pays for them.
   const size_t size = table_size(counts, 4);
   (void)table_size(dense_count, 4);
   for (size_t index=0; index<size; index++) {
@@ -660,6 +693,24 @@ void baseline_validate_3pcf(
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Build the immutable baseline object from the caller's loaded table.
+// Creation repeats the checks of baseline_validate_3pcf, stores the
+// per-axis constants (dense count, first and last coordinate, inverse
+// spacing) that turn each later query into pure arithmetic, and
+// densifies ln B with dense_table, the natural-cubic resampling the
+// response preparation above documents.
+//
+// Parameters:
+//   input - description of the loaded table; baseline_3pcf.h defines
+//           every field. This call borrows the arrays and never keeps
+//           them.
+// Returns: the baseline object for baseline_bispectrum_3pcf and
+// finally for baseline_destroy_3pcf. A NULL input returns NULL, so a
+// caller without a supplied bispectrum passes the NULL straight
+// through.
+// ---------------------------------------------------------------------------
 baseline_3pcf* baseline_create_3pcf(
   const baseline_input_3pcf* input // borrowed table; NULL disables
 )
@@ -674,11 +725,17 @@ baseline_3pcf* baseline_create_3pcf(
     "baseline_3pcf: clamp must be 0 or 1"); exit(1); }
   if (!(NULL != input->log_bispectrum)) { log_fatal(
     "baseline_3pcf: missing ln B table"); exit(1); }
+
+  // prepare_axes validates the axes and fills the owner's per-axis
+  // query constants in one step.
   const int counts[4] = {input->nz, input->nk, input->nu, input->nv};
   const double* axes[4] = {input->z, input->logk, input->logu, input->v};
   baseline_3pcf* baseline = calloc1d_generic(1, sizeof(*baseline));
   prepare_axes(counts, axes, input->boost, baseline->count, baseline->lower,
     baseline->upper, baseline->inverse);
+
+  // The same physical sorted-triangle ranges as in validation: z >= 0,
+  // log(u) <= 0 and v inside [0, 1].
   if (!(0.0 <= input->z[0])) { log_fatal(
     "baseline_3pcf: negative redshift axis"); exit(1); }
   if (!(0.0 >= input->logu[input->nu - 1])) { log_fatal(
@@ -687,6 +744,7 @@ baseline_3pcf* baseline_create_3pcf(
     "baseline_3pcf: v must be >=0"); exit(1); }
   if (!(1.0 >= input->v[input->nv - 1])) { log_fatal(
     "baseline_3pcf: v must be <=1"); exit(1); }
+
   // Prove the final dense count fits before allocating any intermediate
   // spline pass. The spline code still checks each intermediate size.
   (void)table_size(baseline->count, 4);
@@ -696,6 +754,10 @@ baseline_3pcf* baseline_create_3pcf(
   return baseline;
 }
 
+
+// Release the dense table and the baseline object itself. A NULL
+// baseline does nothing, matching the NULL that baseline_create_3pcf
+// returns for a caller without a supplied table.
 void baseline_destroy_3pcf(
   baseline_3pcf* baseline // owned object; NULL does nothing
 )
@@ -706,23 +768,57 @@ void baseline_destroy_3pcf(
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Supplied matter bispectrum B at one triangle of wavenumbers.
+//
+// The table lives on the sorted-triangle coordinates the header
+// documents: with the sides sorted a <= b <= c, the coordinates are
+// the middle side k = b, the ratio u = a/b and the folding parameter
+// v = (c - b)/a. The code below extracts those sorted sides from the
+// input, which may arrive in any order.
+//
+// Parameters:
+//   baseline - the prepared table; a supplied B has no amplitude, so
+//              unlike the response reads a NULL is always refused
+//   sides    - the three triangle wavenumbers in h/Mpc [3], any order.
+//              The caller has already validated the triangle itself;
+//              this read checks only its table coordinates, through
+//              the domain policy of read_log_table
+//   z        - redshift inside the declared domain
+// Returns: the interpolated matter bispectrum B in (Mpc/h)^6, finite
+// and strictly positive, or the program stops.
+// ---------------------------------------------------------------------------
 double baseline_bispectrum_3pcf(
   const baseline_3pcf* baseline, // prepared physical B table
-  const double* sides, // triangle sides [3], h/Mpc, already validated
+  const double* sides, // triangle sides [3], h/Mpc, any order
   const double z // redshift
 )
 {
   if (!(NULL != baseline)) { log_fatal(
     "baseline_3pcf: missing prepared B table"); exit(1); }
+
+  // Sort the sides by comparisons alone, as in feedback_bispectrum_3pcf
+  // above: the min/max composition for the middle side cancels nothing,
+  // where subtracting the two extremes from the side sum would lose a
+  // squeezed triangle's middle side to roundoff.
   const double small = fmin(sides[0], fmin(sides[1], sides[2]));
   const double large = fmax(sides[0], fmax(sides[1], sides[2]));
   const double middle = fmax(fmin(sides[0], sides[1]),
     fmin(fmax(sides[0], sides[1]), sides[2]));
+
+  // The fmin clips the roundoff of a nearly degenerate triangle, which
+  // can push v a few machine epsilons above its mathematical upper
+  // bound of 1.
   const double coordinates[4] = {z, log(middle), log(small/middle),
     fmin(1.0, (large - middle)/small)};
   const double logarithm = read_log_table(baseline->count, baseline->lower,
     baseline->upper, baseline->inverse, baseline->clamp, baseline->logarithm,
     coordinates, 4);
+
+  // exp of a finite logarithm is positive unless it underflows to zero
+  // or overflows to infinity; either extreme would poison every later
+  // product, so both are refused here with the table's name attached.
   const double value = exp(logarithm);
   if (!(isfinite(value))) { log_fatal(
     "baseline_3pcf: B overflows floating-point storage"); exit(1); }

@@ -2055,6 +2055,12 @@ static double grid_aperture_reader(
 }
 
 
+// The full compensated-filter aperture statistic with this grid
+// standing in for the direct bispectrum provider. The shared
+// integrator physics_aperture_integrate_3pcf owns the quadrature
+// measure and the filter convention, so a grid result and the direct
+// reference differ by interpolation error alone; this route never
+// touches the b_L table.
 void physics_grid_aperture_full_3pcf(
   const physics_grid_3pcf* grid, // prepared tables replacing direct B
   const int nell, // quadrature nodes on each Fourier leg
@@ -2068,13 +2074,15 @@ void physics_grid_aperture_full_3pcf(
   double* out // [nfilter], one aperture value per filter triple
 )
 {
-  // The direct reference uses this same Fourier quadrature; only the
-  // provider of B changes, and this route never touches the b_L table.
   physics_aperture_integrate_3pcf(grid, grid_aperture_reader,
     nell, ell, dell, nphi, phi, dphi, nfilter, filters, out);
 }
 
 
+// Release a grid and every array it owns. A NULL grid does nothing,
+// so callers may destroy unconditionally. The grid copied its pixel
+// window at creation, so destruction never reaches back into the
+// model.
 void physics_grid_destroy_3pcf(
   physics_grid_3pcf* grid // owned grid; NULL is allowed
 )
@@ -2246,6 +2254,13 @@ physics_grid_query_3pcf* physics_grid_query_create_3pcf(
 }
 
 
+// Decide whether a query's stored geometry matches a grid exactly.
+// The first group compares sizes, the Legendre cutoff and the chart
+// switches; the memcmp block then compares every axis value byte for
+// byte. Physical values are deliberately not a key: a query exists to
+// serve many physical grids of identical geometry. Any mismatch, or
+// any NULL or b_L-less input, returns zero rather than aborting, so a
+// caller can probe before it commits to an evaluation.
 int physics_grid_query_matches_3pcf(
   const physics_grid_query_3pcf* query, // complete immutable geometry key
   const physics_grid_3pcf* grid // physical values are deliberately not a key
@@ -2274,6 +2289,7 @@ int physics_grid_query_matches_3pcf(
 }
 
 
+// The fixed per-leg output size of a query, for sizing caller buffers.
 int physics_grid_query_nell_3pcf(
   const physics_grid_query_3pcf* query // fixed output Fourier size
 )
@@ -2287,6 +2303,8 @@ int physics_grid_query_nell_3pcf(
 }
 
 
+// The largest Legendre degree a query evaluates; its output rows run
+// over L = 0..lmax.
 int physics_grid_query_lmax_3pcf(
   const physics_grid_query_3pcf* query // fixed maximum Legendre degree
 )
@@ -2468,6 +2486,9 @@ void physics_grid_query_evaluate_3pcf(
 }
 
 
+// Release a query and every array it owns; NULL is allowed. A query
+// never owns a physical grid, so destroying one leaves every grid it
+// served untouched.
 void physics_grid_query_destroy_3pcf(
   physics_grid_query_3pcf* query // owned geometry only, never a physical grid
 )
@@ -2513,6 +2534,10 @@ void physics_grid_multipoles_3pcf(
 }
 
 
+// Expose one actual interpolation axis for diagnostics and records;
+// the header lists the axis numbering. The returned pointer borrows
+// the grid's own array, so it stays valid exactly as long as the grid
+// and must never be freed by the caller.
 void physics_grid_axis_3pcf(
   const physics_grid_3pcf* grid, // prepared grid
   const int axis, // 0..7, in the order the header lists
