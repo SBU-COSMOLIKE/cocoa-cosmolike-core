@@ -5,8 +5,10 @@
 
 namespace cosmolike_interface {
 
-// Registers physical_covariance and halo_tables on the
-// module's production and notebook submodules (covariance_interface.cpp).
+// Registers the covariance bindings (covariance_interface.cpp): the
+// input builders shape_noise and covariance_inputs on the module
+// itself, and physical_covariance and halo_tables on its production
+// and notebook submodules.
 void bind_threepcf_covariance(
   pybind11::module_& module // Python module receiving the bindings
 );

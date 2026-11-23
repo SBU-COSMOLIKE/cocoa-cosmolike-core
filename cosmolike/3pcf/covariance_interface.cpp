@@ -30,10 +30,10 @@ namespace cosmolike_interface {
 //   Python dict of NumPy arrays and scalars
 //     -> covariance_arguments (type, shape and domain checks)
 //     -> covariance_input_3pcf (documented in covariance_physics_3pcf.h)
-//     -> covariance_physical_3pcf / covariance_halos_3pcf /
-//        covariance_xi_from_power_3pcf (the C kernels)
+//     -> covariance_physical_3pcf / covariance_halos_3pcf (the C
+//        kernels)
 //
-// Every function registers twice, with one input convention per
+// Each compute binding registers twice, with one input convention per
 // submodule. The production submodule borrows: it takes a view, an
 // array object that shares the caller's memory, so the caller must
 // pass contiguous C-order float64/int32 arrays, and the adapter holds
@@ -41,8 +41,11 @@ namespace cosmolike_interface {
 // the call. The notebook submodule copies: it accepts sliced or
 // strided arrays and writes each one into a private buffer the adapter
 // owns, and the copies then travel through the Armadillo wrapper
-// (covariance_wrapper.cpp). Neither adapter changes a physical
-// equation, adds a halo term, or performs a numerical integral.
+// (covariance_wrapper.cpp). The two input builders, shape_noise and
+// covariance_inputs, register once on the parent module and always
+// copy: they assemble the dictionary the compute bindings consume.
+// Neither adapter changes a physical equation, adds a halo term, or
+// performs a numerical integral.
 //
 // Field labels name (source bin, aperture radius) pairs. Row labels
 // name observables built from two or three such fields. Keeping these
@@ -262,9 +265,13 @@ class covariance_arguments {
       input.theta_edges = real.at("theta_edges").data();
     }
 
-    // A variance snapshot is optional, but partial snapshots are not.
-    // Its mass axis is retained even though mass already appears above:
-    // the C consumer compares them before using these prepared values.
+    // An optional snapshot supplies the halo mass variance
+    // sigma^2(M,z) - the variance of the linear density field smoothed
+    // on the scale that encloses the mass M - with its logarithmic
+    // mass slope and the density that defines those mass radii. Its
+    // five keys must arrive together or not at all. The mass axis is
+    // retained even though mass already appears above: the C consumer
+    // compares them before using these prepared values.
     const char* variance_names[5] = {"halo_z", "halo_mass",
       "halo_sigma2", "halo_dlnsigma_dlnm", "halo_reference_rho"};
     int variance_keys = 0;
@@ -328,6 +335,14 @@ class covariance_arguments {
     input.area = scalar(values, "area", 0.0);
     input.center_window = integer_scalar(values, "center_window", 1);
     input.large_area = integer_scalar(values, "large_area", 0);
+
+    // estimator selects how the aperture statistics are measured. The
+    // compiled covariance codes only the full-filter estimator
+    // (estimator = 0), which averages complete filtered maps over
+    // aperture centers. A finite side-angle-side (SAS) estimator
+    // instead selects finite triangle configurations; that is a
+    // different estimator, and its covariance is not implemented, so
+    // validate() refuses every other value.
     input.estimator = integer_scalar(values, "estimator", 0);
     input.ia_model = integer_scalar(values, "ia_model", 0);
     input.noise_mode = integer_scalar(values, "noise_mode", 0);
@@ -713,10 +728,23 @@ class covariance_arguments {
 //
 // The dictionary becomes a covariance_arguments object, the C engine
 // runs without the GIL, and the six covariance families come back in
-// one [6,nrow,nrow] array: Gaussian, bispectrum-squared (BB), power
-// times one-halo trispectrum, power times bispectrum, connected
-// one-halo, and the chosen halo-abundance response, in the order
-// covariance_physics_3pcf.h documents.
+// one [6,nrow,nrow] array, in the order covariance_physics_3pcf.h
+// documents:
+//
+//   Gaussian            - built from pairs of power spectra plus white
+//                         noise: the full covariance a Gaussian shear
+//                         field would have
+//   BB                  - products of two matter bispectra
+//   PT                  - a power spectrum times the one-halo
+//                         trispectrum, the connected four-point
+//                         correlation of matter inside a single halo
+//   PB                  - a power spectrum times a matter bispectrum
+//   connected one-halo  - every leg of both observables meets in the
+//                         same halo
+//   halo-abundance      - survey-scale density modes modulating the
+//   response              halo counts in the footprint (the squeezed
+//                         two-halo model, not a complete super-sample
+//                         covariance)
 //
 // Parameters:
 //   owner    - the Python object that owns the prepared physics model
@@ -905,13 +933,33 @@ static py::tuple halos_binding(
 
 
 // ============================================================================
-// [SECTION] MODULE REGISTRATION
+// [SECTION] INPUT BUILDERS
 // ============================================================================
 
-// Diagonal shape-noise power from the source densities and dispersions.
+// ---------------------------------------------------------------------------
+// White shape-noise power matrix of the source bins.
+//
+// Shape noise is the random part of a measured galaxy shape: the
+// intrinsic ellipticity that remains after the lensing shear is taken
+// out. For uncorrelated shapes it is white - the same at every
+// multipole - and bin i carries the power sigma_i^2/n_i, with sigma_i
+// the rms of one ellipticity component and n_i the effective source
+// density per steradian. Different bins hold different galaxies, so
+// the matrix is diagonal.
+//
+// Parameters:
+//   density    - [nsource] effective sources per square arcminute
+//   dispersion - [nsource] rms of one ellipticity component per bin
+//
+// Returns:
+//   [nsource,nsource] white-noise power: the noise entry of
+//   covariance_inputs
+//
+// Refuses mismatched lengths and nonpositive densities or dispersions.
+// ---------------------------------------------------------------------------
 static py::array_t<double> shape_noise_3pcf(
   const py::array_t<double>& density, // effective sources per square arcminute
-  const py::array_t<double>& dispersion // rms of ONE ellipticity component
+  const py::array_t<double>& dispersion // rms of one ellipticity component
 )
 {
   const auto n = input_array_3pcf<double>(density, 1, true);
@@ -919,9 +967,16 @@ static py::array_t<double> shape_noise_3pcf(
   if (n.size() < 1 || sigma.size() != n.size()) {
     throw py::value_error("Shape-noise arrays must have matching source bins.");
   }
+
+  // Start from an all-zero matrix: every off-diagonal noise power
+  // vanishes, so the loop writes only the diagonal.
   const int bins = n.size();
   py::array_t<double> noise({bins, bins});
   std::fill_n(noise.mutable_data(), noise.size(), 0.0);
+
+  // The caller quotes the density per square arcminute while the
+  // covariance works in steradians; arcmin, one arcminute in radians,
+  // converts n to a per-steradian density inside the division below.
   const double arcmin = M_PI/(180.0*60.0);
   for (int i=0; i<bins; i++) {
     if (!(n.data()[i] > 0.0) || !(sigma.data()[i] > 0.0)) {
@@ -933,9 +988,51 @@ static py::array_t<double> shape_noise_3pcf(
   return noise;
 }
 
+// ---------------------------------------------------------------------------
+// The validated input dictionary of physical_covariance, built from a
+// per-row description of the measurement.
+//
+// The caller names each covariance row by its observable, its source
+// bins and its angles; this builder expands that description into the
+// arrays the covariance engine needs: the six quadrature rules with
+// every accuracy boost applied, the refined halo-profile grid, the
+// shared field labels, the xi separation nodes and weights, and, in
+// analytic-noise mode, the exact bin edges. The result is a plain
+// dictionary, so a notebook can inspect or override any entry before
+// the covariance call, and covariance_arguments revalidates every
+// entry it receives.
+//
+// Parameters:
+//   kind        - observable per row: "map3" (the third moment of the
+//                 aperture mass), "xip" or "xim" (the binned shear
+//                 correlations)
+//   bins        - [nrow,3] source-bin index of each leg; xi rows read
+//                 the first two
+//   angles      - [nrow,3] radians: three aperture radii for a map3
+//                 row, the lower and upper bin edge for a xi row
+//   noise       - [nsource,nsource] white-noise angular power, as
+//                 shape_noise builds it
+//   grids       - per quadrature (ell, phi, radius, k, mass,
+//                 window_ell) the bounds, count and optional
+//                 logarithmic flag, plus the profile_radius nodes
+//   physical    - physical covariance settings, copied into the result
+//   theta_count - baseline separation quadrature order per xi row
+//   pair_weight - "uniform_area", or measured [row,theta] weights
+//   accuracy    - None, or global and per-stage refinement multipliers
+//
+// Returns:
+//   the completed input dictionary of physical_covariance
+//
+// Refuses a malformed row description, a missing quadrature, a
+// non-increasing profile grid, a boost product beyond 1024 profile
+// subdivisions, a theta refinement under measured pair weights, and
+// analytic xi noise without uniform-area weights in the large-area
+// limit.
+// ---------------------------------------------------------------------------
 static py::dict covariance_inputs_3pcf(
   const std::vector<std::string>& kind, // measurement type per row
-  const py::array_t<int, py::array::c_style|py::array::forcecast>& bins, // source indices
+  // source-bin index of each leg, [nrow,3]
+  const py::array_t<int, py::array::c_style|py::array::forcecast>& bins,
   const py::array_t<double>& angles, // [row,3], radians
   const py::array_t<double>& noise, // [source,source], angular power
   const py::dict& grids, // baseline quadratures and profile radii
@@ -945,12 +1042,24 @@ static py::dict covariance_inputs_3pcf(
   const py::object& accuracy // global and individual refinement controls
 )
 {
+  // --- 1. ROW DESCRIPTION SHAPES ---
+  // Every row brings three slots for source bins and angles, whatever
+  // its observable; xi rows leave the third slot unused.
   const int nrow = kind.size();
   const auto radii = input_array_3pcf<double>(angles, 2, true);
   if (bins.ndim() != 2 || bins.shape(0) != nrow || bins.shape(1) != 3
       || radii.shape(0) != nrow || radii.shape(1) != 3 || nrow == 0) {
     throw py::value_error("Covariance rows need [row,3] bins and angles.");
   }
+
+  // --- 2. QUADRATURE RULES ---
+  // The result starts as a copy of the caller's settings dictionary,
+  // which therefore never changes. Each of the six integration grids
+  // becomes a Gauss-Legendre rule (quadrature_3pcf), with its bounds
+  // taken from grids and its order multiplied by the global and
+  // per-stage accuracy boosts (accuracy_quadrature_3pcf). The window
+  // grid keys its boost as covariance_window_boost; the other five
+  // follow the covariance_<name>_boost pattern.
   auto result = py::dict(physical.attr("copy")());
   const auto controls = init_accuracy_3pcf(accuracy);
   const char* names[] = {"ell", "phi", "radius", "k", "mass", "window_ell"};
@@ -969,6 +1078,15 @@ static py::dict covariance_inputs_3pcf(
     result[names[i]] = rule[0];
     result[weights[i]] = rule[1];
   }
+
+  // --- 3. PROFILE GRID REFINEMENT ---
+  // The profile grid arrives as a node list, not as bounds and a
+  // count, so boosting it means subdividing its intervals. The
+  // subdivision count is the smallest power of two at or above the
+  // product of the global and profile boosts, which keeps every
+  // original node a node of the refined grid. The cap of 1024
+  // subdivisions per interval stops a runaway boost product before it
+  // allocates an enormous grid.
   const auto profile = input_array_3pcf<double>(grids["profile_radius"], 1, true);
   if (profile.size() < 2 || profile.data()[0] != 0.0) {
     throw py::value_error("Profile radius needs increasing nodes from zero.");
@@ -990,11 +1108,25 @@ static py::dict covariance_inputs_3pcf(
         profile.data()[i]+width*(double(j)/subdivision);
     }
   }
+  // The last node is written directly from the input, so no
+  // accumulated roundoff shifts the grid's upper end - the coverage
+  // check in covariance_arguments compares against it exactly.
   refined.mutable_data()[refined.size()-1] = profile.data()[profile.size()-1];
   result["profile_radius"] = refined;
   result["profile_upsample"] = accuracy_count_3pcf(controls,
     physical.contains("profile_upsample") ? py::cast<int>(physical["profile_upsample"]) : 8,
     "profile_upsample_boost", false, false);
+
+  // --- 4. NOISE AND FIELD LABELS ---
+  // The noise matrix is copied so later changes to the caller's array
+  // cannot leak into this input set. Each distinct (source bin,
+  // aperture radius) pair then becomes one field label: the linear
+  // search reuses the first occurrence, so legs that share a source
+  // and radius share a label and the engine computes each filtered
+  // field once. A xi leg carries radius zero, the bare (unfiltered)
+  // shear field. The row tables record each row's observable code
+  // (1 = Map3, 2 = xi+, 3 = xi-, the codes of
+  // covariance_physics_3pcf.h) and the field labels of its legs.
   result["noise"] = py::array(noise.attr("copy")());
   std::vector<std::pair<int,double>> fields;
   py::array_t<int> row_fields({nrow, 3}), row_kind(nrow);
@@ -1029,6 +1161,13 @@ static py::dict covariance_inputs_3pcf(
   result["field_radius"] = field_radius;
   result["row_fields"] = row_fields;
   result["row_kind"] = row_kind;
+
+  // --- 5. SEPARATION NODES AND WEIGHTS ---
+  // Each xi row averages over its annulus with theta_count separation
+  // nodes, boosted by xi_theta_boost. A measured pair-weight array
+  // counts galaxy pairs at specific separations, so a boost that
+  // changes the node count cannot reuse it: the caller must supply
+  // weights measured on the refined nodes.
   const int resolved = accuracy_count_3pcf(controls, theta_count,
     "xi_theta_boost", true, false);
   if (resolved != theta_count && !py::isinstance<py::str>(pair_weight)) {
@@ -1037,6 +1176,12 @@ static py::dict covariance_inputs_3pcf(
   const auto theta = xi_bin_weights_3pcf(kind, angles, resolved, pair_weight);
   result["theta"] = theta[0];
   result["theta_weight"] = theta[1];
+
+  // --- 6. ANALYTIC-NOISE BIN EDGES ---
+  // noise_mode = 1 evaluates the pure shape-noise part of the xi
+  // covariance analytically over each row's exact annulus, which only
+  // exists with uniform-area pair weights in the large-area limit.
+  // A map3 row has no annulus and keeps zero edges.
   if (physical.contains("noise_mode") && py::cast<int>(physical["noise_mode"]) == 1) {
     if (!py::isinstance<py::str>(pair_weight)
         || py::cast<std::string>(pair_weight) != "uniform_area"
@@ -1055,23 +1200,32 @@ static py::dict covariance_inputs_3pcf(
   }
   return result;
 }
+
+
+// ============================================================================
+// [SECTION] MODULE REGISTRATION
+// ============================================================================
+
 // ---------------------------------------------------------------------------
-// Register the covariance bindings on the production and notebook
-// submodules.
+// Register the covariance bindings.
 //
-// The two-pass loop runs the same registrations twice: copying = false
-// defines the production versions, which borrow contiguous buffers,
-// and copying = true defines the notebook versions, which copy any
-// view. Each lambda captures only that flag and forwards to its
-// binding above, so the two submodules expose identical signatures
-// with different input conventions.
+// The input builders shape_noise and covariance_inputs register once,
+// on the module itself: they always copy, so no input-convention split
+// applies to them. The two-pass loop then runs the same compute
+// registrations twice: copying = false defines the production
+// versions, which borrow contiguous buffers, and copying = true
+// defines the notebook versions, which copy any view. Each lambda
+// captures only that flag and forwards to its binding above, so the
+// two submodules expose identical signatures with different input
+// conventions.
 //
 // Parameters:
 //   module - the extension module; its production and notebook
 //            submodules already exist
 //
 // Returns:
-//   nothing; the three functions appear in both submodules
+//   nothing; the two builders appear on the module and the two
+//   compute functions appear in both submodules
 // ---------------------------------------------------------------------------
 void bind_threepcf_covariance(
   py::module_& module // Python module receiving the bindings
@@ -1121,8 +1275,6 @@ void bind_threepcf_covariance(
       "halo bias, and concentration the Duffy et al. c(M,z), each with "
       "shape [z,M]; the fifth output is the normalized NFW Fourier "
       "profile u(k|M,z) with shape [z,M,k].");
-
-
   }
 }
 

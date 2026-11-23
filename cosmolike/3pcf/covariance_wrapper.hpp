@@ -56,8 +56,5 @@ std::vector<arma::Col<double>> covariance_halos_cpp_3pcf(
   const arma::Col<double>& k_profile        // profile wavenumbers, h/Mpc
 );
 
-// Returns the bin-averaged xi of each row, as a column of length nrow.
-
-
 }
 #endif

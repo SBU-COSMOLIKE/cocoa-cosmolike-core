@@ -14,7 +14,10 @@ namespace cosmolike_interface {
 
 // The constructor reads each source pointer only long enough to make
 // the Armadillo-owned copy. Once it returns, moving or changing the
-// caller's NumPy array cannot change this notebook calculation.
+// caller's NumPy array cannot change this notebook calculation. The
+// noise matrix copies nsource*nsource entries, with nsource the
+// model's full source-bin count rather than the field subset this
+// request selects, so every off-diagonal source pair survives.
 covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
   const covariance_input_3pcf& input, // validated arrays and scalars
   const int nsource // full physical source count, including unselected bins
@@ -59,9 +62,12 @@ covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
     request.theta_edges = real.at("theta_edges").memptr();
   }
 
-  // Retain independent copies of every optional variance coordinate and
-  // value. The notebook caller may change or discard its arrays as soon
-  // as this request has been constructed.
+  // The optional halo-variance snapshot carries the halo mass variance
+  // sigma^2(M,z) - the variance of the linear density field smoothed
+  // on the scale that encloses the mass M - and its logarithmic mass
+  // slope, both tabulated on fixed (z, M) nodes. Its arrays copy like
+  // every other input, so the notebook caller may change or discard
+  // them as soon as this request exists.
   if (0 < input.nhalo_z) {
     const size_t count = (size_t)input.nhalo_z*input.nmass;
     real.emplace("halo_z", arma::Col<double>(input.halo_z, input.nhalo_z));
@@ -75,9 +81,7 @@ covariance_request_cpp_3pcf::covariance_request_cpp_3pcf(
     request.halo_dlnsigma_dlnm = real.at("halo_dlnsigma_dlnm").memptr();
   }
 
-  // The source count comes from the model, not from the field subset
-  // the request selects, so the noise copy keeps every off-diagonal
-  // source pair.
+  // The integer label arrays copy the same way as the real ones.
   const std::pair<const char*, std::pair<const int*, size_t>> indices[] = {
     {"field_source", {input.field_source, (size_t)input.nfield}},
     {"row_kind", {input.row_kind, (size_t)input.nrow}},
