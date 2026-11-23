@@ -21,12 +21,14 @@
 // aperture center. Correlations of these values are easier to assemble
 // than a six-wavevector integral when the fields are Gaussian: Wick's
 // theorem expresses a six-field expectation as products of two-field
-// correlations. A connected response model allows a different
-// reduction: when its covariance is an integral dnu H_i(nu) H_j(nu),
-// with nu the integration label and H_i the response of observable i,
-// the covariance is a weighted Gram matrix of those responses. The
-// functions below provide these two contractions and the radial pair
-// transform.
+// correlations. A model for the connected part of a covariance - the
+// part that no product of two-field correlations accounts for -
+// allows a different reduction: when its covariance is an integral
+// dnu H_i(nu) H_j(nu), with nu the integration label and H_i the
+// response of observable i, the covariance is a weighted Gram matrix
+// of those responses, the matrix whose entry (i,j) is the weighted
+// inner product of response i with response j. The functions below
+// provide these two contractions and the radial pair transform.
 //
 // Linke et al. (aperture-statistics covariances, arXiv 2212.04485)
 // discuss the Gaussian aperture covariance and the survey-window

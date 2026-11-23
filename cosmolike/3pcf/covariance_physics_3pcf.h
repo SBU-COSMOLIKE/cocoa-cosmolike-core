@@ -82,9 +82,13 @@ typedef struct {
 } covariance_input_3pcf;
 
 // Full physical covariance. terms has shape [6,nrow,nrow] and holds,
-// in order: the Gaussian term, the BB term, the P*T one-halo cross
-// term, the P*B term, the connected one-halo term, and the
-// halo-abundance response. That response is the squeezed two-halo model
+// in order: the Gaussian term (products of two-point functions), the
+// BB term (a product of two connected three-field correlations - two
+// bispectrum factors, not a shear B mode), the P*T one-halo cross
+// term (a two-point function times a connected four-point function),
+// the P*B term (a two-point function times a bispectrum), the
+// connected one-halo term, and the halo-abundance response. That
+// response is the squeezed two-halo model
 // alone; it is not a complete growth/dilation/tidal SSC. mean has shape
 // [nrow] and excludes the additive noise mean of the quadratic rows.
 // The same Fourier and radial rules define every term, so accuracy is

@@ -25,14 +25,38 @@
 // estimator averages the product of two shears measured at points
 // displaced by -theta/2 and +theta/2 from a common center. A cubic row
 // is third order in the shear field: the aperture-mass third moment
-// Map^3. For every pair of rows the engine fills six covariance terms -
-// Gaussian, BB, P*T, P*B, connected one-halo, and the halo-abundance
-// response - following the cumulant partitions of the aperture-statistics
-// covariance in Linke et al. (2023), arXiv:2212.04485, with the xi rows
-// entering through their actual separation-bin weights as in Wielders et
-// al. (2025), arXiv:2509.20443. This implementation is written from
-// those equations and the flat-sky Fourier rules; it does not translate
-// the GPL threepoint implementation.
+// Map^3. For every pair of rows the engine fills six covariance terms,
+// one per family of the joint-cumulant partition. Connected means the
+// part of a joint correlation that no product of lower-order
+// correlations accounts for; a Gaussian field has no connected
+// correlations beyond second order. The six families, in their slab
+// order, are:
+//
+//   Gaussian     products of two-point functions alone, from Wick's
+//                theorem applied to the Gaussian part of the fields.
+//   BB           products of two connected three-field correlations -
+//                two bispectrum factors. The name abbreviates
+//                bispectrum times bispectrum; it is not the Gaussian
+//                term, and it has nothing to do with the shear B mode.
+//   P*T          a two-point function P times a connected four-field
+//                correlation T (a trispectrum), here from the one-halo
+//                model; it crosses two cubic rows.
+//   P*B          a two-point function times one connected three-field
+//                correlation; it crosses a quadratic row with a cubic
+//                row.
+//   connected one-halo   the fully connected cumulant of all the
+//                fields of the two rows, every field sourced by the
+//                same halo.
+//   halo-abundance response   the covariance from survey-scale
+//                density modes modulating how many halos the survey
+//                volume contains.
+//
+// The partitions follow the aperture-statistics covariance of Linke
+// et al. (2023), arXiv:2212.04485, with the xi rows entering through
+// their actual separation-bin weights as in Wielders et al. (2025),
+// arXiv:2509.20443. This implementation is written from those
+// equations and the flat-sky Fourier rules; it does not translate the
+// GPL threepoint implementation.
 //
 // Notation shared by the helpers and assemblers below:
 //
@@ -57,8 +81,12 @@
 //               (covariance_closure_3pcf returns its magnitude |q+p|).
 //
 // The field model is pure gravitational lensing with independent
-// Gaussian E/B shape noise. The connected four-, five- and six-field
-// cumulants use a Poisson one-halo model. The extra long-mode term is
+// Gaussian E/B shape noise. Shape noise is the white
+// (scale-independent) power that the random intrinsic ellipticities
+// of the finitely many source galaxies add to the measured shear; it
+// feeds the E and B spectra alike. The connected four-, five- and
+// six-field cumulants use a Poisson one-halo model. The extra
+// long-mode term is
 // the halo-abundance response, not a complete growth, dilation or tidal
 // response. Finite center windows keep the full filters inside each
 // aperture. A galaxy mask inside a filter, or a finite triangle
@@ -69,7 +97,10 @@
 // only on their node count, built on one thread before any parallel
 // reader starts. Everything else is call-owned: the call prepares its
 // temporary physical tables before any parallel reader starts and
-// releases them before returning. Each parallel task owns complete
+// releases them before returning. Input arrays are borrowed: they
+// belong to the caller, and the engine reads them for the length of
+// one call without copying, resizing or freeing them. Each parallel
+// task owns complete
 // rows or upper-triangle cells. Quadrature sums keep their input
 // order, so results do not depend on the thread count.
 // ---------------------------------------------------------------------------
@@ -94,7 +125,8 @@
 // malloc1d_int take. Every multidimensional extent below passes through
 // this helper first, so no allocation can silently truncate its count,
 // and the flattened offsets inside the worker loops stay inside their
-// allocations.
+// allocations. Returns the product when it fits; otherwise the call
+// stops with log_fatal.
 static size_t covariance_product_3pcf(
   size_t first, // first array extent
   size_t second // second array extent; must be positive
@@ -131,6 +163,9 @@ static size_t covariance_product_3pcf(
 //   weights - [count] integration weights
 //   first   - [count] first integrand factor
 //   second  - [count] second integrand factor
+//
+// Returns:
+//   the weighted dot product, accumulated in node order
 static inline double covariance_dot_3pcf(
   int count, // number of quadrature nodes
   const double* weights, // [count] integration weights
@@ -426,9 +461,10 @@ void covariance_halos_3pcf(
   double* profile // normalized u [nz,nmass,nk_profile]
 )
 {
-  // 2.77536627e11 is the critical density rho_crit/h^2 in units of
-  // (Msun/h)/(Mpc/h)^3; multiplied by Omega_m it is today's comoving
-  // mean matter density, the rho_m of the M200m halo definition.
+  // 2.77536627e11 is today's critical density rho_crit = 3H_0^2/(8 pi G)
+  // expressed in (Msun/h)/(Mpc/h)^3 - in these h-scaled units its value
+  // carries no leftover factor of h. Multiplied by Omega_m it is today's
+  // comoving mean matter density, the rho_m of the M200m halo definition.
   const double rho = 2.77536627e11*physics_omega_m_3pcf(model);
   const int nm = input->nmass;
 
@@ -605,7 +641,7 @@ typedef struct {
   double* geometry_window;            // [ng] G(|q+p|), finite window only
   double* quadratic;                  // [nquadratic,ng] EE part of Q
   double* quadratic_mixed;            // [nquadratic,ng] EB part of Q
-  double* pair_window;                // [nf,nf,nl] windowed K + ell measure
+  double* pair_window;                // [nf,nf,nl] windowed K * ell measure
   double* j0_radial;                  // [nr,nl] J0(ell*r), ell contiguous
   double* j0_fourier;                 // [nl,nr] J0(ell*r), r contiguous
   double* j0_window;                  // [nwindow,nr] J0(q*r), survey nodes
@@ -856,6 +892,7 @@ static inline void covariance_quadratic_3pcf(
 // weights agree exactly. Two Map^2 rows compare their radii in leg
 // order, because an unequal-radius Q(p,q) changes when its Fourier
 // legs are exchanged, even though the full estimator commutes.
+// Returns 1 when the rows share one kernel shape, 0 otherwise.
 static int covariance_quadratic_equal_3pcf(
   const covariance_input_3pcf* in, // row definitions and field radii
   int first,                     // first quadratic row
@@ -1674,7 +1711,7 @@ static void covariance_profile_fill_3pcf(
 // samples share the SIMD lanes; the sum adds the low lane before the
 // high lane, keeping one fixed node order for any OpenMP thread count.
 // The final odd sample runs in scalar code, so no vector load ever
-// extends past the endpoint arrays.
+// extends past the endpoint arrays. Returns that weighted sum.
 static inline double covariance_profile_response_3pcf(
   const covariance_profile_plan_3pcf* plan, // prepared halo and geometry
   size_t start                            // first endpoint for this radius
@@ -1826,8 +1863,10 @@ static void covariance_halo_terms_3pcf(
   const int need_profiles = work->has_cubic || !in->large_area;
   const size_t matrix = covariance_product_3pcf(no, no);
   const size_t nodes = covariance_product_3pcf(work->nz, nm);
-  // 2.77536627e11 is rho_crit/h^2 in (Msun/h)/(Mpc/h)^3; times Omega_m
-  // it is today's comoving mean matter density, as in the halo tables.
+  // 2.77536627e11 is today's critical density rho_crit in
+  // (Msun/h)/(Mpc/h)^3 (no leftover factor of h in these units); times
+  // Omega_m it is today's comoving mean matter density, as in the halo
+  // tables.
   const double rho = 2.77536627e11*physics_omega_m_3pcf(work->model);
 
   work->sigma2 = calloc1d((int)nodes);
@@ -2498,6 +2537,9 @@ static void covariance_halo_terms_3pcf(
 // Parameters:
 //   work - prepared kernels, spectra and window tables
 //   i, j - the two quadratic rows (j >= i in the caller's triangle)
+//
+// Returns:
+//   the Gaussian covariance of the cell (i, j)
 static double covariance_gaussian_two_3pcf(
   const covariance_work_3pcf* work, // prepared kernels, spectra and windows
   int i, // first quadratic row
@@ -2672,6 +2714,9 @@ static double covariance_gaussian_two_3pcf(
 //   work      - prepared kernels, spectra, S and bispectrum tables
 //   quadratic - the Map^2 or xi row
 //   cubic     - the Map^3 row
+//
+// Returns:
+//   the P*B covariance of the (quadratic, cubic) cell
 static double covariance_pb_3pcf(
   const covariance_work_3pcf* work, // prepared kernels, spectra, S and B tables
   int quadratic, // the Map^2 or xi row
@@ -2945,6 +2990,12 @@ void covariance_physical_3pcf(
       "separately matched covariance");
     exit(1);
   }
+  // The engine reads the estimator selector only here. Only
+  // estimator = 0 is implemented: the full-filter aperture estimator,
+  // whose map statistics apply the complete compensated filter around
+  // every center. A finite side-angle-side triangle selection
+  // (finite-SAS) defines a different estimator whose covariance is not
+  // implemented here.
   if (!(0 == input->estimator)) {
     log_fatal("physical 3pcf covariance: finite-triangle or catalogue-mask "
       "covariance is not this estimator");
