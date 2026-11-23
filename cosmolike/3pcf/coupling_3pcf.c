@@ -73,7 +73,6 @@
 // and this file releases every temporary allocation before returning.
 
 
-
 // ---------------------------------------------------------------------------
 // Read one Fourier coefficient c_Ln of the Legendre polynomial
 // P_L(cos delta) = sum_n c_Ln exp(i n delta). The coefficients are real

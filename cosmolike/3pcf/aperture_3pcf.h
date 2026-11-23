@@ -10,8 +10,9 @@
 // buffer sizes. d2, d3, the radii, dlnd and dphi are positive, and
 // phi lies strictly between zero and pi. Every array is contiguous in
 // C order, with the last index adjacent in memory. Inputs and outputs
-// must not overlap. These functions allocate no memory and keep no
-// pointer after they return.
+// must not overlap. No function here keeps a pointer after it
+// returns; the aperture functions allocate no memory, and the
+// two-point helper frees its own scratch before returning.
 //
 // Weights have shape [nfilter, 4, nd2*nd3*nphi]. A triangle's flat
 // index is (index_d2*nd3 + index_d3)*nphi + index_phi. Filters have
@@ -57,12 +58,12 @@ void aperture_apply_3pcf(
   double* out                    // real aperture moments [nsample,nfilter]
 );
 
-// Bin-averaged xi mean from the E/B angular spectra the caller
-// evaluates on the quadrature nodes. sign = +1
-// selects xi+, which uses the J0 kernel and the sum C_E + C_B;
-// sign = -1 selects xi-, which uses J4 and the difference C_E - C_B.
-// The weights on each separation bin sum to one. The additive noise
-// bias is not removed.
+// Bin-averaged two-point functions xi+ and xi- from the E-mode and
+// B-mode angular spectra the caller evaluates on the quadrature
+// nodes. sign = +1 selects xi+, which uses the Bessel kernel J_0 and
+// the sum C_E + C_B; sign = -1 selects xi-, which uses J_4 and the
+// difference C_E - C_B. The weights on each separation bin sum to
+// one. The additive noise bias is not removed.
 void covariance_xi_from_power_3pcf(
   int nrow,                    // number of xi rows
   int nell,                    // Fourier quadrature nodes

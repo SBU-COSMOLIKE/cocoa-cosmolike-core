@@ -40,13 +40,15 @@
 // module. These routines implement the published math in C.
 //
 // A finite side-angle-side (SAS) grid labels a triangle by two side
-// lengths and the angle between them. This file integrates the
-// triangle bins the caller passes in, and nothing else. A finite set
-// of bins is not the infinite-domain aperture statistic. Finite
-// coverage and quadrature can therefore mix E modes (the curl-free
-// shear pattern that gravitational lensing produces) with B modes
-// (the divergence-free pattern), even when the physical field carries
-// E modes only.
+// lengths and the angle between them. The aperture entry points
+// integrate the triangle bins the caller passes in, and nothing else;
+// a last entry point serves the covariance pipeline by bin-averaging
+// the two-point functions xi+ and xi- from caller-supplied spectra. A
+// finite set of bins is not the infinite-domain aperture statistic.
+// Finite coverage and quadrature can therefore mix E modes (the
+// curl-free shear pattern that gravitational lensing produces) with B
+// modes (the divergence-free pattern), even when the physical field
+// carries E modes only.
 //
 // Arrays are flat, caller-owned C buffers, and this file reads no core
 // cosmology state. The caller checks units, bin definitions, sizes,
@@ -60,12 +62,15 @@
 
 // SIMD (single instruction, multiple data) applies one operation to
 // several numbers at once; each number occupies a vector position
-// called a lane. The type v2d holds two doubles side by side. In this
-// file each lane carries a separate aperture output and accumulates
-// its own triangle sum in a fixed order; the code never adds the two
-// lanes together. SIMDe translates each operation into the processor's
-// vector instructions when they exist, and into portable C when they
-// do not. This file keeps no optional scalar implementation.
+// called a lane. The type v2d holds two doubles side by side. Each
+// loop below says what its two lanes carry: the aperture contraction
+// gives each lane a separate output, whose triangle sum accumulates
+// in a fixed order and never mixes with the other lane, while the
+// two-point quadrature gives the lanes adjacent nodes of one sum and
+// adds them back in the scalar order. SIMDe translates each operation
+// into the processor's vector instructions when they exist, and into
+// portable C when they do not. This file keeps no optional scalar
+// implementation.
 typedef simde__m128d v2d;
 
 
@@ -580,23 +585,24 @@ void aperture_apply_3pcf(
   }
 }
 
-// ============================================================================
-// [SECTION] XI FROM CALLER SPECTRA: THE PUBLIC BIN-AVERAGE ENTRY POINT
-// ============================================================================
+// ===========================================================================
+// BIN-AVERAGED TWO-POINT FUNCTIONS FROM CALLER SPECTRA
+// ===========================================================================
 
 // ---------------------------------------------------------------------------
-// covariance_xi_from_power_3pcf: the bin-averaged two-point function
+// Bin-averaged two-point function of the shear,
 //
-//   xi[row] = int ell dell/(2*pi) Jbar(ell) [C_E(ell) + sign*C_B(ell)],
+//   xi[row] = integral ell dell/(2*pi) Jbar(ell) [C_E(ell) + sign*C_B(ell)],
 //
-// from spectra the caller already evaluated on the quadrature nodes.
-// Jbar is the average of J0 (xi+, sign = +1) or J4 (xi-, sign = -1)
-// over the row's separation nodes with the row's own weights; the E
-// and B spectra add for xi+ and subtract for xi-. The function performs no
-// ell interpolation and no binary search, so the caller controls the
-// quadrature completely. The additive noise bias of the estimator is
-// not removed. Argument shapes and units: see the declaration in
-// aperture_3pcf.h.
+// from E-mode and B-mode angular power spectra the caller already
+// evaluated on the quadrature nodes. Jbar is the cylindrical Bessel
+// function J_0 (for xi+, sign = +1) or J_4 (for xi-, sign = -1)
+// averaged over the row's separation nodes with the row's own weights;
+// the E and B spectra add for xi+ and subtract for xi-. The function
+// performs no ell interpolation and no binary search, so the caller
+// controls the quadrature completely. The additive noise bias of the
+// estimator is not removed. Argument shapes and units: see the
+// declaration in aperture_3pcf.h.
 // ---------------------------------------------------------------------------
 void covariance_xi_from_power_3pcf(
   int nrow, // number of xi rows
