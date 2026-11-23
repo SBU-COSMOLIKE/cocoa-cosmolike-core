@@ -35,12 +35,19 @@ struct physics_baseline_table_cpp_3pcf {
   int clamp = 0; // reject out-of-domain queries by default
 };
 
-// Copied fit quantities for the notebook constructor. The C model copies
-// these arrays once more into its immutable storage before returning.
+// Copied legacy smoothing snapshots for the notebook constructor: at
+// each anchor redshift, rnl holds the radius R_NL at which the linear
+// density variance, smoothed with a Gaussian filter, reaches one, and
+// neff holds n_eff, the effective slope of the linear power spectrum
+// at that radius. The anchor redshifts are piecewise uniform - a few
+// consecutive uniform stretches, so a reader finds a segment by index
+// arithmetic instead of a search. The adapters validate these arrays,
+// but the C constructor ignores the field (physics_3pcf.h marks
+// variance a retained ABI field).
 struct physics_variance_tables_cpp_3pcf {
   arma::Col<double> z; // piecewise-uniform fit redshifts
-  arma::Col<double> rnl; // Gaussian nonlinear radii, Mpc/h
-  arma::Col<double> neff; // effective spectral indices
+  arma::Col<double> rnl; // nonlinear radii R_NL, Mpc/h
+  arma::Col<double> neff; // effective spectral indices n_eff
   arma::Col<double> sigma8; // top-hat rms at R = 8 Mpc/h
 };
 

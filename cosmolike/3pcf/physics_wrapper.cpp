@@ -202,6 +202,11 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
   input.ns = ns;
   input.sigma8 = sigma8;
 
+  // Legacy smoothing snapshots; physics_wrapper.hpp defines R_NL,
+  // n_eff and the anchor sigma8. The four arrays must share one
+  // anchor count of at least four. The adapter validates them, but
+  // the C constructor ignores the field (physics_3pcf.h marks
+  // variance a retained ABI field).
   physics_variance_input_3pcf fit = {};
   if (nullptr != variance) {
     const arma::uword count = variance->z.n_elem;
@@ -282,6 +287,12 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     input.window = pixel_window->memptr();
   }
 
+  // Omega_m(z) is the exact matter density fraction that the
+  // halo-model covariance reads; the theory provider computes it,
+  // because the C side reconstructs no expansion history. The
+  // fraction lives on the background z grid by default, an optional
+  // omega_m_redshift axis replaces that default, and an axis that
+  // arrives without its fraction is refused.
   if (nullptr != omega_m_redshift && nullptr == omega_m_z) {
     throw std::invalid_argument("omega_m_redshift requires omega_m_z");
   }
@@ -298,6 +309,13 @@ std::shared_ptr<physics_owner_3pcf> physics_model_cpp_3pcf(
     }
   }
 
+  // The supplied absolute matter bispectrum (baseline_3pcf.h defines
+  // the table and its units) requires Omega_m(z), because the C side
+  // reconstructs no background of its own. Natural cubic preparation
+  // needs at least four nodes per axis, and the running product of
+  // the axis counts is bounded by INT_MAX before each multiplication,
+  // so the flattened size can neither wrap nor overflow the C int
+  // fields.
   baseline_input_3pcf supplied = {};
   if (nullptr != baseline) {
     if (!(nullptr != omega_m_z)) { spdlog::critical(

@@ -308,8 +308,9 @@ static arma::Mat<int> copy_matrix_physics(
 //   zpivot   - the pivot redshift of both power laws
 //   c1rho    - the normalization product C_1 rho_crit that converts an
 //              alignment amplitude into a power-spectrum weight
-//   fb       - the baryon-feedback amplitude of the BiHalofit matter
-//              bispectrum (Takahashi et al., arXiv:1911.07886)
+//   fb       - the baryon-feedback amplitude of BiHalofit, the fitting
+//              formula for the nonlinear matter bispectrum of
+//              Takahashi et al. (arXiv:1911.07886)
 //   feedback_amplitude - the shared log-response amplitude of the
 //              paired hydro/DMO tables; zero keeps dark matter only
 //
@@ -462,6 +463,11 @@ physics_grid_settings_3pcf settings_physics_grid(
 // physics_3pcf.h defines the table contract and the units: k in h/Mpc,
 // chi in Mpc/h, P in (Mpc/h)^3, a redshift grid that includes zero.
 //
+// The model carries no internal matter-bispectrum fit, so the
+// baseline dictionary - the theory-supplied absolute bispectrum table
+// of baseline_3pcf.h - is mandatory, and an empty one is refused
+// before any array is read.
+//
 // Parameters:
 //   k, p_linear0      - wavenumbers and the z=0 linear power on them
 //   z, p_nonlinear    - redshift grid and the [nz,nk] nonlinear power
@@ -475,6 +481,13 @@ physics_grid_settings_3pcf settings_physics_grid(
 //   source_z          - optional separate source redshift axis
 //   feedback          - optional paired hydro/DMO response dictionary
 //   pixel_window      - optional W(ell) samples at integer ell
+//   baseline          - theory-supplied absolute matter bispectrum
+//                       dictionary (baseline_3pcf.h); never empty
+//   omega_m_z         - exact matter fraction Omega_m(z); required
+//                       with the supplied bispectrum
+//   variance          - legacy smoothing snapshots; validated, then
+//                       ignored by the C constructor
+//   omega_m_redshift  - optional separate redshift axis of omega_m_z
 //
 // Returns:
 //   shared owner of the C model; Python keeps it alive
@@ -513,9 +526,12 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   const py::object& omega_m_redshift = py::none() // optional fraction axis
 )
 {
+  // Refuse a model without a supplied matter bispectrum before any
+  // array is read (the header above states the reason).
   if (baseline.empty()) { throw py::value_error(
     "A theory-supplied matter bispectrum is required; internal C "
     "BiHalofit has been removed. Supply baseline and omega_m_z."); }
+
   shape_physics(k, 1);
   shape_physics(p_linear0, 1);
   shape_physics(z, 1);
@@ -685,10 +701,21 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
     input.window = window.data();
   }
 
+  // The supplied bispectrum and the matter fraction borrow Python
+  // buffers the same way source_z does above, so their handles live
+  // here, outside the if blocks, until the C constructor has copied
+  // every table.
   baseline_input_3pcf supplied = {};
   std::vector<physics_array> baseline_arrays;
   physics_array matter_fraction;
   physics_array matter_axis;
+
+  // Omega_m(z) is the exact matter density fraction that the
+  // halo-model covariance reads; the theory provider computes it,
+  // because this adapter reconstructs no expansion history. The
+  // fraction lives on the background z grid by default, an optional
+  // omega_m_redshift axis replaces that default, and an axis that
+  // arrives without its fraction is refused.
   if (!omega_m_redshift.is_none() && omega_m_z.is_none()) {
     throw py::value_error("omega_m_redshift requires omega_m_z");
   }
@@ -715,6 +742,15 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
       "Omega_m(z) must match its redshift axis"); }
     input.omega_m_z = matter_fraction.data();
   }
+
+  // The supplied absolute matter bispectrum arrives as a dictionary
+  // of exactly seven entries: the four uniform axes z, logk, logu and
+  // v, the flattened table log_bispectrum, plus the two integers
+  // boost and clamp (baseline_3pcf.h documents each field). Natural
+  // cubic preparation needs at least four nodes per axis, and the
+  // running product of the axis counts is bounded by INT_MAX before
+  // each multiplication, so the flattened size can neither wrap nor
+  // overflow the C int fields.
   if (!baseline.empty()) {
     const char* names[5] = {"z", "logk", "logu", "v", "log_bispectrum"};
     if (!(7 == baseline.size())) { spdlog::critical(
@@ -760,9 +796,17 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
     input.baseline = &supplied;
   }
 
-  // Retain borrowed production arrays until the immutable C owner has
-  // copied them. The dictionary is deliberately small and exact so a
-  // misspelled field cannot silently omit a required fit quantity.
+  // Legacy smoothing snapshots of the removed internal fit: at each
+  // anchor redshift, rnl holds the radius R_NL at which the linear
+  // density variance, smoothed with a Gaussian filter, reaches one;
+  // neff holds n_eff, the effective slope of the linear power
+  // spectrum at that radius; and sigma8 holds the top-hat rms in
+  // spheres of 8 Mpc/h. The adapter still validates the arrays, but
+  // the C constructor ignores the field (physics_3pcf.h marks
+  // variance a retained ABI field). The borrowed arrays stay alive in
+  // fit_arrays until physics_create_3pcf returns, and the dictionary
+  // is deliberately small and exact so a misspelled field cannot
+  // silently omit a quantity.
   physics_variance_input_3pcf fit = {};
   std::vector<physics_array> fit_arrays;
   if (!variance.empty()) {
@@ -798,6 +842,12 @@ static std::shared_ptr<physics_owner_3pcf> model_physics_common(
   return std::make_shared<physics_owner_3pcf>(input);
 }
 
+// ---------------------------------------------------------------------------
+// Production constructor binding of PhysicsModel. The Python keyword
+// order lists the optional dictionaries as the binding exposes them,
+// while model_physics_common groups the supplied bispectrum with its
+// matter fraction; this thin forwarder only reorders the arguments.
+// ---------------------------------------------------------------------------
 static std::shared_ptr<physics_owner_3pcf> model_physics(
   const physics_array& k, // wave numbers, h/Mpc
   const physics_array& p_linear0, // linear P(z=0), (Mpc/h)^3
@@ -836,6 +886,16 @@ static std::shared_ptr<physics_owner_3pcf> model_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// Production factory behind PhysicsModelWithBispectrum: the explicit
+// route for a model built from a supplied matter bispectrum. The
+// caller provides the absolute B table and Omega_m(z), and the
+// signature drops the dark-energy and tilt scalars, because the
+// supplied tables already carry the whole expansion history; the
+// forwarder passes zeros into those retained ABI fields. A missing
+// baseline dictionary or a missing Omega_m(z) is refused before any
+// array is read.
+// ---------------------------------------------------------------------------
 static std::shared_ptr<physics_owner_3pcf> model_physics_with_bispectrum(
   const physics_array& k, // wavenumbers, h/Mpc
   const physics_array& p_linear0, // linear P at z=0, (Mpc/h)^3
@@ -920,9 +980,12 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
   const py::object& omega_m_redshift = py::none() // optional fraction axis
 )
 {
+  // Refuse a model without a supplied matter bispectrum before any
+  // copy is made (model_physics_common states the reason).
   if (baseline.empty()) { throw py::value_error(
     "A theory-supplied matter bispectrum is required; internal C "
     "BiHalofit has been removed. Supply baseline and omega_m_z."); }
+
   const arma::Col<double> wave = copy_column_physics(k);
   const arma::Col<double> linear = copy_column_physics(p_linear0);
   const arma::Col<double> redshift = copy_column_physics(z);
@@ -982,6 +1045,10 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
   physics_baseline_table_cpp_3pcf supplied;
   arma::Col<double> matter_fraction;
   arma::Col<double> matter_axis;
+
+  // Omega_m(z) and its optional axis copy like every other notebook
+  // column; model_physics_common explains what the fraction feeds and
+  // why an axis that arrives without its fraction is refused.
   if (!omega_m_redshift.is_none() && omega_m_z.is_none()) {
     throw py::value_error("omega_m_redshift requires omega_m_z");
   }
@@ -993,6 +1060,10 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
     matter_axis = copy_column_physics(
       py::cast<physics_notebook_array>(omega_m_redshift));
   }
+
+  // The notebook baseline dictionary repeats the production contract:
+  // exactly the five arrays plus boost and clamp. The axis-count and
+  // size checks run after these copies, inside physics_model_cpp_3pcf.
   if (!baseline.empty()) {
     const char* names[7] = {"z", "logk", "logu", "v", "log_bispectrum",
       "boost", "clamp"};
@@ -1016,6 +1087,9 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
     supplied.clamp = py::cast<int>(baseline["clamp"]);
   }
 
+  // The legacy smoothing snapshots copy like every other notebook
+  // column; the production block above defines R_NL, n_eff and the
+  // anchor sigma8, and the C constructor ignores the field.
   physics_variance_tables_cpp_3pcf fit;
   if (!variance.empty()) {
     const char* names[4] = {"z", "rnl", "neff", "sigma8"};
@@ -1048,6 +1122,11 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics_common(
     omega_m_redshift.is_none() ? nullptr : &matter_axis);
 }
 
+// ---------------------------------------------------------------------------
+// Notebook constructor binding: the copying twin of model_physics,
+// with the same Python keyword order; this thin forwarder only
+// reorders the arguments for model_notebook_physics_common.
+// ---------------------------------------------------------------------------
 static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
   const physics_notebook_array& k, // wave numbers, h/Mpc
   const physics_notebook_array& p_linear0, // linear P(z=0), (Mpc/h)^3
@@ -1085,6 +1164,12 @@ static std::shared_ptr<physics_owner_3pcf> model_notebook_physics(
 }
 
 
+// ---------------------------------------------------------------------------
+// Notebook factory behind the copying PhysicsModelWithBispectrum
+// route: the twin of model_physics_with_bispectrum, with the same
+// dropped scalars, the same zeros in the retained ABI fields and the
+// same refusals.
+// ---------------------------------------------------------------------------
 static std::shared_ptr<physics_owner_3pcf>
 model_notebook_physics_with_bispectrum(
   const physics_notebook_array& k, // wavenumbers, h/Mpc
@@ -1846,8 +1931,10 @@ void bind_threepcf_physics(
     py::arg("ell").noconvert(), py::arg("dell").noconvert(),
     py::arg("phi").noconvert(), py::arg("dphi").noconvert(),
     py::arg("filters").noconvert(),
-    "Full-filter aperture mean from the prepared table; the model's "
-    "pixel window multiplies all three legs.");
+    "Full-filter aperture mean from the prepared table: the complete "
+    "aperture statistic at one center, not a finite side-angle-side "
+    "triangle selection. The model's pixel window multiplies all "
+    "three legs.");
 
   grid.def("aperture_full_notebook", [](
     // owner of the immutable projected-bispectrum grid
@@ -1908,8 +1995,10 @@ void bind_threepcf_physics(
   // which owns its data, so Python may discard the inputs afterwards.
   py::class_<physics_owner_3pcf, std::shared_ptr<physics_owner_3pcf>> model(
     module, "PhysicsModel",
-    "Owned matter/TATT model from k[h/Mpc], P[(Mpc/h)^3], chi[Mpc/h]. "
-    "All physical arrays are copied. Recreate after changing their values.");
+    "One immutable matter and TATT intrinsic-alignment model, built "
+    "from k in h/Mpc, P in (Mpc/h)^3 and chi in Mpc/h. Construction "
+    "copies every physical array, so later changes to the inputs "
+    "never reach the model: rebuild it instead.");
 
   model.def(py::init(&model_physics),
     py::arg("k").noconvert(),
@@ -1964,7 +2053,8 @@ void bind_threepcf_physics(
     py::arg("omega_m_z") = py::none(),
     py::arg("omega_m_redshift") = py::none(),
     py::arg("baseline") = py::dict(),
-    "Copy sliced or Fortran-order arrays through the Armadillo adapter.");
+    "Build the same model through the copying notebook adapter, "
+    "which accepts sliced or Fortran-order arrays.");
 
   module.def("physics_model_production_with_bispectrum",
     &model_physics_with_bispectrum,
@@ -1989,8 +2079,11 @@ void bind_threepcf_physics(
     py::arg("feedback") = py::dict(),
     py::arg("pixel_window") = py::none(),
     py::arg("variance") = py::dict(),
-    "Construct from supplied absolute B and Omega_m(z); no internal B fit. "
-    "The caller supplies a flat-geometry background consistent with P and B.");
+    "Build the model from a theory-supplied absolute matter "
+    "bispectrum B and the exact matter fraction Omega_m(z); the "
+    "adapter fits no bispectrum of its own. The caller supplies a "
+    "flat background consistent with the power and bispectrum "
+    "tables.");
 
   module.def("physics_model_notebook_with_bispectrum",
     &model_notebook_physics_with_bispectrum,
@@ -2015,8 +2108,9 @@ void bind_threepcf_physics(
     py::arg("feedback") = py::dict(),
     py::arg("pixel_window") = py::none(),
     py::arg("variance") = py::dict(),
-    "Construct from supplied absolute B and Omega_m(z); no internal B fit. "
-    "The caller supplies a flat-geometry background consistent with P and B.");
+    "Build the same supplied-bispectrum model through the copying "
+    "notebook adapter; physics_model_production_with_bispectrum "
+    "documents the contract.");
 
   // --- 3. POINT AND ANGULAR QUERIES --------------------------------------
   // Direct evaluations of the model: bispectra at physical or angular
