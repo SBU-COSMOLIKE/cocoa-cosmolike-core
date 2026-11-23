@@ -68,6 +68,19 @@ using transform_indices = py::array_t<int, py::array::c_style>;
 //       damp the ringing that the FFT's periodic assumption causes.
 //   TreeCorr - the external catalogue-correlation code whose component
 //       convention the aperture outputs adopt.
+//   SAS binning - side-angle-side: a triangle is recorded by two side
+//       lengths and the opening angle between them, each on a finite
+//       bin. The finite-SAS aperture statistics integrate the natural
+//       components over those finite bins instead of sampling ideal
+//       point triangles.
+//   aperture mass - the convergence field smoothed by a compensated
+//       filter of scale R; the third moment of three such filters,
+//       measured from shear, is the statistic the aperture methods
+//       below predict.
+//   prepared projection - a physical grid, built once per ordered
+//       source triplet, that tabulates the projected bispectrum; the
+//       plan rereads the table instead of repeating the line-of-sight
+//       projection quadrature for every triangle.
 // ---------------------------------------------------------------------------
 
 
@@ -287,6 +300,9 @@ class bessel_owner_3pcf {
     return owner;
   }
 
+  // Copy a complete borrowed [nell, nell] integrand into the C input
+  // slice and recompute the forward FFT coefficients. Refuses a shape
+  // that differs from this plan's grid and any nonfinite value.
   void forward(
       const transform_array& integrand // [nell,nell], dln ell integrand
     )
@@ -304,6 +320,10 @@ class bessel_owner_3pcf {
     ready_ = true;
   }
 
+  // Contract the latest forward coefficients with the Bessel kernels
+  // of one order pair and return an independent [nell, nell] NumPy
+  // copy. Refuses orders outside the prepared capacity and refuses to
+  // run before the first forward.
   transform_array inverse(
       const int order1, // first cylindrical Bessel order
       const int order2 // second cylindrical Bessel order
@@ -318,6 +338,8 @@ class bessel_owner_3pcf {
     return output;
   }
 
+  // Forward and inverse in one call: replace the stored input, then
+  // return its transform for a single order pair.
   transform_array evaluate(
       const transform_array& integrand, // complete replacement input
       const int order1, // first cylindrical Bessel order
@@ -329,6 +351,8 @@ class bessel_owner_3pcf {
     return inverse(order1, order2);
   }
 
+  // Notebook twin of forward: copy arbitrary NumPy-compatible input
+  // through Armadillo before the same C forward transform runs.
   void forward_notebook(
       const py::object& integrand // copied input with arbitrary strides
     )
@@ -339,6 +363,8 @@ class bessel_owner_3pcf {
     ready_ = true;
   }
 
+  // Notebook twin of inverse: the Armadillo result returns through
+  // carma as an independently owned NumPy array.
   py::object inverse_notebook(
       const int order1, // first cylindrical Bessel order
       const int order2 // second cylindrical Bessel order
@@ -349,6 +375,7 @@ class bessel_owner_3pcf {
         bessel_inverse_cpp_3pcf(work_.get(), nell_, order1, order2));
   }
 
+  // Notebook twin of evaluate: one copied input, one owned output.
   py::object evaluate_notebook(
       const py::object& integrand, // complete copied replacement input
       const int order1, // first cylindrical Bessel order
@@ -360,6 +387,8 @@ class bessel_owner_3pcf {
     return inverse_notebook(order1, order2);
   }
 
+  // Independent copy of the output grid theta = xy/reversed(ell); a
+  // Python-side write cannot reach the plan's own table.
   transform_array theta() const
   {
     transform_array result(nell_);
@@ -370,6 +399,9 @@ class bessel_owner_3pcf {
  private:
   bessel_owner_3pcf() = default;
 
+  // Shared constructor body: build the C workspace, which copies the
+  // grid, then tabulate the reversed reciprocal output grid
+  // theta[i] = xy/ell[nell-1-i].
   void initialize(
       const int nell, // physical grid length
       const double* ell, // coordinates copied by the C workspace
@@ -393,6 +425,8 @@ class bessel_owner_3pcf {
     }
   }
 
+  // Refuse any Bessel order outside the prepared capacity
+  // [0, max_order]: no kernel table exists beyond it.
   void validate_orders(
       const int order1, // first requested Bessel order
       const int order2 // second requested Bessel order
@@ -408,6 +442,8 @@ class bessel_owner_3pcf {
     }
   }
 
+  // Refuse an inverse before the first forward: the coefficient
+  // buffer holds no data yet.
   void validate_inverse(
       const int order1, // first requested Bessel order
       const int order2 // second requested Bessel order
@@ -710,9 +746,20 @@ class transform_owner_3pcf {
     return result;
   }
 
-  // Prepare the aperture measurement on this plan's fixed triangle grid.
-  // Each output row names an ordered source triplet and three radii.
-  // Repeated triplets share a projection; repeated radii share weights.
+  // Prepare the finite-SAS aperture measurement on this plan's fixed
+  // triangle grid. Each requested data-vector row names an ordered
+  // source triplet and one triplet of aperture radii, and this method
+  // stores everything aperture_vector later needs: the deduplicated
+  // triplet and radius lists, the finite-bin integration weights and
+  // the resolved projection settings. Repeated triplets then share
+  // one projection and repeated radius triplets share one weight
+  // table, however many rows request them.
+  //
+  // Returns nothing; it only fills this plan's aperture_* members.
+  // Refuses row tables whose bin and radius counts disagree, a side
+  // mask that drops every radial bin, a representative side outside
+  // its bin, nonpositive bin widths and an angular quadrature count
+  // nmu <= lmax, which could not resolve every Legendre degree.
   void init_aperture_rows(
     const transform_indices& bins, // [row,3], source-bin indices
     const transform_array& filters, // [row,3], aperture radii in radians
@@ -732,6 +779,12 @@ class transform_owner_3pcf {
     shape_transform(bins, 2);
     shape_transform(filters, 2);
     finite_transform(filters);
+
+    // One guard covers the row tables and the quadrature controls:
+    // both tables are [nrow, 3] and equally long, a batch holds at
+    // least one grid, the direct reference quadrature resolves every
+    // Legendre degree, and the bin widths and the representative
+    // offset are finite, the widths also positive.
     if (bins.shape(1) != 3 || filters.shape(1) != 3
         || bins.shape(0) != filters.shape(0) || batch_size < 1
         || nmu <= lmax_ || !std::isfinite(dlnt) || dlnt <= 0.0
@@ -739,6 +792,11 @@ class transform_owner_3pcf {
         || !std::isfinite(representative_offset)) {
       throw py::value_error("Invalid aperture rows or angular quadrature.");
     }
+
+    // Optional side mask. side_keep marks the radial bins that enter
+    // the aperture integration; a dropped bin keeps its place in the
+    // triangle grid, but its weights are zeroed below, so the final
+    // contraction skips it. The default keeps every bin.
     std::vector<int> keep(ntheta_, 1);
     if (!side_keep.is_none()) {
       auto raw = py::array::ensure(side_keep);
@@ -756,6 +814,19 @@ class transform_owner_3pcf {
         throw py::value_error("side_keep must retain at least one radial bin.");
       }
     }
+
+    // Representative side of each logarithmic bin [lower, lower
+    // e^dlnt], as a factor on the lower edge. The geometric rule
+    // takes the log midpoint, lower e^(dlnt/2). The area-weighted
+    // rule averages the side theta over the bin with the pair-count
+    // measure theta dtheta,
+    //
+    //   <theta> = lower (2/3) (e^(3 dlnt) - 1)/(e^(2 dlnt) - 1),
+    //
+    // the mean side of uniformly distributed pairs in that bin. The
+    // offset then displaces the representative by a fraction of the
+    // lower edge, and the guard keeps the result inside its bin up
+    // to rounding slack (the 1e-14 terms).
     double factor = std::exp(0.5*dlnt);
     if (representative_rule == "area_weighted") {
       factor = (2.0/3.0)*std::expm1(3.0*dlnt)/std::expm1(2.0*dlnt);
@@ -766,10 +837,16 @@ class transform_owner_3pcf {
     if (factor < 1.0-1.e-14 || factor > std::exp(dlnt)*(1.0+1.e-14)) {
       throw py::value_error("Representative side lies outside its bin.");
     }
+
     std::vector<double> sides(ntheta_);
     for (int i=0; i<ntheta_; i++) {
       sides[i] = lower.data()[i]*factor;
     }
+    // Deduplicate the requested rows. For each row, aperture_triplet_
+    // points at its unique source triplet and aperture_filter_ at its
+    // unique radius triplet, so aperture_vector later projects each
+    // distinct triplet once and contracts each distinct radius set
+    // once, whatever the number of rows that reuse them.
     std::vector<std::array<int,3>> triplets;
     std::vector<std::array<double,3>> radii;
     aperture_bins_.assign(bins.data(), bins.data()+bins.size());
@@ -796,6 +873,8 @@ class transform_owner_3pcf {
         radii.push_back(radius);
       }
     }
+    // Flatten the unique lists into the [count, 3] buffers the C
+    // engines read.
     aperture_triplets_.clear();
     for (const auto& triplet : triplets) {
       aperture_triplets_.insert(aperture_triplets_.end(),
@@ -805,6 +884,12 @@ class transform_owner_3pcf {
     for (const auto& radius : radii) {
       flat_filters.insert(flat_filters.end(), radius.begin(), radius.end());
     }
+
+    // Build one finite-bin weight table per unique radius triplet.
+    // aperture_weights_3pcf integrates the compensated aperture
+    // filters over every SAS bin, so the later step that turns
+    // natural components into aperture moments is a plain weighted
+    // sum over triangles.
     const size_t triangles = static_cast<size_t>(ntheta_)*ntheta_*nphi_;
     aperture_nfilter_ = radii.size();
     aperture_real_.resize(radii.size()*4*triangles);
@@ -812,6 +897,10 @@ class transform_owner_3pcf {
     aperture_weights_3pcf(ntheta_, ntheta_, nphi_, aperture_nfilter_,
       sides.data(), sides.data(), phi.data(), dlnt, dphi,
       flat_filters.data(), aperture_real_.data(), aperture_imag_.data());
+
+    // Zero the weights of every triangle that touches a dropped side
+    // bin. The weight table carries the mask, not the triangle grid,
+    // so the transform geometry stays untouched.
     for (size_t f=0; f<radii.size()*4; f++) {
       for (int i=0; i<ntheta_; i++) {
         for (int j=0; j<ntheta_; j++) {
@@ -823,6 +912,9 @@ class transform_owner_3pcf {
         }
       }
     }
+
+    // Record the resolved controls for aperture_vector and for the
+    // read-only diagnostic properties.
     aperture_keep_ = keep;
     aperture_sides_ = sides;
     aperture_settings_ = settings_physics_grid(settings);
@@ -832,9 +924,22 @@ class transform_owner_3pcf {
     aperture_nmu_ = nmu;
   }
 
-  // Project each ordered source triplet once, then assign every requested
-  // aperture radius to its original output row. Physical grids are rebuilt
-  // on every call. Only geometry and FFT scratch persist in this plan.
+  // Evaluate the aperture data vector for one physical model:
+  // project each unique ordered source triplet once, transform it to
+  // natural components, contract it with each unique weight table
+  // and assign the values back to their original rows. Physical
+  // grids are rebuilt on every call, so no cosmology-dependent table
+  // survives between likelihood evaluations; only geometry and FFT
+  // scratch persist in this plan.
+  //
+  // component selects the physical content: 0 the total prediction,
+  // 1 the NLA (nonlinear linear alignment) baseline alone, 2 the
+  // intrinsic-alignment residual beyond that baseline.
+  //
+  // Returns one aperture moment per initialized row, scaled by the
+  // optional shear-calibration factor of that row's sources. Refuses
+  // to run before init_aperture_rows and refuses a calibration
+  // vector that omits a requested source bin.
   transform_array aperture_vector(
     const py::object& model, // immutable physical model for this evaluation
     const py::dict& ia, // IA and feedback parameters in CosmoLike convention
@@ -848,6 +953,11 @@ class transform_owner_3pcf {
     const auto* physical = borrow_physics_model_3pcf(model);
     const auto parameters = parameters_physics(ia);
     const int nrow = aperture_filter_.size();
+
+    // Optional multiplicative shear calibration. Each leg of a row's
+    // source triplet contributes a factor 1 + m_i, with m_i the
+    // offset of source bin i, so the row's aperture moment scales by
+    // the product over its three legs.
     std::vector<double> calibration_factors(nrow, 1.0);
     if (!calibration.is_none()) {
       auto shear = transform_array::ensure(calibration);
@@ -870,10 +980,20 @@ class transform_owner_3pcf {
     transform_array result(nrow);
     const int ntriplet = aperture_triplets_.size()/3;
     std::vector<double> values(aperture_nfilter_);
+
+    // The explicit b_L buffer serves only the routes that read
+    // multipoles - the direct reference and the component
+    // selections; the prepared total contracts straight from the
+    // grid and never fills it.
     std::vector<double> multipoles;
     if (!aperture_prepared_ || component != 0) {
       multipoles.resize(static_cast<size_t>(lmax_+1)*nell_*nell_);
     }
+
+    // Walk the unique triplets in batches. One batch prepares at
+    // most aperture_batch_ projection grids at a time, which bounds
+    // the memory the prepared route holds while the grid
+    // construction still amortizes its setup across sources.
     for (int start=0; start<ntriplet; start+=aperture_batch_) {
       const int count = std::min(aperture_batch_, ntriplet-start);
       std::vector<physics_grid_3pcf*> grids(count, nullptr);
@@ -881,6 +1001,12 @@ class transform_owner_3pcf {
         physics_grid_create_many_3pcf(physical, &parameters, count,
           aperture_triplets_.data()+3*start, &aperture_settings_, grids.data());
       }
+      // Three routes lead to the aperture values of one triplet: the
+      // prepared total contracts its grid directly; a prepared
+      // component first exports the selected multipoles from that
+      // grid; the direct reference evaluates the multipoles by
+      // quadrature with aperture_nmu_ angular nodes. All three end
+      // in the same contraction against the finite-bin weights.
       for (int i=0; i<count; i++) {
         const int triplet = start+i;
         if (aperture_prepared_ && component == 0) {
@@ -898,6 +1024,8 @@ class transform_owner_3pcf {
           transform_aperture_3pcf(plan_, multipoles.data(), aperture_nfilter_,
             aperture_real_.data(), aperture_imag_.data(), values.data());
         }
+        // Copy this triplet's values into every row that requested
+        // it, each row picking its own radius triplet.
         for (int row=0; row<nrow; row++) {
           if (aperture_triplet_[row] == triplet) {
             result.mutable_data()[row] = values[aperture_filter_[row]];
@@ -913,9 +1041,23 @@ class transform_owner_3pcf {
     return result;
   }
 
-  // Decompose by physical operator AND by placement of intrinsic shapes.
-  // GGI puts I on the third leg; IIG puts I on the first two. Selecting
-  // vertices in C avoids obtaining a small IA term by subtracting totals.
+  // Decompose the aperture prediction along two axes at once: the
+  // physical operator and the placement of the intrinsic shapes. A
+  // placement label such as GGI reads leg by leg - G marks a
+  // gravitationally lensed shear, I an intrinsic shape - so GGI puts
+  // the intrinsic shape on the third leg and IIG on the first two.
+  // Each (operator, placement) term is evaluated directly, by
+  // selecting legs inside the C engine, because subtracting two
+  // near-equal totals would lose the small intrinsic-alignment terms
+  // to cancellation.
+  //
+  // Returns a dict: "operators" and "placements" name the first two
+  // axes of "values" [5, 8, nrow]; "total" is the full prediction
+  // and "closure" the sum of all terms minus that total, a
+  // cross-check that must vanish to rounding. Refuses a preselected
+  // operator or leg placement in ia and, on the prepared route, an
+  // unsigned baseline, because the decomposition must control both
+  // choices itself.
   py::dict aperture_components(
     const py::object& model, // same physical input as the total prediction
     const py::dict& ia, // full IA choice, without a preselected operator
@@ -931,7 +1073,20 @@ class transform_owner_3pcf {
     const int nrow = total.size();
     transform_array values({5, 8, nrow});
     std::fill_n(values.mutable_data(), values.size(), 0.0);
+
+    // intrinsic_legs is a bitmask: bit 0 marks an intrinsic shape on
+    // leg 1, bit 1 on leg 2 and bit 2 on leg 3. masks lists the
+    // eight placements in the display order GGG, GGI, GIG, IGG,
+    // GII, IIG, IGI, III - GGI, intrinsic only on leg 3, is bit 2
+    // alone, the mask value 4.
     const int masks[8] = {0, 4, 2, 1, 6, 3, 5, 7};
+
+    // Evaluate each nonzero term. The placement GGG carries no
+    // intrinsic leg, so only the gravity row op = 0 fills it; the
+    // operator code max(1, op) = 1 it passes is inert when the leg
+    // mask is zero. Every alignment operator op >= 1 pairs with the
+    // seven placements that hold at least one intrinsic leg, and
+    // the skipped slots of values stay zero.
     for (int op=0; op<5; op++) {
       for (int place=0; place<8; place++) {
         if ((op == 0 && place != 0) || (op != 0 && place == 0)) {
@@ -945,6 +1100,10 @@ class transform_owner_3pcf {
           values.mutable_data()+(op*8+place)*nrow);
       }
     }
+
+    // Closure check: the 5 x 8 = 40 slots, zeros included, must
+    // reassemble the total prediction, so their sum minus the total
+    // exposes any term the decomposition lost or double-counted.
     transform_array closure(nrow);
     for (int row=0; row<nrow; row++) {
       double sum = 0.0;
@@ -953,6 +1112,9 @@ class transform_owner_3pcf {
       }
       closure.mutable_data()[row] = sum-total.data()[row];
     }
+
+    // Name the axes, so a notebook reads the decomposition without
+    // this file at hand.
     py::dict result;
     result["operators"] = py::make_tuple("gravity", "linear_alignment",
       "density_weighting", "tidal_torque", "velocity_shear");
@@ -964,6 +1126,7 @@ class transform_owner_3pcf {
     return result;
   }
 
+  // Independent copy of the plan's logarithmic Fourier grid.
   transform_array ell() const
   {
     transform_array result(nell_);
@@ -987,6 +1150,8 @@ class transform_owner_3pcf {
     return result;
   }
 
+  // Mask of radial side bins the aperture weights retain (true =
+  // the bin enters the integration).
   py::array_t<bool> side_keep() const
   {
     py::array_t<bool> result(aperture_keep_.size());
@@ -996,6 +1161,8 @@ class transform_owner_3pcf {
     return result;
   }
 
+  // Representative side length of each radial bin, in radians, after
+  // the rule and offset init_aperture_rows applied.
   transform_array representative_sides() const
   {
     transform_array result(aperture_sides_.size());
@@ -1003,6 +1170,8 @@ class transform_owner_3pcf {
     return result;
   }
 
+  // Copy of the resolved projection settings, so a notebook can
+  // record the provenance of a data vector.
   py::dict projection_settings() const
   {
     return py::dict(aperture_settings_record_.attr("copy")());
@@ -1026,15 +1195,20 @@ class transform_owner_3pcf {
   }
 
   std::vector<double> ell_; // owned physical Fourier coordinates
-  std::vector<int> aperture_keep_;
-  std::vector<double> aperture_sides_;
+  std::vector<int> aperture_keep_; // 1 = side bin enters the weights
+  std::vector<double> aperture_sides_; // representative sides, radians
+  // aperture_bins_: source triplet of every row, flattened [row, 3];
+  // aperture_triplets_: the unique ordered triplets, flattened
   std::vector<int> aperture_bins_, aperture_triplets_;
+  // per row: index of its unique triplet and of its unique radius set
   std::vector<int> aperture_triplet_, aperture_filter_;
+  // finite-bin weights [nfilter, 4, triangle], real and imaginary
   std::vector<double> aperture_real_, aperture_imag_;
-  physics_grid_settings_3pcf aperture_settings_;
-  py::dict aperture_settings_record_;
+  physics_grid_settings_3pcf aperture_settings_; // resolved C controls
+  py::dict aperture_settings_record_; // Python copy for diagnostics
+  // unique radius triplets; grids per batch; direct quadrature count
   int aperture_nfilter_=0, aperture_batch_=1, aperture_nmu_=0;
-  bool aperture_prepared_=true;
+  bool aperture_prepared_=true; // false = direct reference quadrature
   transform_plan_3pcf* plan_ = nullptr; // owned C plan and FFT scratch
   int nell_ = 0; // Fourier grid length
   int ntheta_ = 0; // radial bins the indices pick
@@ -1046,9 +1220,20 @@ class transform_owner_3pcf {
 
 
 
-// Align lower angular-bin edges exactly with FFTLog's reciprocal ell grid.
-// Refinement subdivides the logarithmic bin width by an integer; extending
-// the Fourier range therefore changes no requested measurement angle.
+// ---------------------------------------------------------------------------
+// Build a logarithmic Fourier grid whose reversed reciprocal grid
+// theta = 1/ell contains every requested lower side edge exactly.
+// FFTLog measures angles only on that reciprocal grid, so the FFT
+// step must divide the side-bin width dlnt: the step is dlnt over an
+// integer subdivision count, and refining the grid or extending the
+// Fourier range then moves no requested measurement angle.
+//
+// Returns the pair (ell, indices): the grid [length] and, for each
+// side edge, the index of its node in the reversed grid. Refuses
+// nonpositive or disordered bounds, side edges that are not equally
+// log-spaced at width dlnt, and a grid beyond 65536 nodes - a cap
+// that keeps the quadratic [nell, nell] transform stages affordable.
+// ---------------------------------------------------------------------------
 static py::tuple aligned_fft_grid_3pcf(
   const transform_array& theta, // lower side edges in radians
   const double dlnt, // common logarithmic bin width
@@ -1064,6 +1249,10 @@ static py::tuple aligned_fft_grid_3pcf(
       || !std::isfinite(ell_max) || ell_max <= ell_min || minimum_size < 4) {
     throw py::value_error("Invalid angular/Fourier alignment bounds.");
   }
+
+  // The side edges must march in steps of exactly dlnt in the log;
+  // the tolerance only absorbs the rounding of the caller's own
+  // exp/log arithmetic.
   for (int i=0; i<theta.size(); i++) {
     if (theta.data()[i] <= 0.0 || (i > 0 &&
         std::abs(std::log(theta.data()[i])-std::log(theta.data()[i-1])-dlnt)
@@ -1071,12 +1260,27 @@ static py::tuple aligned_fft_grid_3pcf(
       throw py::value_error("Theta edges must be equally log-spaced.");
     }
   }
+
+  // Choose the FFT step as dlnt/subdivisions, with enough integer
+  // subdivisions that at least minimum_size nodes span the requested
+  // Fourier range; the step both divides the side-bin width and
+  // meets the resolution floor.
   const double subdivisions = std::max(1.0,
     std::ceil(minimum_size*dlnt/std::log(ell_max/ell_min)));
   const double step = dlnt/subdivisions;
+
+  // Pin the grid to the first side edge: "first" is the
+  // reversed-grid index where theta[0] = 1/ell sits, chosen as the
+  // smallest index for which the grid top exp(log_maximum) still
+  // reaches ell_max, so theta[0] lands exactly on a node without
+  // wasted range.
   const double first = std::max(0.0,
     std::ceil(std::log(theta.data()[0]*ell_max)/step));
   const double log_maximum = -std::log(theta.data()[0])+first*step;
+
+  // The grid must hold at least minimum_size nodes, reach down to
+  // ell_min, and still contain the last side edge, which sits
+  // "subdivisions" nodes after each previous one.
   const double required = std::max({double(minimum_size),
     std::ceil((log_maximum-std::log(ell_min))/step)+1.0,
     first+(theta.size()-1)*subdivisions+1.0});
@@ -1087,6 +1291,10 @@ static py::tuple aligned_fft_grid_3pcf(
   if (length > 65536) {
     throw py::value_error("FFT length exceeds 65536; reduce its density.");
   }
+
+  // Fill the grid downward from its pinned top and record where each
+  // side edge sits; the final comparison catches any accumulated
+  // rounding beyond two parts in 1e12.
   transform_array ell(length);
   transform_indices indices(theta.size());
   for (int i=0; i<length; i++) {
@@ -1104,6 +1312,20 @@ static py::tuple aligned_fft_grid_3pcf(
   return py::make_tuple(ell, indices);
 }
 
+// ---------------------------------------------------------------------------
+// Build the complete finite-SAS aperture plan behind
+// TransformPlan.for_aperture: resolve the accuracy multipliers,
+// align the FFT grid with the side bins, fill and cross-check the
+// projection settings, parse the transform options, and return a
+// plan whose aperture rows are initialized, ready for
+// aperture_vector.
+//
+// Returns the owning plan object. Refuses projection settings that
+// fail to cover the FFT multipole range or disagree with lmax, an
+// opening-angle grid that is not uniform inside (0, pi), an unknown
+// projection mode, and any transform option this route does not
+// support.
+// ---------------------------------------------------------------------------
 static std::unique_ptr<transform_owner_3pcf> aperture_plan_3pcf(
   const transform_indices& bins, // [row,3], ordered source bins
   const transform_array& filters, // [row,3], aperture radii in radians
@@ -1127,14 +1349,24 @@ static std::unique_ptr<transform_owner_3pcf> aperture_plan_3pcf(
   double representative_offset // displacement as fraction of a lower bin edge
 )
 {
+  // Resolve the accuracy multipliers first - fft_boost refines the
+  // minimum FFT length and angular_boost the reference quadrature
+  // count - so every later grid derives from the boosted values.
   const auto controls = init_accuracy_3pcf(accuracy);
   minimum_size = accuracy_count_3pcf(controls, minimum_size,
     "fft_boost", false, false);
   nmu = accuracy_count_3pcf(controls, nmu, "angular_boost", true, false);
+
   const auto aligned = aligned_fft_grid_3pcf(theta_lower, dlnt,
     ell_min, ell_max, minimum_size);
   const auto ell = aligned[0].cast<transform_array>();
   const auto indices = aligned[1].cast<transform_indices>();
+
+  // Fill the projection defaults from the aligned grid itself, then
+  // insist on consistency: the projection must tabulate at least the
+  // FFT's multipole range, at the same Legendre cutoff and with
+  // multipole preparation on, or the prepared route would read
+  // outside its table.
   auto settings = accuracy_projection_3pcf(controls, projection_settings);
   if (!settings.contains("ell_min")) {
     settings["ell_min"] = ell.data()[0];
@@ -1155,6 +1387,10 @@ static std::unique_ptr<transform_owner_3pcf> aperture_plan_3pcf(
       || (projection_mode != "prepared" && projection_mode != "direct")) {
     throw py::value_error("Finite-SAS projection must cover its FFT multipoles.");
   }
+
+  // The opening-angle representatives must march uniformly at width
+  // dphi, strictly inside (0, pi), the open interval where a SAS
+  // triangle stays nondegenerate.
   shape_transform(phi, 1);
   finite_transform(phi);
   for (int i=0; i<phi.size(); i++) {
@@ -1164,8 +1400,11 @@ static std::unique_ptr<transform_owner_3pcf> aperture_plan_3pcf(
       throw py::value_error("Require uniformly spaced 0<phi<pi.");
     }
   }
-  // Match the existing TransformPlan defaults. These FFT biases and taper
-  // controls are numerical choices, independent of the physical model.
+  // Match the existing TransformPlan defaults. These FFT biases and
+  // taper controls are numerical choices, independent of the
+  // physical model. The two silently accepted options are the values
+  // this route fixes anyway: the projection "centroid" and xy = 1,
+  // the reciprocal grid the alignment above assumed.
   double nu1=1.01, nu2=1.01, window_width=0.25, averaging=0.0;
   int padding=0, npsi=200;
   bool window=false, ordered=true;
@@ -1205,6 +1444,8 @@ static std::unique_ptr<transform_owner_3pcf> aperture_plan_3pcf(
       throw py::value_error("Unsupported aperture transform option: "+key);
     }
   }
+  // Construct the plan on the aligned geometry, then prepare its
+  // aperture rows: the result is ready for aperture_vector.
   auto plan = std::make_unique<transform_owner_3pcf>(ell, phi, indices,
     lmax, mmax, nu1, nu2, 1.0, dlnt, padding, window, window_width,
     npsi, averaging, "centroid", convention, ordered);

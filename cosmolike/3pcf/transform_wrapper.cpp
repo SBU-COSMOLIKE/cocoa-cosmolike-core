@@ -168,12 +168,18 @@ arma::Mat<double> bessel_cpp_3pcf(
 
 
 // ---------------------------------------------------------------------------
-// Replace a retained workspace's input and Fourier coefficients. Armadillo
-// stores its first index fastest; C stores its second index fastest. Pack
-// cell (first,second) at first*nell+second without changing the physical
-// axes. Copying every cell matters because an earlier inverse overwrites
-// the workspace's input buffer with its output. Nothing from that output
-// may enter the next forward transform.
+// Replace a retained workspace's input and Fourier coefficients with
+// a new integrand. Armadillo stores its first index fastest while
+// the C buffer stores its second index fastest, so the loop writes
+// cell (first, second) at the row-major offset first*nell + second;
+// the physical axes never change, only the memory order. The copy
+// covers every cell because an earlier inverse overwrites the
+// workspace's input buffer with its own output, and nothing from
+// that output may leak into the next forward transform.
+//
+// Returns nothing; the new coefficients live in the workspace.
+// Refuses a null workspace, a grid shorter than two nodes, an
+// integrand that is not [nell, nell] and any nonfinite value.
 // ---------------------------------------------------------------------------
 void bessel_forward_cpp_3pcf(
     fftlog_workspace_3pcf* work, // workspace owned by the caller
@@ -200,11 +206,17 @@ void bessel_forward_cpp_3pcf(
 
 
 // ---------------------------------------------------------------------------
-// Use the latest forward coefficients for one pair of Bessel orders. The
-// inverse overwrites scratch and the workspace's output, but preserves
-// forward coefficients. The returned Armadillo matrix copies every value
-// before another inverse can overwrite that output. Its physical axes are
-// [theta1,theta2], the same order as the row-major C result.
+// Evaluate the double-Bessel inverse of the latest forward
+// coefficients for one pair of Bessel orders. The inverse overwrites
+// the workspace's scratch and output buffers but preserves the
+// forward coefficients, so repeated calls serve several order pairs
+// from a single forward. The returned Armadillo matrix copies every
+// value before another inverse can overwrite that output; its
+// physical axes are [theta1, theta2], the same order as the
+// row-major C result.
+//
+// Refuses a null workspace and a grid shorter than two nodes, and
+// aborts on a nonfinite transform.
 // ---------------------------------------------------------------------------
 arma::Mat<double> bessel_inverse_cpp_3pcf(
     fftlog_workspace_3pcf* work, // workspace with a completed forward
