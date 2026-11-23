@@ -16,28 +16,33 @@ extern "C" {
 // comoving distance chi in Mpc/h and the power spectrum P in
 // (Mpc/h)^3. The background redshift grid includes zero, where the
 // growth factor equals one. k is uniform in ln k; z and source_z are
-// piecewise uniform, with at most MAX_GRID_SEGMENTS = 10 segments.
-// Generate each segment with the np.linspace convention; the shared grid
-// detector uses relative spacing tolerance 1e-9. Production preparation
-// uses natural cubic splines within each segment; source_readers retains
-// the original source interpolation for comparisons.
-// The model copies every buffer during
-// creation and owns its interpolation data afterwards, so the caller
-// may free the inputs once physics_create_3pcf returns.
+// piecewise uniform - a short run of abutting uniform segments, each
+// with its own spacing, at most MAX_GRID_SEGMENTS = 10 of them. The
+// producer generates each segment with the np.linspace convention,
+// and the shared grid detector accepts a relative spacing tolerance
+// of 1e-9. Production preparation fits natural cubic splines (zero
+// second derivative at the segment ends) within each segment;
+// source_readers = 1 keeps the original source interpolation for
+// comparisons. The model copies every buffer during creation and owns
+// its interpolation data afterwards, so the caller may free the
+// inputs once physics_create_3pcf returns.
 //
 // The provider supplies Omega_m(z) for the halo collapse correction.
 // Pressureless matter permits Omega_m0*(1+z)^3/[H(z)/H0]^2 in the
 // provider; exact massive-neutrino fractions must include their actual
-// density evolution. C never reconstructs a separate CPL background.
+// density evolution. C never reconstructs a separate CPL
+// (Chevallier-Polarski-Linder, w(a) = w0 + wa (1 - a)) background.
 // Flat lensing geometry remains the provider's responsibility.
 //
-// Smoothing snapshots below are retained as an adapter data type. They
-// belong to the theory producer, not to this projection model.
+// The smoothing snapshots below are an adapter data type for the
+// theory producer; this projection model never reads them. R_NL is
+// the radius where the smoothed linear density variance reaches one,
+// and n_eff the local slope of the linear power spectrum there.
 typedef struct {
   int nz; // anchor count
   const double* z; // piecewise-uniform redshift nodes [nz]
-  const double* rnl; // positive nonlinear radii [nz], Mpc/h
-  const double* neff; // effective spectral indices [nz]
+  const double* rnl; // positive nonlinear radii R_NL [nz], Mpc/h
+  const double* neff; // effective spectral indices n_eff [nz]
   const double* sigma8; // positive linear rms amplitudes [nz]
 } physics_variance_input_3pcf;
 
@@ -66,10 +71,10 @@ typedef struct {
   double w0;       // dark-energy equation of state today
   double wa;       // its evolution, w(a) = w0 + wa (1 - a)
   double ns;       // primordial spectral index
-  double sigma8;   // legacy interface scalar; never rescales supplied power
+  double sigma8;   // compatibility scalar; never rescales supplied power
   int source_readers; // 1 keeps cubic source reads for comparisons
   int table_boost; // dense-grid refinement factor; zero means eight
-  int fit_nz; // retained ABI field; fit sampling belongs to the provider
+  int fit_nz; // compatibility field; fit sampling belongs to the provider
   // Optional independent source coordinates. A NULL source_z with
   // nsource = 0 reuses the background z grid and keeps its exact
   // preparation arithmetic. Source resolution never changes the
@@ -79,14 +84,17 @@ typedef struct {
   const feedback_input_3pcf* feedback; // optional paired response; copied
   int nwindow; // zero disables the angular pixel window
   const double* window; // W(ell) at integers 0..nwindow-1; copied
-  // Required theory-supplied matter B. The provider owns BiHalofit or any
-  // replacement prescription. omega_de/w0/wa/ns are retained ABI fields,
-  // unused here; the supplied flat background owns the expansion history.
+  // Required theory-supplied matter B. The provider owns BiHalofit
+  // (the fitted halo-model formula for the nonlinear matter bispectrum
+  // of Takahashi et al., arXiv:1911.07886) or any replacement
+  // prescription. omega_de/w0/wa/ns are compatibility fields this
+  // model never reads; the supplied flat background owns the
+  // expansion history.
   const baseline_input_3pcf* baseline; // copied absolute matter B table
   const double* omega_m_z; // required exact matter fraction for halo covariance
   int nomega; // zero reuses nz; otherwise independent matter-fraction nodes
   const double* omega_m_redshift; // optional piecewise-uniform axis [nomega]
-  // Retained ABI field; smoothing quantities belong to the theory producer.
+  // Compatibility field; smoothing quantities belong to the theory producer.
   const physics_variance_input_3pcf* variance; // unused by this model
 } physics_input_3pcf;
 
@@ -168,11 +176,12 @@ double physics_feedback_bispectrum_3pcf(
 );
 
 // component: 0 = supplied full matter B, 1 = tree level from P_linear.
-// Legacy components 2/3 are refused; C owns no matter-fit decomposition.
-// A supplied full B cannot define the fitted pieces 2/3, so those requests
-// stop explicitly. The covariance's independent halo integrals do not
-// request those fitted pieces. Optional fb still multiplies the selected B;
-// leave it zero if the supplied table already contains the same feedback.
+// Components 2 and 3, the one- and three-halo pieces of a local
+// matter fit, are refused: C owns no matter-fit decomposition, and a
+// supplied full B cannot define them, so those requests stop
+// explicitly. The covariance's independent halo integrals never
+// request them. Optional fb still multiplies the selected B; a caller
+// whose table already contains that feedback keeps fb at zero.
 double physics_matter_3pcf(
   const physics_model_3pcf* model,
   double k1,

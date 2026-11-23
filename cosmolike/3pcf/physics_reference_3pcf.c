@@ -8,7 +8,8 @@
 // on distance coordinates solely when source_readers is explicitly selected.
 // They own no static state and require no mutable GSL accelerator.
 
-// Build a not-a-knot cubic spline on an irregular grid.
+// reference_spline_coeffs_3pcf: build a not-a-knot cubic spline on an
+// irregular grid.
 //
 // A cubic spline stores the second derivative at every node; between
 // nodes the interpolant is the cubic polynomial those endpoint values
@@ -119,9 +120,9 @@ void reference_spline_coeffs_3pcf(
 // Only source-comparison readers call this function. Production preparation
 // and evaluation find cells by arithmetic on declared uniform segments.
 int reference_interval_3pcf(
-  const double* grid,
-  const int count,
-  const double coordinate
+  const double* grid, // increasing node coordinates [count]
+  const int count, // number of nodes
+  const double coordinate // query position
 )
 {
   int lower = 0;

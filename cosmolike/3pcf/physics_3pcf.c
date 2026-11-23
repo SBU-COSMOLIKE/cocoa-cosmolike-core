@@ -46,8 +46,10 @@ static int omp_get_thread_num(void) { return 0; }
 // Sugiyama's MIT-licensed fastnc package, tatt commit
 // 7b2336ce37a909bed51f07f32a2a4f096e71b6ce (halofit.py,
 // ia_bispectra.py and bispectrum.py); Rafael Gomes wrote parts of the
-// IA code. The external matter provider may use BiHalofit (Takahashi
-// et al., arXiv:1911.07886). The TATT and velocity-shear equations follow
+// IA code. The external matter provider may use BiHalofit, the
+// fitted halo-model formula for the nonlinear matter bispectrum of
+// Takahashi et al. (arXiv:1911.07886).
+// The TATT and velocity-shear equations follow
 // Gomes et al. (arXiv:2601.09133). This port evaluates fastnc's
 // active tensor equations only. The package also ships direct-equation
 // IA helpers that it never calls; their amplitude normalization
@@ -244,9 +246,9 @@ static void triangle_physics(double first, double second, double third);
 // at least two nodes; positive = 1 also requires every value to be
 // positive.
 static void increasing_physics(
-  const double* values,
-  const int count,
-  const int positive
+  const double* values, // grid nodes to validate [count]
+  const int count, // number of nodes, at least two
+  const int positive // 1 also requires every node to be positive
 )
 {
   if (!(values != NULL && count >= 2)) {
@@ -272,13 +274,14 @@ static void increasing_physics(
 
 
 // ---------------------------------------------------------------------------
-// Copy source-comparison inputs into model-owned storage. The separate
-// reference module supplies their not-a-knot coefficients. Production calls
-// make_natural_spline, which uses the shared uniform-grid solver instead.
+// make_reference_spline: copy source-comparison inputs into
+// model-owned storage. The separate reference module supplies their
+// not-a-knot coefficients. Production calls make_natural_spline,
+// which uses the shared uniform-grid solver instead.
 static physics_spline make_reference_spline(
-  const double* x,
-  const double* y,
-  const int count
+  const double* x, // strictly increasing source coordinates [count]
+  const double* y, // finite source samples [count]
+  const int count // number of nodes, at least two
 )
 {
   physics_spline result = {0};
@@ -372,7 +375,6 @@ static physics_spline make_natural_spline(
 }
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // read_spline: evaluate one spline. A uniform table (positive
 // inverse_spacing) interpolates linearly inside the cell its index
 // arithmetic selects and follows the edge segments outside the grid.
@@ -383,9 +385,9 @@ static physics_spline make_natural_spline(
 // kernels use it so a query outside a source's support contributes
 // nothing.
 static double read_spline(
-  const physics_spline* spline,
-  const double coordinate,
-  const int zero_outside
+  const physics_spline* spline, // prepared table to evaluate
+  const double coordinate, // query position in the table's x units
+  const int zero_outside // 1 returns zero beyond the grid ends
 )
 {
   if (zero_outside && (coordinate < spline->x[0]
@@ -401,7 +403,7 @@ static double read_spline(
   }
 
   // The producer declares uniform segments, so preparation and production
-  // use the core's segment lookup. A retained upstream comparison can
+  // use the core's segment lookup. A source-comparison table can
   // still carry its original distance coordinates.
   int index;
   if (0 < spline->axis.count) {
@@ -433,8 +435,8 @@ static double read_spline(
 // accuracy: the forecast must test the tabulated support against its
 // aperture and scale cuts.
 static double read_power(
-  const physics_spline* spline,
-  const double logk
+  const physics_spline* spline, // log P against log k table
+  const double logk // natural log of the wave number
 )
 {
   const int last = spline->n - 1;
@@ -458,9 +460,9 @@ static double read_power(
 // values. Power rows use one uniform log-k segment. Redshift tables use
 // uniformize_spline, which preserves every declared uniform segment.
 static physics_spline uniform_storage(
-  const int count,
-  const double lower,
-  const double upper
+  const int count, // nodes of the uniform grid, at least two
+  const double lower, // first coordinate
+  const double upper // last coordinate, above lower
 )
 {
   physics_spline result = {0};
@@ -596,8 +598,9 @@ static void prepare_uniform_readers(physics_model_3pcf* model)
   }
 
   double* column = calloc1d(old_count);
-  // Two extra columns carry the endpoint power-law slopes. Extrapolation
-  // therefore does not change when the interior log-k grid is refined.
+  // Two extra columns carry the endpoint power-law slopes, so each
+  // refined redshift row extrapolates in k with slopes interpolated
+  // along redshift exactly like its interior values.
   for (int wave=0; wave<nk + 2; wave++) {
     for (int redshift=0; redshift<old_count; redshift++) {
       if (wave < nk) {
@@ -666,9 +669,9 @@ static double linear_read(
 // contributes its width times the average of its endpoint values,
 // which integrates the straight line between the two samples exactly.
 static double trapezoid(
-  const double* x,
-  const double* y,
-  const int count
+  const double* x, // increasing integration nodes [count]
+  const double* y, // integrand samples [count]
+  const int count // number of nodes
 )
 {
   double sum = 0.0;
@@ -679,8 +682,6 @@ static double trapezoid(
 }
 
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // ===========================================================================
 // [SECTION] RADIAL KERNELS AND MODEL CONSTRUCTION
 // ===========================================================================
@@ -1263,9 +1264,9 @@ void physics_default_ia_3pcf(physics_ia_3pcf* parameters)
 // window drops to zero on purpose, even when that sample is nonzero.
 // Do not interpolate that boundary into a gradual taper.
 double physics_window_value_3pcf(
-  const int count,
-  const double* window,
-  const double ell
+  const int count, // number of integer-ell samples; zero disables
+  const double* window, // samples at ell = 0..count-1
+  const double ell // real multipole to read
 )
 {
   if (count == 0) {
@@ -1291,8 +1292,8 @@ double physics_window_value_3pcf(
 // physics_window_samples_3pcf: expose the owned window samples and
 // their count; the model keeps ownership.
 const double* physics_window_samples_3pcf(
-  const physics_model_3pcf* model,
-  int* count
+  const physics_model_3pcf* model, // owner of the samples
+  int* count // sample count, output
 )
 {
   if (!(model && count)) {
@@ -1313,9 +1314,9 @@ const double* physics_window_samples_3pcf(
 // arithmetic within the producer's uniform redshift segments. Both
 // production and source comparisons share this core indexing rule.
 static physics_power_row prepare_power_row(
-  const physics_model_3pcf* model,
-  const double z,
-  const int mode
+  const physics_model_3pcf* model, // owner of the power tables
+  const double z, // redshift of the row
+  const int mode // 0 linear*D^2, 1 nonlinear(z=0)*D^2, 2 nonlinear(z)
 )
 {
   physics_power_row row = {0};
@@ -1346,8 +1347,8 @@ static physics_power_row prepare_power_row(
 // bracketing row interpolates log P linearly between its two redshift
 // rows.
 static double read_power_row_log(
-  const physics_power_row* row,
-  const double logk
+  const physics_power_row* row, // prepared redshift bracket
+  const double logk // natural log of the wave number
 )
 {
   if (row->upper == NULL) {
@@ -1379,6 +1380,8 @@ static double read_power_row_log(
 
 
 // ---------------------------------------------------------------------------
+// read_power_row: the prepared-row evaluation of read_power_row_log,
+// taking the wave number itself rather than its logarithm.
 static double read_power_row(const physics_power_row* row, const double k)
 {
   return read_power_row_log(row, log(k));
@@ -1390,10 +1393,10 @@ static double read_power_row(const physics_power_row* row, const double k)
 // convention of prepare_power_row (0 linear times D^2, 1 nonlinear at
 // z = 0 times D^2, 2 nonlinear interpolated in redshift).
 double physics_power_3pcf(
-  const physics_model_3pcf* model,
-  const double k,
-  const double z,
-  const int mode
+  const physics_model_3pcf* model, // immutable physical tables
+  const double k, // wave number, h/Mpc
+  const double z, // redshift within the tabulated range
+  const int mode // power convention of prepare_power_row
 )
 {
   if (!(model && isfinite(k) && k > 0.0 && isfinite(z)
@@ -1412,10 +1415,10 @@ double physics_power_3pcf(
 // physics_feedback_power_3pcf: the paired baryon response ratio for
 // the power spectrum; feedback_3pcf.c owns the physics.
 double physics_feedback_power_3pcf(
-  const physics_model_3pcf* model,
-  const double k,
-  const double z,
-  const double amplitude
+  const physics_model_3pcf* model, // owner of the paired response
+  const double k, // wave number, h/Mpc
+  const double z, // redshift, nonnegative
+  const double amplitude // shared log-response amplitude; zero is DMO
 )
 {
   if (!(model && isfinite(k) && k > 0.0
@@ -1432,10 +1435,10 @@ double physics_feedback_power_3pcf(
 // physics_feedback_bispectrum_3pcf: the paired baryon response ratio
 // for the bispectrum, after validating the triangle.
 double physics_feedback_bispectrum_3pcf(
-  const physics_model_3pcf* model,
-  const double* sides,
-  const double z,
-  const double amplitude
+  const physics_model_3pcf* model, // owner of the paired response
+  const double* sides, // three wavevector lengths closing a triangle
+  const double z, // redshift, nonnegative
+  const double amplitude // shared log-response amplitude; zero is DMO
 )
 {
   if (!(model && sides && isfinite(z) && z >= 0.0)) {
@@ -1461,9 +1464,9 @@ double physics_feedback_bispectrum_3pcf(
 // even when epsilon squared falls below the precision of a number
 // near one.
 static double pair_cosine_physics(
-  const double first,
-  const double second,
-  const double opposite
+  const double first, // length of one input side
+  const double second, // length of the other input side
+  const double opposite // length of the side closing the pair
 )
 {
   const double small = fmin(first, second);
@@ -1485,9 +1488,9 @@ static double pair_cosine_physics(
 // closing the two input modes, and so drives the tree-level
 // bispectrum.
 static double f2_physics(
-  const double first,
-  const double second,
-  const double opposite
+  const double first, // length of one input side
+  const double second, // length of the other input side
+  const double opposite // length of the side closing the pair
 )
 {
   const double small = fmin(first, second);
@@ -1519,9 +1522,9 @@ static double f2_physics(
 // factored subtraction accordingly to keep the squeezed-triangle
 // precision.
 static double closing_cosine_physics(
-  const double first,
-  const double closing,
-  const double opposite
+  const double first, // length of the input side
+  const double closing, // length of the closing side
+  const double opposite // length of the remaining side
 )
 {
   const double small = fmin(first, closing);
@@ -1537,7 +1540,7 @@ static double closing_cosine_physics(
 // with_ia = 1 also fills the IA vertex shapes; the matter-only
 // baseline passes 0 and skips that unused preparation.
 static physics_triangle_geometry triangle_geometry(
-  const double* sides,
+  const double* sides, // three side lengths of one triangle
   const int with_ia // prepare IA shapes only when an IA reader will use them
 )
 {
@@ -1668,8 +1671,8 @@ static physics_triangle_geometry triangle_geometry(
 // cancel. The same arrangement serves the tree-level matter
 // diagnostic and the TATT vertices.
 static double tree_sum_physics(
-  const physics_triangle_geometry* geometry,
-  const double* power
+  const physics_triangle_geometry* geometry, // prepared shape factors
+  const double* power // P(k) at the three side lengths [3]
 )
 {
   int shortest = 0;
@@ -1712,9 +1715,9 @@ static double tree_sum_physics(
 // overshoot a degenerate triangle by a few units in the last place.
 // A genuinely impossible triangle misses by far more than the slack.
 static void triangle_physics(
-  const double first,
-  const double second,
-  const double third
+  const double first, // first wavevector length
+  const double second, // second wavevector length
+  const double third // third wavevector length
 )
 {
   const double largest = fmax(first, fmax(second, third));
@@ -1750,10 +1753,10 @@ static void triangle_physics(
 // applies the complete fit. suppress_only = 1 caps the fitted ratio
 // at one before scaling, keeping only the suppression.
 static double baryon_physics(
-  const double* sides,
-  const double z,
-  const double fb,
-  const int suppress_only
+  const double* sides, // three wave numbers, h/Mpc [3]
+  const double z, // redshift; the fit sees no baryon effect above z = 5
+  const double fb, // fraction of the fitted ratio to apply
+  const int suppress_only // 1 caps the fitted ratio at one
 )
 {
   if (fb == 0.0 || z >= 5.0) {
@@ -1796,12 +1799,12 @@ static double baryon_physics(
 // also needs. A full B table does not define a one-/three-halo split; that
 // decomposition belongs to the theory provider, when its model has one.
 static double matter_prepared(
-  const physics_model_3pcf* model,
-  const double* sides,
-  const double z,
-  const int component,
-  const physics_power_row* prepared,
-  const physics_triangle_geometry* prepared_geometry
+  const physics_model_3pcf* model, // owner of B and power tables
+  const double* sides, // three wave numbers [3]
+  const double z, // redshift of the query
+  const int component, // 0 supplied full B, 1 tree level
+  const physics_power_row* prepared, // optional prepared linear row
+  const physics_triangle_geometry* prepared_geometry // optional shape
 )
 {
   if (!(component <= 1)) { log_fatal(
@@ -1828,13 +1831,13 @@ static double matter_prepared(
 // the baryon ratio at the requested fb, with the fit's enhancement
 // pieces allowed (suppress_only off).
 double physics_matter_3pcf(
-  const physics_model_3pcf* model,
-  const double k1,
-  const double k2,
-  const double k3,
-  const double z,
-  const int component,
-  const double fb
+  const physics_model_3pcf* model, // immutable physical tables
+  const double k1, // first wavevector length, h/Mpc
+  const double k2, // second wavevector length, h/Mpc
+  const double k3, // third wavevector length, h/Mpc
+  const double z, // redshift within the tabulated range
+  const int component, // 0 supplied full B, 1 tree level
+  const double fb // baryon-ratio fraction; zero keeps DMO
 )
 {
   if (!(model && component >= 0 && component <= 3
@@ -1918,10 +1921,10 @@ static void check_ia(const physics_ia_3pcf* parameters)
 // piece is the density-shaped trace part of the tidal-torque
 // operator.
 static physics_ia_coefficients ia_coefficients(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const double z,
-  const double growth
+  const physics_model_3pcf* model, // supplies Omega_m
+  const physics_ia_3pcf* parameters, // public TATT parameters
+  const double z, // redshift of the coefficients
+  const double growth // growth factor D(z) at that redshift
 )
 {
   physics_ia_coefficients coefficients;
@@ -1973,11 +1976,11 @@ static physics_ia_coefficients ia_coefficients(
 // therefore stays zero here. Preparing three explicit vertices keeps
 // each leg and orientation visible.
 static void ia_vertices(
-  const physics_triangle_geometry* geometry,
-  const double* power,
-  const physics_ia_coefficients* coefficients,
-  double vertices[3][3],
-  double* tree,
+  const physics_triangle_geometry* geometry, // prepared shape factors
+  const double* power, // P(k) at the three side lengths [3]
+  const physics_ia_coefficients* coefficients, // vertex weights at z
+  double vertices[3][3], // helicity vertices [cyclic][helicity], output
+  double* tree, // gravity part per ordering, stays zero here [3]
   const int e_only // omit helicity one when only E correlators are requested
 )
 {
@@ -2026,11 +2029,11 @@ static void ia_vertices(
 // shapes occupy helicity zero only, which explains the conditional
 // factors in these contractions.
 static double tensor002(
-  const double vertices[3][3],
-  const double* tree,
-  const double linear,
-  const int cyclic,
-  const int helicity
+  const double vertices[3][3], // second-order vertices [cyclic][helicity]
+  const double* tree, // gravity tree part per ordering [3]
+  const double linear, // linear-shape weight 2 C_1
+  const int cyclic, // leg carrying the second-order vertex
+  const int helicity // tensor component of the single shape leg
 )
 {
   return vertices[cyclic][helicity] + (helicity == 0
@@ -2041,12 +2044,12 @@ static double tensor002(
 
 // ---------------------------------------------------------------------------
 static double tensor022(
-  const double vertices[3][3],
-  const double* tree,
-  const double linear,
-  const int cyclic,
-  const int helicity2,
-  const int helicity3
+  const double vertices[3][3], // second-order vertices [cyclic][helicity]
+  const double* tree, // gravity tree part per ordering [3]
+  const double linear, // linear-shape weight 2 C_1
+  const int cyclic, // leg carrying the single density
+  const int helicity2, // tensor component of the first shape leg
+  const int helicity3 // tensor component of the second shape leg
 )
 {
   const double delta2 = helicity2 == 0 ? sqrt(2.0/3.0) : 0.0;
@@ -2059,12 +2062,12 @@ static double tensor022(
 
 // ---------------------------------------------------------------------------
 static double tensor222(
-  const double vertices[3][3],
-  const double linear,
-  const int cyclic,
-  const int helicity1,
-  const int helicity2,
-  const int helicity3
+  const double vertices[3][3], // second-order vertices [cyclic][helicity]
+  const double linear, // linear-shape weight 2 C_1
+  const int cyclic, // cyclic ordering of the three shape legs
+  const int helicity1, // tensor component of the first shape leg
+  const int helicity2, // tensor component of the second shape leg
+  const int helicity3 // tensor component of the third shape leg
 )
 {
   const double delta1 = helicity1 == 0 ? sqrt(2.0/3.0) : 0.0;
@@ -2085,15 +2088,15 @@ static double tensor222(
 // lengths; sorting only the k values would silently exchange
 // source-bin kernels.
 static void ia_prepared(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const physics_ia_coefficients* coefficients,
-  const double* sides,
-  const double z,
-  const int remove_alignment,
-  double* out,
-  const physics_power_row* prepared,
-  const physics_triangle_geometry* prepared_geometry,
+  const physics_model_3pcf* model, // owner of the power tables
+  const physics_ia_3pcf* parameters, // public IA settings
+  const physics_ia_coefficients* coefficients, // vertex weights at z
+  const double* sides, // three wave numbers [3]
+  const double z, // redshift of the evaluation
+  const int remove_alignment, // 1 omits the linear-alignment part
+  double* out, // 19 components, or the 7 all-E entries when e_only
+  const physics_power_row* prepared, // optional prepared power row
+  const physics_triangle_geometry* prepared_geometry, // optional shape
   const int e_only // output[0..6] only; the public 19-component API uses zero
 )
 {
@@ -2203,14 +2206,14 @@ static void ia_prepared(
 // at one triangle and redshift (the header file lists the component
 // order).
 void physics_ia_bispectra_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const double k1,
-  const double k2,
-  const double k3,
-  const double z,
-  const int remove_alignment,
-  double* out
+  const physics_model_3pcf* model, // immutable physical tables
+  const physics_ia_3pcf* parameters, // public IA settings
+  const double k1, // first wavevector length, h/Mpc
+  const double k2, // second wavevector length, h/Mpc
+  const double k3, // third wavevector length, h/Mpc
+  const double z, // redshift within the tabulated range
+  const int remove_alignment, // 1 removes C_1^p B_tree, all-E entries
+  double* out // the 19 ordered components
 )
 {
   if (!(model && out && isfinite(z) && z >= 0.0
@@ -2238,13 +2241,13 @@ void physics_ia_bispectra_3pcf(
 // geometry once and validates the shape association before launching
 // workers: changing one leg alone would require a different geometry.
 void physics_ia_same_shape_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int npoint,
-  const double* sides,
-  const double* z,
-  const int remove_alignment,
-  double* out
+  const physics_model_3pcf* model, // immutable physical tables
+  const physics_ia_3pcf* parameters, // public IA settings
+  const int npoint, // number of commonly scaled triangles
+  const double* sides, // [npoint,3] sides sharing one shape
+  const double* z, // redshift per triangle [npoint]
+  const int remove_alignment, // 1 removes the linear-alignment part
+  double* out // [npoint,19] components
 )
 {
   if (!(model && sides && z && out && npoint > 0)) {
@@ -2314,11 +2317,11 @@ void physics_ia_same_shape_3pcf(
 // placement diagnostic asks for one field; the ordinary total keeps
 // its original combined-kernel arithmetic.
 static void field_kernel_physics(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int bin,
+  const physics_model_3pcf* model, // owner of the kernel tables
+  const physics_ia_3pcf* parameters, // supplies C_1(z) for the I field
+  const int bin, // source bin of the kernel
   const int field, // -1=G+I, 0=G, 1=I, on the same finite kernel grid
-  double* out
+  double* out // kernel on the LOS nodes [nlos]
 )
 {
   if (!(model && out && bin >= 0 && bin < model->nbin)) {
@@ -2361,10 +2364,10 @@ static void field_kernel_physics(
 // physics_nla_kernel_3pcf: the combined NLA kernel G + C_1 W of one
 // bin on the LOS nodes, with chi (1 + z) included.
 void physics_nla_kernel_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int bin,
-  double* out
+  const physics_model_3pcf* model, // immutable physical tables
+  const physics_ia_3pcf* parameters, // supplies C_1(z)
+  const int bin, // source bin
+  double* out // combined kernel on the LOS nodes [nlos]
 )
 {
   field_kernel_physics(model, parameters, bin, -1, out);
@@ -2407,9 +2410,9 @@ void physics_nla_kernel_3pcf(
 //   4. The placement bitmask below gates diagnostics that keep only
 //      one field placement.
 physics_projection_3pcf* physics_projector_create_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int* bins
+  const physics_model_3pcf* model, // borrowed; must outlive the projection
+  const physics_ia_3pcf* parameters, // copied IA parameter set
+  const int* bins // ordered source bins of the three legs [3]
 )
 {
   if (!(model && bins)) {
@@ -2543,11 +2546,11 @@ void physics_projector_destroy_3pcf(physics_projection_3pcf* projection)
 // total E-mode prediction, 1 the matter baseline with NLA kernels,
 // and 2 the TATT residual alone.
 double physics_projected_3pcf(
-  const physics_projection_3pcf* projection,
-  const double ell1,
-  const double ell2,
-  const double ell3,
-  const int component
+  const physics_projection_3pcf* projection, // prepared radial weights
+  const double ell1, // first angular Fourier side
+  const double ell2, // second angular Fourier side
+  const double ell3, // closing side
+  const int component // 0 total E, 1 matter baseline, 2 TATT residual
 )
 {
   if (!(projection && component >= 0 && component <= 2)) {
@@ -2611,10 +2614,10 @@ double physics_projected_3pcf(
 // the strict validator and follows the source's continuation: clipped
 // vertex angles, and zero at a zero closing side.
 double physics_projected_puv_extension_3pcf(
-  const physics_projection_3pcf* projection,
-  const double ell1,
-  const double ell2,
-  const double ell3
+  const physics_projection_3pcf* projection, // prepared radial weights
+  const double ell1, // first side of the rectangular corner
+  const double ell2, // second side of the rectangular corner
+  const double ell3 // closing side; zero returns zero
 )
 {
   if (!(projection && isfinite(ell1) && isfinite(ell2)
@@ -2752,6 +2755,9 @@ physics_projection_batch_3pcf* physics_projection_batch_create_3pcf(
 
 
 // ---------------------------------------------------------------------------
+// physics_projection_batch_destroy_3pcf: free the packed weights; a
+// NULL batch is a no-op, and the borrowed first projector and model
+// stay with their owners.
 void physics_projection_batch_destroy_3pcf(
   physics_projection_batch_3pcf* batch // borrowed projector/model stay owned
 )
@@ -2770,13 +2776,13 @@ void physics_projection_batch_destroy_3pcf(
 // prescription, baryon convention or PUV treatment between the two
 // layouts, so both produce identical per-node physics.
 static double projected_node_physics(
-  const physics_projection_3pcf* first,
-  const double* angular_sides,
-  const physics_triangle_geometry* geometry,
-  const int node,
-  const int component,
-  const int puv_extension,
-  double* intrinsic
+  const physics_projection_3pcf* first, // shared coefficients and model
+  const double* angular_sides, // the triangle's three multipoles [3]
+  const physics_triangle_geometry* geometry, // shared prepared shape
+  const int node, // LOS node index
+  const int component, // 0 total, 1 baseline, 2 residual
+  const int puv_extension, // nonzero zeroes non-finite residual terms
+  double* intrinsic // 19-entry scratch; the first seven are filled
 )
 {
   const physics_model_3pcf* model = first->model;
@@ -2842,7 +2848,6 @@ void physics_projected_batch_3pcf(
   if (!(first != NULL)) {
     log_fatal("physics_3pcf: missing batch projection");
     exit(1);
-
   }
   if (!puv_extension) {
     triangle_physics(ell1, ell2, ell3);
@@ -3065,7 +3070,6 @@ void physics_projection_batch_evaluate_3pcf(
 // [SECTION] MULTIPOLES, ACCESSORS AND NLA ANGULAR POWER
 // ===========================================================================
 
-// ---------------------------------------------------------------------------
 // physics_multipoles_3pcf: the Legendre coefficients b_L of the
 // projected E-mode bispectrum in mu, the cosine of the angle between
 // the two Fourier multipole legs:
@@ -3246,14 +3250,14 @@ void physics_multipoles_3pcf(
 // covariance shares the same physical tables; the model keeps
 // ownership for its lifetime.
 void physics_radial_3pcf(
-  const physics_model_3pcf* model,
-  int* nbin,
-  int* nlos,
-  const double** z,
-  const double** chi,
-  const double** dchi,
-  const double** lens,
-  const double** shape
+  const physics_model_3pcf* model, // owner of every exposed array
+  int* nbin, // source-bin count, output
+  int* nlos, // LOS node count, output
+  const double** z, // borrowed LOS redshifts [nlos]
+  const double** chi, // borrowed LOS distances [nlos]
+  const double** dchi, // borrowed trapezoid weights [nlos]
+  const double** lens, // borrowed lensing kernel rows [nbin,nlos]
+  const double** shape // borrowed shape kernel rows [nbin,nlos]
 )
 {
   if (!(model && nbin && nlos && z && chi && dchi && lens && shape)) {
@@ -3284,12 +3288,14 @@ double physics_omega_m_3pcf(const physics_model_3pcf* model)
 
 
 // ---------------------------------------------------------------------------
-// The halo collapse threshold reads this owned provider fraction.
-// The constructor either copied the provider's values or derived them from
-// the supplied expansion history under the pressureless-matter assumption.
+// physics_omega_m_z_3pcf: the tabulated matter fraction Omega_m(z) at
+// one redshift. The halo collapse threshold of the covariance reads
+// this owned provider fraction; the constructor requires the table
+// and copies it, so no local reconstruction from the expansion
+// history takes place here.
 double physics_omega_m_z_3pcf(
-  const physics_model_3pcf* model,
-  const double z
+  const physics_model_3pcf* model, // owner of the tabulated fraction
+  const double z // redshift within the supplied background
 )
 {
   if (!(model && isfinite(z) && z >= 0.0)) {
@@ -3307,15 +3313,17 @@ double physics_omega_m_z_3pcf(
 
 
 // ---------------------------------------------------------------------------
-// Read two neighboring ell outputs with their prepared integer cells.
-// Both redshift rows share the same uniform log-k nodes. Gathers supply
-// the two cell endpoints; SIMD lanes represent independent ell values,
-// not partial pieces of a radial sum. The source-comparison and endpoint
-// extrapolation cases retain their scalar physical readers.
+// nla_power_pair: read the nonlinear power at two neighboring ell
+// values from one prepared redshift bracket. Both redshift rows share
+// the same uniform log-k nodes, and the caller supplies the prepared
+// integer cells. Gathers load the two cell endpoints; SIMD lanes
+// represent independent ell values, not partial pieces of a radial
+// sum. The source-comparison and endpoint extrapolation cases keep
+// their scalar physical readers.
 static physics_v2d nla_power_pair(
-  const physics_power_row* row,
-  const int* indices,
-  const double* fractions
+  const physics_power_row* row, // bracketing nonlinear redshift rows
+  const int* indices, // prepared cells; negative marks a scalar read [2]
+  const double* fractions // cell fractions, or log k for a scalar read [2]
 )
 {
   if (indices[0] < 0 || indices[1] < 0) {
@@ -3388,7 +3396,8 @@ static physics_v2d nla_power_pair(
 // 2). The trapezoid LOS sum reuses the model's prepared power rows,
 // and a nonzero feedback amplitude multiplies the power by its baryon
 // response ratio per ell. The function rejects TATT loop parameters
-// and the legacy bispectrum-only fb: this spectrum is strictly NLA.
+// and a nonzero bispectrum-only fb, which could not act on a power
+// spectrum: this spectrum is strictly NLA.
 void physics_nla_power_batch_3pcf(
   const physics_model_3pcf* model,   // immutable physical tables
   const physics_ia_3pcf* parameters, // NLA parameters; TATT rejected
@@ -3578,11 +3587,11 @@ void physics_nla_power_batch_3pcf(
 // physics_nla_power_3pcf: single-multipole convenience wrapper over
 // the batch spectrum above.
 double physics_nla_power_3pcf(
-  const physics_model_3pcf* model,
-  const physics_ia_3pcf* parameters,
-  const int bin1,
-  const int bin2,
-  const double ell
+  const physics_model_3pcf* model, // immutable physical tables
+  const physics_ia_3pcf* parameters, // NLA parameters; TATT rejected
+  const int bin1, // source bin of the first kernel
+  const int bin2, // source bin of the second kernel
+  const double ell // single positive multipole
 )
 {
   double result;
@@ -3605,8 +3614,8 @@ double physics_nla_power_3pcf(
 // Returning zero above the threshold keeps every operation on normal
 // numbers and changes no digit of any integral.
 static double aperture_filter_physics(
-  const double ell,
-  const double radius
+  const double ell, // angular multipole
+  const double radius // aperture radius; the filter argument is ell*radius
 )
 {
   const double scaled = ell*radius;
@@ -3828,10 +3837,10 @@ void physics_aperture_integrate_3pcf(
 // reader callback - the total E-mode projected bispectrum with the
 // pixel window applied once per leg.
 static double direct_aperture_reader(
-  const void* context,
-  const double ell1,
-  const double ell2,
-  const double ell3
+  const void* context, // a physics_projection_3pcf
+  const double ell1, // first side
+  const double ell2, // second side
+  const double ell3 // closing side
 )
 {
   const physics_projection_3pcf* projection = context;
