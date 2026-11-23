@@ -68,7 +68,7 @@ import cosmolike_notebook_utils as cnu
 ```
 
 `import cosmolike_notebook_utils as cnu` binds the CAMB helper, the
-galaxy/shear plotters and the Fisher tools. Three module groups are
+galaxy/shear plotters and the Fisher tools. Some module groups are
 deliberately not bound by that line and are imported explicitly where
 they are used:
 
@@ -76,12 +76,16 @@ they are used:
 from cosmolike_notebook_utils import plot_datavectors_cluster as pdc
 from cosmolike_notebook_utils import covariance as cov
 from cosmolike_notebook_utils import plot_covariances as pcov
+from cosmolike_notebook_utils import caches
+from cosmolike_notebook_utils import mpi_batching
 ```
 
 The cluster plotters stay separate because only cluster projects need
 them; the covariance modules stay separate because covariance
 generation is optional at compilation and its notebooks follow their
-[own guide](covariance/README.md).
+[own guide](covariance/README.md). `caches` and `mpi_batching` are
+usually imported by a project's notebook wrappers, which re-export
+their functions, so notebooks rarely import them directly.
 
 How one data-vector figure is produced, from a notebook to the
 screen. The return conventions in this diagram belong to the
@@ -105,7 +109,9 @@ flowchart TB
 | [plot_datavectors.py](plot_datavectors.py) | Tomographic panel grids of the galaxy/shear data vectors: `plot_C_ss_tomo_limber`, `plot_xi`, `plot_C_gs_tomo_limber`, `plot_gammat_tomo_limber`, `plot_C_gg_tomo`, `plot_wtheta_tomo`, and the baryonic-feedback sweep `plot_baryon_suppression`. |
 | [plot_datavectors_cluster.py](plot_datavectors_cluster.py) | The cluster observables: `plot_N_cluster` counts, cluster lensing (`plot_gammat_cluster_tomo`, `plot_sigma_cluster_tomo`, `plot_C_cs_tomo_limber`), cluster clustering and cluster x galaxy, in the same panel conventions. `plot_sigma_cluster_tomo` receives the already transformed localized cluster-lensing statistic (the data vector's Y operator applied to gamma_t, with calibration and selection factors); its last angular bin is a constructed zero, not a measured zero signal (the operator subtracts the outermost bin's estimate from itself), and is omitted from the curves; the [covariance guide](covariance/README.md#real_space_and_fourier_assembly) defines the transformation. |
 | [plot_response.py](plot_response.py) | `plot_response_function`: how each data-vector entry responds to the matter power spectrum. It draws the arrays the notebook wrappers compute: local response curves (the entry's contribution per logarithmic wavenumber interval, divided by the fixed full entry) and the accumulated absolute fraction RF(k_max), normalized by the total over the finite response table so it rises from 0 to 1 for a nonzero entry. The optional peak division is display-only. |
-| [fisher.py](fisher.py) | Finite-difference and derivkit derivatives of a supplied data-vector function (`get_ddv`, `get_ddv_dkit`), Fisher assembly (`get_Fisher`, `get_Fisher2`), `get_FoM`, Gaussian priors and getdist contour plots (`plot_Fisher`). |
+| [fisher.py](fisher.py) | Finite-difference and derivkit derivatives of a supplied data-vector function (`get_ddv`, `get_ddv_dkit`), the five-point stencil the project drivers share (`FIVE_POINT_OFFSETS`, `FIVE_POINT_WEIGHTS`, `five_point`), Fisher assembly and algebra (`get_Fisher`, `get_Fisher2`, `fisher_bias`, `combine`, `marginalized_sigma`), `get_FoM`, Gaussian priors and getdist contour plots (`plot_Fisher`). |
+| [caches.py](caches.py) | Caches of notebook results, kept in a project's `chains/`: `read_or_build` reads `<folder>/<name>.npz` when the file is there and otherwise computes and writes it. A cache made with other settings stops the read with a message naming every difference, and `write_fisher_cache` never replaces a file without `overwrite=True`. |
+| [mpi_batching.py](mpi_batching.py) | Independent jobs on MPI ranks: a greedy coloring that groups tomographic bins into batches so no batch holds both bins of a cross pair (`pair_coloring`, `bins_of_color`), and the fixed job-to-rank assignment and loop (`task_owners`, `run_owned_jobs`, `peak_rss_mb`). |
 | [plot_nz_reconstruction.py](plot_nz_reconstruction.py) | `plot_nz_four_reconstructions`: regenerate the manual study’s two-panel figure from saved compiled-reader samples and bin-area measurements; no cosmology calculation. |
 | [plot_covariances.py](plot_covariances.py) | Covariance figures from supplied arrays: split correlation triangles, component maps and histograms, and standard deviations per angular or multipole bin. |
 | [covariance/](covariance/README.md) | Preparation and assembly of Gaussian, super-sample and connected non-Gaussian covariance forecasts, with accuracy controls, eigenvalue diagnostics and independent test oracles. |
@@ -283,6 +289,13 @@ uses the derivkit package; `get_Fisher2` combines both steps.
 The derivative step sizes and the figure-of-merit convention are
 documented in [fisher.py](fisher.py)'s docstrings, including the
 limits of each shortcut.
+
+The expensive pieces of a forecast (derivative bases, scale cuts) live
+in per-user cache files under the project's `chains/`.
+[caches.py](caches.py) holds the rule: a cache is read when the file
+is there, computed and written when it is missing, and never replaced;
+a read with other settings stops with a message naming every
+difference, so no notebook silently mixes two set-ups.
 
 ## Choosing Fisher accuracy from a default-accuracy base <a name="fisher-noise"></a>
 

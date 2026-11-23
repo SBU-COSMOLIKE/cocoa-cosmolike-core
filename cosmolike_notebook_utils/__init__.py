@@ -35,13 +35,17 @@ and `ddv` parameters of the Fisher helpers). Shared groups:
                      against k_max at z = 0, one curve per bin, from
                      the cuts the compiled interface computed.
   fisher             finite-difference and derivkit derivatives of a
-                     data-vector function passed as an argument,
-                     Fisher-matrix assembly, figures of merit, the
-                     FoM-noise estimate (get_stencil_noise,
-                     get_fom_noise_weights, predict_fom_noise: the
-                     numerical noise of a derivative column and the
-                     change of a figure of merit it predicts), and
-                     Fisher contour plots via getdist.
+                     data-vector function passed as an argument, the
+                     five-point stencil the project drivers share
+                     (FIVE_POINT_OFFSETS, FIVE_POINT_WEIGHTS,
+                     five_point), Fisher-matrix assembly and algebra
+                     (fisher_bias, combine, marginalized_sigma),
+                     figures of merit, the FoM-noise estimate
+                     (get_stencil_noise, get_fom_noise_weights,
+                     predict_fom_noise: the numerical noise of a
+                     derivative column and the change of a figure of
+                     merit it predicts), and Fisher contour plots via
+                     getdist.
 
 The two covariance modules are not imported by this file, so
 `import cosmolike_notebook_utils as cnu` does not bind them; the
@@ -56,6 +60,23 @@ covariance notebooks import them as submodules:
   plot_covariances   correlation triangles, component maps/histograms,
                      standard deviations per angular or multipole bin,
                      and halo trispectrum terms, from supplied arrays.
+
+caches and mpi_batching are also imported as submodules, usually by a
+project's notebook wrappers, which re-export their functions:
+
+    from cosmolike_notebook_utils import caches, mpi_batching
+
+  caches             caches of notebook results in a project's chains/
+                     folder: read_or_build reads a cache when the file
+                     is there and otherwise computes and writes it; a
+                     cache made with other settings stops the read with
+                     a message naming every difference, and no file is
+                     replaced without overwrite=True.
+  mpi_batching       independent jobs on MPI ranks: a greedy coloring
+                     that groups tomographic bins into batches so no
+                     batch holds both bins of a cross pair, and the
+                     fixed job-to-rank assignment and loop, with the
+                     MPI communicator passed in.
 
 The notebooks keep everything project-specific: fiducial parameter
 values, tomographic-bin layouts, the interface init sequence, and
