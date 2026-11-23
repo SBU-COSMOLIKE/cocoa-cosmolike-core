@@ -1912,7 +1912,7 @@ static void check_ia(const physics_ia_3pcf* parameters)
 // redshift power eta1; A_2 is the tidal-torque amplitude (a2) with
 // eta2; bta is the density-weighting amplitude b_TA; ct scales the
 // velocity-shear term; c1rho is the C_1 rho_crit normalization,
-// 0.0134 by default. The combined vertex weights follow: linear is
+// 0.01389 by default. The combined vertex weights follow: linear is
 // 2 C_1 for a linear shape on one leg, velocity is -2 C_t/5,
 // quadratic is C_2, and density is b_TA C_1 - 2 C_2/3, whose second
 // piece is the density-shaped trace part of the tidal-torque
