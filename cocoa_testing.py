@@ -4698,6 +4698,9 @@ def run_matter_emulator_prior_check(
     fisher_probe=None,
     get_covariance=None,
     advisory=False,
+    candidate_extra_args=None,
+    use_emulator_switch=True,
+    select_vector=None,
 ):
     """Compare a candidate matter emulator with CAMB on random cosmologies.
 
@@ -4735,6 +4738,11 @@ def run_matter_emulator_prior_check(
       fisher_probe = None for the complete vector, or "xi" for the initial
         real-space shear rows. The latter requires get_covariance.
       get_covariance = initialized native full covariance reader.
+      candidate_extra_args = explicit additional emulator theory options.
+      use_emulator_switch = whether the likelihood uses the ordinary
+        use_emulator/non_linear_emul flags. Provider-only likelihoods do not.
+      select_vector = optional native mask/compression callable, applied
+        after the full vector is checked against its likelihood.
       advisory = report prediction errors without failing on their size;
         an incomplete Fisher calculation still fails.
 
@@ -4777,8 +4785,9 @@ def run_matter_emulator_prior_check(
     if len(info["likelihood"]) != 1:
         raise ValueError("Choose one project's likelihood for this comparison.")
     likelihood_name = next(iter(info["likelihood"]))
-    info["likelihood"][likelihood_name]["non_linear_emul"] = 2
-    info["likelihood"][likelihood_name]["print_datavector"] = False
+    if use_emulator_switch:
+        info["likelihood"][likelihood_name]["non_linear_emul"] = 2
+        info["likelihood"][likelihood_name]["print_datavector"] = False
     camb_args = info["theory"]["camb"]["extra_args"]
     camb_args["halofit_version"] = "mead2020"
     camb_args.pop("HMCode_logT_AGN", None)
@@ -4858,7 +4867,8 @@ def run_matter_emulator_prior_check(
         if points_file is not None:
             record.write(f"explicit parameter table={points_path}; seed unused\n")
         record.write("mnu=0.06 eV; plain mead2020; CAMB AccuracyBoost=3; k_per_logint=50\n")
-        record.write("CAMB background in both; original CAMB versus existing EMUL2 likelihood routes\n")
+        record.write("CAMB background in both; candidate replaces the requested power spectra\n")
+        record.write(f"candidate_extra_args={candidate_extra_args}; native_selection={select_vector is not None}\n")
         for directory in (project, Path(__file__).parent, code_dir, data_dir):
             revision = subprocess.check_output(
                 ["git", "-C", str(directory), "rev-parse", "HEAD"],
@@ -4877,9 +4887,11 @@ def run_matter_emulator_prior_check(
         # their setters and caches interfere with each other.
         for route in ("camb", "candidate"):
             settings = copy.deepcopy(info)
-            settings["likelihood"][likelihood_name]["use_emulator"] = 0
+            if use_emulator_switch:
+                settings["likelihood"][likelihood_name]["use_emulator"] = 0
             if route == "candidate":
-                settings["likelihood"][likelihood_name]["use_emulator"] = 2
+                if use_emulator_switch:
+                    settings["likelihood"][likelihood_name]["use_emulator"] = 2
                 settings["params"]["As_1e9"]["drop"] = False
                 settings["theory"]["emulmps"] = {
                     "external": emulmps,
@@ -4894,6 +4906,13 @@ def run_matter_emulator_prior_check(
                         "fixed_params": {"mnu": 0.06},
                     },
                 }
+                if candidate_extra_args is not None:
+                    settings["theory"]["emulmps"]["extra_args"].update(candidate_extra_args)
+                # These inputs are dropped by CAMB-only project examples,
+                # but the matter emulator consumes them directly.
+                for name in ("omegam", "omegab"):
+                    if isinstance(settings["params"].get(name), dict):
+                        settings["params"][name]["drop"] = False
             model = get_model(info_or_yaml_or_file=settings)
             likelihood = model.likelihood[likelihood_name]
             precision = np.asarray(get_precision())
@@ -4922,7 +4941,7 @@ def run_matter_emulator_prior_check(
                             sampled_params_values=model.parameterization.check_sampled(point)
                         )
                         vector = np.asarray(likelihood.get_datavector(**inputs))
-                    if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
+                    if vector.ndim != 1 or not np.all(np.isfinite(vector)):
                         raise ValueError("Prediction shape or finite-value check failed.")
                     # Re-score the saved vector through the same likelihood.
                     # A disagreement means the repeated getter changed state;
@@ -4935,6 +4954,10 @@ def run_matter_emulator_prior_check(
                         atol=1.e-8,
                     ):
                         raise ValueError("Saved prediction does not reproduce its likelihood.")
+                    if select_vector is not None:
+                        vector = np.asarray(select_vector(vector))
+                    if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
+                        raise ValueError("Selected prediction does not match its precision.")
                     rows[index] = vector
                     loglike_rows[index] = posterior.loglike
                     message = f"{route} cosmology {index + 1}/{n_models}: evaluated"
@@ -4979,6 +5002,7 @@ def run_matter_emulator_prior_check(
                         steps=fisher_steps,
                         rows=fisher_rows,
                         covariance=fisher_covariance,
+                        select_vector=select_vector,
                     )
                 except Exception as error:
                     fisher_failed = True
@@ -5056,7 +5080,7 @@ def run_matter_emulator_prior_check(
 def compute_matter_emulator_fisher(
     model, likelihood, center, precision, params, output, steps=None,
     rows=None, covariance=None, sample_power=18, seeds=(137, 138),
-    min_effective=200, parameters=None,
+    min_effective=200, parameters=None, select_vector=None,
 ):
     """Compute the reference model's local Fisher information and contours.
 
@@ -5069,6 +5093,7 @@ def compute_matter_emulator_fisher(
       steps = optional named absolute stencil steps (not relative steps).
       parameters = optional differentiated names. The complete sampled
         center still reaches Cobaya, including undifferentiated nuisances.
+      select_vector = optional native mask/compression before derivatives.
       rows = optional unmasked data subset; requires the full covariance.
       covariance = full covariance, only used when selecting data rows.
       sample_power, seeds, min_effective = bounded integration controls.
@@ -5170,11 +5195,15 @@ def compute_matter_emulator_fisher(
                 sampled_params_values=model.parameterization.check_sampled(point)
             )
             vector = np.array(likelihood.get_datavector(**inputs), dtype=float, copy=True)
-        if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
+        if vector.ndim != 1 or not np.all(np.isfinite(vector)):
             raise ValueError("Fisher prediction has wrong shape or nonfinite entries.")
         if not np.isclose(likelihood.compute_logp(datavector=vector), result.loglike,
                           rtol=1.e-12, atol=1.e-8):
             raise ValueError("Fisher saved prediction does not reproduce its likelihood.")
+        if select_vector is not None:
+            vector = np.asarray(select_vector(vector))
+        if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
+            raise ValueError("Selected Fisher prediction does not match its precision.")
         return vector[selected]
 
     # The existing cache reuses identical shared stencil points only within
