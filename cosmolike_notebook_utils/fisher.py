@@ -1751,11 +1751,15 @@ def fisher_matrix(derivatives, names, covariance=None, precision=None, priors=No
             raise ValueError("Precision rows do not match derivative rows.")
         fisher = fisher_from_derivatives(jacobian, matrix)
     if priors is not None:
+        # {name: sigma} becomes add_gaussian_priors' {index: (mean, sigma)};
+        # the mean adds no curvature, so 0.0 stands in for it.
+        indexed = {}
         for name, width in priors.items():
             if name not in names or not np.isfinite(width) or width <= 0.0:
                 raise ValueError(f"Prior {name} requires a known name and sigma>0.")
-            index = names.index(name)
-            fisher[index, index] += 1.0 / width**2
+            indexed[names.index(name)] = (0.0, float(width))
+        if indexed:
+            fisher = add_gaussian_priors(F=fisher, priors=indexed)
     return 0.5 * (fisher + fisher.T)
 
 
