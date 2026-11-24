@@ -2321,6 +2321,14 @@ def stable_inverse(F, rtol):
     # eigenvalues w and eigenvectors V (columns) of the scaled matrix
     w, V = np.linalg.eigh(F*s[:, None]*s[None, :])
 
+    # a Fisher matrix has no negative eigenvalue; one beyond round-off (more
+    # negative than -rtol times the largest) means F is not a Fisher
+    # matrix, and dropping it as a null direction would hide that
+    if w.min() < -rtol*w.max():
+        raise ValueError("stable_inverse: the Fisher matrix has a negative "
+                         f"eigenvalue ({w.min():.3e} in the unit-diagonal "
+                         "scaling), so it is not positive semidefinite.")
+
     # keep the directions above the cut, invert on them, undo the scaling
     keep = w > rtol*w.max()
     F_inv = (s[:, None]*V[:, keep]) @ np.diag(1.0/w[keep]) @ (V[:, keep].T*s[None, :])
