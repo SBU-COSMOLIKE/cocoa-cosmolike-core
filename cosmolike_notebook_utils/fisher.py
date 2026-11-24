@@ -408,6 +408,9 @@ def get_FoM(i, j, F):
       check raises before anything else is computed.
 
     Raises:
+      ValueError when the full Fisher matrix is not positive definite
+      (any eigenvalue <= 0): its inverse is then no covariance, even when
+      the selected 2x2 block of that inverse happens to look valid.
       ValueError when the marginalized 2x2 block is not positive
       definite (any eigenvalue <= 0): such a block bounds no error
       ellipse, so no figure of merit exists for it. The test is on
@@ -419,7 +422,11 @@ def get_FoM(i, j, F):
     # 0.5 * (F + F^T) symmetrizes away numerical asymmetry before
     # inverting; np.ix_([i, j], [i, j]) selects the 2x2 block with
     # rows and columns (i, j)
-    C = np.linalg.inv(0.5 * (F + F.T))
+    symmetric = 0.5 * (F + F.T)
+    if not np.all(np.linalg.eigvalsh(symmetric) > 0.0):
+        raise ValueError("get_FoM: the Fisher matrix is not positive definite, "
+                         "so its inverse is no parameter covariance.")
+    C = np.linalg.inv(symmetric)
     C = C[np.ix_([i, j], [i, j])]
     eigenvalues = np.linalg.eigvalsh(C)
     if np.any(eigenvalues <= 0):
