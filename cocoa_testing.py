@@ -4692,6 +4692,12 @@ def run_matter_emulator_prior_check(
     fisher=False,
     output_dir=None,
     fisher_sample_power=18,
+    fisher_center=None,
+    fisher_parameters=None,
+    fisher_steps=None,
+    fisher_probe=None,
+    get_covariance=None,
+    advisory=False,
 ):
     """Compare a candidate matter emulator with CAMB on random cosmologies.
 
@@ -4724,6 +4730,13 @@ def run_matter_emulator_prior_check(
       fisher = also compute the CAMB Fisher matrix and bounded-prior plot.
       output_dir = optional destination below the project chains directory.
       fisher_sample_power = log2 proposal count per bounded-Fisher repetition.
+      fisher_center, fisher_parameters, fisher_steps = optional reference
+        point, differentiated parameter names and absolute derivative steps.
+      fisher_probe = None for the complete vector, or "xi" for the initial
+        real-space shear rows. The latter requires get_covariance.
+      get_covariance = initialized native full covariance reader.
+      advisory = report prediction errors without failing on their size;
+        an incomplete Fisher calculation still fails.
 
     Returns:
       number of failed or nonfinite comparisons. Generated vectors, points,
@@ -4942,14 +4955,30 @@ def run_matter_emulator_prior_check(
                 # All sampled nuisance parameters enter the Fisher matrix;
                 # the random accuracy points keep their declared values.
                 try:
+                    fisher_rows = None
+                    fisher_covariance = None
+                    if fisher_probe is not None:
+                        if fisher_probe != "xi" or get_covariance is None:
+                            raise ValueError("Shear Fisher requires probe xi and a covariance reader.")
+                        nsource = likelihood.source_ntomo
+                        nshear = nsource * (nsource + 1) * likelihood.ntheta
+                        fisher_rows = np.flatnonzero(
+                            (np.diag(reference_precision) > 0.0)
+                            & (np.arange(len(reference_precision)) < nshear)
+                        )
+                        fisher_covariance = np.asarray(get_covariance())
                     compute_matter_emulator_fisher(
                         model=model,
                         likelihood=likelihood,
-                        center=base_point,
+                        center=base_point if fisher_center is None else fisher_center,
                         precision=reference_precision,
                         params=settings["params"],
                         output=output / "fisher",
                         sample_power=fisher_sample_power,
+                        parameters=fisher_parameters,
+                        steps=fisher_steps,
+                        rows=fisher_rows,
+                        covariance=fisher_covariance,
                     )
                 except Exception as error:
                     fisher_failed = True
@@ -5013,15 +5042,21 @@ def run_matter_emulator_prior_check(
             summary += f"Fisher plot FAILED {type(error).__name__}: {error}\n"
     if fisher_failed:
         summary += "Fisher overlay incomplete; inspect status and fisher diagnostics.\n"
+    calculation_failed = (fisher_failed or not finite_reference.all()
+                          or not np.any(finite & (distances >= 0.0)))
+    if not finite_reference.all():
+        summary += "CAMB reference evaluations incomplete; comparison cannot pass.\n"
+    if not np.any(finite & (distances >= 0.0)):
+        summary += "No finite nonnegative prediction distances were obtained.\n"
     (output / "summary.txt").write_text(summary)
     print(summary, flush=True)
-    return int((~passed).sum()) + int(fisher_failed)
+    return int(calculation_failed) if advisory else int((~passed).sum()) + int(fisher_failed)
 
 
 def compute_matter_emulator_fisher(
     model, likelihood, center, precision, params, output, steps=None,
     rows=None, covariance=None, sample_power=18, seeds=(137, 138),
-    min_effective=200,
+    min_effective=200, parameters=None,
 ):
     """Compute the reference model's local Fisher information and contours.
 
@@ -5032,6 +5067,8 @@ def compute_matter_emulator_fisher(
       params = parameter specifications of this same configuration.
       output = directory for derivatives, priors and bounded samples.
       steps = optional named absolute stencil steps (not relative steps).
+      parameters = optional differentiated names. The complete sampled
+        center still reaches Cobaya, including undifferentiated nuisances.
       rows = optional unmasked data subset; requires the full covariance.
       covariance = full covariance, only used when selecting data rows.
       sample_power, seeds, min_effective = bounded integration controls.
@@ -5053,8 +5090,11 @@ def compute_matter_emulator_fisher(
     output.mkdir(parents=True, exist_ok=True)
     if getattr(model.prior, "external", {}):
         raise ValueError("External/correlated priors require their full curvature; unsupported here.")
-    names = list(model.parameterization.sampled_params())
-    center = {name: float(center[name]) for name in names}
+    sampled = list(model.parameterization.sampled_params())
+    names = sampled if parameters is None else list(parameters)
+    if not names or len(set(names)) != len(names) or set(names) - set(sampled):
+        raise ValueError("Differentiated parameters must be unique sampled names.")
+    center = {name: float(center[name]) for name in sampled}
     lower, upper, widths, absolute_steps = [], [], {}, {}
     steps = {} if steps is None else dict(steps)
     if set(steps) - set(names):
@@ -5139,10 +5179,14 @@ def compute_matter_emulator_fisher(
 
     # The existing cache reuses identical shared stencil points only within
     # this fixed model. It never treats nearby cosmologies as the same point.
-    cache = cf.ExactMeanCache(predict)
+    reference = predict(center)
+    # Subtract one fixed vector before differencing. An inactive parameter
+    # then gives exactly zero at every stencil point, rather than a tiny
+    # artificial slope from adding rounded multiples of the same vector.
+    cache = cf.ExactMeanCache(lambda point: predict(point) - reference)
     bounds = dict(zip(names, zip(lower, upper)))
     try:
-        _, reference, coarse, fine = cf.differentiate(
+        _, _, coarse, fine = cf.differentiate(
             predict=cache, parameters=center, steps=absolute_steps, bounds=bounds,
         )
     finally:
@@ -5161,8 +5205,10 @@ def compute_matter_emulator_fisher(
     )
     (output / "definition.txt").write_text(
         "Centered local CAMB Fisher diagnostic, not a fitted posterior.\n"
-        "All sampled parameters varied; independent Gaussian prior curvature "
-        "and all hard bounds retained. Data/prior linear scores not fitted.\n"
+        "Differentiated parameters: " + ", ".join(names) + "\n"
+        "Fixed in this Fisher calculation: " + ", ".join(n for n in sampled if n not in names) + "\n"
+        "Independent Gaussian prior curvature and all selected hard bounds "
+        "retained. Data/prior linear scores not fitted.\n"
         "Fixed data covariance; no covariance derivatives.\n"
         "Exactly zero local response: " + ", ".join(np.asarray(names)[zero]) + "\n"
         "A zero response can hide nonlinear dependence, such as an IA slope "
@@ -5332,8 +5378,23 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
             "covariance": bounded_covariance, "diagnostics": diagnostics}
 
 
-def plot_matter_emulator_fisher(output, points_file, distances_file, names=None, project_name=None):
-    """Overlay direct emulator errors on bounded local Fisher marginals.
+def plot_matter_emulator_fisher(
+    output,
+    points_file,
+    distances_file,
+    names=None,
+    project_name=None,
+    local_points_file=None,
+    local_distances_file=None,
+    amplitude_max=3.5,
+    omega_m_bounds=(0.2, 0.5),
+):
+    """Plot direct emulator errors with bounded local Fisher marginals.
+
+    The project name identifies the survey. Colors distinguish the three
+    accuracy thresholds; circles show prior draws and diamonds show an
+    optional local sample. Solid and dashed contours enclose 68 and 95
+    percent of the bounded local Fisher distribution, respectively.
 
     Arguments:
       output = Fisher directory containing bounded_samples.npz.
@@ -5341,6 +5402,11 @@ def plot_matter_emulator_fisher(output, points_file, distances_file, names=None,
       distances_file = distances.txt with matching sequential row indices.
       names = optional displayed cosmological names.
       project_name = project label printed on the figure.
+      local_points_file, local_distances_file = optional second comparison.
+      amplitude_max = upper plotting and integration bound on 1e9 As;
+        a tighter saved prior bound remains in force.
+      omega_m_bounds = comparison interval imposed before marginalization;
+        intersects, rather than widens, the saved prior.
     Returns:
       saved PNG and PDF paths. No model evaluations occur.
     """
@@ -5353,80 +5419,124 @@ def plot_matter_emulator_fisher(output, points_file, distances_file, names=None,
     output = Path(output)
     if project_name is None:
         project_name = next((p.name for p in output.parents if p.parent.name == "projects"), "Project")
+    if (local_points_file is None) != (local_distances_file is None):
+        raise ValueError("The local comparison requires both points and distances.")
     record = np.load(file=output / "bounded_samples.npz")
     if not bool(record["sampling_valid"]):
-        raise ValueError("Bounded sampling has not passed its effective-count check.")
+        raise ValueError("Bounded sampling has not passed its convergence checks.")
     all_names = record["names"].tolist()
-    points = np.atleast_1d(np.genfromtxt(points_file, names=True))
-    distances = np.atleast_2d(np.loadtxt(distances_file))
-    if (len(points) != len(distances)
-            or not np.array_equal(distances[:, 0], np.arange(len(points)))):
-        raise ValueError("Comparison points and distance row indices disagree.")
+    lower, upper = record["lower"].copy(), record["upper"].copy()
+    if "As_1e9" in all_names:
+        i = all_names.index("As_1e9")
+        if not np.isfinite(amplitude_max) or amplitude_max <= lower[i]:
+            raise ValueError("Amplitude cap must exceed the saved lower bound.")
+        upper[i] = min(upper[i], amplitude_max)
+    if "omegam" in all_names:
+        i = all_names.index("omegam")
+        lower[i] = max(lower[i], omega_m_bounds[0])
+        upper[i] = min(upper[i], omega_m_bounds[1])
+        if not lower[i] < upper[i]:
+            raise ValueError("No overlap with the Omega_m comparison interval.")
+    # Impose a revised amplitude prior on the full-dimensional samples
+    # before selecting columns. Cropping an already marginalized ellipse
+    # would omit the change in its probability normalization.
+    weights = record["weights"]
+    positive = ((weights > 0.0)
+                & np.all((record["values"] >= lower)
+                         & (record["values"] <= upper), axis=1))
+    if np.count_nonzero(positive) < 3:
+        raise ValueError("Too few Fisher samples remain within the plot bounds.")
+    comparison_files = [(points_file, distances_file, False)]
+    if local_points_file is not None:
+        comparison_files.append((local_points_file, local_distances_file, True))
+    comparisons = []
+    for point_path, distance_path, local in comparison_files:
+        points = np.atleast_1d(np.genfromtxt(point_path, names=True))
+        distances = np.atleast_2d(np.loadtxt(distance_path))
+        if (len(points) != len(distances)
+                or not np.array_equal(distances[:, 0], np.arange(len(points)))):
+            raise ValueError("Comparison points and distance row indices disagree.")
+        comparisons.append((points, distances[:, 1], local))
     if names is None:
         names = [name for name in ("As_1e9", "omegam", "H0", "omegab", "ns", "w", "wa", "w0pwa")
-                 if name in all_names and name in points.dtype.names]
-    if len(names) < 2 or any(name not in all_names or name not in points.dtype.names for name in names):
-        raise ValueError("Select at least two names present in Fisher and comparison.")
+                 if name in all_names and name in comparisons[0][0].dtype.names]
+    if len(names) < 2 or any(name not in all_names for name in names):
+        raise ValueError("Select at least two cosmological names in the Fisher sample.")
+    for points, _, _ in comparisons:
+        if any(name not in points.dtype.names for name in names):
+            raise ValueError("Every comparison must contain the displayed parameters.")
     index = [all_names.index(name) for name in names]
-    weights = record["weights"]
-    positive = weights > 0.0
-    ranges = {name: [float(record["lower"][i]), float(record["upper"][i])]
-              for name, i in zip(names, index)}
-    # All nuisance bounds were imposed on the full-dimensional sample.
-    # Column selection here therefore gives the bounded marginal density.
-    labels = {"As_1e9": r"10^9 A_s", "omegam": r"\Omega_m", "H0": r"H_0",
+    ranges = {name: [float(lower[i]), float(upper[i])] for name, i in zip(names, index)}
+    labels = {"As_1e9": r"10^9 A_s", "omegam": r"\Omega_m",
+              "H0": r"H_0\;[\mathrm{km\,s^{-1}\,Mpc^{-1}}]",
               "omegab": r"\Omega_b", "ns": r"n_s", "w": r"w_0",
               "wa": r"w_a", "w0pwa": r"w_0+w_a"}
     samples = MCSamples(
-        samples=record["values"][positive][:, index], weights=weights[positive],
-        names=names, labels=[labels.get(name, name) for name in names], ranges=ranges,
+        samples=record["values"][positive][:, index],
+        weights=weights[positive],
+        names=names,
+        labels=[labels.get(name, name) for name in names],
+        ranges=ranges,
+        sampler="uncorrelated",
+        settings={"ignore_rows": 0},
     )
-    error = distances[:, 1]
-    valid = np.isfinite(error) & (error >= 0.0)
-    categories = [
-        (valid & (error < 0.2), "#0072B2", "o", r"$E<0.2$"),
-        (valid & (error >= 0.2) & (error < 0.5), "#009E73", "s", r"$0.2\leq E<0.5$"),
-        (valid & (error >= 0.5) & (error < 1.0), "#E69F00", "^", r"$0.5\leq E<1$"),
-        (valid & (error >= 1.0), "#D55E00", "x", r"$E\geq1$"),
-        (~valid, "#777777", "+", "Nonfinite/invalid"),
-    ]
+    colors = ["#0072B2", "#009E73", "#8B5AA7", "#D55E00"]
+    error_labels = [r"$E<0.2$", r"$0.2\leq E<0.5$", r"$0.5\leq E<1$", r"$E\geq1$ or failed"]
     with plt.rc_context():
-        plt.rcParams.update({"font.family": "STIXGeneral", "mathtext.fontset": "stix"})
+        plt.rcParams.update({"font.family": "DejaVu Sans", "mathtext.fontset": "dejavusans"})
         amplitude = "As_1e9" if "As_1e9" in names else names[0]
         horizontal = [name for name in names if name != amplitude]
         columns = min(2, len(horizontal))
         rows = (len(horizontal)+columns-1)//columns
         figure, axes = plt.subplots(rows, columns, squeeze=False,
-                                    figsize=(5.4*columns, 4.5*rows), sharey=True)
-        for axis, name in zip(axes.flat, horizontal):
+                                    figsize=(5.5*columns, 4.4*rows), sharey=True)
+        for panel, (axis, name) in enumerate(zip(axes.flat, horizontal)):
             density = samples.get2DDensity(name, amplitude)
             levels = np.sort(density.getContourLevels([0.68, 0.95]))
             axis.contour(density.x, density.y, density.P, levels=levels,
-                         colors="black", linestyles=["--", "-"])
-            axis.set_xlabel("$" + labels.get(name, name) + "$")
-            axis.set_ylabel("$" + labels.get(amplitude, amplitude) + "$")
-            for chosen, color, marker, _ in categories:
-                axis.scatter(points[name][chosen], points[amplitude][chosen],
-                             color=color, marker=marker, s=25, zorder=5)
-            # Use the recorded prior limits. Historical points outside the
-            # current prior stay in the results table, outside these axes.
+                         colors="black", linestyles=["--", "-"], linewidths=1.5)
+            for points, error, local in comparisons:
+                valid = np.isfinite(error) & (error >= 0.0)
+                within = np.ones(len(points), dtype=bool)
+                for j, parameter in enumerate(all_names):
+                    if parameter in points.dtype.names:
+                        within &= (points[parameter] >= lower[j]) & (points[parameter] <= upper[j])
+                categories = [valid & (error < 0.2), valid & (error >= 0.2) & (error < 0.5),
+                              valid & (error >= 0.5) & (error < 1.0), ~valid | (error >= 1.0)]
+                for chosen, color in zip(categories, colors):
+                    chosen = chosen & within
+                    axis.scatter(points[name][chosen], points[amplitude][chosen],
+                                 color=color, marker="D" if local else "o",
+                                 s=44 if local else 30, edgecolors="black" if local else None,
+                                 linewidths=0.6, zorder=3 if local else 2)
+            axis.set_xlabel("$" + labels.get(name, name) + "$", fontsize=14)
+            if panel % columns == 0:
+                axis.set_ylabel("$" + labels.get(amplitude, amplitude) + "$", fontsize=15)
+            axis.tick_params(labelsize=11)
             for variable, setter in ((name, axis.set_xlim), (amplitude, axis.set_ylim)):
-                position = all_names.index(variable)
-                limits = [record["lower"][position], record["upper"][position]]
-                if np.all(np.isfinite(limits)):
-                    setter(*limits)
+                if np.all(np.isfinite(ranges[variable])):
+                    setter(*ranges[variable])
+            if amplitude == "As_1e9":
+                lo, hi = ranges[amplitude]
+                ticks = np.arange(np.ceil(lo*2)/2, hi, 0.5)
+                axis.set_yticks(np.append(ticks, hi))
         for axis in list(axes.flat)[len(horizontal):]:
             axis.set_visible(False)
-        handles = [Line2D([], [], color=color, marker=marker, linestyle="none", label=label)
-                   for _, color, marker, label in categories]
-        handles.append(Line2D([], [], color="black", label="Bounded local Fisher: 68%, 95%"))
-        figure.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.95),
-                      ncol=3, frameon=False)
-        label = str(project_name).replace("_", " ").upper()
-        figure.suptitle(label + ": direct vector error E", y=0.99)
-        figure.tight_layout(rect=(0, 0, 1, 0.84 if rows == 1 else 0.88))
+        handles = [Line2D([], [], color=color, marker="o", linestyle="none", label=label)
+                   for color, label in zip(colors, error_labels)]
+        handles.append(Line2D([], [], color="black", marker="o", linestyle="none",
+                              label="Prior sample within cap"))
+        if local_points_file is not None:
+            handles.append(Line2D([], [], color="black", marker="D", linestyle="none",
+                                  label=f"Local {len(comparisons[1][0])}"))
+        handles.extend([Line2D([], [], color="black", linestyle="-", label="Bounded Fisher 68%"),
+                        Line2D([], [], color="black", linestyle="--", label="Bounded Fisher 95%")])
+        figure.suptitle(str(project_name).replace("_", " ").upper(), fontsize=18, y=0.995)
+        figure.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.96),
+                      ncol=4, frameon=False, fontsize=11)
+        figure.tight_layout(rect=(0, 0, 1, 0.78 if rows == 1 else 0.88))
         png, pdf = output / "emulator_fisher.png", output / "emulator_fisher.pdf"
-        figure.savefig(png, dpi=180, bbox_inches="tight")
-        figure.savefig(pdf, bbox_inches="tight")
+        figure.savefig(png, dpi=180)
+        figure.savefig(pdf)
         plt.close(figure)
     return png, pdf
