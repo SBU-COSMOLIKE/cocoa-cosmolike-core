@@ -1763,18 +1763,20 @@ def fisher_matrix(derivatives, names, covariance=None, precision=None, priors=No
     return 0.5 * (fisher + fisher.T)
 
 
-def parameter_covariance(fisher, names):
-    """Invert parameter information only when every direction is constrained.
+def resolved_fisher(fisher, names):
+    """Check that a Fisher matrix constrains every parameter direction.
 
-    Parameters with zero derivatives, such as an IA redshift slope at
-    zero IA amplitude, need removal or an explicitly justified prior.
-    A pseudoinverse would hide that absence of information.
+    Use it before inverting a Fisher matrix whose parameters might carry no
+    information: parameters with zero derivatives, such as an IA redshift
+    slope at zero IA amplitude, need removal or an explicitly justified
+    prior, and a pseudoinverse would hide that absence of information.
 
     Arguments:
       fisher = square information matrix in names order.
       names = parameter labels for a useful failure message.
     Returns:
-      marginalized parameter covariance, with squared parameter units.
+      (matrix, normalized, scales): the symmetrized Fisher matrix, the
+      same matrix scaled to unit diagonal, and the scales sqrt(F_ii).
     Raises:
       ValueError if the matrix has a numerically unresolved eigenmode.
     """
@@ -1794,6 +1796,24 @@ def parameter_covariance(fisher, names):
             f"Fisher matrix cannot resolve all of {names}; "
             "remove a null parameter or specify a physical prior."
         )
+    return matrix, normalized, scales
+
+
+def parameter_covariance(fisher, names):
+    """Invert parameter information only when every direction is constrained.
+
+    The check is resolved_fisher's; the inverse is solved on the matrix
+    scaled to unit diagonal, so parameter units do not set the round-off.
+
+    Arguments:
+      fisher = square information matrix in names order.
+      names = parameter labels for a useful failure message.
+    Returns:
+      marginalized parameter covariance, with squared parameter units.
+    Raises:
+      ValueError if the matrix has a numerically unresolved eigenmode.
+    """
+    matrix, normalized, scales = resolved_fisher(fisher=fisher, names=names)
     identity = np.eye(matrix.shape[0])
     inverse_normalized = np.linalg.solve(normalized, identity)
     return inverse_normalized / scales[:, None] / scales[None, :]
@@ -1804,7 +1824,9 @@ def figure_of_merit(fisher, names, pair):
 
     The convention is FoM=1/sqrt(det(C_pair)); no contour-probability
     multiplier is included. Marginalizing first retains the effect of
-    every other fitted parameter and its specified prior.
+    every other fitted parameter and its specified prior. After the
+    resolved_fisher check, the value is get_FoM's, the module's one
+    figure of merit.
 
     Arguments:
       fisher = information matrix in names order.
@@ -1822,9 +1844,8 @@ def figure_of_merit(fisher, names, pair):
         if name not in names:
             raise ValueError(f"FoM parameter {name} is absent from {names}.")
         indices.append(names.index(name))
-    covariance = parameter_covariance(fisher=fisher, names=names)
-    selected = covariance[np.ix_(indices, indices)]
-    return 1.0 / np.sqrt(np.linalg.det(selected))
+    matrix, normalized, scales = resolved_fisher(fisher=fisher, names=names)
+    return get_FoM(i=indices[0], j=indices[1], F=matrix)
 
 
 def retained_stencil_noise(stencil_values, steps, invcov):
