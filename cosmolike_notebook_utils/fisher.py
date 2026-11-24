@@ -274,6 +274,26 @@ def add_gaussian_priors(F, priors):
     return Fp
 
 
+def fisher_from_derivatives(D, invcov):
+    """Return the Fisher matrix F = D^T C^-1 D of a derivative matrix.
+
+    Use it whenever the derivatives are already computed: every Fisher
+    assembly of this module (get_Fisher, get_Fisher2 and the precision
+    branch of fisher_matrix) contracts them here, in one order, so that
+    they agree to the last bit.
+
+    Arguments:
+      D      = 2D (n_data, n_params) array, D[a, p] = d mu_a / d p.
+      invcov = 2D (n_data, n_data) inverse covariance of the data vector.
+
+    Returns:
+      the (n_params, n_params) Fisher matrix.
+    """
+    # @ is numpy matrix multiplication: D^T (C^-1 D), with C^-1 D formed
+    # first (n_data x n_params), so the large matrix multiplies a thin one.
+    return D.T @ (invcov @ D)
+
+
 def get_Fisher(ddv, CV=None, h=0.02, AccuracyBoost=3.1, priors=None,
                invcov=None):
     """Assemble F = D^T C^-1 D from a derivative function.
@@ -321,7 +341,7 @@ def get_Fisher(ddv, CV=None, h=0.02, AccuracyBoost=3.1, priors=None,
     # weakens what a common-mode response measures and sharpens
     # what a difference-mode response measures. Visual curve
     # separation in the data-vector plots measures none of this.
-    F = D.T @ (invcov @ D)
+    F = fisher_from_derivatives(D, invcov)
     if priors is not None:
         F = add_gaussian_priors(F=F, priors=priors)
     return F
@@ -348,7 +368,7 @@ def get_Fisher2(dv, CV=None, AccuracyBoost=3.0, priors=None,
     # one derivkit derivative per parameter, glued as the columns of
     # D as in get_Fisher
     D = np.column_stack([get_ddv_dkit(dv, index=p, CV=CV, AccuracyBoost=AccuracyBoost, min_samples=min_samples, fallback_mode=fallback_mode) for p in list(range(len(CV)))]).astype(np.float64)
-    F = D.T @ (invcov @ D)
+    F = fisher_from_derivatives(D, invcov)
     if priors is not None:
         F = add_gaussian_priors(F=F, priors=priors)
     return F
@@ -1729,7 +1749,7 @@ def fisher_matrix(derivatives, names, covariance=None, precision=None, priors=No
         matrix = symmetric_matrix(precision, name="Precision", positive=True)
         if matrix.shape[0] != jacobian.shape[0]:
             raise ValueError("Precision rows do not match derivative rows.")
-        fisher = jacobian.T @ matrix @ jacobian
+        fisher = fisher_from_derivatives(jacobian, matrix)
     if priors is not None:
         for name, width in priors.items():
             if name not in names or not np.isfinite(width) or width <= 0.0:
