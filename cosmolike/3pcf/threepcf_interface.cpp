@@ -8,6 +8,7 @@
 #include <type_traits>
 #include <vector>
 #include <utility>
+#include <string>
 #include <carma.h>
 #include <pybind11/stl.h>
 #include <spdlog/spdlog.h>
@@ -1355,6 +1356,48 @@ static void bind_threepcf_core_bridge(
 
 
 // ---------------------------------------------------------------------------
+// symmetric_covariance_3pcf: refuse a covariance whose two triangles
+// disagree, then average them.
+//
+// Each difference C_ij - C_ji is compared with sqrt(C_ii C_jj), the
+// size of its own rows and columns: in correlation units the test does
+// not depend on the units of each observable. A tolerance in the
+// matrix's own units would refuse an asymmetric matrix in one unit
+// system and accept the same matrix after a change of units. Map3
+// entries are many orders of magnitude below xi entries, so a single
+// absolute scale cannot serve both blocks.
+//
+// The diagonal must be positive first, or that scale is undefined. The
+// dimensionless bound 1e-10 is far above the roundoff of a product such
+// as T C T^T and far below any real disagreement; only differences
+// within it are averaged away. The Cholesky factorization that follows
+// reads one triangle, so without this test it would silently pick one
+// of two different symmetric matrices.
+// ---------------------------------------------------------------------------
+static void symmetric_covariance_3pcf(
+  arma::mat& matrix, // square, finite covariance; averaged in place
+  const char* name // matrix named in the refusal
+)
+{
+  const arma::vec diagonal = matrix.diag();
+  if (arma::any(diagonal <= 0.0)) {
+    throw py::value_error(std::string(name) + " needs a positive diagonal.");
+  }
+  const arma::vec scale = arma::sqrt(diagonal);
+  for (arma::uword j=0; j<matrix.n_cols; j++) {
+    for (arma::uword i=j+1; i<matrix.n_rows; i++) {
+      if (std::abs(matrix(i,j) - matrix(j,i)) > 1.e-10*scale(i)*scale(j)) {
+        throw py::value_error(std::string(name) + " is not symmetric "
+          "in correlation units; check its row ordering.");
+      }
+    }
+  }
+  matrix = 0.5*(matrix + matrix.t());
+}
+
+
+
+// ---------------------------------------------------------------------------
 // IP3PCF: the joint measurement state for the combined two-point plus
 // three-point likelihood. It follows the ordinary IP singleton of
 // generic_interface.cpp: one active dataset per process, replaced as
@@ -1439,10 +1482,10 @@ public:
         reduced(i,j) = matrix(selected(i),selected(j));
       }
     }
-    if (!observed.is_finite() || !reduced.is_finite()
-        || !arma::approx_equal(reduced, reduced.t(), "both", 1.e-13, 1.e-10)) {
-      throw py::value_error("Selected joint data need finite symmetric covariance.");
+    if (!observed.is_finite() || !reduced.is_finite()) {
+      throw py::value_error("Selected joint data need finite covariance.");
     }
+    symmetric_covariance_3pcf(reduced, "Selected joint covariance");
     // Optional compression. A [Ncompressed, Nselected] matrix T
     // replaces the selected vector by T d and its covariance by
     // T C T^T. An empty array means no compression; the empty
@@ -1465,6 +1508,9 @@ public:
       }
       observed = transform*observed;
       reduced = transform*reduced*transform.t();
+      // T C T^T is symmetric only up to roundoff; a degenerate T can
+      // also leave a zero diagonal, refused here before the Cholesky.
+      symmetric_covariance_3pcf(reduced, "Compressed joint covariance");
     }
     // Cholesky factorization: chol finds the lower-triangular L with
     // L L^T = C. Only a positive-definite C has such a factor, so a
