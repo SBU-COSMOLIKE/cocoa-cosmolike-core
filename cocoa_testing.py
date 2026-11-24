@@ -4880,16 +4880,32 @@ def run_matter_emulator_prior_check(
                     posterior = model.logposterior(params_values=point, cached=False)
                     if not np.isfinite(posterior.loglike):
                         raise ValueError("Nonfinite likelihood; no current prediction accepted.")
-                    # to_input(dict) also changes Cobaya's internal sampled
-                    # parameter ordering. Convert through its canonical-order
-                    # check first, or a later posterior call can associate
-                    # the right values with the wrong parameter names.
-                    inputs = model.parameterization.to_input(
-                        sampled_params_values=model.parameterization.check_sampled(point)
-                    )
-                    vector = np.asarray(likelihood.get_datavector(**inputs))
+                    if hasattr(likelihood, "last_datavector"):
+                        # The uncached posterior call just evaluated this
+                        # vector, including any Python stochastic templates.
+                        # Retain it without repeating expensive native setters.
+                        vector = np.array(likelihood.last_datavector, copy=True)
+                    else:
+                        # to_input(dict) changes Cobaya's internal sampled
+                        # ordering. Its canonical check prevents assigning
+                        # values to the wrong names on the next evaluation.
+                        inputs = model.parameterization.to_input(
+                            sampled_params_values=model.parameterization.check_sampled(point)
+                        )
+                        vector = np.asarray(likelihood.get_datavector(**inputs))
                     if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
                         raise ValueError("Prediction shape or finite-value check failed.")
+                    # Re-score the saved vector through the same likelihood.
+                    # A disagreement means the repeated getter changed state;
+                    # such a row is invalid, not an emulator accuracy result.
+                    repeated_loglike = likelihood.compute_logp(datavector=vector)
+                    if not np.isclose(
+                        a=repeated_loglike,
+                        b=posterior.loglike,
+                        rtol=1.e-12,
+                        atol=1.e-8,
+                    ):
+                        raise ValueError("Saved prediction does not reproduce its likelihood.")
                     rows[index] = vector
                     loglike_rows[index] = posterior.loglike
                     message = f"{route} cosmology {index + 1}/{n_models}: evaluated"
