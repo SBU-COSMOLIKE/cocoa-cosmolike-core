@@ -5536,9 +5536,9 @@ def plot_matter_emulator_fisher(
 ):
     """Plot direct emulator errors with bounded local Fisher marginals.
 
-    The project name identifies the survey. Colors distinguish the four
-    accuracy thresholds; circles show prior draws and diamonds show an
-    optional local sample. Solid and dashed contours enclose 68 and 95
+    The project name identifies the survey. Colors and marker shapes
+    distinguish the accuracy bands; open markers show prior draws and
+    filled markers show an optional local sample. Solid and dashed contours enclose 68 and 95
     percent of the bounded local Fisher distribution, respectively.
 
     Arguments:
@@ -5626,6 +5626,7 @@ def plot_matter_emulator_fisher(
         settings={"ignore_rows": 0},
     )
     colors = ["#0072B2", "#009E73", "#8B5AA7", "#E69F00", "#333333"]
+    markers = ["o", "s", "D", "^", "P"]
     error_labels = [r"$E<0.2$", r"$0.2\leq E<0.5$", r"$0.5\leq E<1$",
                     r"$1\leq E<4$", r"$E\geq4$"]
     with plt.rc_context():
@@ -5650,12 +5651,12 @@ def plot_matter_emulator_fisher(
                 categories = [valid & (error < 0.2), valid & (error >= 0.2) & (error < 0.5),
                               valid & (error >= 0.5) & (error < 1.0),
                               valid & (error >= 1.0) & (error < 4.0), valid & (error >= 4.0)]
-                for chosen, color in zip(categories, colors):
+                for chosen, color, marker in zip(categories, colors, markers):
                     chosen = chosen & within
                     axis.scatter(points[name][chosen], points[amplitude][chosen],
-                                 color=color, marker="D" if local else "o",
-                                 s=44 if local else 30, edgecolors="black" if local else None,
-                                 linewidths=0.6, zorder=3 if local else 2)
+                                 facecolors=color if local else "none", marker=marker,
+                                 s=48 if local else 38, edgecolors="black" if local else color,
+                                 linewidths=0.7 if local else 1.2, zorder=3 if local else 2)
                 failed = ~valid & within
                 axis.scatter(points[name][failed], points[amplitude][failed],
                              color="black", marker="x", s=44, linewidths=1.2,
@@ -5673,14 +5674,14 @@ def plot_matter_emulator_fisher(
                 axis.set_yticks(np.append(ticks, hi))
         for axis in list(axes.flat)[len(horizontal):]:
             axis.set_visible(False)
-        handles = [Line2D([], [], color=color, marker="o", linestyle="none", label=label)
-                   for color, label in zip(colors, error_labels)]
+        handles = [Line2D([], [], color=color, marker=marker, linestyle="none", label=label)
+                   for color, marker, label in zip(colors, markers, error_labels)]
         handles.append(Line2D([], [], color="black", marker="x", linestyle="none",
                               label="Failed evaluation"))
         handles.append(Line2D([], [], color="black", marker="o", linestyle="none",
-                              label="Prior sample within cap"))
+                              markerfacecolor="none", label="Prior (open)"))
         if local_points_file is not None:
-            handles.append(Line2D([], [], color="black", marker="D", linestyle="none",
+            handles.append(Line2D([], [], color="black", marker="o", linestyle="none",
                                   label=f"Local {len(comparisons[1][0])}"))
         handles.extend([Line2D([], [], color="black", linestyle="-", label="Bounded Fisher 68%"),
                         Line2D([], [], color="black", linestyle="--", label="Bounded Fisher 95%")])
