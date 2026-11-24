@@ -532,12 +532,16 @@ class transform_owner_3pcf {
     }
     // The triangle count ntheta*ntheta*nphi is later passed as an int
     // and used in array shapes; refuse a plan whose count does not fit,
-    // so every product of these sizes below is safe.
-    const size_t triangle_count = static_cast<size_t>(indices.size())
-      *static_cast<size_t>(indices.size())*static_cast<size_t>(phi.size());
-    if (!(static_cast<size_t>(INT_MAX) >= triangle_count)) {
-      spdlog::critical("3pcf transform: ntheta*ntheta*nphi = {} triangles "
-        "exceeds the int range", triangle_count);
+    // so every product of these sizes below is safe. shape_transform
+    // keeps each axis between 1 and INT_MAX, so ntheta*ntheta fits in
+    // size_t. Comparing it with INT_MAX/nphi never forms the full
+    // product, which could wrap around in size_t and pass the check.
+    const size_t pair_count = static_cast<size_t>(indices.size())
+      *static_cast<size_t>(indices.size());
+    if (!(static_cast<size_t>(INT_MAX)/static_cast<size_t>(phi.size())
+        >= pair_count)) {
+      spdlog::critical("3pcf transform: ntheta = {} and nphi = {} give "
+        "more than INT_MAX triangles", indices.size(), phi.size());
       std::exit(1);
     }
 
