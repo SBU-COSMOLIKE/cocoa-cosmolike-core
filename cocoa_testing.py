@@ -5200,6 +5200,8 @@ def compute_matter_emulator_fisher(
       steps = optional named absolute stencil steps (not relative steps).
       parameters = optional differentiated names. The complete sampled
         center still reaches Cobaya, including undifferentiated nuisances.
+        Without this override, ordinary NLA excludes its exact TATT-only
+        A2_1, A2_2 and BTA_1 coordinates: their independent priors factor out.
       select_vector = optional native mask/compression before derivatives.
       rows = optional unmasked data subset; requires the full covariance.
       covariance = full covariance, only used when selecting data rows.
@@ -5224,6 +5226,20 @@ def compute_matter_emulator_fisher(
         raise ValueError("External/correlated priors require their full curvature; unsupported here.")
     sampled = list(model.parameterization.sampled_params())
     names = sampled if parameters is None else list(parameters)
+    inactive_nla = []
+    if parameters is None and getattr(likelihood, "IA_model", None) == 0:
+        # These are the ordinary likelihoods' amplitude, redshift slope
+        # and density-weighting names. IA.c and the IA_MODEL_TATT branches
+        # in cosmo2D.c exclude their terms throughout NLA, not just at the
+        # fiducial. Their independent prior integrals are constants. Keep
+        # the full center supplied to Cobaya, but do not differentiate an
+        # unused BTA at its common zero-valued hard boundary. TATT and an
+        # explicit caller parameter list retain their existing behavior.
+        inactive_nla = [
+            name for name in sampled
+            if name.endswith(("_A2_1", "_A2_2", "_BTA_1"))
+        ]
+        names = [name for name in sampled if name not in inactive_nla]
     if not names or len(set(names)) != len(names) or set(names) - set(sampled):
         raise ValueError("Differentiated parameters must be unique sampled names.")
     center = {name: float(center[name]) for name in sampled}
@@ -5352,6 +5368,7 @@ def compute_matter_emulator_fisher(
         "Centered local CAMB Fisher diagnostic, not a fitted posterior.\n"
         "Differentiated parameters: " + ", ".join(names) + "\n"
         "Fixed in this Fisher calculation: " + ", ".join(n for n in sampled if n not in names) + "\n"
+        "Exact NLA-independent prior factors omitted: " + ", ".join(inactive_nla) + "\n"
         "Independent Gaussian prior curvature and all selected hard bounds "
         "retained. Data/prior linear scores not fitted.\n"
         "Fixed data covariance; no covariance derivatives.\n"
