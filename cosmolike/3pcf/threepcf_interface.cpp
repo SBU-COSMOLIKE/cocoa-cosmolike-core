@@ -1440,6 +1440,9 @@ public:
     selected_.reset();
     mask_.reset();
     full_size_ = 0;
+    mock_count_ = 0;
+    exponent_ = 0.0;
+    log_normalization_ = 0.0;
   }
 
   void set_data(
@@ -1451,6 +1454,10 @@ public:
     const int parameter_count // varied mean parameters for Percival exponent
   )
   {
+    // The previous dataset is forgotten before any check: a refused
+    // input then leaves no dataset at all, so a caller that catches the
+    // error cannot go on scoring predictions against the old data.
+    reset();
     if (data.ndim() != 1 || covariance.ndim() != 2 || indices.ndim() != 1
         || covariance.shape(0) != data.size()
         || covariance.shape(1) != data.size() || indices.size() == 0) {
@@ -2386,7 +2393,8 @@ void bind_threepcf(
 
   // Joint measurement state. These bindings publish the IP3PCF
   // singleton documented above: init_joint_data installs a fully
-  // validated dataset, reset_joint_data clears it, and the remaining
+  // validated dataset (a refused call leaves no dataset),
+  // reset_joint_data clears it, and the remaining
   // entries select rows, score a theory vector and expose the stored
   // quantities.
   module.def("init_joint_data", [](const array_3pcf& data,
