@@ -299,7 +299,7 @@ def read_fisher_cache(name, settings=None, comparable=None, tier=None, folder=No
 
     if not os.path.isfile(path):
         raise FileNotFoundError(f"{path} does not exist: compute the result and "
-                                "write it with fm.read_or_build or fm.write_fisher_cache")
+                                "write it with read_or_build or write_fisher_cache")
 
     # 1. Read the record, the JSON values and every array.
     with np.load(path, allow_pickle=False) as data:

@@ -2130,8 +2130,9 @@ def fisher_bias(F, names, *shifts):
     Arguments:
       F       = Fisher matrix over names (one block, or the sum from combine).
       names   = its parameter names.
-      *shifts = any number of (B, block_names) pairs from
-                ModelFisher.bias_vector. With a block-diagonal covariance, the
+      *shifts = any number of (B, block_names) pairs, as a project's
+                bias-vector builder returns them (for example
+                ModelFisher.bias_vector of the lssty1xdesi wrappers). With a block-diagonal covariance, the
                 blocks' numerators add, as their information does.
 
     Returns:
@@ -2220,3 +2221,35 @@ def marginalized_sigma(F, names, keep):
         k = names.index(name)
         out[name] = float(np.sqrt(cov[k, k]))
     return out
+
+
+def stable_inverse(F, rtol):
+    """Invert a symmetric Fisher matrix safely when it is singular.
+
+    Use it instead of np.linalg.inv whenever a parameter set can leave a
+    direction with no information at all (for example, flat-prior
+    parameters whose data were all cut). np.linalg.inv amplifies round-off
+    along such a direction by about 1e16. Here F is scaled to unit diagonal
+    (so the parameter units do not matter), diagonalized, and the
+    directions whose eigenvalue is below rtol times the largest are dropped
+    (a pseudo-inverse).
+
+    Arguments:
+      F    = 2D symmetric array, the Fisher matrix (positive diagonal).
+      rtol = the relative eigenvalue cut, e.g. 1e-12.
+
+    Returns:
+      (F_inv, null): F_inv the pseudo-inverse in the original units; null
+      holds the dropped directions as columns, in the scaled basis (zero
+      entries mark the parameters they leave alone).
+    """
+    # scale to unit diagonal: s_i = 1/sqrt(F_ii)
+    s = 1.0/np.sqrt(np.diag(F))
+
+    # eigenvalues w and eigenvectors V (columns) of the scaled matrix
+    w, V = np.linalg.eigh(F*s[:, None]*s[None, :])
+
+    # keep the directions above the cut, invert on them, undo the scaling
+    keep = w > rtol*w.max()
+    F_inv = (s[:, None]*V[:, keep]) @ np.diag(1.0/w[keep]) @ (V[:, keep].T*s[None, :])
+    return F_inv, V[:, ~keep]
