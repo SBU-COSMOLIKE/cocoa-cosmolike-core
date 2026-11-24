@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <type_traits>
 #include <vector>
 #include <spdlog/spdlog.h>
 
@@ -101,11 +103,36 @@ pybind11::array_t<Number, pybind11::array::c_style> input_array_3pcf(
       "NumPy arrays");
     std::exit(1);
   }
-  const pybind11::array input = pybind11::reinterpret_borrow<pybind11::array>(object);
+  pybind11::array input = pybind11::reinterpret_borrow<pybind11::array>(object);
   if (!(input.dtype().is(pybind11::dtype::of<Number>()))) {
-    spdlog::critical("3pcf interface: array has the wrong dtype; "
-      "require float64 or int32 as documented");
-    std::exit(1);
+    // The notebook route copies its inputs anyway, so an integer array of
+    // another width (NumPy's default int64, for example) is converted
+    // after a range check, as the other notebook adapters do. Production
+    // borrows the buffer and keeps requiring the exact dtype.
+    bool converted = false;
+    if constexpr (std::is_integral<Number>::value) {
+      const char kind = input.dtype().kind();
+      if (notebook && ('i' == kind || 'u' == kind)) {
+        if (input.size() > 0) {
+          const double minimum = pybind11::cast<double>(input.attr("min")());
+          const double maximum = pybind11::cast<double>(input.attr("max")());
+          if (!(static_cast<double>(std::numeric_limits<Number>::min()) <= minimum
+                && static_cast<double>(std::numeric_limits<Number>::max()) >= maximum)) {
+            spdlog::critical("3pcf interface: integer input exceeds the "
+              "range of its C type");
+            std::exit(1);
+          }
+        }
+        input = pybind11::reinterpret_borrow<pybind11::array>(
+          input.attr("astype")(pybind11::dtype::of<Number>()));
+        converted = true;
+      }
+    }
+    if (!converted) {
+      spdlog::critical("3pcf interface: array has the wrong dtype; "
+        "require float64 or int32 as documented");
+      std::exit(1);
+    }
   }
   if (!(input.ndim() == rank)) {
     spdlog::critical("3pcf interface: array has the wrong rank");
