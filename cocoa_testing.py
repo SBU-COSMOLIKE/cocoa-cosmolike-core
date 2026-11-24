@@ -5004,7 +5004,10 @@ def run_matter_emulator_prior_check(
                         likelihood=likelihood,
                         center=base_point if fisher_center is None else fisher_center,
                         precision=reference_precision,
-                        params=settings["params"],
+                        # Likelihood defaults can add sampled nuisance
+                        # parameters absent from the user's YAML. Cobaya's
+                        # resolved parameter definitions include their priors.
+                        params=model.info()["params"],
                         output=output / "fisher",
                         sample_power=fisher_sample_power,
                         parameters=fisher_parameters,
