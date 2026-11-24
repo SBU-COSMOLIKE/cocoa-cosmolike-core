@@ -4939,8 +4939,9 @@ def run_matter_emulator_prior_check(
     )
     # Prior draws include points that fit the data very poorly. Compare their
     # CAMB likelihoods with the best saved point before interpreting an error
-    # as relevant to inference. Nuisance parameters stayed fixed throughout:
-    # this is neither a profile likelihood nor a marginalized exclusion test.
+    # as relevant to inference. Nuisance values are prescribed (constant for
+    # prior draws, supplied per row for explicit inputs); they are not fitted.
+    # This is neither a profile likelihood nor a marginalized exclusion test.
     fit_penalty = np.full(n_models, np.nan)
     finite_reference = np.isfinite(loglikes["camb"])
     if finite_reference.any():
@@ -4953,7 +4954,10 @@ def run_matter_emulator_prior_check(
         X=np.column_stack((
             np.arange(n_models), loglikes["camb"], fit_penalty, distances,
         )),
-        header="index logL_CAMB fixed_nuisance_fit_penalty emulator_vector_error",
+        header=("index logL_CAMB "
+                + ("fixed_nuisance_fit_penalty" if points_file is None
+                   else "prescribed_nuisance_fit_penalty")
+                + " emulator_vector_error"),
     )
     summary = f"{int(passed.sum())}/{n_models} pass delta_chi2 < {limit}; {int((~finite).sum())} nonfinite\n"
     if finite.any():
