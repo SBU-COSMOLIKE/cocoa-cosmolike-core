@@ -5682,11 +5682,23 @@ def plot_matter_emulator_fisher(
         handles.extend([Line2D([], [], color="black", linestyle="-", label="Bounded Fisher 68%"),
                         Line2D([], [], color="black", linestyle="--", label="Bounded Fisher 95%")])
         figure.suptitle(str(project_name).replace("_", " ").upper(), fontsize=18, y=0.995)
-        figure.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.96),
-                      ncol=4, frameon=False, fontsize=11)
-        figure.tight_layout(rect=(0, 0, 1, 0.71 if rows == 1 else 0.84))
+        legend = figure.legend(
+            handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.96),
+            ncol=min(4, 2 * columns), frameon=False, fontsize=11,
+        )
+        # Reserve the legend's measured height, including the extra error
+        # bands. A fixed top margin clips labels in the one-panel test.
+        figure.canvas.draw()
+        renderer = figure.canvas.get_renderer()
+        legend_box = legend.get_window_extent(renderer=renderer)
+        legend_fraction = legend_box.transformed(figure.transFigure.inverted())
+        figure.tight_layout(rect=(0, 0, 1, legend_fraction.y0 - 0.025))
+        figure.canvas.draw()
+        for axis in axes.flat:
+            if axis.get_visible() and legend_box.overlaps(axis.get_window_extent()):
+                raise ValueError("The Fisher legend overlaps a panel; increase the figure height.")
         png, pdf = output / "emulator_fisher.png", output / "emulator_fisher.pdf"
-        figure.savefig(png, dpi=180)
-        figure.savefig(pdf)
+        figure.savefig(png, dpi=180, bbox_inches="tight")
+        figure.savefig(pdf, bbox_inches="tight")
         plt.close(figure)
     return png, pdf
