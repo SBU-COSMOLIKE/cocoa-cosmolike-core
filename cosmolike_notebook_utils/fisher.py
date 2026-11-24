@@ -1620,7 +1620,8 @@ class ExactMeanCache:
 def differentiate(predict, parameters, steps, bounds=None):
     """Differentiate every selected parameter with a fourth-order stencil.
 
-    Four displaced means give [-f(2h)+8f(h)-8f(-h)+f(-2h)]/(12h).
+    Four displaced means give [-f(2h)+8f(h)-8f(-h)+f(-2h)]/(12h), the
+    module's one five-point stencil (FIVE_POINT_OFFSETS, five_point).
     Repeating at h/2 exposes step sensitivity without treating agreement
     as proof that the underlying integration has converged. Bounds are
     checked before any model evaluation; no one-sided replacement is made.
@@ -1675,18 +1676,16 @@ def differentiate(predict, parameters, steps, bounds=None):
         for refinement in range(2):
             step = float(steps[name]) / (2.0 ** refinement)
             displaced = []
-            # Order is -2h,-h,+h,+2h, identical for both step choices.
-            for offset in (-2.0, -1.0, 1.0, 2.0):
+            # The points of the shared stencil, in FIVE_POINT_OFFSETS order
+            # (+2h, +h, -h, -2h), identical for both step choices.
+            for offset in FIVE_POINT_OFFSETS:
                 point = dict(parameters)
                 point[name] = float(parameters[name]) + offset * step
                 value = np.asarray(predict(point), dtype=np.float64)
                 if value.shape != reference.shape or not np.all(np.isfinite(value)):
                     raise ValueError(f"Prediction shape/values changed at {name}.")
                 displaced.append(value)
-            derivative = (
-                displaced[0] - 8.0 * displaced[1]
-                + 8.0 * displaced[2] - displaced[3]
-            ) / (12.0 * step)
+            derivative = five_point(displaced, step)
             if refinement == 0:
                 derivatives[:, column] = derivative
             else:
