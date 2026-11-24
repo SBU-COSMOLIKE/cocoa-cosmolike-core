@@ -1543,9 +1543,14 @@ def plot_Fisher_prior_walls(F, names, fiducial, params, ranges, boxes=None,
 def symmetric_matrix(values, name, positive=False):
     """Check a covariance-like matrix before a statistical contraction.
 
-    Symmetry is tested relative to each matrix's own scale; this matters
-    when aperture covariances have very small numerical units. Averaging
-    the two triangles removes accepted floating-point asymmetry only.
+    Symmetry is tested entry by entry in dimensionless coordinates: the
+    difference A_ij - A_ji is divided by sqrt(|A_ii A_jj|), the scale of
+    its own rows and columns. A single tolerance from the largest entry
+    would let a block of much smaller entries (another observable's units,
+    a parameter with other units) differ by a large fraction of itself.
+    Rows whose diagonal is zero (null directions) are compared against the
+    largest entry instead. Averaging the two triangles then removes
+    accepted floating-point asymmetry only.
 
     Arguments:
       values = finite square numerical array.
@@ -1561,9 +1566,13 @@ def symmetric_matrix(values, name, positive=False):
         raise ValueError(f"{name} must be square; received {matrix.shape}.")
     if matrix.shape[0] == 0 or not np.all(np.isfinite(matrix)):
         raise ValueError(f"{name} must contain finite values and at least one row.")
-    scale = np.max(np.abs(matrix))
-    tolerance = 64.0 * np.finfo(np.float64).eps * scale
-    if np.max(np.abs(matrix - matrix.T)) > tolerance:
+    # the scale of entry (i, j): sqrt(|A_ii A_jj|), or the largest entry
+    # where a diagonal is zero
+    diagonal = np.sqrt(np.abs(np.diag(matrix)))
+    scale = np.outer(diagonal, diagonal)
+    scale[scale == 0.0] = np.max(np.abs(matrix))
+    tolerance = 64.0 * np.finfo(np.float64).eps
+    if np.max(np.abs(matrix - matrix.T) / np.where(scale > 0.0, scale, 1.0)) > tolerance:
         raise ValueError(f"{name} is asymmetric; check its row ordering.")
     matrix = 0.5 * (matrix + matrix.T)
     if positive:
