@@ -81,3 +81,32 @@ External files: `mask_reference.py`, `build_mask.sh`,
 `results/mask_resolution.{json,npz}`, `results/mask_simd.disassembly.txt`.
 LSST's opt-in `test_covariance_mask.py` uses the reference directory and
 `COSMOLIKE_MASK_LIBRARY`/`COSMOLIKE_OPERATORS_LIBRARY`.
+
+
+## Optional forecast inputs (2026-11-24)
+
+Both ordinary and joint-cluster forecasts accept `mask_cl` (raw common
+binary-mask power from L=0) and `mask_pair_correlation` (one measured pair
+availability factor per real-space angular bin). The latter replaces the
+harmonic pair calculation entirely, so insufficient mask resolution cannot
+reject valid measured pairs. It does not alter SSC. The monopole-derived
+area replaces the declared area after a 0.1% agreement check. No general
+Gaussian mask-mode coupling or catalog-dependent pair weights are added.
+The covariance CLI accepts these arrays under `covariance:`; they are not
+accuracy controls. Inputs and resolved area are archived with the result.
+
+`load_mask_cl` reads contiguous L,C_L text; `footprint_mask` rejects a cutoff
+that would discard supplied modes. Short spectra are treated as band
+limited. Bad spectrum shape, nonfinite values, negative power, nonphysical
+areas and invalid angular edges fail before native evaluation.
+
+The cluster-area extension and its cross-window restriction are described
+in [the joint forecast reference](covariance_cluster_joint.md). Retain the
+cap import in forecast_cluster: its differing count areas still need it.
+
+The port's isolated native build passed 59 DES cluster covariance tests;
+10 opt-in slow halo tests stayed skipped. Four existing LSST Y1 CLI-reader
+tests passed separately. Before/after ordinary and joint forecasts retained
+all 27 returned numerical arrays byte for byte when no new inputs were
+supplied. Runs used BLAS=1 and at most four OpenMP threads; legacy tests
+requesting eight were capped at four, so this is no new eight-thread result.

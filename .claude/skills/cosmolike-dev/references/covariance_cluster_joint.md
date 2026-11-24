@@ -204,3 +204,28 @@ means. The controlled thread-scaling table above predates these changes.
 All 46 DES covariance checks still pass. Numerical accuracy, the omitted
 physics and scaling beyond four threads remain open; see the measured
 component refinement in covariance_accuracy.md.
+
+
+## Count area as a function of redshift (2026-11-24)
+
+`cluster_area_table` contains redshift and area in square degrees, linearly
+interpolated on the count quadrature. Rescale density and its response by
+Omega(z)/Omega_2pt before count assembly: the unchanged compiled component
+then gives shell counts Omega(z)*f_K^2*n. Poisson variance equals the mean.
+Only active shells need area-table coverage; an empty footprint has zero
+counts. All two-point blocks retain their original area.
+
+Count-count SSC uses a cap of Omega(z), unless that area equals Omega_2pt,
+when it reuses the two-point mask variance. Count/two-point SSC retains
+V_cross=V_2pt. This is an approximation, since area alone gives no mask
+cross-spectrum. Require V_count >= V_2pt within rounding: otherwise the
+2-by-2 window covariance has negative determinant. Reject that input rather
+than repairing a covariance. A passed bound is not physical validation of
+the cross-window approximation; the archive names the omitted cross-spectrum.
+
+The core port combines upstream PR63 (ce4de30) and PR64 (e94a3ec). Preserve
+both the cap helper and the supplied-mask path. Measured pair counts bypass
+the mask operator, whose temporary memory is released inside its own branch.
+Tests in des_cluster/tests/covariance/test_footprint_inputs.py check area
+normalization, count scaling, distinct masks, bound rejection, YAML inputs,
+archive provenance, and native notebook/production agreement.

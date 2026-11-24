@@ -36,7 +36,9 @@ from .accuracy import non_gaussian_multipoles
 from .counts_cluster import count_statistics
 from .forecast import _json_array
 from .gaussian import observed_spectra, limber_spectra
-from .geometry import cap_mask, noise_powers
+from .geometry import (
+    cap_mask, correlation_pair_area, footprint_area, footprint_mask, noise_powers,
+)
 from .survey import compress_operators, project_connected, _matter_covariance_tables
 from .survey_cluster import observable_layout, selected_windows, all_pairs_spectra
 from .transform_cluster import localize_covariance
@@ -140,6 +142,99 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
     return projected.reshape(len(transform), nrichness, nstate).transpose(1, 0, 2)
 
 
+def _count_area(table, geometry, density, area_sr):
+    """Survey solid angle of the cluster counts at each radial state.
+
+    A volume-limited cluster sample loses the parts of the footprint too
+    shallow to detect clusters at z, so the counts see an area Omega(z)
+    smaller than the two-point footprint. The likelihood takes this
+    Omega(z) from set_cluster_area (cosmo2D_cluster.c, cluster_counts_fill);
+    this is the same linear interpolation of the same (z, deg^2) table.
+
+    Arguments:
+        table = [n,2] float, z strictly increasing and the area in deg^2,
+            nonnegative and at most the full sky.
+        geometry = [4,nstate] a,chi,f_K,dchi of the forecast states.
+        density = [ncount,nstate] selected abundance of every count bin.
+        area_sr = two-point footprint area in steradians.
+    Returns:
+        [nstate] Omega(z) in steradians. States where no count bin has
+        clusters keep area_sr: their count shells vanish anyway.
+    Raises:
+        ValueError for a malformed table, or one that does not cover the
+        redshift of every state where some count bin has clusters (the
+        likelihood stops there as well).
+    """
+    deg2_to_sr = (np.pi/180.0)**2
+    table = np.asarray(table, dtype=float)
+    if (table.ndim != 2 or table.shape[0] < 2 or table.shape[1] != 2
+            or not np.all(np.isfinite(table))
+            or np.any(np.diff(table[:, 0]) <= 0.0)
+            or np.any(table[:, 1] < 0.0)
+            or np.any(table[:, 1]*deg2_to_sr > 4.0*np.pi)):
+        raise ValueError("cluster_area_table must be [n,2] with n >= 2, z strictly "
+                         "increasing and 0 <= area <= full sky in deg^2")
+    z = 1.0/geometry[0]-1.0
+    active = np.any(density > 0.0, axis=0)
+    if np.any(active & ((z < table[0, 0]) | (z > table[-1, 0]))):
+        raise ValueError("cluster_area_table must cover the redshift of every "
+                         "state where a count bin has clusters")
+    area = np.full(z.shape, float(area_sr))
+    area[active] = np.interp(z[active], table[:, 0], table[:, 1])*deg2_to_sr
+    return area
+
+
+def _count_variance(interface, area, area_sr, variance, distance, long_power,
+                    mask_ell_max):
+    """Long-mode variance seen by the counts of each shell, sigma_b^2(chi).
+
+    The count-count SSC of a shell correlates two counts over the same
+    footprint Omega(z), so its sigma_b^2 is that of a cap of area Omega(z),
+    not of the two-point footprint. Shells that keep area_sr reuse the
+    two-point variance; equal areas share one C call.
+
+    Arguments:
+        interface = compiled project with covariance_ssc_mask_variance.
+        area = [nstate] count footprint (_count_area), in sr.
+        area_sr = two-point footprint area in steradians.
+        variance = [nstate] sigma_b^2 of the two-point footprint, in c/H0.
+        distance = [nstate] f_K in c/H0.
+        long_power = [nstate,mask_ell_max+1] linear power of the long modes.
+        mask_ell_max = last multipole of the footprint spectrum.
+    Returns:
+        [nstate] sigma_b^2 of the count footprint, in c/H0; zero where the
+        count footprint is empty.
+    Raises:
+        ValueError if the assumed cross variance (the two-point variance)
+        exceeds the Cauchy bound of the two auto variances. Different
+        footprints then need a measured or modeled mask cross-spectrum.
+    """
+    result = np.array(variance, dtype=float)
+    for value in np.unique(area):
+        if value == area_sr:
+            continue
+        nodes = np.flatnonzero(area == value)
+        if value == 0.0:
+            result[nodes] = 0.0
+            continue
+        result[nodes] = interface.covariance_ssc_mask_variance(
+            mask_cl=cap_mask(area_sr=value, ell_max=mask_ell_max), area_sr=value,
+            distance=np.ascontiguousarray(distance[nodes]),
+            power=np.ascontiguousarray(long_power[nodes]),
+        )
+        # The model takes V_count,2pt = V_2pt. Its two-window covariance
+        # has determinant V_2pt*(V_count-V_2pt), which cannot be negative.
+        # A larger count footprint or an unrelated irregular mask can
+        # violate this condition. Refuse it; clipping a covariance would
+        # hide missing window physics. Allow only rounding-size differences.
+        if np.any(result[nodes] < variance[nodes]*(1.0-1.e-12)):
+            raise ValueError(
+                "count/two-point SSC window approximation violates the "
+                "Cauchy bound; these footprints require a mask cross-spectrum"
+            )
+    return result
+
+
 def compute_forecast(interface, settings, progress=None, backend=None):
     """Return the joint angular forecast with separate G, SSC and cNG.
 
@@ -160,6 +255,21 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             term; ia must be none. Without the mapping the spectra are
             Limber. SSC and cNG always use the Limber model. Numerical
             controls come from the common covariance accuracy boost.
+            The optional cluster_area_table [n,2] (z, deg^2) is the survey
+            area of the cluster counts as a function of redshift, the
+            table the likelihood passes to set_cluster_area. With it the
+            mean counts, their Poisson noise and their SSC response use
+            Omega(z) on every shell, and count-count SSC uses the
+            long-mode variance of a cap of area Omega(z). Count-two-point
+            SSC keeps the variance of the two-point footprint, and the
+            two-point blocks (cluster ones included) keep area_deg2.
+            Without the table the counts use area_deg2 at every z.
+            Optional mask_cl is the raw binary-mask power spectrum for
+            SSC and noise pair areas. Its monopole sets the common area
+            and must agree with area_deg2 to 0.1%. A supplied
+            mask_pair_correlation replaces only real-space noise pair
+            areas. Count areas differing from the two-point area still
+            use caps: no cross-spectrum of distinct masks is supplied.
         progress = optional callable receiving stage and elapsed seconds.
         backend = None uses notebook wrappers; interface.covariance selects
             the direct production bindings to the same C calculations.
@@ -196,7 +306,10 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     # result. (pi/180)^2 converts deg^2 to sr.
     resolved = dict(settings)
     resolved['mnu'] = settings['cosmology']['mnu']
-    resolved['area_sr'] = settings['area_deg2']*(np.pi/180.0)**2
+    resolved['area_sr'] = footprint_area(
+        area_deg2=settings['area_deg2'],
+        mask_cl=settings.get('mask_cl'),
+    )
     # pi radians = 180 degrees = 10800 arcminutes.
     resolved['edges_rad'] = np.asarray(settings['theta_edges_arcmin'])*np.pi/10800.0
     resolved['space'] = 'real'
@@ -224,6 +337,15 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         'selected-cluster one-halo cNG corrections',
         'non-SSC count-spectrum cross covariance',
     ]
+    if settings.get('cluster_area_table') is None:
+        resolved['count_area_model'] = 'constant area_deg2'
+    else:
+        resolved['count_area_model'] = (
+            'cluster_area_table Omega(z) for counts and count-count SSC; '
+            'count-two-point SSC with the two-point footprint variance')
+        resolved['omitted_terms'].append(
+            'cross-spectrum of distinct count and two-point masks; '
+            'different count areas use spherical caps')
     if not nonlimber:
         resolved['omitted_terms'].append('all-pairs non-Limber corrections')
     if not rsd:
@@ -378,18 +500,36 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     kernels = np.ascontiguousarray(kernels)
     nbin = kernels.shape[1]
 
-    # The footprint is modeled as a spherical cap of area area_sr. Its own
-    # operator runs to mask_ell_max, a cutoff separate from the signal's.
-    mask = cap_mask(area_sr=resolved['area_sr'], ell_max=settings['mask_ell_max'])
-    mask_operator = interface.covariance_realspace_operator(
-        edges_rad=resolved['edges_rad'], ell_max=settings['mask_ell_max'],
-        nquad=settings['angle_nquad'],
+    # Use the supplied raw mask spectrum, or a cap of area area_sr. Its
+    # operator cutoff is independent of the cosmological signal cutoff.
+    mask = footprint_mask(
+        area_sr=resolved['area_sr'],
+        ell_max=settings['mask_ell_max'],
+        mask_cl=settings.get('mask_cl'),
     )
-    # Pair areas use the spin-0 bin kernel, probe 3 (w(theta)).
-    pair_area = interface.covariance_mask_pair_area(
-        mask_cl=mask, area_sr=resolved['area_sr'], edges_rad=resolved['edges_rad'],
-        scalar_kernel=np.ascontiguousarray(mask_operator[3]),
-    )
+    if settings.get('mask_pair_correlation') is None:
+        mask_operator = interface.covariance_realspace_operator(
+            edges_rad=resolved['edges_rad'],
+            ell_max=settings['mask_ell_max'],
+            nquad=settings['angle_nquad'],
+        )
+        # Pair areas use the spin-0 bin kernel, probe 3 (w(theta)).
+        pair_area = interface.covariance_mask_pair_area(
+            mask_cl=mask,
+            area_sr=resolved['area_sr'],
+            edges_rad=resolved['edges_rad'],
+            scalar_kernel=np.ascontiguousarray(mask_operator[3]),
+        )
+        del mask_operator
+    else:
+        # Measured pair counts replace this calculation, not just its
+        # result. A truncated mask spectrum need not resolve small holes
+        # and may not give positive reconstructed areas in every bin.
+        pair_area = correlation_pair_area(
+            area_sr=resolved['area_sr'],
+            edges_rad=resolved['edges_rad'],
+            correlation=settings['mask_pair_correlation'],
+        )
 
     def project_means(observed):
         """Project every row's observed spectrum with its probe's bin kernel.
@@ -431,9 +571,9 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         spectra=signal, noise=noise, rows=rows, operators=kernels,
         ell_min=2, area_sr=resolved['area_sr'], pair_area_sr2=pair_area,
     )
-    # Release the large all-pairs spectra and the mask operator before the
+    # Release the large all-pairs spectra before the
     # halo-table stage; no later stage reads them.
-    del spectra, signal, snapshot, mask_operator, correction
+    del spectra, signal, snapshot, correction
     checkpoint('gaussian_and_mean', tick)
 
     # --- 3. Shared matter cNG and SSC, plus the selected own-profile response ---
@@ -513,16 +653,28 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     # the order of two_point_positions.
     shell = np.ascontiguousarray(shell.reshape(len(rows)*nbin, nstate))
 
-    # Long-mode variance per radial shell seen through the cap mask,
-    # sigma_b^2(chi) in c/H0. Counts use the same shells and variance, so
-    # counts and two-point functions respond to one set of long modes.
+    # Long-mode variance per radial shell through the two-point mask,
+    # sigma_b^2(chi) in c/H0. The joint projection uses this variance for
+    # count/two-point crosses; count-count SSC is replaced below if its
+    # area differs. The area table alone cannot give a mask cross-spectrum.
     variance = interface.covariance_ssc_mask_variance(
         mask_cl=mask, area_sr=resolved['area_sr'],
         distance=np.ascontiguousarray(distance), power=matter['long_power'],
     )
+    # Count footprint Omega(z) on every shell: the two-point area unless
+    # cluster_area_table is set. count_statistics multiplies by one area,
+    # so the density and its response carry Omega(z)/area_sr instead:
+    # area_sr*f_K^2*(Omega/area_sr)*n = Omega*f_K^2*n on each shell.
+    count_area = np.full(nstate, resolved['area_sr'])
+    if settings.get('cluster_area_table') is not None:
+        count_area = _count_area(
+            table=settings['cluster_area_table'], geometry=geometry,
+            density=catalogs['density'], area_sr=resolved['area_sr'],
+        )
+    scale = count_area/resolved['area_sr']
     counts = count_statistics(
         interface=interface, distance=distance, dchi=dchi,
-        density=catalogs['density'], derivative=catalogs['derivative'],
+        density=catalogs['density']*scale, derivative=catalogs['derivative']*scale,
         area_sr=resolved['area_sr'], background_variance=variance,
     )
 
@@ -543,6 +695,23 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     # the transpose of the strict upper triangle (k=1) fills the lower one,
     # so the matrix is exactly symmetric.
     ssc = np.triu(ssc)+np.triu(ssc, k=1).T
+
+    # With an area table, two counts of one shell share the footprint
+    # Omega(z), so their SSC uses the long-mode variance of that footprint.
+    # The count-two-point blocks above keep the two-point variance.
+    if np.any(count_area != resolved['area_sr']):
+        count_variance = _count_variance(
+            interface=interface, area=count_area, area_sr=resolved['area_sr'],
+            variance=variance, distance=distance,
+            long_power=matter['long_power'],
+            mask_ell_max=settings['mask_ell_max'],
+        )
+        count_ssc = interface.covariance_project(
+            left=counts['shell_response'], right=counts['shell_response'],
+            weight=np.ascontiguousarray(dchi*count_variance),
+        )
+        count_ssc = np.triu(count_ssc)+np.triu(count_ssc, k=1).T
+        ssc[np.ix_(count_positions, count_positions)] = count_ssc
 
     # In the biased-tracer cNG approximation the matter trispectrum has
     # one linear bias per density leg. Keep every crossed radial window.

@@ -9,6 +9,7 @@
 7. [One accuracy boost](#one_accuracy_boost)
 8. [Interpolation and numerical checks](#interpolation_and_numerical_checks)
 9. [Gaussian physics in notebooks and YAML](#gaussian_physics)
+10. [Survey masks and cluster-count area](#survey_geometry)
 
 # Covariance tools for notebooks <a name="covariance_tools_for_notebooks"></a>
 
@@ -74,7 +75,7 @@ Gaussian model therefore does not add matching SSC/cNG physics.
 | `power.py` | Fill nested, dense linear/nonlinear/cb log-power tables with natural cubic interpolation before C linear lookups. |
 | `accuracy.py` | Refine interpolation grids and multipole cutoffs with `accuracy_boost`; choose quadrature rules independently with `integration_accuracy`. |
 | `gaussian.py` | Batched all-pairs Limber spectra, complete Wick pairings, conversion of source spectra to observed shear, rectangular Gaussian projection, and real-space pair noise. `shear_gaussian` is the shared small single-source example. |
-| `geometry.py` | Convert number densities to noise powers, construct a raw spherical-cap mask spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
+| `geometry.py` | Convert number densities to noise powers, read raw survey-mask power and pair counts, construct a spherical-cap spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
 | `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
 | `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks with Gaussian non-Limber/NLA/TATT options and separate zero-IA Limber SSC/cNG. |
@@ -306,7 +307,7 @@ The low-level supplied-spectrum wrappers let users state their own field
 conventions explicitly; see their Python `help(...)` documentation.
 
 The supported model uses massless neutrinos, linear galaxy bias, zero
-magnification and a spherical-cap footprint. Gaussian spectra have
+magnification and a spherical-cap or supplied binary-mask footprint. Gaussian spectra have
 the [non-Limber, RSD and IA choices](#gaussian_physics)
 described below; SSC/cNG retain zero RSD, zero IA and Limber
 projection. Optional
@@ -513,3 +514,98 @@ and the precision-matrix expansion. It consumes arrays supplied by the
 project; it neither loads DES data nor calls a physical model. The DES
 `EXAMPLE_COVARIANCE_PME.ipynb` illustrates the analytic-plus-simulation
 calculation with an explicitly synthetic covariance ensemble.
+
+## Survey masks and cluster-count area <a name="survey_geometry"></a>
+
+A survey area specifies how much sky was observed; it does not describe
+holes, disconnected regions or the pairs lost near a boundary. The
+optional inputs below let both `forecast.compute_forecast` and
+`forecast_cluster.compute_forecast` use more of that information. These
+features were adapted from João Rebouças's upstream
+[PR 63](https://github.com/CosmoLike/cocoa-cosmolike-core/pull/63) and
+[PR 64](https://github.com/CosmoLike/cocoa-cosmolike-core/pull/64).
+
+| Setting | Input and effect |
+|---|---|
+| `mask_cl` | Raw power of a common binary survey mask, indexed from multipole zero. Replaces the cap spectrum in SSC and in the real-space pure-noise pair areas. |
+| `mask_pair_correlation` | One positive, bin-averaged pair-availability factor per angular bin. Replaces the pure-noise pair areas directly; does not change SSC. Real-space forecasts only. |
+| `cluster_area_table` | Two columns: redshift and count-survey area in square degrees. Changes the mean counts, Poisson noise and count SSC; the two-point footprint remains unchanged. Joint cluster forecasts only. |
+
+In a notebook, put these inputs into the returned `settings` mapping before
+calling `compute`. Read a raw mask spectrum with
+`cov.load_mask_cl(filename=mask_file)`: the text file must contain two
+columns, contiguous multipoles starting at zero and their raw power.
+Use `np.loadtxt` for a count-area table. The command-line covariance YAML
+accepts the same three arrays under `covariance:`. They are physical
+inputs, so the accuracy boost does not alter their values. The saved
+forecast includes the supplied arrays and resolved area.
+
+For a binary mask with solid angle $`\Omega`$, its monopole obeys
+
+$$
+C_0^W=\frac{\Omega^2}{4\pi}.
+$$
+
+Do not divide the spectrum by this monopole, by area, or by sky fraction.
+The area derived from it must agree with `area_deg2` within 0.1%; that
+monopole area is then used consistently by all covariance terms. General
+object weights do not satisfy this geometric interpretation. The caller
+must establish that the mask is binary: the spectrum alone cannot prove
+that. A spectrum shorter than `mask_ell_max + 1` is explicitly treated as
+band limited and padded with zeros; a longer spectrum is rejected rather
+than silently truncated.
+
+The pair factor $`w_W`$ is normalized to the number of pairs expected
+without boundary losses. For angular bin $`[\theta_-,\theta_+]`$, its
+ordered-pair area is
+
+$$
+A_{\rm pair}=\Omega\,2\pi
+(\cos\theta_- - \cos\theta_+)\,w_W.
+$$
+
+Multiplication by the two catalog densities gives the ordered-pair count.
+No additional factor of two belongs here. A measured factor must use this
+normalization and these same bin edges; a raw full-sky mask correlation
+has a different normalization. The numerical calculation uses the sine
+identity for the cosine difference to retain precision in narrow bins.
+See [Troxel et al., Eq. 6](https://arxiv.org/abs/1804.10663) for the role
+of pair counts in shape-noise covariance. A single supplied factor applies
+to every catalog pair; catalog-dependent footprints and nonuniform object
+weights need their corresponding pair counts, which this input does not
+provide.
+
+A mask-only factor omits the source-clustering contribution in that
+paper's Eq. 6. If a measured galaxy-pair factor already includes clustering,
+do not multiply by that contribution again.
+
+The signal-signal and mixed signal-noise Gaussian terms retain their
+existing area approximation, and cNG retains its inverse-area scaling.
+Supplying a mask spectrum does not implement general Gaussian mask-mode
+coupling. Supplying measured pairs does not provide an SSC mask: without
+`mask_cl`, SSC still uses the cap. Measured pair areas are evaluated
+directly, bypassing the harmonic pair reconstruction altogether.
+
+Cluster counts need one further distinction. A depth-limited catalog can
+cover less sky at high redshift. Linear interpolation of
+`cluster_area_table` supplies that shell's area in both the expected
+count and its abundance response. The table must cover every shell with
+selected clusters. The count-count SSC uses a cap of that shell's area;
+if its area equals the two-point area, it reuses the supplied two-point
+mask instead. A zero-area shell contributes no counts.
+
+The count/two-point SSC still approximates the cross-window long-mode
+variance by the two-point variance. An area table cannot determine the
+actual cross-spectrum of two footprints. Writing the two auto variances
+as $`V_N`$ and $`V_2`$, this approximation gives the window matrix
+
+$$
+\begin{pmatrix}V_N&V_2\\V_2&V_2\end{pmatrix}.
+$$
+
+Its determinant is $`V_2(V_N-V_2)`$. If the count variance is smaller,
+the assumed cross term violates the Cauchy bound and the forecast raises
+an error. It does not clip the covariance or change an eigenvalue.
+Passing this check establishes algebraic consistency, not the accuracy
+of the distinct-footprint approximation. The forecast archive records
+this omitted cross-spectrum whenever an area table is supplied.

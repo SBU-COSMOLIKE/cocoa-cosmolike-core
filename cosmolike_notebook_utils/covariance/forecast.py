@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from ..camb_cosmology import get_camb_cosmology
-from .geometry import noise_powers
+from .geometry import footprint_area, noise_powers
 from .power import refine_power_tables
 from .survey import (
     observable_rows, realspace_covariance, fourier_covariance,
@@ -379,6 +379,14 @@ def compute_forecast(interface, settings, space="real", rows=None,
             nonlimber, rsd and ia (see gaussian_model); an absent entry
             selects Limber, zero-IA spectra without redshift-space
             distortions.
+            Optional mask_cl is the raw binary-mask power spectrum from
+            geometry.load_mask_cl. It supplies SSC and the noise pair
+            areas; sqrt(4*pi*C_0) must agree with area_deg2 to 0.1% and
+            becomes the common area. Optional mask_pair_correlation
+            supplies one measured w_W per angular bin and replaces only
+            the real-space noise pair areas. SSC still uses mask_cl, or
+            a cap when no mask spectrum is supplied. These inputs do not
+            implement general masked Gaussian signal-mode coupling.
         space = "real" for angular bins, "fourier" for E-mode bandpowers.
         backend = None uses notebook wrappers; interface.covariance uses
             the direct production bindings to the same C calculations.
@@ -401,6 +409,8 @@ def compute_forecast(interface, settings, space="real", rows=None,
     # The space is checked first, so a misspelled space leaves the core alone.
     if space not in ("real", "fourier"):
         raise ValueError("space must be 'real' or 'fourier'")
+    if space == "fourier" and settings.get("mask_pair_correlation") is not None:
+        raise ValueError("mask_pair_correlation describes real-space angular bins")
 
     # Reapply the core accuracy boost (the resolution of the C table
     # readers) and the Gaussian IA model on every calculation. The caller
@@ -457,7 +467,10 @@ def compute_forecast(interface, settings, space="real", rows=None,
     resolved = dict(settings)
     resolved["space"] = space
     resolved["mnu"] = settings["cosmology"]["mnu"]
-    resolved["area_sr"] = settings["area_deg2"]*(np.pi/180.0)**2
+    resolved["area_sr"] = footprint_area(
+        area_deg2=settings["area_deg2"],
+        mask_cl=settings.get("mask_cl"),
+    )
     resolved["edges_rad"] = settings["theta_edges_arcmin"]*np.pi/(180.0*60.0)
 
     # --- 4. G, SSC AND cNG IN THE REQUESTED SPACE ---

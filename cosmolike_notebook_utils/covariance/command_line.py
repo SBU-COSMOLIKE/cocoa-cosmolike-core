@@ -173,8 +173,8 @@ def load_run_configuration(filename, survey, default_space="real", joint=False):
     # --- 6. COVARIANCE CONTROLS AND MEASUREMENT SPACE ---
 
     # dict(...) copies the YAML block, so the pop below leaves the run
-    # record in settings["run_yaml"] intact. After the pop, every remaining
-    # key is an accuracy control for survey.configuration.
+    # record in settings["run_yaml"] intact. Survey geometry arrays are
+    # physical inputs, so remove them before resolving accuracy controls.
     controls = dict(info.get("covariance") or {})
     if "threads" in controls:
         raise ValueError("remove covariance.threads; set OMP_NUM_THREADS "
@@ -183,6 +183,14 @@ def load_run_configuration(filename, survey, default_space="real", joint=False):
     spaces = ["real"] if joint else ["real", "fourier"]
     if space not in spaces:
         raise ValueError(f"covariance.space must be one of {spaces}")
+    geometry = {}
+    for name in ("mask_cl", "mask_pair_correlation", "cluster_area_table"):
+        if name in controls:
+            geometry[name] = controls.pop(name)
+    if not joint and geometry.get("cluster_area_table") is not None:
+        raise ValueError("cluster_area_table requires the joint cluster forecast")
+    if space == "fourier" and geometry.get("mask_pair_correlation") is not None:
+        raise ValueError("mask_pair_correlation describes real-space angular bins")
 
     # --- 7. OPENMP THREADS FROM THE ENVIRONMENT ---
 
@@ -204,6 +212,7 @@ def load_run_configuration(filename, survey, default_space="real", joint=False):
     # refine the project's baseline, under the same global boost as Jupyter.
     # **controls passes each remaining YAML key as a keyword argument.
     settings = survey.configuration(**controls)
+    settings.update(geometry)
     settings["cosmology"].update(cosmology)
     settings["run_yaml"] = info
 
