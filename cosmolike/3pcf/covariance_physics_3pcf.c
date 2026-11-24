@@ -311,6 +311,9 @@ static inline void covariance_tophat_3pcf(
 // later calls only compare the node count.
 static const int COVARIANCE_NFW_NODES_3PCF = 524288;
 
+// No reset clears this table, on purpose: it depends only on the
+// compile-time node count, never on cosmology, mass or redshift, so no
+// setter can leave it describing an old state.
 static nfw_profile covariance_nfw_profile_3pcf = {0};
 
 static void covariance_nfw_table_3pcf(void)

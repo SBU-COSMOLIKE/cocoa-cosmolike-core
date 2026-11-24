@@ -685,7 +685,18 @@ static std::shared_ptr<physics_owner_3pcf> model_from_core_3pcf()
     std::exit(1);
   }
   if (NULL != input) {
-    cached = std::make_shared<physics_owner_3pcf>(*input);
+    // The guard has already committed the new state, so a model that
+    // fails to build here must not leave the previous one cached: later
+    // calls would return it for the new inputs. Stop instead, as the C
+    // code does on any failure.
+    try {
+      cached = std::make_shared<physics_owner_3pcf>(*input);
+    }
+    catch (const std::exception& error) {
+      spdlog::critical("3pcf interface: model_from_core could not build the "
+        "model for the new core state ({})", error.what());
+      std::exit(1);
+    }
   }
   return cached;
 }

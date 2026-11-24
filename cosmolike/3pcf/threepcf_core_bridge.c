@@ -2055,6 +2055,5 @@ void threepcf_core_initial_setup(void)
   reset_pdelta_dispatch();
   reset_like_struct();
   reset_cmb_struct();
-  bridge_stored_shear_nbin = 0;
   reset_threepcf_core_bridge();
 }
