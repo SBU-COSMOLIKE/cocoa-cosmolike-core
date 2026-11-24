@@ -4888,6 +4888,24 @@ def run_matter_emulator_prior_check(
         X=result_table,
         header="model_index delta_chi2 passes_strict_limit log_L_CAMB_minus_log_L_emulator",
     )
+    # Prior draws include points that fit the data very poorly. Compare their
+    # CAMB likelihoods with the best saved point before interpreting an error
+    # as relevant to inference. Nuisance parameters stayed fixed throughout:
+    # this is neither a profile likelihood nor a marginalized exclusion test.
+    fit_penalty = np.full(n_models, np.nan)
+    finite_reference = np.isfinite(loglikes["camb"])
+    if finite_reference.any():
+        best_loglike = np.max(loglikes["camb"][finite_reference])
+        fit_penalty[finite_reference] = -2.0 * (
+            loglikes["camb"][finite_reference] - best_loglike
+        )
+    np.savetxt(
+        fname=output / "likelihood_relevance.txt",
+        X=np.column_stack((
+            np.arange(n_models), loglikes["camb"], fit_penalty, distances,
+        )),
+        header="index logL_CAMB fixed_nuisance_fit_penalty emulator_vector_error",
+    )
     summary = f"{int(passed.sum())}/{n_models} pass delta_chi2 < {limit}; {int((~finite).sum())} nonfinite\n"
     if finite.any():
         summary += f"median={np.median(distances[finite]):.9g}; maximum={np.max(distances[finite]):.9g}\n"
