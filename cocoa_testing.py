@@ -4689,6 +4689,9 @@ def run_matter_emulator_prior_check(
     seed=137,
     limit=1.0,
     points_file=None,
+    fisher=False,
+    output_dir=None,
+    fisher_sample_power=18,
 ):
     """Compare a candidate matter emulator with CAMB on random cosmologies.
 
@@ -4718,6 +4721,9 @@ def run_matter_emulator_prior_check(
       points_file = optional named-column text table of explicit parameter
         points; supplied values replace the example's overrides. Its row
         count replaces n_models and no random cosmologies are drawn.
+      fisher = also compute the CAMB Fisher matrix and bounded-prior plot.
+      output_dir = optional destination below the project chains directory.
+      fisher_sample_power = log2 proposal count per bounded-Fisher repetition.
 
     Returns:
       number of failed or nonfinite comparisons. Generated vectors, points,
@@ -4814,7 +4820,16 @@ def run_matter_emulator_prior_check(
         output = project / "chains/matter_emulator_points" / source.stem / points_path.stem
     else:
         output = project / "chains/matter_emulator_prior" / source.stem
+    if fisher:
+        output = output / "with_fisher"
+    if output_dir is not None:
+        output = Path(output_dir).resolve()
+        if not output.is_relative_to(project / "chains"):
+            raise ValueError("Comparison output must stay below project chains/.")
     output.mkdir(parents=True, exist_ok=True)
+    if (output / "source.yaml").exists():
+        if (output / "source.yaml").read_text() != source.read_text():
+            raise ValueError("Saved YAML differs; choose a new --output directory.")
     columns = sorted(points[0])
     table = []
     for point in points:
@@ -4841,6 +4856,7 @@ def run_matter_emulator_prior_check(
     vectors = {}
     loglikes = {}
     reference_precision = None
+    fisher_failed = False
     status = (output / "status.txt").open("w")
     try:
         # Finish one model before initializing the next: the C library has
@@ -4920,6 +4936,27 @@ def run_matter_emulator_prior_check(
             vectors[route] = rows
             loglikes[route] = loglike_rows
             np.save(file=output / f"{route}_loglikes.npy", arr=loglike_rows)
+            if route == "camb" and fisher:
+                # Compute through this same live CAMB model, before the
+                # candidate initializes the library's global native state.
+                # All sampled nuisance parameters enter the Fisher matrix;
+                # the random accuracy points keep their declared values.
+                try:
+                    compute_matter_emulator_fisher(
+                        model=model,
+                        likelihood=likelihood,
+                        center=base_point,
+                        precision=reference_precision,
+                        params=settings["params"],
+                        output=output / "fisher",
+                        sample_power=fisher_sample_power,
+                    )
+                except Exception as error:
+                    fisher_failed = True
+                    message = f"Fisher FAILED {type(error).__name__}: {error}"
+                    print(message, flush=True)
+                    status.write(message + "\n")
+                    status.flush()
             model.close()
     finally:
         status.close()
@@ -4963,5 +5000,433 @@ def run_matter_emulator_prior_check(
     if finite.any():
         summary += f"median={np.median(distances[finite]):.9g}; maximum={np.max(distances[finite]):.9g}\n"
     (output / "summary.txt").write_text(summary)
+    if fisher and not fisher_failed:
+        try:
+            plot_matter_emulator_fisher(
+                output=output / "fisher",
+                points_file=output / "points.txt",
+                distances_file=output / "distances.txt",
+                project_name=project.name,
+            )
+        except Exception as error:
+            fisher_failed = True
+            summary += f"Fisher plot FAILED {type(error).__name__}: {error}\n"
+    if fisher_failed:
+        summary += "Fisher overlay incomplete; inspect status and fisher diagnostics.\n"
+    (output / "summary.txt").write_text(summary)
     print(summary, flush=True)
-    return int((~passed).sum())
+    return int((~passed).sum()) + int(fisher_failed)
+
+
+def compute_matter_emulator_fisher(
+    model, likelihood, center, precision, params, output, steps=None,
+    rows=None, covariance=None, sample_power=18, seeds=(137, 138),
+    min_effective=200,
+):
+    """Compute the reference model's local Fisher information and contours.
+
+    Arguments:
+      model, likelihood = initialized CAMB Cobaya model and its likelihood.
+      center = sampled parameter dictionary; fixed inputs come from Cobaya.
+      precision = native precision, including zero masked rows.
+      params = parameter specifications of this same configuration.
+      output = directory for derivatives, priors and bounded samples.
+      steps = optional named absolute stencil steps (not relative steps).
+      rows = optional unmasked data subset; requires the full covariance.
+      covariance = full covariance, only used when selecting data rows.
+      sample_power, seeds, min_effective = bounded integration controls.
+    Returns:
+      sample_matter_emulator_fisher's dictionary of weighted samples.
+    Side effects:
+      Evaluates the live reference model and restores its fiducial state.
+      Saves Fisher information before sampling, permitting inexpensive retries.
+
+    This is a centered forecast approximation. It does not fit the observed
+    data score or move the fiducial to the nuisance-prior means. Consequently
+    its bounded contours are not measured posterior credible regions.
+    """
+    from pathlib import Path
+    import numpy as np
+    from cosmolike_notebook_utils import fisher as cf
+
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    if getattr(model.prior, "external", {}):
+        raise ValueError("External/correlated priors require their full curvature; unsupported here.")
+    names = list(model.parameterization.sampled_params())
+    center = {name: float(center[name]) for name in names}
+    lower, upper, widths, absolute_steps = [], [], {}, {}
+    steps = {} if steps is None else dict(steps)
+    if set(steps) - set(names):
+        raise ValueError("Fisher step overrides must name sampled parameters.")
+    for name in names:
+        specification = params[name]
+        prior = specification["prior"]
+        if not isinstance(prior, dict):
+            raise ValueError(f"Prior for {name} must be an explicit mapping.")
+        distribution = prior.get("dist", "uniform")
+        if distribution == "uniform":
+            lo, hi = float(prior["min"]), float(prior["max"])
+            scale = (hi - lo) / 10.0
+        elif distribution in ("norm", "truncnorm"):
+            scale = float(prior.get("scale", 1.0))
+            widths[name] = scale
+            if distribution == "truncnorm":
+                location = float(prior.get("loc", 0.0))
+                lo = location + float(prior["a"]) * scale
+                hi = location + float(prior["b"]) * scale
+            else:
+                lo, hi = -np.inf, np.inf
+        else:
+            raise ValueError(f"Fisher prior {distribution} for {name} is unsupported.")
+        if not lo < center[name] < hi or not np.isfinite(scale) or scale <= 0.0:
+            raise ValueError(f"Fisher center for {name} must lie inside a proper prior.")
+        lower.append(lo)
+        upper.append(hi)
+        # Proposal widths choose numerical steps, never prior curvature.
+        # Comparing h and h/2 below tests this initial numerical choice.
+        proposal = specification.get("proposal", scale)
+        proposal = scale if proposal is None else float(proposal)
+        step = float(steps.get(name, 0.1 * proposal))
+        if name not in steps:
+            step = min(step, 0.2*(center[name]-lo), 0.2*(hi-center[name]))
+        if not np.isfinite(step) or step <= 0.0:
+            raise ValueError(f"Fisher step for {name} must be finite and positive.")
+        absolute_steps[name] = step
+
+    precision = np.asarray(precision, dtype=float)
+    if precision.ndim != 2 or precision.shape[0] != precision.shape[1]:
+        raise ValueError("Native precision must be square.")
+    cf.symmetric_matrix(precision, name="Native precision")
+    if np.any(np.diag(precision) < 0.0):
+        raise ValueError("Native precision has negative diagonal entries.")
+    active = np.flatnonzero(np.diag(precision) > 0.0)
+    if rows is None:
+        selected = active
+        metric = precision[np.ix_(selected, selected)]
+        arguments = {"precision": metric}
+    else:
+        selected = np.asarray(rows)
+        if (selected.ndim != 1 or selected.dtype.kind not in "iu"
+                or len(np.unique(selected)) != len(selected)
+                or not np.all(np.isin(selected, active))):
+            raise ValueError("Fisher rows must be unique unmasked integer indices.")
+        if covariance is None or np.shape(covariance) != precision.shape:
+            raise ValueError("A data subset requires the full matching covariance.")
+        # Selecting the full precision would condition on omitted data.
+        # A marginal observable subset instead uses this covariance block.
+        metric = np.asarray(covariance)[np.ix_(selected, selected)]
+        arguments = {"covariance": metric}
+    cf.symmetric_matrix(metric, name="Fisher data metric", positive=True)
+
+    def predict(point):
+        result = model.logposterior(params_values=point, cached=False)
+        if not np.isfinite(result.loglike):
+            raise ValueError("Fisher reference likelihood is nonfinite.")
+        if hasattr(likelihood, "last_datavector"):
+            vector = np.array(likelihood.last_datavector, dtype=float, copy=True)
+        else:
+            inputs = model.parameterization.to_input(
+                sampled_params_values=model.parameterization.check_sampled(point)
+            )
+            vector = np.array(likelihood.get_datavector(**inputs), dtype=float, copy=True)
+        if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
+            raise ValueError("Fisher prediction has wrong shape or nonfinite entries.")
+        if not np.isclose(likelihood.compute_logp(datavector=vector), result.loglike,
+                          rtol=1.e-12, atol=1.e-8):
+            raise ValueError("Fisher saved prediction does not reproduce its likelihood.")
+        return vector[selected]
+
+    # The existing cache reuses identical shared stencil points only within
+    # this fixed model. It never treats nearby cosmologies as the same point.
+    cache = cf.ExactMeanCache(predict)
+    bounds = dict(zip(names, zip(lower, upper)))
+    try:
+        _, reference, coarse, fine = cf.differentiate(
+            predict=cache, parameters=center, steps=absolute_steps, bounds=bounds,
+        )
+    finally:
+        model.logposterior(params_values=center, cached=False)
+    first = cf.fisher_matrix(derivatives=coarse, names=names, priors=widths, **arguments)
+    second = cf.fisher_matrix(derivatives=fine, names=names, priors=widths, **arguments)
+    zero = np.all(coarse == 0.0, axis=0) & np.all(fine == 0.0, axis=0)
+    np.savez_compressed(
+        file=output / "fisher.npz", names=names,
+        center=[center[name] for name in names], lower=lower, upper=upper,
+        gaussian_width=[widths.get(name, np.nan) for name in names],
+        steps=[absolute_steps[name] for name in names], rows=selected,
+        reference=reference, metric=metric, metric_is_covariance=rows is not None,
+        derivatives_coarse=coarse, derivatives_fine=fine,
+        fisher_coarse=first, fisher_fine=second, zero_response=zero,
+    )
+    (output / "definition.txt").write_text(
+        "Centered local CAMB Fisher diagnostic, not a fitted posterior.\n"
+        "All sampled parameters varied; independent Gaussian prior curvature "
+        "and all hard bounds retained. Data/prior linear scores not fitted.\n"
+        "Fixed data covariance; no covariance derivatives.\n"
+        "Exactly zero local response: " + ", ".join(np.asarray(names)[zero]) + "\n"
+        "A zero response can hide nonlinear dependence, such as an IA slope "
+        "at zero amplitude. These parameters remain in the bounded integral.\n"
+    )
+    return sample_matter_emulator_fisher(
+        output=output, sample_power=sample_power, seeds=seeds, min_effective=min_effective,
+    )
+
+
+def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min_effective=200):
+    """Integrate a saved centered Fisher Gaussian over all prior bounds.
+
+    Arguments:
+      output = directory holding compute_matter_emulator_fisher's archive.
+      sample_power = base-two sample exponent per independent Sobol scramble.
+      seeds = at least two distinct integer scrambling seeds.
+      min_effective = minimum importance effective count in each scramble.
+    Returns:
+      dictionary with names, values, weights, covariance and diagnostics.
+    Side effects:
+      Saves weighted samples and seed/step convergence diagnostics. Derivatives
+      are never recomputed. Low effective count raises after saving diagnostics.
+
+    Cosmological coordinates with finite bounds are sampled uniformly; other
+    coordinates follow their conditional Gaussian. Applying ALL remaining
+    bounds before projecting gives the bounded marginal, not a clipped ellipse.
+    """
+    from pathlib import Path
+    import numpy as np
+    from scipy.special import ndtri
+    from scipy.stats import qmc
+    from cosmolike_notebook_utils import fisher as cf
+
+    output = Path(output)
+    record = np.load(file=output / "fisher.npz")
+    names = record["names"].tolist()
+    center, lower, upper = (record[key] for key in ("center", "lower", "upper"))
+    fisher = cf.symmetric_matrix(record["fisher_fine"], name="Fisher")
+    coarse = cf.symmetric_matrix(record["fisher_coarse"], name="Coarse Fisher")
+    seeds = tuple(seeds)
+    if len(seeds) < 2 or len(set(seeds)) != len(seeds):
+        raise ValueError("Use at least two distinct sampling seeds.")
+    if not isinstance(sample_power, int) or not 1 <= sample_power <= 24:
+        raise ValueError("sample_power must be an integer between 1 and 24.")
+    if not np.isfinite(min_effective) or min_effective <= 0.0:
+        raise ValueError("min_effective must be positive.")
+    cosmological = {"As_1e9", "ns", "H0", "omegab", "omegam", "w", "wa", "w0",
+                    "w0pwa", "sigma8", "S8"}
+    finite = np.isfinite(lower) & np.isfinite(upper)
+    null = (np.diag(fisher) == 0.0) & (np.diag(coarse) == 0.0)
+    if np.any(null & ~finite):
+        raise ValueError("A zero-information parameter needs proper finite bounds.")
+    uniform = np.array([i for i, name in enumerate(names)
+                        if finite[i] and (name in cosmological or null[i])], dtype=int)
+    conditional = np.array([i for i in range(len(names)) if i not in uniform], dtype=int)
+    schur = fisher[np.ix_(uniform, uniform)].copy()
+    if len(conditional):
+        block = fisher[np.ix_(conditional, conditional)]
+        # Only the conditional block requires inversion. A bounded flat
+        # coordinate is integrated uniformly, without a pseudoinverse.
+        conditional_covariance = cf.parameter_covariance(
+            fisher=block, names=[names[i] for i in conditional],
+        )
+        response = -np.linalg.solve(block, fisher[np.ix_(conditional, uniform)])
+        factor = np.linalg.cholesky(conditional_covariance)
+        schur += fisher[np.ix_(uniform, conditional)] @ response
+    if len(uniform):
+        width = upper[uniform] - lower[uniform]
+        scaled = 0.5*(schur+schur.T) * width[:, None] * width[None, :]
+        eigenvalues = np.linalg.eigvalsh(scaled)
+        if eigenvalues[0] < -1.e-10 * max(1.0, eigenvalues[-1]):
+            raise ValueError("Fisher Schur complement has negative curvature.")
+
+    values_list, weights_list, coarse_logs, seed_list, diagnostics, masses = [], [], [], [], [], []
+    for seed in seeds:
+        draws = qmc.Sobol(d=len(names), scramble=True, seed=seed).random_base2(sample_power)
+        values = np.tile(center, (len(draws), 1))
+        values[:, uniform] = lower[uniform] + draws[:, uniform]*(upper[uniform]-lower[uniform])
+        displacement = values[:, uniform] - center[uniform]
+        if len(conditional):
+            # Inverse-normal transform, followed by Cholesky multiplication,
+            # generates the full conditional nuisance covariance and mean.
+            normal = ndtri(np.clip(draws[:, conditional], np.finfo(float).eps,
+                                   1.0-np.finfo(float).eps))
+            values[:, conditional] = center[conditional] + displacement @ response.T + normal @ factor.T
+        distance = np.einsum("ij,jk,ik->i", displacement, schur, displacement)
+        accepted = np.all((values >= lower) & (values <= upper), axis=1)
+        log_weight = -0.5*distance
+        weight = np.exp(log_weight) * accepted
+        total = np.sum(weight)
+        effective = total**2 / np.sum(weight**2) if total > 0.0 else 0.0
+        if total > 0.0:
+            normalized = weight / total
+            mean = normalized @ values
+            sigma = np.sqrt(normalized @ ((values-mean)**2))
+        else:
+            mean = sigma = np.full(len(names), np.nan)
+        diagnostics.append([seed, effective, *mean, *sigma])
+        masses.append(total / len(weight))
+        values_list.append(values)
+        weights_list.append(weight)
+        seed_list.append(np.full(len(values), seed))
+        full_displacement = values-center
+        changed = np.einsum("ij,jk,ik->i", full_displacement, coarse-fisher, full_displacement)
+        coarse_logs.append(np.where(accepted, log_weight-0.5*changed, -np.inf))
+    values, weights = np.concatenate(values_list), np.concatenate(weights_list)
+    coarse_log = np.concatenate(coarse_logs)
+    finite_log = np.isfinite(coarse_log)
+    coarse_weight = np.zeros(len(values))
+    if finite_log.any():
+        coarse_weight[finite_log] = np.exp(coarse_log[finite_log]-np.max(coarse_log[finite_log]))
+    diagnostics = np.asarray(diagnostics)
+    seed_means = diagnostics[:, 2:2+len(names)]
+    seed_widths = diagnostics[:, 2+len(names):]
+    average_width = np.mean(seed_widths, axis=0)
+    width_spread = np.max(np.ptp(seed_widths, axis=0) / average_width)
+    mean_spread = np.max(np.ptp(seed_means, axis=0) / average_width)
+    mass_spread = np.ptp(masses) / np.mean(masses) if np.mean(masses) > 0.0 else np.inf
+    # Effective count alone is not a convergence test. Independent
+    # scramblings must also agree on means, widths and normalization.
+    sampling_valid = bool(
+        np.all(diagnostics[:, 1] >= min_effective)
+        and width_spread <= 0.2 and mean_spread <= 0.25 and mass_spread <= 0.25
+    )
+    np.savez_compressed(
+        file=output / "bounded_samples.npz", names=names, values=values,
+        weights=weights, coarse_weights=coarse_weight, seed=np.concatenate(seed_list),
+        lower=lower, upper=upper, uniform_indices=uniform, sampling_valid=sampling_valid,
+    )
+    np.savetxt(
+        fname=output / "sampling_convergence.txt", X=diagnostics,
+        header="seed effective_count " + " ".join("mean_"+n for n in names)
+        + " " + " ".join("sigma_"+n for n in names),
+    )
+    (output / "sampling_checks.txt").write_text(
+        f"maximum_relative_seed_width_spread={width_spread:.8g}; limit=0.2\n"
+        f"maximum_seed_mean_spread_in_sigma={mean_spread:.8g}; limit=0.25\n"
+        f"relative_seed_normalization_spread={mass_spread:.8g}; limit=0.25\n"
+        f"minimum_effective={min_effective}; sampling_valid={sampling_valid}\n"
+    )
+    if not sampling_valid:
+        raise ValueError("Bounded-Fisher sampling did not converge; increase sample_power "
+                         "with sample_matter_emulator_fisher. Derivatives remain saved.")
+    normalized = weights/np.sum(weights)
+    mean = normalized @ values
+    delta = values-mean
+    bounded_covariance = delta.T @ (normalized[:, None]*delta)
+    cn = coarse_weight/coarse_weight.sum()
+    cm = cn @ values
+    cc = (values-cm).T @ (cn[:, None]*(values-cm))
+    sigma, coarse_sigma = np.sqrt(np.diag(bounded_covariance)), np.sqrt(np.diag(cc))
+    np.savetxt(
+        fname=output / "bounded_widths.txt",
+        X=np.column_stack((np.arange(len(names)), mean, sigma, coarse_sigma)),
+        header="index mean sigma_fine sigma_coarse; names=" + " ".join(names),
+    )
+    (output / "sampling_definition.txt").write_text(
+        "All bounds imposed before marginalization; centered local Fisher, not data posterior.\n"
+        "Importance effective count measures weight concentration; Sobol points "
+        "are not independent posterior draws. Compare independent scramblings.\n"
+        f"sample_power={sample_power}; seeds={seeds}; minimum_effective={min_effective}\n"
+        f"coarse_reweight_effective={1.0/np.sum(cn**2):.8g}\n"
+        f"maximum_relative_width_change_h_to_half_h={np.max(np.abs(coarse_sigma/sigma-1.0)):.8g}\n"
+    )
+    return {"names": names, "values": values, "weights": weights,
+            "covariance": bounded_covariance, "diagnostics": diagnostics}
+
+
+def plot_matter_emulator_fisher(output, points_file, distances_file, names=None, project_name=None):
+    """Overlay direct emulator errors on bounded local Fisher marginals.
+
+    Arguments:
+      output = Fisher directory containing bounded_samples.npz.
+      points_file = named-column comparison parameters in saved row order.
+      distances_file = distances.txt with matching sequential row indices.
+      names = optional displayed cosmological names.
+      project_name = project label printed on the figure.
+    Returns:
+      saved PNG and PDF paths. No model evaluations occur.
+    """
+    from pathlib import Path
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from getdist import MCSamples
+
+    output = Path(output)
+    if project_name is None:
+        project_name = next((p.name for p in output.parents if p.parent.name == "projects"), "Project")
+    record = np.load(file=output / "bounded_samples.npz")
+    if not bool(record["sampling_valid"]):
+        raise ValueError("Bounded sampling has not passed its effective-count check.")
+    all_names = record["names"].tolist()
+    points = np.atleast_1d(np.genfromtxt(points_file, names=True))
+    distances = np.atleast_2d(np.loadtxt(distances_file))
+    if (len(points) != len(distances)
+            or not np.array_equal(distances[:, 0], np.arange(len(points)))):
+        raise ValueError("Comparison points and distance row indices disagree.")
+    if names is None:
+        names = [name for name in ("As_1e9", "omegam", "H0", "omegab", "ns", "w", "wa", "w0pwa")
+                 if name in all_names and name in points.dtype.names]
+    if len(names) < 2 or any(name not in all_names or name not in points.dtype.names for name in names):
+        raise ValueError("Select at least two names present in Fisher and comparison.")
+    index = [all_names.index(name) for name in names]
+    weights = record["weights"]
+    positive = weights > 0.0
+    ranges = {name: [float(record["lower"][i]), float(record["upper"][i])]
+              for name, i in zip(names, index)}
+    # All nuisance bounds were imposed on the full-dimensional sample.
+    # Column selection here therefore gives the bounded marginal density.
+    labels = {"As_1e9": r"10^9 A_s", "omegam": r"\Omega_m", "H0": r"H_0",
+              "omegab": r"\Omega_b", "ns": r"n_s", "w": r"w_0",
+              "wa": r"w_a", "w0pwa": r"w_0+w_a"}
+    samples = MCSamples(
+        samples=record["values"][positive][:, index], weights=weights[positive],
+        names=names, labels=[labels.get(name, name) for name in names], ranges=ranges,
+    )
+    error = distances[:, 1]
+    valid = np.isfinite(error) & (error >= 0.0)
+    categories = [
+        (valid & (error < 0.2), "#0072B2", "o", r"$E<0.2$"),
+        (valid & (error >= 0.2) & (error < 0.5), "#009E73", "s", r"$0.2\leq E<0.5$"),
+        (valid & (error >= 0.5) & (error < 1.0), "#E69F00", "^", r"$0.5\leq E<1$"),
+        (valid & (error >= 1.0), "#D55E00", "x", r"$E\geq1$"),
+        (~valid, "#777777", "+", "Nonfinite/invalid"),
+    ]
+    with plt.rc_context():
+        plt.rcParams.update({"font.family": "STIXGeneral", "mathtext.fontset": "stix"})
+        amplitude = "As_1e9" if "As_1e9" in names else names[0]
+        horizontal = [name for name in names if name != amplitude]
+        columns = min(2, len(horizontal))
+        rows = (len(horizontal)+columns-1)//columns
+        figure, axes = plt.subplots(rows, columns, squeeze=False,
+                                    figsize=(5.4*columns, 4.5*rows), sharey=True)
+        for axis, name in zip(axes.flat, horizontal):
+            density = samples.get2DDensity(name, amplitude)
+            levels = np.sort(density.getContourLevels([0.68, 0.95]))
+            axis.contour(density.x, density.y, density.P, levels=levels,
+                         colors="black", linestyles=["--", "-"])
+            axis.set_xlabel("$" + labels.get(name, name) + "$")
+            axis.set_ylabel("$" + labels.get(amplitude, amplitude) + "$")
+            for chosen, color, marker, _ in categories:
+                axis.scatter(points[name][chosen], points[amplitude][chosen],
+                             color=color, marker=marker, s=25, zorder=5)
+            # Use the recorded prior limits. Historical points outside the
+            # current prior stay in the results table, outside these axes.
+            for variable, setter in ((name, axis.set_xlim), (amplitude, axis.set_ylim)):
+                position = all_names.index(variable)
+                limits = [record["lower"][position], record["upper"][position]]
+                if np.all(np.isfinite(limits)):
+                    setter(*limits)
+        for axis in list(axes.flat)[len(horizontal):]:
+            axis.set_visible(False)
+        handles = [Line2D([], [], color=color, marker=marker, linestyle="none", label=label)
+                   for _, color, marker, label in categories]
+        handles.append(Line2D([], [], color="black", label="Bounded local Fisher: 68%, 95%"))
+        figure.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.95),
+                      ncol=3, frameon=False)
+        label = str(project_name).replace("_", " ").upper()
+        figure.suptitle(label + ": direct vector error E", y=0.99)
+        figure.tight_layout(rect=(0, 0, 1, 0.84 if rows == 1 else 0.88))
+        png, pdf = output / "emulator_fisher.png", output / "emulator_fisher.pdf"
+        figure.savefig(png, dpi=180, bbox_inches="tight")
+        figure.savefig(pdf, bbox_inches="tight")
+        plt.close(figure)
+    return png, pdf
