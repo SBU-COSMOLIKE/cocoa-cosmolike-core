@@ -46,9 +46,15 @@ Contents:
   get_ddv_dkit        the same derivative via the derivkit package
   get_Fisher          F = D^T C^-1 D from a derivative function
   get_Fisher2         the same, with derivkit derivatives
+  fisher_from_derivatives
+                      the same contraction from an already computed
+                      derivative matrix D
   add_gaussian_priors add 1/sigma^2 to the diagonal for Gaussian
                       priors
   get_FoM             figure of merit of one parameter pair
+  stable_inverse      pseudo-inverse of a Fisher matrix that may be
+                      singular: scaled to unit diagonal, directions
+                      below rtol of the largest eigenvalue dropped
   get_stencil_noise   numerical noise of one evaluation along one
                       parameter, measured from the five stencil points
                       (fourth difference), the spurious Fisher prior a
@@ -329,7 +335,7 @@ def get_Fisher(ddv, CV=None, h=0.02, AccuracyBoost=3.1, priors=None,
     # data-vector evaluations per call with get_ddv); np.column_stack
     # glues the returned 1D arrays side by side as the columns of D
     D = np.column_stack([ddv(index=p, h=h, CV=CV, AccuracyBoost=AccuracyBoost) for p in list(range(len(CV)))]).astype(np.float64)
-    # @ is numpy matrix multiplication: D^T (C^-1 D). The inverse
+    # fisher_from_derivatives contracts F = D^T (C^-1 D). The inverse
     # covariance weights coherent changes of the predictions: two
     # parameters with nearly parallel derivative columns move the
     # data the same way, so the data constrain their combination
@@ -1844,7 +1850,9 @@ def figure_of_merit(fisher, names, pair):
         if name not in names:
             raise ValueError(f"FoM parameter {name} is absent from {names}.")
         indices.append(names.index(name))
-    matrix, normalized, scales = resolved_fisher(fisher=fisher, names=names)
+    # resolved_fisher also returns the unit-diagonal matrix and its scales;
+    # get_FoM needs only the checked, symmetrized Fisher matrix
+    matrix, _, _ = resolved_fisher(fisher=fisher, names=names)
     return get_FoM(i=indices[0], j=indices[1], F=matrix)
 
 
