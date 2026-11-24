@@ -2286,8 +2286,13 @@ def stable_inverse(F, rtol):
     directions whose eigenvalue is below rtol times the largest are dropped
     (a pseudo-inverse).
 
+    A parameter with no information at all (a zero row and column, F_ii =
+    0) cannot be scaled to unit diagonal; it keeps unit scale, so its zero
+    eigenvalue is dropped like any other null direction and the
+    constrained parameters are inverted as usual.
+
     Arguments:
-      F    = 2D symmetric array, the Fisher matrix (positive diagonal).
+      F    = 2D symmetric array, the Fisher matrix (nonnegative diagonal).
       rtol = the relative eigenvalue cut, e.g. 1e-12.
 
     Returns:
@@ -2295,8 +2300,16 @@ def stable_inverse(F, rtol):
       holds the dropped directions as columns, in the scaled basis (zero
       entries mark the parameters they leave alone).
     """
-    # scale to unit diagonal: s_i = 1/sqrt(F_ii)
-    s = 1.0/np.sqrt(np.diag(F))
+    # scale to unit diagonal: s_i = 1/sqrt(F_ii); a parameter with F_ii = 0
+    # keeps s_i = 1 (its row and column are zero, so it is a null direction)
+    diagonal = np.diag(F)
+    if not np.all(np.isfinite(diagonal)) or np.any(diagonal < 0.0):
+        raise ValueError("stable_inverse: the Fisher diagonal must be finite "
+                         "and nonnegative.")
+    if not np.any(diagonal > 0.0):
+        raise ValueError("stable_inverse: every parameter has zero information.")
+    s = np.ones_like(diagonal)
+    s[diagonal > 0.0] = 1.0/np.sqrt(diagonal[diagonal > 0.0])
 
     # eigenvalues w and eigenvectors V (columns) of the scaled matrix
     w, V = np.linalg.eigh(F*s[:, None]*s[None, :])

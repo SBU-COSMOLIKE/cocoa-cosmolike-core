@@ -22,7 +22,9 @@ The file layout. A cache is one .npz file (numpy's zip archive of arrays):
 
 "settings" is the settings dict the caller passed, flattened with "/"; the
 keys that end in data_files/<file> are data-file checksums and go to
-"data_files". A read with settings compares both entry by entry. The file
+"data_files", keyed by the file name when that name is unique and by the
+full settings path when two inputs share a name (e.g. two datasets'
+mask.txt), so neither checksum can replace the other. A read with settings compares both entry by entry. The file
 holds no pickles (Python's serialized objects), so reading a cache runs no
 code.
 
@@ -175,12 +177,21 @@ def cache_record(name, settings, result=None):
 
     # A key ending in data_files/<file> is a checksum (from model_settings);
     # every other key is a setting.
+    checksums = {}
     for key in flat:
         parts = key.split("/")
         if len(parts) > 1 and parts[-2] == "data_files":
-            record["data_files"][parts[-1]] = flat[key]
+            checksums[key] = flat[key]
         else:
             record["settings"][key] = flat[key]
+
+    # A unique file name stays the short key (as in every record written
+    # before); two inputs with the same file name keep their full settings
+    # path, so the second checksum cannot overwrite the first.
+    files = [key.split("/")[-1] for key in checksums]
+    for key, value in checksums.items():
+        file = key.split("/")[-1]
+        record["data_files"][file if 1 == files.count(file) else key] = value
 
     if isinstance(result, dict) and "names" in result:
         record["parameters"] = _plain(result["names"])
