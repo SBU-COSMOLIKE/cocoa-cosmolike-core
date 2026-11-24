@@ -593,6 +593,9 @@ typedef struct
   int clustering_photoz;
   int clustering_nzbins;
   double** clustering_zdist_table;
+  // Bin count clustering_zdist_table was allocated with (0 = no table),
+  // as shear_zdist_table_nbin for the source table.
+  int clustering_zdist_table_nbin;
   double clustering_zdist_zall[2];  // [RANGE_MIN, RANGE_MAX] of the table
   double clustering_zdist_z[3][MAX_SIZE_ARRAYS]; // [RANGE_MIN|RANGE_MAX][bin]:
                                                  // each bin's n(z) support;

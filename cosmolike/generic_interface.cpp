@@ -767,12 +767,11 @@ double compute_sigma2(
 // loaded yet are skipped, so calling this before any load changes nothing.
 // ---------------------------------------------------------------------------
 
-// The bin count the stored lens n(z) table was saved with (set_lens_sample).
-// set_lens_sample_size may change the struct's count before the next load,
-// and a stored table must be read with its own count. The source table's
-// count lives with the table, in redshift.shear_zdist_table_nbin, because
-// the 3pcf bridge installs that table too and both must see one record.
-static int stored_clustering_nbin = 0;
+// The bin counts the stored n(z) tables were saved with live with the
+// tables (redshift.shear_zdist_table_nbin, clustering_zdist_table_nbin):
+// set_*_sample_size may change the struct's count before the next load,
+// a stored table must be read with its own count, and the 3pcf bridge
+// installs the source table too, so every installer sees one record.
 
 static void reload_loaded_redshift_samples()
 {
@@ -801,7 +800,7 @@ static void reload_loaded_redshift_samples()
       continue;
     }
     const int stored = (sample == 0) ? redshift.shear_zdist_table_nbin
-                                     : stored_clustering_nbin;
+                                     : redshift.clustering_zdist_table_nbin;
     if (stored != ntomo) {
       critical("the stored {} n(z) has {} bins but the sample now has {}: "
                "load the new n(z) before changing the n(z) selection",
@@ -4813,7 +4812,7 @@ void set_lens_sample(arma::Mat<double> input_table)
       (zmid_cache != Ntable.photoz_zmid_convention);
   // a table saved with another bin count is not compared entry by entry
   if (redshift.clustering_nzbins != static_cast<int>(input_table.n_rows) ||
-      stored_clustering_nbin != Ntomo ||
+      redshift.clustering_zdist_table_nbin != Ntomo ||
       NULL == redshift.clustering_zdist_table) {
     cache_update = 1;
   }
@@ -4841,7 +4840,7 @@ void set_lens_sample(arma::Mat<double> input_table)
   if (1 == cache_update || 1 == force_cache_update_test)
   {
     redshift.clustering_nzbins = input_table.n_rows;
-    stored_clustering_nbin = Ntomo;
+    redshift.clustering_zdist_table_nbin = Ntomo;
     const int nzbins = redshift.clustering_nzbins;    // alias
 
     if (redshift.clustering_zdist_table != NULL) {

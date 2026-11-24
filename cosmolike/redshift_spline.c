@@ -870,6 +870,14 @@ double zdistr_histo_n(double z, const int ni)
     log_fatal("redshift n(z) not loaded");
     exit(1);
   } 
+  // The table holds shear_zdist_table_nbin rows plus the z row; a bin
+  // count declared later (set_source_sample_size) without a matching
+  // install would read the z row past the allocation.
+  if (redshift.shear_zdist_table_nbin != redshift.shear_nbin) {
+    log_fatal("source n(z) table was installed for %d bins but %d are "
+              "declared", redshift.shear_zdist_table_nbin, redshift.shear_nbin);
+    exit(1);
+  }
   double res = 0.0;
   if ((z >= redshift.shear_zdist_zall[RANGE_MIN]) && (z<redshift.shear_zdist_zall[RANGE_MAX])) 
   {
@@ -1722,6 +1730,13 @@ double pf_histo_n(double z, const int ni)
     log_fatal("redshift n(z) not loaded");
     exit(1);
   } 
+  // As zdistr_histo_n: the table must belong to the declared bin count.
+  if (redshift.clustering_zdist_table_nbin != redshift.clustering_nbin) {
+    log_fatal("lens n(z) table was installed for %d bins but %d are "
+              "declared", redshift.clustering_zdist_table_nbin,
+              redshift.clustering_nbin);
+    exit(1);
+  }
   
   double res = 0.0;
   if ((z >= redshift.clustering_zdist_zall[RANGE_MIN]) && 

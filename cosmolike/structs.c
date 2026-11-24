@@ -173,6 +173,7 @@ void reset_redshift_struct(void)
     free(redshift.clustering_zdist_table);
     redshift.clustering_zdist_table = NULL;
   }
+  redshift.clustering_zdist_table_nbin = 0;
   redshift.clustering_photoz = 0;
   redshift.clustering_zdist_zall[RANGE_MIN] = 0.0;
   redshift.clustering_zdist_zall[RANGE_MAX] = 0.0;
