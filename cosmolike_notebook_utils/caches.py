@@ -201,6 +201,55 @@ def cache_record(name, settings, result=None):
     return json.loads(json.dumps(record))
 
 
+def _file_differences(stored, current):
+    """Return one line per data-file checksum that differs between two records.
+
+    A record keys a checksum by the file name, or by its full settings path
+    when two inputs share a name. A record written before shared names were
+    kept stored one checksum under the bare name: it still matches when
+    every current entry of that name carries exactly that checksum, and
+    differs otherwise.
+
+    Arguments:
+      stored  = the "data_files" of the stored record.
+      current = the "data_files" of the current record.
+
+    Returns:
+      list of str, empty when every checksum agrees.
+    """
+    out = []
+
+    # The current entries of each file name, whether keyed short or by path.
+    by_name = {}
+    for key, value in current.items():
+        by_name.setdefault(key.split("/")[-1], []).append((key, value))
+
+    covered = set()
+    for key, value in stored.items():
+        if key in current:
+            covered.add(key)
+            if current[key] != value:
+                out.append(f"{key}: cache {value}, now {current[key]}")
+            continue
+
+        # A bare name in the stored record: every current entry of that
+        # name must carry the stored checksum.
+        entries = by_name.get(key, []) if "/" not in key else []
+        if not entries:
+            out.append(f"{key}: cache {value}, now (absent)")
+            continue
+        for current_key, current_value in entries:
+            covered.add(current_key)
+            if current_value != value:
+                out.append(f"{current_key}: cache {value}, now {current_value}")
+
+    for key, value in current.items():
+        if key not in covered:
+            out.append(f"{key}: cache (absent), now {value}")
+
+    return out
+
+
 def _differences(stored, current, ignored=()):
     """Return one line per key whose value differs between two flat dicts.
 
@@ -331,7 +380,7 @@ def read_fisher_cache(name, settings=None, comparable=None, tier=None, folder=No
             ignored = set(current["settings"]) - set(kept["settings"])
 
         lines = _differences(record["settings"], current["settings"], ignored)
-        lines += _differences(record["data_files"], current["data_files"])
+        lines += _file_differences(record["data_files"], current["data_files"])
 
         if lines:
             raise ValueError(f"{path} was made with other settings ({len(lines)} "
