@@ -530,6 +530,16 @@ class transform_owner_3pcf {
       spdlog::critical("3pcf transform: convention must be fastnc or treecorr");
       std::exit(1);
     }
+    // The triangle count ntheta*ntheta*nphi is later passed as an int
+    // and used in array shapes; refuse a plan whose count does not fit,
+    // so every product of these sizes below is safe.
+    const size_t triangle_count = static_cast<size_t>(indices.size())
+      *static_cast<size_t>(indices.size())*static_cast<size_t>(phi.size());
+    if (!(static_cast<size_t>(INT_MAX) >= triangle_count)) {
+      spdlog::critical("3pcf transform: ntheta*ntheta*nphi = {} triangles "
+        "exceeds the int range", triangle_count);
+      std::exit(1);
+    }
 
     ell_.assign(ell.data(), ell.data()+ell.size());
     nell_ = static_cast<int>(ell.size());
@@ -851,7 +861,10 @@ class transform_owner_3pcf {
     // once, whatever the number of rows that reuse them.
     // The row tables are built in locals and installed only after every
     // row passed its checks, so a refused request leaves the plan as it
-    // was.
+    // was. The settings dictionary is converted first for the same
+    // reason: a malformed one throws here, before anything changes.
+    const auto resolved_settings = settings_physics_grid(settings);
+    const py::dict settings_record = py::dict(settings.attr("copy")());
     std::vector<std::array<int,3>> triplets;
     std::vector<std::array<double,3>> radii;
     std::vector<int> row_triplet;
@@ -924,8 +937,8 @@ class transform_owner_3pcf {
     // read-only diagnostic properties.
     aperture_keep_ = keep;
     aperture_sides_ = sides;
-    aperture_settings_ = settings_physics_grid(settings);
-    aperture_settings_record_ = py::dict(settings.attr("copy")());
+    aperture_settings_ = resolved_settings;
+    aperture_settings_record_ = settings_record;
     aperture_batch_ = batch_size;
     aperture_prepared_ = prepared;
     aperture_nmu_ = nmu;

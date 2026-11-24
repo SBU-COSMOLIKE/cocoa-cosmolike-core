@@ -526,6 +526,10 @@ arma::Col<double> physics_feedback_power_cpp_3pcf(
     result[index] = physics_feedback_power_3pcf(owner.get(), k[index],
       z[index], amplitude);
   }
+  if (!(result.is_finite())) {
+    spdlog::critical("3pcf physics wrapper: power response is not finite");
+    std::exit(1);
+  }
 
   return result;
 }
