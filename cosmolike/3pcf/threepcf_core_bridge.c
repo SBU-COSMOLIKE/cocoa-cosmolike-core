@@ -1364,6 +1364,10 @@ void reset_threepcf_core_bridge(void)
   guard.have_build = 0;
   memset(guard.counts, 0, sizeof(guard.counts));
   memset(guard.keys, 0, sizeof(guard.keys));
+  // No source table is stored after a reset, so its recorded bin count
+  // must go too; otherwise a table installed afterwards by another
+  // installer would be checked against the old count.
+  bridge_stored_shear_nbin = 0;
   // guard.generation stays monotonic on purpose: a consumer that
   // cached a generation number across the reset must still observe
   // the next build as new.

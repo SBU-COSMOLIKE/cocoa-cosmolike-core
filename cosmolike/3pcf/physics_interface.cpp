@@ -2441,6 +2441,9 @@ void bind_threepcf_physics(
       result.mutable_data()[index] = physics_feedback_power_3pcf(owner.get(),
         k.data()[index], z.data()[index], amplitude);
     }
+    // A nonfinite response stops here, before the likelihood multiplies
+    // the nonlinear power by it far from this call.
+    finite_physics(result);
     return result;
   }, py::arg("k").noconvert(), py::arg("z").noconvert(),
     py::arg("amplitude"));
@@ -2457,6 +2460,7 @@ void bind_threepcf_physics(
     physics_array result(values.n_elem);
     std::memcpy(result.mutable_data(), values.memptr(),
       static_cast<size_t>(values.n_elem)*sizeof(double));
+    finite_physics(result);
     return result;
   }, py::arg("k"), py::arg("z"), py::arg("amplitude"));
 

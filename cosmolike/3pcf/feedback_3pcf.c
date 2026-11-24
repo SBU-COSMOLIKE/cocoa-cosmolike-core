@@ -591,10 +591,12 @@ double feedback_bispectrum_3pcf(
   const double small = fmin(sides[0], fmin(sides[1], sides[2]));
   const double large = fmax(sides[0], fmax(sides[1], sides[2]));
 
-  // The middle side comes from comparisons alone. The algebraic
-  // shortcut - subtracting the two extremes from the sum of all three
-  // sides - cancels large numbers in a very squeezed triangle and
-  // loses the middle side to roundoff; comparisons cancel nothing.
+  // The middle side comes from comparisons alone, so it is one of the
+  // three stored values exactly. Subtracting the two extremes from the
+  // sum of the sides (as physics_grid_3pcf.c does) is also accurate for
+  // a valid triangle - the middle side is at least half the largest, so
+  // only a few ulps are lost - but it would not reproduce the stored
+  // value bit for bit.
   const double middle = fmax(fmin(sides[0], sides[1]),
     fmin(fmax(sides[0], sides[1]), sides[2]));
 
@@ -799,9 +801,7 @@ double baseline_bispectrum_3pcf(
     "baseline_3pcf: missing prepared B table"); exit(1); }
 
   // Sort the sides by comparisons alone, as in feedback_bispectrum_3pcf
-  // above: the min/max composition for the middle side cancels nothing,
-  // where subtracting the two extremes from the side sum would lose a
-  // squeezed triangle's middle side to roundoff.
+  // above, so the middle side is exactly one of the stored values.
   const double small = fmin(sides[0], fmin(sides[1], sides[2]));
   const double large = fmax(sides[0], fmax(sides[1], sides[2]));
   const double middle = fmax(fmin(sides[0], sides[1]),

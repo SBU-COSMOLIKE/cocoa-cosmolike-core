@@ -637,8 +637,9 @@ class transform_owner_3pcf {
     shape_transform(real, 3);
     shape_transform(imag, 3);
 
-    const int triangles = ntheta_*ntheta_*nphi_;
-    if (!(4 == real.shape(1) && real.shape(2) == triangles)) {
+    const size_t triangles = static_cast<size_t>(ntheta_)*ntheta_*nphi_;
+    if (!(4 == real.shape(1)
+          && static_cast<size_t>(real.shape(2)) == triangles)) {
       spdlog::critical("3pcf transform: weights do not match this plan's "
         "triangle grid");
       std::exit(1);
@@ -685,8 +686,9 @@ class transform_owner_3pcf {
     shape_transform(real, 3);
     shape_transform(imag, 3);
 
-    const int triangles = ntheta_*ntheta_*nphi_;
-    if (!(4 == real.shape(1) && real.shape(2) == triangles)) {
+    const size_t triangles = static_cast<size_t>(ntheta_)*ntheta_*nphi_;
+    if (!(4 == real.shape(1)
+          && static_cast<size_t>(real.shape(2)) == triangles)) {
       spdlog::critical("3pcf transform: weights do not match this plan's "
         "triangle grid");
       std::exit(1);
@@ -847,11 +849,13 @@ class transform_owner_3pcf {
     // unique radius triplet, so aperture_vector later projects each
     // distinct triplet once and contracts each distinct radius set
     // once, whatever the number of rows that reuse them.
+    // The row tables are built in locals and installed only after every
+    // row passed its checks, so a refused request leaves the plan as it
+    // was.
     std::vector<std::array<int,3>> triplets;
     std::vector<std::array<double,3>> radii;
-    aperture_bins_.assign(bins.data(), bins.data()+bins.size());
-    aperture_filter_.clear();
-    aperture_triplet_.clear();
+    std::vector<int> row_triplet;
+    std::vector<int> row_filter;
     for (int row=0; row<bins.shape(0); row++) {
       std::array<int,3> triplet;
       std::array<double,3> radius;
@@ -863,16 +867,19 @@ class transform_owner_3pcf {
         }
       }
       auto t = std::find(triplets.begin(), triplets.end(), triplet);
-      aperture_triplet_.push_back(t-triplets.begin());
+      row_triplet.push_back(t-triplets.begin());
       if (t == triplets.end()) {
         triplets.push_back(triplet);
       }
       auto r = std::find(radii.begin(), radii.end(), radius);
-      aperture_filter_.push_back(r-radii.begin());
+      row_filter.push_back(r-radii.begin());
       if (r == radii.end()) {
         radii.push_back(radius);
       }
     }
+    aperture_bins_.assign(bins.data(), bins.data()+bins.size());
+    aperture_triplet_ = row_triplet;
+    aperture_filter_ = row_filter;
     // Flatten the unique lists into the [count, 3] buffers the C
     // engines read.
     aperture_triplets_.clear();
