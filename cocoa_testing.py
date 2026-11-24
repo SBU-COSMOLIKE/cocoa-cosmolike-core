@@ -18,6 +18,11 @@ generator (generate_frozen_reference.py) import everything from
 their project's shim, never from this module directly. A WORKED
 EXAMPLE below shows the complete shim a new project writes.
 
+The candidate matter-spectrum prior check is a separate accuracy study:
+run_matter_emulator_prior_check reads the chosen current example, compares
+two freshly computed predictions, and records the source, points and code
+revisions under chains/. It never refreshes a frozen regression reference.
+
 THE FROZEN-STATE DOCTRINE
 
 Everything a test evaluates is FROZEN: stored under the project's
@@ -4674,3 +4679,218 @@ def conftest_configure(config):
     """
     os.environ["COCOA_FASTPT_HIGH"] = str(config.getoption("--high"))
     os.environ["COCOA_FASTPT_MASK"] = str(config.getoption("--mask"))
+
+
+def run_matter_emulator_prior_check(
+    project,
+    configuration,
+    get_precision,
+    n_models=50,
+    seed=137,
+    limit=1.0,
+):
+    """Compare a candidate matter emulator with CAMB on random cosmologies.
+
+    Project tests call this routine with their ordinary Cobaya evaluate
+    example and native precision reader, as the other shared Cocoa tests
+    do. Each cosmology changes the theory state; cached=False forces the
+    likelihood to run. Nuisance parameters retain the example's override.
+    Both routes use CAMB distances and plain HMCode2020, with mnu=0.06 eV.
+    The candidate uses the project's existing EMUL2 likelihood route.
+
+    Draw the cosmological box priors, intersect Omega_m with (0.2, 0.5),
+    and keep fixed cosmological parameters fixed. Do not redraw failures
+    or silently restrict to the emulator training domain. The result is
+    delta_model.T @ precision @ delta_model, not a difference between two
+    chi-squared values against the measured data. A value below limit is
+    the requested agreement criterion at that point, not a proof that
+    importance weights have adequate effective sample size.
+
+    Arguments:
+      project = project directory below Cocoa/projects.
+      configuration = existing evaluate YAML, including its nuisance point.
+      get_precision = the initialized native masked precision reader.
+      n_models = number of random cosmologies; default 50.
+      seed = model i uses numpy.random.default_rng(seed + i).
+      limit = strict upper bound on the prediction-distance statistic.
+
+    Returns:
+      number of failed or nonfinite comparisons. Generated vectors, points,
+      status records and a summary are written under the project's chains/.
+      EMULATOR_CODE_DIR and EMULATOR_DATA_DIR select candidate checkouts.
+      The project driver selects the native interface before calling this
+      routine; production configuration files remain unchanged.
+    """
+    import copy
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import numpy as np
+    from cobaya.model import get_model
+    from cobaya.yaml import yaml_load_file
+
+    project = Path(project).resolve()
+    root = project.parents[1]
+    source = project / configuration
+    code_dir = Path(os.environ.get(
+        "EMULATOR_CODE_DIR",
+        root / "external_modules/code/emulators/emultrf",
+    ))
+    data_dir = Path(os.environ.get(
+        "EMULATOR_DATA_DIR",
+        root / "external_modules/data/emultrf",
+    ))
+    sys.path.insert(0, str(code_dir))
+    from emulmps.emulmps import emulmps
+
+    info = yaml_load_file(str(source))
+    base_point = dict(info["sampler"]["evaluate"]["override"])
+    base_point.pop("mnu", None)
+    info.pop("sampler")
+    info.pop("output", None)
+    info["params"]["mnu"] = {"value": 0.06}
+    if len(info["likelihood"]) != 1:
+        raise ValueError("Choose one project's likelihood for this comparison.")
+    likelihood_name = next(iter(info["likelihood"]))
+    info["likelihood"][likelihood_name]["non_linear_emul"] = 2
+    info["likelihood"][likelihood_name]["print_datavector"] = False
+    camb_args = info["theory"]["camb"]["extra_args"]
+    camb_args["halofit_version"] = "mead2020"
+    camb_args.pop("HMCode_logT_AGN", None)
+    camb_args["AccuracyBoost"] = 3.0
+    camb_args["k_per_logint"] = 50
+    # Background parameters and the number of massive species remain the
+    # project's choices. Only the mass and nonlinear prescription change.
+    names = ["As_1e9", "ns", "H0", "omegab", "omegam", "w", "w0pwa", "wa"]
+    points = []
+    for index in range(n_models):
+        random = np.random.default_rng(seed + index)
+        point = dict(base_point)
+        for name in names:
+            specification = info["params"].get(name)
+            if not isinstance(specification, dict):
+                continue
+            prior = specification.get("prior")
+            if prior is None:
+                continue
+            if "min" not in prior or "max" not in prior:
+                raise ValueError(f"Cosmological prior for {name} is not a uniform box.")
+            lower = float(prior["min"])
+            upper = float(prior["max"])
+            if name == "omegam":
+                lower = max(lower, np.nextafter(0.2, 0.5))
+                upper = min(upper, np.nextafter(0.5, 0.2))
+            if lower >= upper:
+                raise ValueError(f"Empty requested prior interval for {name}.")
+            point[name] = float(random.uniform(low=lower, high=upper))
+        if not 0.2 < point["omegam"] < 0.5:
+            raise ValueError("The comparison requires 0.2 < Omega_m < 0.5.")
+        points.append(point)
+
+    output = project / "chains/matter_emulator_prior" / source.stem
+    output.mkdir(parents=True, exist_ok=True)
+    columns = sorted(points[0])
+    table = []
+    for point in points:
+        table.append([point[name] for name in columns])
+    np.savetxt(
+        fname=output / "points.txt",
+        X=table,
+        header=" ".join(columns),
+    )
+    (output / "source.yaml").write_text(source.read_text())
+    with (output / "provenance.txt").open("w") as record:
+        record.write(f"models={n_models}\nseed={seed}\nlimit={limit}\n")
+        record.write("mnu=0.06 eV; plain mead2020; CAMB AccuracyBoost=3; k_per_logint=50\n")
+        record.write("CAMB background in both; original CAMB versus existing EMUL2 likelihood routes\n")
+        for directory in (project, Path(__file__).parent, code_dir, data_dir):
+            revision = subprocess.check_output(
+                ["git", "-C", str(directory), "rev-parse", "HEAD"],
+                text=True,
+            ).strip()
+            record.write(f"{directory}: {revision}\n")
+
+    vectors = {}
+    loglikes = {}
+    reference_precision = None
+    status = (output / "status.txt").open("w")
+    try:
+        # Finish one model before initializing the next: the C library has
+        # one global state. Holding two live likelihood instances would make
+        # their setters and caches interfere with each other.
+        for route in ("camb", "candidate"):
+            settings = copy.deepcopy(info)
+            settings["likelihood"][likelihood_name]["use_emulator"] = 0
+            if route == "candidate":
+                settings["likelihood"][likelihood_name]["use_emulator"] = 2
+                settings["params"]["As_1e9"]["drop"] = False
+                settings["theory"]["emulmps"] = {
+                    "external": emulmps,
+                    "stop_at_error": True,
+                    "provides": ["Pk_interpolator", "Pk_grid"],
+                    "extra_args": {
+                        "model_file": str(root / "external_modules/data/emultrf/emulmps/npce_emul/emulator_npce.keras"),
+                        "metadata_file": str(root / "external_modules/data/emultrf/emulmps/npce_emul/metadata.joblib"),
+                        "nl_model_file": str(data_dir / "emulmps/w0wa_mead2020/emulator_mead2020.keras"),
+                        "nl_metadata_file": str(data_dir / "emulmps/w0wa_mead2020/metadata.joblib"),
+                        "param_order": ["As_1e9", "ns", "H0", "omegab", "omegam", "w", "wa"],
+                        "fixed_params": {"mnu": 0.06},
+                    },
+                }
+            model = get_model(info_or_yaml_or_file=settings)
+            likelihood = model.likelihood[likelihood_name]
+            precision = np.asarray(get_precision())
+            if reference_precision is None:
+                reference_precision = precision.copy()
+                np.save(file=output / "precision.npy", arr=precision)
+            else:
+                np.testing.assert_array_equal(precision, reference_precision)
+            rows = np.full((n_models, len(precision)), np.nan)
+            loglike_rows = np.full(n_models, np.nan)
+            for index, point in enumerate(points):
+                try:
+                    posterior = model.logposterior(params_values=point, cached=False)
+                    if not np.isfinite(posterior.loglike):
+                        raise ValueError("Nonfinite likelihood; no current prediction accepted.")
+                    inputs = model.parameterization.to_input(sampled_params_values=point)
+                    vector = np.asarray(likelihood.get_datavector(**inputs))
+                    if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
+                        raise ValueError("Prediction shape or finite-value check failed.")
+                    rows[index] = vector
+                    loglike_rows[index] = posterior.loglike
+                    message = f"{route} cosmology {index + 1}/{n_models}: evaluated"
+                except Exception as error:
+                    # Keep the failed row as NaN. Never reuse a previous
+                    # vector, redraw a point, or count a rejection as a pass.
+                    message = f"{route} cosmology {index + 1}/{n_models}: FAILED {type(error).__name__}: {error}"
+                print(message, flush=True)
+                status.write(message + "\n")
+                status.flush()
+                np.save(file=output / f"{route}_vectors.npy", arr=rows)
+            vectors[route] = rows
+            loglikes[route] = loglike_rows
+            np.save(file=output / f"{route}_loglikes.npy", arr=loglike_rows)
+            model.close()
+    finally:
+        status.close()
+
+    residuals = vectors["candidate"] - vectors["camb"]
+    distances = np.einsum("ij,jk,ik->i", residuals, reference_precision, residuals)
+    finite = np.isfinite(distances)
+    passed = finite & (distances >= 0.0) & (distances < limit)
+    log_weights = loglikes["camb"] - loglikes["candidate"]
+    result_table = np.column_stack((
+        np.arange(n_models), distances, passed.astype(int), log_weights,
+    ))
+    np.savetxt(
+        fname=output / "distances.txt",
+        X=result_table,
+        header="model_index delta_chi2 passes_strict_limit log_L_CAMB_minus_log_L_emulator",
+    )
+    summary = f"{int(passed.sum())}/{n_models} pass delta_chi2 < {limit}; {int((~finite).sum())} nonfinite\n"
+    if finite.any():
+        summary += f"median={np.median(distances[finite]):.9g}; maximum={np.max(distances[finite]):.9g}\n"
+    (output / "summary.txt").write_text(summary)
+    print(summary, flush=True)
+    return int((~passed).sum())
