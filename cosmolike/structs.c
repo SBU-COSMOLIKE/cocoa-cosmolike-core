@@ -162,6 +162,7 @@ void reset_redshift_struct(void)
     free(redshift.shear_zdist_table);
     redshift.shear_zdist_table = NULL;
   }
+  redshift.shear_zdist_table_nbin = 0;
   redshift.shear_nzbins = 0;
   redshift.shear_zdist_zall[RANGE_MIN] = 0.0;
   redshift.shear_zdist_zall[RANGE_MAX] = 0.0;

@@ -576,6 +576,11 @@ typedef struct
   int shear_photoz;
   int shear_nzbins;
   double** shear_zdist_table;
+  // Bin count shear_zdist_table was allocated with (0 = no table). The
+  // table holds one n(z) row per bin plus the z row; every installer
+  // that allocates it sets this, and every reader checks it, because
+  // shear_nbin can change (set_source_sample_size) before the next install.
+  int shear_zdist_table_nbin;
   double shear_zdist_zall[2];  // [RANGE_MIN, RANGE_MAX] of the whole table
   double shear_zdist_z[2][MAX_SIZE_ARRAYS]; // [RANGE_MIN|RANGE_MAX][bin]:
                                             // each bin's n(z) support

@@ -391,13 +391,15 @@ static void supplied_clear(void)
   supplied.suppress_only = 0;
 }
 
-// The bin count redshift.shear_zdist_table was allocated with. The
-// table holds one n(z) row per bin plus the z row, so reading it
-// under a larger redshift.shear_nbin would run past the allocation;
-// the model refresh refuses that mismatch. A table installed under
-// another count is also reloaded without an entry-by-entry
-// comparison, as in generic_interface.cpp.
-static int bridge_stored_shear_nbin = 0;
+// The bin count redshift.shear_zdist_table was allocated with is
+// redshift.shear_zdist_table_nbin (structs.h). The table holds one
+// n(z) row per bin plus the z row, so reading it under a larger
+// redshift.shear_nbin would run past the allocation; the model
+// refresh refuses that mismatch. A table installed under another
+// count is also reloaded without an entry-by-entry comparison, as in
+// generic_interface.cpp. The record lives with the table, not here:
+// generic_interface.cpp installs the same table, and a private copy
+// here would go out of date when it does.
 
 // ---------------------------------------------------------------------------
 // Supplied-tier setters. Shared discipline (threepcf_core_bridge.h):
@@ -1177,10 +1179,10 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
     // shear_nbin without touching the table, so a new count must wait
     // for a matching reinstall; indexing row shear_nbin before that
     // would read outside the allocation.
-    if (bridge_stored_shear_nbin != redshift.shear_nbin) {
+    if (redshift.shear_zdist_table_nbin != redshift.shear_nbin) {
       log_fatal("threepcf bridge: the source table was installed for %d "
                 "bins but %d are declared; install the matching source "
-                "sample first", bridge_stored_shear_nbin,
+                "sample first", redshift.shear_zdist_table_nbin,
                 redshift.shear_nbin);
       exit(1);
     }
@@ -1285,10 +1287,10 @@ const physics_input_3pcf* threepcf_bridge_refresh(void)
   else {
     // the same row-count requirement as the source selection above:
     // only a table installed for shear_nbin bins has shear_nbin rows
-    if (bridge_stored_shear_nbin != redshift.shear_nbin) {
+    if (redshift.shear_zdist_table_nbin != redshift.shear_nbin) {
       log_fatal("threepcf bridge: the source table was installed for %d "
                 "bins but %d are declared; install the matching source "
-                "sample first", bridge_stored_shear_nbin,
+                "sample first", redshift.shear_zdist_table_nbin,
                 redshift.shear_nbin);
       exit(1);
     }
@@ -1364,10 +1366,9 @@ void reset_threepcf_core_bridge(void)
   guard.have_build = 0;
   memset(guard.counts, 0, sizeof(guard.counts));
   memset(guard.keys, 0, sizeof(guard.keys));
-  // No source table is stored after a reset, so its recorded bin count
-  // must go too; otherwise a table installed afterwards by another
-  // installer would be checked against the old count.
-  bridge_stored_shear_nbin = 0;
+  // The source table and its bin count belong to the redshift struct
+  // (reset_redshift_struct clears both), so nothing source-related is
+  // kept here.
   // guard.generation stays monotonic on purpose: a consumer that
   // cached a generation number across the reset must still observe
   // the next build as new.
@@ -1745,7 +1746,7 @@ void threepcf_core_set_source_sample(
 
   int cache_update = 0;
   if (redshift.shear_nzbins != nzbins ||
-      bridge_stored_shear_nbin != Ntomo ||
+      redshift.shear_zdist_table_nbin != Ntomo ||
       NULL == redshift.shear_zdist_table) {
     cache_update = 1;
   }
@@ -1771,7 +1772,7 @@ void threepcf_core_set_source_sample(
 
   bridge_require_finite(table, nzbins*ncol, "source n(z) table");
   redshift.shear_nzbins = nzbins;
-  bridge_stored_shear_nbin = Ntomo;
+  redshift.shear_zdist_table_nbin = Ntomo;
   free(redshift.shear_zdist_table);
   redshift.shear_zdist_table = (double**) malloc2d(Ntomo + 1, nzbins);
   double** tab = redshift.shear_zdist_table;

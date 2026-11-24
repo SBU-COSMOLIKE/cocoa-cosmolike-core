@@ -1324,9 +1324,15 @@ static void bind_threepcf_core_bridge(
       "Install the velocity-shear amplitude C_t (nuisance.ia[1][2]).",
       py::arg("ct"));
 
-  core.def("initial_setup", &threepcf_core_initial_setup,
-      "Reset the global structs and the bridge, as initial_setup does "
-      "in full-core builds.");
+  // Both initial_setup bindings are full resets: this one also clears the
+  // validated joint dataset, as the top-level initial_setup does, so a
+  // notebook that resets through either can never score a new prediction
+  // against the previous dataset.
+  core.def("initial_setup", []() {
+    threepcf_core_initial_setup();
+    reset_threepcf_joint_data();
+  }, "Reset the global structs, the bridge and the joint dataset, as "
+     "initial_setup does in full-core builds.");
 
   // --- translations and the factory --------------------------------------
   core.def("ia_parameters_from_core", &ia_parameters_from_core_3pcf,

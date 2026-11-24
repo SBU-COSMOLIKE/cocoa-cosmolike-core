@@ -767,10 +767,11 @@ double compute_sigma2(
 // loaded yet are skipped, so calling this before any load changes nothing.
 // ---------------------------------------------------------------------------
 
-// The bin counts the stored n(z) tables were saved with (set_source_sample,
-// set_lens_sample). set_*_sample_size may change the struct's count before
-// the next load, and a stored table must be read with its own count.
-static int stored_shear_nbin = 0;
+// The bin count the stored lens n(z) table was saved with (set_lens_sample).
+// set_lens_sample_size may change the struct's count before the next load,
+// and a stored table must be read with its own count. The source table's
+// count lives with the table, in redshift.shear_zdist_table_nbin, because
+// the 3pcf bridge installs that table too and both must see one record.
 static int stored_clustering_nbin = 0;
 
 static void reload_loaded_redshift_samples()
@@ -799,7 +800,7 @@ static void reload_loaded_redshift_samples()
     if (hist == NULL || ntomo == 0) {
       continue;
     }
-    const int stored = (sample == 0) ? stored_shear_nbin
+    const int stored = (sample == 0) ? redshift.shear_zdist_table_nbin
                                      : stored_clustering_nbin;
     if (stored != ntomo) {
       critical("the stored {} n(z) has {} bins but the sample now has {}: "
@@ -5018,7 +5019,7 @@ void set_source_sample(arma::Mat<double> input_table)
       (zmid_cache != Ntable.photoz_zmid_convention);
   // a table saved with another bin count is not compared entry by entry
   if (redshift.shear_nzbins != static_cast<int>(input_table.n_rows) ||
-      stored_shear_nbin != Ntomo ||
+      redshift.shear_zdist_table_nbin != Ntomo ||
       NULL == redshift.shear_zdist_table) {
     cache_update = 1;
   }
@@ -5045,7 +5046,7 @@ void set_source_sample(arma::Mat<double> input_table)
   if (1 == cache_update || 1 == force_cache_update_test)
   {
     redshift.shear_nzbins = input_table.n_rows;
-    stored_shear_nbin = Ntomo;
+    redshift.shear_zdist_table_nbin = Ntomo;
     const int nzbins = redshift.shear_nzbins; // alias
 
     if (redshift.shear_zdist_table != NULL) {
