@@ -206,9 +206,12 @@ def _file_differences(stored, current):
 
     A record keys a checksum by the file name, or by its full settings path
     when two inputs share a name. A record written before shared names were
-    kept stored one checksum under the bare name: it still matches when
-    every current entry of that name carries exactly that checksum, and
-    differs otherwise.
+    kept stored one checksum under the bare name. It still compares when
+    the name now belongs to one input. When several inputs now share the
+    name, the old record kept only one of their checksums, so it cannot
+    show what the others were when the cache was written: it differs and
+    the cache must be recomputed, even if every current entry happens to
+    carry the stored checksum.
 
     Arguments:
       stored  = the "data_files" of the stored record.
@@ -232,11 +235,18 @@ def _file_differences(stored, current):
                 out.append(f"{key}: cache {value}, now {current[key]}")
             continue
 
-        # A bare name in the stored record: every current entry of that
-        # name must carry the stored checksum.
+        # A bare name in the stored record matches only when one current
+        # input carries that name; with several, the discarded checksums
+        # cannot be verified.
         entries = by_name.get(key, []) if "/" not in key else []
         if not entries:
             out.append(f"{key}: cache {value}, now (absent)")
+            continue
+        if len(entries) > 1:
+            for current_key, _ in entries:
+                covered.add(current_key)
+            out.append(f"{key}: cache stored one checksum, now {len(entries)} "
+                       "inputs share this name; recompute the cache")
             continue
         for current_key, current_value in entries:
             covered.add(current_key)
