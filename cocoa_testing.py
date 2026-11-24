@@ -4688,13 +4688,15 @@ def run_matter_emulator_prior_check(
     n_models=50,
     seed=137,
     limit=1.0,
+    points_file=None,
 ):
     """Compare a candidate matter emulator with CAMB on random cosmologies.
 
     Project tests call this routine with their ordinary Cobaya evaluate
     example and native precision reader, as the other shared Cocoa tests
     do. Each cosmology changes the theory state; cached=False forces the
-    likelihood to run. Nuisance parameters retain the example's override.
+    likelihood to run. Random draws retain the example's nuisance override;
+    an explicit points_file may also specify the nuisance parameters.
     Both routes use CAMB distances and plain HMCode2020, with mnu=0.06 eV.
     The candidate uses the project's existing EMUL2 likelihood route.
 
@@ -4713,6 +4715,9 @@ def run_matter_emulator_prior_check(
       n_models = number of random cosmologies; default 50.
       seed = model i uses numpy.random.default_rng(seed + i).
       limit = strict upper bound on the prediction-distance statistic.
+      points_file = optional named-column text table of explicit parameter
+        points; supplied values replace the example's overrides. Its row
+        count replaces n_models and no random cosmologies are drawn.
 
     Returns:
       number of failed or nonfinite comparisons. Generated vectors, points,
@@ -4764,7 +4769,7 @@ def run_matter_emulator_prior_check(
     # project's choices. Only the mass and nonlinear prescription change.
     names = ["As_1e9", "ns", "H0", "omegab", "omegam", "w", "w0pwa", "wa"]
     points = []
-    for index in range(n_models):
+    for index in range(n_models if points_file is None else 0):
         random = np.random.default_rng(seed + index)
         point = dict(base_point)
         for name in names:
@@ -4788,7 +4793,27 @@ def run_matter_emulator_prior_check(
             raise ValueError("The comparison requires 0.2 < Omega_m < 0.5.")
         points.append(point)
 
-    output = project / "chains/matter_emulator_prior" / source.stem
+    if points_file is not None:
+        points_path = Path(points_file).resolve()
+        supplied = np.atleast_1d(np.genfromtxt(points_path, names=True))
+        if not supplied.dtype.names or not len(supplied):
+            raise ValueError("The parameter table needs named columns and rows.")
+        unknown = set(supplied.dtype.names) - set(base_point)
+        if unknown:
+            raise ValueError(f"Unknown or fixed parameter columns: {sorted(unknown)}")
+        for row in supplied:
+            point = dict(base_point)
+            for name in supplied.dtype.names:
+                point[name] = float(row[name])
+            if not all(np.isfinite(value) for value in point.values()):
+                raise ValueError("Supplied parameter points must be finite.")
+            if not 0.2 < point["omegam"] < 0.5:
+                raise ValueError("The comparison requires 0.2 < Omega_m < 0.5.")
+            points.append(point)
+        n_models = len(points)
+        output = project / "chains/matter_emulator_points" / source.stem / points_path.stem
+    else:
+        output = project / "chains/matter_emulator_prior" / source.stem
     output.mkdir(parents=True, exist_ok=True)
     columns = sorted(points[0])
     table = []
@@ -4802,6 +4827,8 @@ def run_matter_emulator_prior_check(
     (output / "source.yaml").write_text(source.read_text())
     with (output / "provenance.txt").open("w") as record:
         record.write(f"models={n_models}\nseed={seed}\nlimit={limit}\n")
+        if points_file is not None:
+            record.write(f"explicit parameter table={points_path}; seed unused\n")
         record.write("mnu=0.06 eV; plain mead2020; CAMB AccuracyBoost=3; k_per_logint=50\n")
         record.write("CAMB background in both; original CAMB versus existing EMUL2 likelihood routes\n")
         for directory in (project, Path(__file__).parent, code_dir, data_dir):
@@ -4853,7 +4880,13 @@ def run_matter_emulator_prior_check(
                     posterior = model.logposterior(params_values=point, cached=False)
                     if not np.isfinite(posterior.loglike):
                         raise ValueError("Nonfinite likelihood; no current prediction accepted.")
-                    inputs = model.parameterization.to_input(sampled_params_values=point)
+                    # to_input(dict) also changes Cobaya's internal sampled
+                    # parameter ordering. Convert through its canonical-order
+                    # check first, or a later posterior call can associate
+                    # the right values with the wrong parameter names.
+                    inputs = model.parameterization.to_input(
+                        sampled_params_values=model.parameterization.check_sampled(point)
+                    )
                     vector = np.asarray(likelihood.get_datavector(**inputs))
                     if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
                         raise ValueError("Prediction shape or finite-value check failed.")
