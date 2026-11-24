@@ -4701,6 +4701,8 @@ def run_matter_emulator_prior_check(
     candidate_extra_args=None,
     use_emulator_switch=True,
     select_vector=None,
+    focused_models=25,
+    local_points_file=None,
 ):
     """Compare a candidate matter emulator with CAMB on random cosmologies.
 
@@ -4745,6 +4747,10 @@ def run_matter_emulator_prior_check(
         after the full vector is checked against its likelihood.
       advisory = report prediction errors without failing on their size;
         an incomplete Fisher calculation still fails.
+      focused_models = additional draws from the bounded Fisher distribution
+        after a broad-prior test; zero skips this stage for diagnostics.
+      local_points_file = optional predetermined focused sample, replacing
+        the Fisher draws. It must contain focused_models rows.
 
     Returns:
       number of failed or nonfinite comparisons. Generated vectors, points,
@@ -4761,6 +4767,9 @@ def run_matter_emulator_prior_check(
     import numpy as np
     from cobaya.model import get_model
     from cobaya.yaml import yaml_load_file
+
+    if not isinstance(focused_models, int) or focused_models < 0:
+        raise ValueError("focused_models must be a nonnegative integer.")
 
     project = Path(project).resolve()
     root = project.parents[1]
@@ -5052,21 +5061,60 @@ def run_matter_emulator_prior_check(
     summary = f"{int(passed.sum())}/{n_models} pass delta_chi2 < {limit}; {int((~finite).sum())} nonfinite\n"
     if finite.any():
         summary += f"median={np.median(distances[finite]):.9g}; maximum={np.max(distances[finite]):.9g}\n"
+    for threshold in (0.2, 0.5, 1.0, 4.0):
+        count = np.count_nonzero(finite & (distances >= 0.0) & (distances < threshold))
+        summary += f"delta_chi2 < {threshold}: {count}/{n_models}\n"
+    summary += f"delta_chi2 >= 4: {np.count_nonzero(finite & (distances >= 4.0))}/{n_models}\n"
     (output / "summary.txt").write_text(summary)
+    focused_failed = 0
     if fisher and not fisher_failed:
         try:
+            local_points = None
+            local_distances = None
+            if points_file is None and focused_models > 0:
+                # Draw only from the CAMB Fisher, before looking at emulator
+                # errors. Varying all differentiated nuisance parameters keeps
+                # their covariance with cosmology in the focused comparison.
+                local_input = local_points_file
+                if local_input is None:
+                    local_input = draw_matter_emulator_focused_points(
+                        output=output / "fisher",
+                        n_models=focused_models,
+                        seed=seed + 10000,
+                    )
+                supplied = np.atleast_1d(np.genfromtxt(local_input, names=True))
+                if len(supplied) != focused_models:
+                    raise ValueError("Focused table row count differs from focused_models.")
+                focused_failed = run_matter_emulator_prior_check(
+                    project=project,
+                    configuration=configuration,
+                    get_precision=get_precision,
+                    points_file=local_input,
+                    output_dir=output / "local",
+                    limit=limit,
+                    advisory=advisory,
+                    candidate_extra_args=candidate_extra_args,
+                    use_emulator_switch=use_emulator_switch,
+                    select_vector=select_vector,
+                    focused_models=0,
+                )
+                local_points = output / "local/points.txt"
+                local_distances = output / "local/distances.txt"
+                summary += f"Focused comparison: {focused_models} points; see local/summary.txt.\n"
             plot_matter_emulator_fisher(
                 output=output / "fisher",
                 points_file=output / "points.txt",
                 distances_file=output / "distances.txt",
                 project_name=project.name,
+                local_points_file=local_points,
+                local_distances_file=local_distances,
             )
         except Exception as error:
             fisher_failed = True
             summary += f"Fisher plot FAILED {type(error).__name__}: {error}\n"
     if fisher_failed:
         summary += "Fisher overlay incomplete; inspect status and fisher diagnostics.\n"
-    calculation_failed = (fisher_failed or not finite_reference.all()
+    calculation_failed = (fisher_failed or focused_failed or not finite_reference.all()
                           or not np.any(finite & (distances >= 0.0)))
     if not finite_reference.all():
         summary += "CAMB reference evaluations incomplete; comparison cannot pass.\n"
@@ -5074,7 +5122,63 @@ def run_matter_emulator_prior_check(
         summary += "No finite nonnegative prediction distances were obtained.\n"
     (output / "summary.txt").write_text(summary)
     print(summary, flush=True)
-    return int(calculation_failed) if advisory else int((~passed).sum()) + int(fisher_failed)
+    return int(calculation_failed) if advisory else int((~passed).sum()) + int(fisher_failed) + focused_failed
+
+
+def draw_matter_emulator_focused_points(output, n_models=25, seed=10137):
+    """Save parameter draws from a validated bounded CAMB Fisher calculation.
+
+    All differentiated parameters, including nuisances, are drawn together.
+    Undifferentiated parameters retain the evaluate example's overrides when
+    the comparison reads this table. The draws are deterministic for a given
+    archive and seed, and use no emulator errors or observed-data fit scores.
+    These are local Fisher draws, not samples from an inferred posterior.
+
+    Arguments:
+      output = Fisher directory containing bounded_samples.npz.
+      n_models = number of additional parameter points.
+      seed = random seed for weighted sampling without replacement.
+    Returns:
+      path of focused_points.txt; the file contains named parameter columns.
+    """
+    from pathlib import Path
+    import numpy as np
+
+    output = Path(output)
+    if not isinstance(n_models, int) or n_models < 1:
+        raise ValueError("The focused sample must contain a positive integer number of points.")
+    with np.load(file=output / "bounded_samples.npz") as record:
+        if not bool(record["sampling_valid"]):
+            raise ValueError("Focused draws require converged bounded Fisher sampling.")
+        names = record["names"].tolist()
+        values = record["values"].copy()
+        weights = record["weights"].copy()
+        lower = record["lower"]
+        upper = record["upper"]
+        valid = np.all(np.isfinite(values), axis=1)
+        valid &= np.all((values >= lower) & (values <= upper), axis=1)
+        valid &= np.isfinite(weights) & (weights > 0.0)
+        if "omegam" in names:
+            omega_m = values[:, names.index("omegam")]
+            valid &= (omega_m > 0.2) & (omega_m < 0.5)
+        if "As_1e9" in names:
+            valid &= values[:, names.index("As_1e9")] <= 3.5
+    if np.count_nonzero(valid) < n_models:
+        raise ValueError("Too few bounded Fisher samples for the requested focused points.")
+    values = values[valid]
+    weights = weights[valid]
+    weights /= np.sum(weights)
+    random = np.random.default_rng(seed=seed)
+    selected = random.choice(a=len(values), size=n_models, replace=False, p=weights)
+    destination = output / "focused_points.txt"
+    np.savetxt(fname=destination, X=values[selected], header=" ".join(names))
+    (output / "focused_definition.txt").write_text(
+        f"Weighted bounded Fisher draws; count={n_models}; seed={seed}.\n"
+        "All differentiated nuisance parameters drawn jointly with cosmology.\n"
+        "0.2 < Omega_m < 0.5; 1e9 As <= 3.5; no selection on emulator error.\n"
+        "Undifferentiated inputs keep the evaluate YAML overrides.\n"
+    )
+    return destination
 
 
 def compute_matter_emulator_fisher(
@@ -5209,6 +5313,15 @@ def compute_matter_emulator_fisher(
     # The existing cache reuses identical shared stencil points only within
     # this fixed model. It never treats nearby cosmologies as the same point.
     reference = predict(center)
+    if hasattr(likelihood, "last_datavector"):
+        center_loglike = float(likelihood.compute_logp(datavector=likelihood.last_datavector))
+    else:
+        center_loglike = float(model.logposterior(params_values=center, cached=False).loglike)
+    (output / "fiducial_likelihood.txt").write_text(
+        f"Matched CAMB mead2020 reference: logL={center_loglike:.17g}; -2logL={-2*center_loglike:.17g}\n"
+        "This is the YAML fiducial with the comparison's fixed mass and matched nonlinear prescription.\n"
+        "It need not have zero residual against a synthetic vector made with another prescription.\n"
+    )
     # Subtract one fixed vector before differencing. An inactive parameter
     # then gives exactly zero at every stencil point, rather than a tiny
     # artificial slope from adding rounded multiples of the same vector.
@@ -5420,7 +5533,7 @@ def plot_matter_emulator_fisher(
 ):
     """Plot direct emulator errors with bounded local Fisher marginals.
 
-    The project name identifies the survey. Colors distinguish the three
+    The project name identifies the survey. Colors distinguish the four
     accuracy thresholds; circles show prior draws and diamonds show an
     optional local sample. Solid and dashed contours enclose 68 and 95
     percent of the bounded local Fisher distribution, respectively.
@@ -5509,8 +5622,9 @@ def plot_matter_emulator_fisher(
         sampler="uncorrelated",
         settings={"ignore_rows": 0},
     )
-    colors = ["#0072B2", "#009E73", "#8B5AA7", "#D55E00"]
-    error_labels = [r"$E<0.2$", r"$0.2\leq E<0.5$", r"$0.5\leq E<1$", r"$E\geq1$ or failed"]
+    colors = ["#0072B2", "#009E73", "#8B5AA7", "#E69F00", "#333333"]
+    error_labels = [r"$E<0.2$", r"$0.2\leq E<0.5$", r"$0.5\leq E<1$",
+                    r"$1\leq E<4$", r"$E\geq4$"]
     with plt.rc_context():
         plt.rcParams.update({"font.family": "DejaVu Sans", "mathtext.fontset": "dejavusans"})
         amplitude = "As_1e9" if "As_1e9" in names else names[0]
@@ -5531,13 +5645,18 @@ def plot_matter_emulator_fisher(
                     if parameter in points.dtype.names:
                         within &= (points[parameter] >= lower[j]) & (points[parameter] <= upper[j])
                 categories = [valid & (error < 0.2), valid & (error >= 0.2) & (error < 0.5),
-                              valid & (error >= 0.5) & (error < 1.0), ~valid | (error >= 1.0)]
+                              valid & (error >= 0.5) & (error < 1.0),
+                              valid & (error >= 1.0) & (error < 4.0), valid & (error >= 4.0)]
                 for chosen, color in zip(categories, colors):
                     chosen = chosen & within
                     axis.scatter(points[name][chosen], points[amplitude][chosen],
                                  color=color, marker="D" if local else "o",
                                  s=44 if local else 30, edgecolors="black" if local else None,
                                  linewidths=0.6, zorder=3 if local else 2)
+                failed = ~valid & within
+                axis.scatter(points[name][failed], points[amplitude][failed],
+                             color="black", marker="x", s=44, linewidths=1.2,
+                             zorder=4)
             axis.set_xlabel("$" + labels.get(name, name) + "$", fontsize=14)
             if panel % columns == 0:
                 axis.set_ylabel("$" + labels.get(amplitude, amplitude) + "$", fontsize=15)
@@ -5553,6 +5672,8 @@ def plot_matter_emulator_fisher(
             axis.set_visible(False)
         handles = [Line2D([], [], color=color, marker="o", linestyle="none", label=label)
                    for color, label in zip(colors, error_labels)]
+        handles.append(Line2D([], [], color="black", marker="x", linestyle="none",
+                              label="Failed evaluation"))
         handles.append(Line2D([], [], color="black", marker="o", linestyle="none",
                               label="Prior sample within cap"))
         if local_points_file is not None:
@@ -5563,7 +5684,7 @@ def plot_matter_emulator_fisher(
         figure.suptitle(str(project_name).replace("_", " ").upper(), fontsize=18, y=0.995)
         figure.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.96),
                       ncol=4, frameon=False, fontsize=11)
-        figure.tight_layout(rect=(0, 0, 1, 0.78 if rows == 1 else 0.88))
+        figure.tight_layout(rect=(0, 0, 1, 0.71 if rows == 1 else 0.84))
         png, pdf = output / "emulator_fisher.png", output / "emulator_fisher.pdf"
         figure.savefig(png, dpi=180)
         figure.savefig(pdf)
