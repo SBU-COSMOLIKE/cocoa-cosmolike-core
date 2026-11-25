@@ -5623,11 +5623,9 @@ def run_matter_emulator_prior_check(
             # Use the same shared MPI job owner as the established DESI
             # Fisher driver. Small rounds let rank zero save checkpoints
             # between rounds, without another scheduling implementation.
-            for first in range(0, n_models, size):
-                jobs = [(index,) for index in range(first, min(first + size, n_models))
-                        if not done[index]]
-                if not jobs:
-                    continue
+            pending = np.flatnonzero(~done)
+            for first in range(0, len(pending), size):
+                jobs = [(int(index),) for index in pending[first:first + size]]
                 if mpi_comm is None:
                     gathered = [evaluate_point(job) for job in jobs]
                 else:
