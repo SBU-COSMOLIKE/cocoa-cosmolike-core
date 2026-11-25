@@ -1,4 +1,4 @@
-"""Shared n(z) selection cache round-trip checks for every project.
+"""Shared n(z) cache and sample-node checks for survey interfaces.
 
 Live n(z) selection changes must behave like any other cache
 invalidation. Flipping the z-column reading (Z_LOW left edges, Z_MID
@@ -8,19 +8,16 @@ effect on the very next query, move the fiducial means together with
 the curves, and restore every value bit for bit when the original
 selection returns.
 
-These are cache-behavior checks, not accuracy checks: the compiled
-production readers and the stored fiducial means are compared bitwise
-across selection round trips on synthetic histograms, with no
-cosmology calculation involved. The means matter because the lens
-means are the pivot of the photo-z stretch: a selection change that
-rebuilds the curves without recomputing the means is exactly the
-staleness these checks exist to refuse.
+The cache checks compare readouts and fiducial means bitwise on
+synthetic histograms without evaluating cosmology. The means matter
+because the lens means are the pivot of the photo-z stretch. A
+separate sample-node check compares the production readers with an
+analytic linear density.
 
 Each project's tests/data_vector/test_nz_cache_roundtrip.py is a thin
-stub: it resolves its own compiled interface module and binds the
-three test callables that build_nz_cache_tests returns. The checks are
-identical in every project because the machinery under test lives in
-the shared core, not in the project.
+stub. It resolves its compiled interface and binds the three common
+cache checks returned by build_nz_cache_tests. DESI and DES Y6 also bind
+the sample-node check.
 """
 import ctypes
 from pathlib import Path
@@ -88,13 +85,14 @@ def _state(library):
 
 
 def build_nz_cache_tests(ci):
-    """Build the three round-trip checks against one compiled interface.
+    """Build the reader checks against one compiled interface.
 
     Returns a dict of pytest test callables. The project stub assigns
     each to a module-level name, which is how pytest collects them:
 
         _suite = build_nz_cache_tests(ci)
         test_zmid_convention_round_trip = _suite["zmid_convention"]
+        test_density_at_sample_nodes = _suite["sample_nodes"]
         test_reconstruction_round_trip = _suite["reconstruction"]
         test_interpolant_round_trip = _suite["interpolant"]
     """
@@ -133,6 +131,36 @@ def build_nz_cache_tests(ci):
             # survive.
             ci.init_photoz_conventions(interpolation_type=0, zmid_convention=0)
             np.testing.assert_array_equal(_state(library), base)
+        finally:
+            ci.initial_setup()
+
+    @pytest.mark.parametrize("zmid", (0, 1))
+    def test_density_at_sample_nodes(zmid, tmp_path):
+        """Both readers retain a linear density at each interior input node."""
+        library = _compiled_readers(ci)
+        z = .05017 + np.arange(257, dtype=float) * .0041
+        heights = np.column_stack((1. + 3.*z, 2. - z))
+        dz = (z[-1] - z[0]) / (len(z) - 1)
+        filename = tmp_path / "linear_density.nz"
+        np.savetxt(filename, np.column_stack((z, heights)))
+
+        # The two-stage spline represents a line exactly. Its endpoint
+        # padding is outside this check, so query interior sample nodes only.
+        query = z[1:-1]
+        if zmid == 0:
+            # A Z_LOW input is tabulated at the left edge of each cell.
+            query = query + .5*dz
+        expected = heights[1:-1] / (heights.sum(axis=0) * dz)
+        try:
+            ci.initial_setup()
+            ci.init_accuracy_boost(accuracy_boost=1, integration_accuracy=0)
+            ci.init_photoz_histogram_akima(enabled=0, preparation_factor=3)
+            ci.init_photoz_conventions(interpolation_type=0, zmid_convention=zmid)
+            _load_sample(ci, filename)
+            for reader in (library.nz_source_photoz, library.nz_lens_photoz):
+                for tomo in range(2):
+                    actual = np.array([reader(value, tomo) for value in query])
+                    np.testing.assert_allclose(actual, expected[:, tomo], rtol=2e-12, atol=0)
         finally:
             ci.initial_setup()
 
@@ -191,6 +219,7 @@ def build_nz_cache_tests(ci):
 
     return {
         "zmid_convention": test_zmid_convention_round_trip,
+        "sample_nodes": test_density_at_sample_nodes,
         "reconstruction": test_reconstruction_round_trip,
         "interpolant": test_interpolant_round_trip,
     }

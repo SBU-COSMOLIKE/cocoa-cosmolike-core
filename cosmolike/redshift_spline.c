@@ -1400,6 +1400,12 @@ double nz_source_photoz(double zz, const int nj)
 
     const int ntomo  = redshift.shear_nbin;
     const int nzbins = redshift.shear_nzbins;
+    const int z_mid = (1 == Ntable.photoz_zmid_convention);
+    if (z_mid && (NULL == redshift.shear_zdist_table ||
+                  redshift.shear_zdist_table_nbin != ntomo)) {
+      log_fatal("source n(z) table must be installed for %d bins", ntomo);
+      exit(1);
+    }
 
     if (NULL != table) {
       free(table);
@@ -1421,7 +1427,7 @@ double nz_source_photoz(double zz, const int nj)
     // Z_LOW convention (default): the file z column holds left bin edges,
     // so the tabulated value belongs at the cell center z + dz/2.
     // Z_MID: the column holds the sample points themselves.
-    const double off = (1 == Ntable.photoz_zmid_convention) ? 0.0 : 0.5;
+    const double off = z_mid ? 0.0 : 0.5;
     for (int k = 0; k < nzbins; k++) {
       table[ntomo+1][k] = zmin + (k + off) * dz_histo;
     }
@@ -1446,6 +1452,8 @@ double nz_source_photoz(double zz, const int nj)
     //               = sum_i raw_i(z_k) / norm
     //
     // the raw histograms stacked, normalized to unit total integral.
+    // Z_MID's k-th sample belongs to row k. Mapping its computed
+    // coordinate back through floor can round down to row k - 1.
     double NORM[MAX_SIZE_ARRAYS];
     double norm = 0;
     #pragma omp parallel for reduction( + : norm )
@@ -1453,7 +1461,9 @@ double nz_source_photoz(double zz, const int nj)
       NORM[i] = 0.0;
       for (int k = 0; k < nzbins; k++) {
         const double z = table[ntomo+1][k];
-        NORM[i] += zdistr_histo_n(z, i) * dz_histo;
+        const double density = z_mid ? redshift.shear_zdist_table[i][k]
+                                     : zdistr_histo_n(z, i);
+        NORM[i] += density * dz_histo;
       }
       if (!(NORM[i] > 0.0)) {
         log_fatal("zero/negative n(z) normalization for source bin %d", i);
@@ -1471,7 +1481,9 @@ double nz_source_photoz(double zz, const int nj)
       table[0][k] = 0;
       for (int i = 0; i < ntomo; i++) {
         const double z = table[ntomo+1][k];
-        table[i + 1][k] = zdistr_histo_n(z, i) / NORM[i];
+        const double density = z_mid ? redshift.shear_zdist_table[i][k]
+                                     : zdistr_histo_n(z, i);
+        table[i + 1][k] = density / NORM[i];
         table[0][k] += table[i+1][k] * NORM[i] / norm;
       }
     }
@@ -1892,6 +1904,12 @@ double nz_lens_photoz(double zz, int nj)
 
     const int ntomo  = redshift.clustering_nbin;
     const int nzbins = redshift.clustering_nzbins;
+    const int z_mid = (1 == Ntable.photoz_zmid_convention);
+    if (z_mid && (NULL == redshift.clustering_zdist_table ||
+                  redshift.clustering_zdist_table_nbin != ntomo)) {
+      log_fatal("lens n(z) table must be installed for %d bins", ntomo);
+      exit(1);
+    }
 
     if (NULL != table) {
       free(table);
@@ -1913,7 +1931,7 @@ double nz_lens_photoz(double zz, int nj)
     // Z_LOW convention (default): the file z column holds left bin edges,
     // so the tabulated value belongs at the cell center z + dz/2.
     // Z_MID: the column holds the sample points themselves.
-    const double off = (1 == Ntable.photoz_zmid_convention) ? 0.0 : 0.5;
+    const double off = z_mid ? 0.0 : 0.5;
     for (int k = 0; k < nzbins; k++) {
       table[ntomo+1][k] = zmin + (k + off) * dz_histo;
     }
@@ -1938,6 +1956,7 @@ double nz_lens_photoz(double zz, int nj)
     //               = sum_i raw_i(z_k) / norm
     //
     // the raw histograms stacked, normalized to unit total integral.
+    // Keep Z_MID's stored row at each sample node, as for source n(z).
     double NORM[MAX_SIZE_ARRAYS];
     double norm = 0;
     #pragma omp parallel for reduction( + : norm )
@@ -1945,7 +1964,9 @@ double nz_lens_photoz(double zz, int nj)
       NORM[i] = 0.0;
       for (int k = 0; k < nzbins; k++) {
         const double z = table[ntomo+1][k];
-        NORM[i] += pf_histo_n(z, i) * dz_histo;
+        const double density = z_mid ? redshift.clustering_zdist_table[i][k]
+                                     : pf_histo_n(z, i);
+        NORM[i] += density * dz_histo;
       }
       if (!(NORM[i] > 0.0)) {
         log_fatal("zero/negative n(z) normalization for source bin %d", i);
@@ -1964,7 +1985,9 @@ double nz_lens_photoz(double zz, int nj)
       table[0][k] = 0;
       for (int i=0; i<ntomo; i++) {
         const double z = table[ntomo+1][k];
-        table[i + 1][k] = pf_histo_n(z, i) / NORM[i];
+        const double density = z_mid ? redshift.clustering_zdist_table[i][k]
+                                     : pf_histo_n(z, i);
+        table[i + 1][k] = density / NORM[i];
         table[0][k] += table[i+1][k] * NORM[i] / norm;
       }
     }
