@@ -5348,7 +5348,8 @@ def run_matter_emulator_prior_check(
                 # and the actual compiled module and networks selected here.
                 files = set()
                 options = info["likelihood"][likelihood_name]
-                folder = root / options.get("path", project / "data")
+                dataset_path = options.get("path")
+                folder = project / "data" if dataset_path is None else root / dataset_path
                 dataset = folder / options["data_file"]
                 files.add(dataset)
                 for line in dataset.read_text().splitlines():
