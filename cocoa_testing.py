@@ -6201,6 +6201,10 @@ def compute_matter_emulator_fisher(
                     tuple(candidates[i] for i in bins_of_color(color=colors, c=color))
                     for color in range(max(colors) + 1)
                 ]
+            if single_step and baseline is not None and mpi_comm is not None:
+                # Give the two target cosmology stencils to different ranks.
+                pair = baseline_noise["pair"]
+                jobs = sorted(jobs, key=lambda job: pair.index(job) if job in pair else len(pair))
             results = {}
             if jobs:
                 if mpi_comm is None:
