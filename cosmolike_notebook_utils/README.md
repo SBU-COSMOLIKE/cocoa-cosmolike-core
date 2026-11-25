@@ -380,6 +380,49 @@ centers and more than two step sizes when a table-cell crossing or source
 boundary could be responsible. Shared stencil samples mean these scaling
 checks are diagnostics, not independent statistical measurements.
 
+The official matter-emulator Fisher tests use this sequence through
+[`cocoa_testing.py`](../cocoa_testing.py). Their full base follows the
+evaluate example's physical theory and ordinary numerical accuracy, with
+the requested fixed neutrino mass of 0.06 eV. Supported non-Limber early
+exits are set to zero throughout the Fisher calculation, since a moving
+exit can create a discontinuous derivative. The separate CAMB/emulator
+mean comparison retains its own matched plain-mead2020 prescription.
+
+The base retains its h and h/2 stencils in `fisher/default_accuracy/`.
+`matter_emulator_fisher_noise` calls the shared functions above without
+another model evaluation. At the next numerical setting, columns covering
+95% of the measured baseline noise contribution run first, together with
+the target pair. The two step sizes use the same full baseline Fisher
+weights. The selected-column reports name unmeasured columns explicitly;
+their zero entries omit unknown contributions. All remaining columns then
+run once for the final full-Fisher check, reusing the selected results.
+
+The default next setting raises native sampling and quadrature and CAMB
+sampling; `fisher_accuracy_likelihood` and `fisher_accuracy_camb` can supply
+a project's documented alternatives. `numerical_settings.txt` records the
+actual stage choices and fiducial likelihood. These settings are a trial,
+not a declaration of convergence. The default test requires target-pair
+FoMs to agree within 1% between h and h/2 at each accuracy and between
+accuracies at each step. `fisher_fom_tolerance` changes that explicit test
+criterion. Separate tests of angular truncation and integration range
+remain necessary.
+
+For dark energy the pair is w0 and wa. If the sampled coordinates are
+`w` and `w0pwa = w + wa`, the transformation has determinant one, so its
+pair FoM and noise weights are identical. LCDM tests use As and Omega_m.
+All selected nuisance parameters and Gaussian prior curvature remain in
+the matrices. A proper bounded distribution can exist even when the
+unbounded Fisher is singular; such a distribution does not make the
+inverse-Fisher noise formula defined. The screen refuses that case rather
+than adding artificial Gaussian priors.
+
+The bounded contour sampler checks the coarse-step reweighting separately
+from the fine-step sample. A fine distribution may be too narrow to cover
+the coarse tails. Low effective count or inconsistent coarse seed results
+therefore stop the step comparison, while retaining the valid fine sample
+and derivative archive for inspection. A green fine-sampling diagnostic
+alone never certifies derivative convergence.
+
 
 # Units and array conventions <a name="units"></a>
 

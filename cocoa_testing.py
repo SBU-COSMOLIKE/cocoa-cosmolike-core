@@ -4703,6 +4703,12 @@ def run_matter_emulator_prior_check(
     select_vector=None,
     focused_models=25,
     local_points_file=None,
+    derivative_provider=None,
+    amplitude_bias_cuts=None,
+    mpi_comm=None,
+    fisher_accuracy_likelihood=None,
+    fisher_accuracy_camb=None,
+    fisher_fom_tolerance=0.01,
 ):
     """Compare a candidate matter emulator with CAMB on random cosmologies.
 
@@ -4733,6 +4739,8 @@ def run_matter_emulator_prior_check(
         points; supplied values replace the example's overrides. Its row
         count replaces n_models and no random cosmologies are drawn.
       fisher = also compute the CAMB Fisher matrix and bounded-prior plot.
+        Its physical theory follows the example, with mnu fixed to 0.06 eV;
+        the plain-mead2020 matching applies to mean comparisons only.
       output_dir = optional destination below the project chains directory.
       fisher_sample_power = log2 proposal count per bounded-Fisher repetition.
       fisher_center, fisher_parameters, fisher_steps = optional reference
@@ -4749,8 +4757,20 @@ def run_matter_emulator_prior_check(
         an incomplete Fisher calculation still fails.
       focused_models = additional draws from the bounded Fisher distribution
         after a broad-prior test; zero skips this stage for diagnostics.
+      mpi_comm = optional MPI communicator. Each rank owns one live model;
+        point indices are distributed in rank order and only rank zero writes.
+        Completed checkpoint rows are retained on resubmission.
       local_points_file = optional predetermined focused sample, replacing
         the Fisher draws. It must contain focused_models rows.
+      fisher_accuracy_likelihood, fisher_accuracy_camb = optional overrides
+        of the explicit next numerical setting used for the Fisher check.
+        Without them, native sampling doubles up to the established boost
+        cap of three, integration advances one level, CAMB AccuracyBoost
+        reaches at least two and k_per_logint at least fifty. 3PCF's separate
+        sampling/integration controls double. Existing larger boosts stay.
+      fisher_fom_tolerance = relative target-pair FoM tolerance, default 1%,
+        required at both derivative steps and between numerical settings.
+        This is the test criterion, not a universal science requirement.
 
     Returns:
       number of failed or nonfinite comparisons. Generated vectors, points,
@@ -4760,6 +4780,7 @@ def run_matter_emulator_prior_check(
       routine; production configuration files remain unchanged.
     """
     import copy
+    import io
     import subprocess
     import sys
     from pathlib import Path
@@ -4767,6 +4788,10 @@ def run_matter_emulator_prior_check(
     import numpy as np
     from cobaya.model import get_model
     from cobaya.yaml import yaml_load_file
+    from cosmolike_notebook_utils.mpi_batching import run_owned_jobs
+
+    rank = 0 if mpi_comm is None else mpi_comm.Get_rank()
+    size = 1 if mpi_comm is None else mpi_comm.Get_size()
 
     if not isinstance(focused_models, int) or focused_models < 0:
         raise ValueError("focused_models must be a nonnegative integer.")
@@ -4794,6 +4819,10 @@ def run_matter_emulator_prior_check(
     if len(info["likelihood"]) != 1:
         raise ValueError("Choose one project's likelihood for this comparison.")
     likelihood_name = next(iter(info["likelihood"]))
+    # Preserve the example's physical theory and ordinary accuracy for
+    # Fisher. Only the requested fixed neutrino mass above is shared with
+    # the separate matched-mead2020 emulator comparison below.
+    fisher_settings = copy.deepcopy(info)
     if use_emulator_switch:
         info["likelihood"][likelihood_name]["non_linear_emul"] = 2
         info["likelihood"][likelihood_name]["print_datavector"] = False
@@ -4857,39 +4886,106 @@ def run_matter_emulator_prior_check(
         output = Path(output_dir).resolve()
         if not output.is_relative_to(project / "chains"):
             raise ValueError("Comparison output must stay below project chains/.")
-    output.mkdir(parents=True, exist_ok=True)
-    if (output / "source.yaml").exists():
-        if (output / "source.yaml").read_text() != source.read_text():
-            raise ValueError("Saved YAML differs; choose a new --output directory.")
-    columns = sorted(points[0])
-    table = []
-    for point in points:
-        table.append([point[name] for name in columns])
-    np.savetxt(
-        fname=output / "points.txt",
-        X=table,
-        header=" ".join(columns),
-    )
-    (output / "source.yaml").write_text(source.read_text())
-    with (output / "provenance.txt").open("w") as record:
-        record.write(f"models={n_models}\nseed={seed}\nlimit={limit}\n")
-        if points_file is not None:
-            record.write(f"explicit parameter table={points_path}; seed unused\n")
-        record.write("mnu=0.06 eV; plain mead2020; CAMB AccuracyBoost=3; k_per_logint=50\n")
-        record.write("CAMB background in both; candidate replaces the requested power spectra\n")
-        record.write(f"candidate_extra_args={candidate_extra_args}; native_selection={select_vector is not None}\n")
-        for directory in (project, Path(__file__).parent, code_dir, data_dir):
-            revision = subprocess.check_output(
-                ["git", "-C", str(directory), "rev-parse", "HEAD"],
-                text=True,
-            ).strip()
-            record.write(f"{directory}: {revision}\n")
+    metadata_error = None
+    if rank == 0:
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+            if (output / "source.yaml").exists():
+                if (output / "source.yaml").read_text() != source.read_text():
+                    raise ValueError("Saved YAML differs; choose a new --output directory.")
+            columns = sorted(points[0])
+            table = []
+            for point in points:
+                table.append([point[name] for name in columns])
+            if (output / "points.txt").exists():
+                previous = np.loadtxt(output / "points.txt", ndmin=2)
+                if previous.shape != np.shape(table) or not np.array_equal(previous, table):
+                    raise ValueError("Saved points differ; choose a new output directory.")
+            np.savetxt(
+                fname=output / "points.txt",
+                X=table,
+                header=" ".join(columns),
+            )
+            (output / "source.yaml").write_text(source.read_text())
+            with io.StringIO() as record:
+                record.write(f"models={n_models}\nseed={seed}\nlimit={limit}\n")
+                if points_file is not None:
+                    record.write(f"explicit parameter table={points_path}; seed unused\n")
+                record.write("mnu=0.06 eV; plain mead2020; CAMB AccuracyBoost=3; k_per_logint=50\n")
+                record.write("CAMB background in both; candidate replaces the requested power spectra\n")
+                record.write(f"candidate_extra_args={candidate_extra_args}; native_selection={select_vector is not None}\n")
+                record.write(f"use_emulator_switch={use_emulator_switch}; "
+                             f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}\n")
+                for directory in (project, Path(__file__).parent, code_dir, data_dir):
+                    revision = subprocess.check_output(
+                        ["git", "-C", str(directory), "rev-parse", "HEAD"],
+                        text=True,
+                    ).strip()
+                    record.write(f"{directory}: {revision}\n")
+                # A Git revision survives local edits. Hash the survey inputs,
+                # including the measured vector (its score is checkpointed),
+                # and the actual compiled module and networks selected here.
+                files = set()
+                options = info["likelihood"][likelihood_name]
+                folder = root / options.get("path", project / "data")
+                dataset = folder / options["data_file"]
+                files.add(dataset)
+                for line in dataset.read_text().splitlines():
+                    entry = line.split("#", 1)[0]
+                    if "=" in entry:
+                        value = entry.split("=", 1)[1].strip()
+                        if value and (folder / value).is_file():
+                            files.add(folder / value)
+                for value in options.values():
+                    if isinstance(value, str) and value and (root / value).is_file():
+                        files.add(root / value)
+                # Cobaya expands likelihood defaults from the project's package.
+                for pattern in ("*.yaml", "*.py"):
+                    files.update((project / "likelihood").glob(pattern))
+                native = sys.modules[f"cosmolike_{project.name}_interface"]
+                files.add(Path(native.__file__))
+                camb_package = root / info["theory"]["camb"]["path"] / "camb"
+                files.add(camb_package / "camblib.so")
+                files.update(camb_package.glob("*.py"))
+                for theory in info["theory"]:
+                    package = Path(__file__).parent / "theory" / theory
+                    if package.is_dir():
+                        files.update(package.glob("*.py"))
+                        files.update(package.glob("*.yaml"))
+                linear = root / "external_modules/data/emultrf/emulmps/npce_emul"
+                nonlinear = data_dir / "emulmps/w0wa_mead2020"
+                networks = {
+                    "model_file": linear / "emulator_npce.keras",
+                    "metadata_file": linear / "metadata.joblib",
+                    "nl_model_file": nonlinear / "emulator_mead2020.keras",
+                    "nl_metadata_file": nonlinear / "metadata.joblib",
+                }
+                for key, path in networks.items():
+                    files.add(Path((candidate_extra_args or {}).get(key, path)))
+                files.update((code_dir / "emulmps").rglob("*.py"))
+                files.add(Path(__file__))
+                for path in sorted(files):
+                    record.write(f"{path.resolve()} {sha256_of(path)}\n")
+                provenance = record.getvalue()
+            previous_provenance = output / "provenance.txt"
+            if not previous_provenance.exists() and any(output.glob("*_vectors.npy")):
+                raise ValueError("Missing checkpoint provenance; use a fresh output directory.")
+            if previous_provenance.exists() and previous_provenance.read_text() != provenance:
+                raise ValueError("Saved model provenance differs; choose a new output directory.")
+            previous_provenance.write_text(provenance)
+
+        except Exception as error:
+            metadata_error = f"{type(error).__name__}: {error}"
+    if mpi_comm is not None:
+        metadata_error = mpi_comm.bcast(metadata_error, root=0)
+    if metadata_error is not None:
+        raise ValueError(metadata_error)
 
     vectors = {}
     loglikes = {}
     reference_precision = None
     fisher_failed = False
-    status = (output / "status.txt").open("w")
+    status = (output / "status.txt").open("a") if rank == 0 else io.StringIO()
     try:
         # Finish one model before initializing the next: the C library has
         # one global state. Holding two live likelihood instances would make
@@ -4922,17 +5018,66 @@ def run_matter_emulator_prior_check(
                 for name in ("omegam", "omegab"):
                     if isinstance(settings["params"].get(name), dict):
                         settings["params"][name]["drop"] = False
-            model = get_model(info_or_yaml_or_file=settings)
+            model_error = None
+            try:
+                model = get_model(info_or_yaml_or_file=settings)
+            except Exception as error:
+                model_error = f"{type(error).__name__}: {error}"
+            errors = [model_error] if mpi_comm is None else mpi_comm.allgather(model_error)
+            if any(error is not None for error in errors):
+                raise RuntimeError(f"MPI model initialization failed: {errors}")
             likelihood = model.likelihood[likelihood_name]
             precision = np.asarray(get_precision())
-            if reference_precision is None:
-                reference_precision = precision.copy()
-                np.save(file=output / "precision.npy", arr=precision)
-            else:
-                np.testing.assert_array_equal(precision, reference_precision)
+            precision_error = None
+            try:
+                if reference_precision is None:
+                    reference_precision = precision.copy()
+                    if rank == 0:
+                        if (output / "precision.npy").exists():
+                            np.testing.assert_array_equal(np.load(output / "precision.npy"), precision)
+                        else:
+                            np.save(file=output / "precision.npy", arr=precision)
+                else:
+                    np.testing.assert_array_equal(precision, reference_precision)
+            except Exception as error:
+                precision_error = f"{type(error).__name__}: {error}"
+            errors = [precision_error] if mpi_comm is None else mpi_comm.allgather(precision_error)
+            if any(error is not None for error in errors):
+                raise RuntimeError(f"Saved/native precision differs: {errors}")
             rows = np.full((n_models, len(precision)), np.nan)
             loglike_rows = np.full(n_models, np.nan)
-            for index, point in enumerate(points):
+            done = np.zeros(n_models, dtype=bool)
+            resume_error = None
+            if rank == 0:
+                try:
+                    vector_path = output / f"{route}_vectors.npy"
+                    loglike_path = output / f"{route}_loglikes.npy"
+                    done_path = output / f"{route}_done.npy"
+                    if vector_path.exists() and loglike_path.exists():
+                        saved_rows = np.load(vector_path)
+                        saved_loglikes = np.load(loglike_path)
+                        if saved_rows.shape != rows.shape or saved_loglikes.shape != loglike_rows.shape:
+                            raise ValueError("Saved comparison checkpoint has another shape.")
+                        rows, loglike_rows = saved_rows, saved_loglikes
+                        done = (np.all(np.isfinite(rows), axis=1)
+                                & np.isfinite(loglike_rows))
+                        if done_path.exists():
+                            saved_done = np.load(done_path)
+                            if saved_done.shape != done.shape:
+                                raise ValueError("Saved completion flags have another shape.")
+                            done = saved_done.astype(bool)
+                except Exception as error:
+                    resume_error = f"{type(error).__name__}: {error}"
+            if mpi_comm is not None:
+                resume_error = mpi_comm.bcast(resume_error, root=0)
+                rows, loglike_rows, done = mpi_comm.bcast((rows, loglike_rows, done), root=0)
+            if resume_error is not None:
+                raise ValueError(resume_error)
+            def evaluate_point(job):
+                index = job[0]
+                point = points[index]
+                vector = None
+                loglike = np.nan
                 try:
                     posterior = model.logposterior(params_values=point, cached=False)
                     if not np.isfinite(posterior.loglike):
@@ -4967,173 +5112,278 @@ def run_matter_emulator_prior_check(
                         vector = np.asarray(select_vector(vector))
                     if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
                         raise ValueError("Selected prediction does not match its precision.")
-                    rows[index] = vector
-                    loglike_rows[index] = posterior.loglike
+                    loglike = posterior.loglike
                     message = f"{route} cosmology {index + 1}/{n_models}: evaluated"
                 except Exception as error:
+                    vector = None
+                    loglike = np.nan
                     # Keep the failed row as NaN. Never reuse a previous
                     # vector, redraw a point, or count a rejection as a pass.
                     message = f"{route} cosmology {index + 1}/{n_models}: FAILED {type(error).__name__}: {error}"
-                print(message, flush=True)
-                status.write(message + "\n")
-                status.flush()
-                np.save(file=output / f"{route}_vectors.npy", arr=rows)
-            vectors[route] = rows
-            loglikes[route] = loglike_rows
-            np.save(file=output / f"{route}_loglikes.npy", arr=loglike_rows)
+                return index, vector, loglike, message
+
+            # Use the same shared MPI job owner as the established DESI
+            # Fisher driver. Small rounds let rank zero save checkpoints
+            # between rounds, without another scheduling implementation.
+            for first in range(0, n_models, size):
+                jobs = [(index,) for index in range(first, min(first + size, n_models))
+                        if not done[index]]
+                if not jobs:
+                    continue
+                if mpi_comm is None:
+                    gathered = [evaluate_point(job) for job in jobs]
+                else:
+                    results, _ = run_owned_jobs(mpi_comm, jobs, evaluate_point)
+                    gathered = list(results.values()) if rank == 0 else None
+                checkpoint_error = None
+                if rank == 0:
+                    try:
+                        for item in gathered:
+                            if item is None:
+                                continue
+                            index, vector, loglike, message = item
+                            if vector is not None:
+                                rows[index] = vector
+                                loglike_rows[index] = loglike
+                            done[index] = True
+                            print(message, flush=True)
+                            status.write(message + "\n")
+                        status.flush()
+                        np.save(output / f"{route}_vectors.npy", rows)
+                        np.save(output / f"{route}_loglikes.npy", loglike_rows)
+                        np.save(output / f"{route}_done.npy", done)
+                    except Exception as error:
+                        checkpoint_error = f"{type(error).__name__}: {error}"
+                if mpi_comm is not None:
+                    checkpoint_error = mpi_comm.bcast(checkpoint_error, root=0)
+                if checkpoint_error is not None:
+                    raise RuntimeError(checkpoint_error)
+            if mpi_comm is not None:
+                rows, loglike_rows = mpi_comm.bcast((rows, loglike_rows), root=0)
+            vectors[route], loglikes[route] = rows, loglike_rows
             if route == "camb" and fisher:
-                # Compute through this same live CAMB model, before the
-                # candidate initializes the library's global native state.
-                # All sampled nuisance parameters enter the Fisher matrix;
-                # the random accuracy points keep their declared values.
+                # Close the matched-mean reference before changing native
+                # accuracy. CosmoLike has one global model state per rank.
+                model.close()
+                model = None
                 try:
-                    fisher_rows = None
-                    fisher_covariance = None
-                    if fisher_probe is not None:
-                        if fisher_probe != "xi" or get_covariance is None:
-                            raise ValueError("Shear Fisher requires probe xi and a covariance reader.")
-                        nsource = likelihood.source_ntomo
-                        nshear = nsource * (nsource + 1) * likelihood.ntheta
-                        fisher_rows = np.flatnonzero(
-                            (np.diag(reference_precision) > 0.0)
-                            & (np.arange(len(reference_precision)) < nshear)
+                    normal = copy.deepcopy(fisher_settings)
+                    if use_emulator_switch:
+                        normal["likelihood"][likelihood_name]["use_emulator"] = 0
+                    # A parameter-dependent early exit creates jumps in a
+                    # derivative. Disable it for both Fisher accuracies;
+                    # the separate mean comparisons keep the YAML values.
+                    for key in ("nonlimber_tolerance_gg", "nonlimber_tolerance_gs"):
+                        if hasattr(likelihood, key):
+                            normal["likelihood"][likelihood_name][key] = 0.0
+                    refined = None
+                    for stage in ("default_accuracy", "refined_accuracy"):
+                        current = normal if refined is None else refined
+                        error = None
+                        try:
+                            model = get_model(info_or_yaml_or_file=current)
+                            likelihood = model.likelihood[likelihood_name]
+                            np.testing.assert_array_equal(get_precision(), reference_precision)
+                        except Exception as caught:
+                            error = f"{type(caught).__name__}: {caught}"
+                        errors = [error] if mpi_comm is None else mpi_comm.allgather(error)
+                        if any(item is not None for item in errors):
+                            raise ValueError(f"Fisher model setup failed: {errors}")
+                        if stage == "default_accuracy":
+                            # One explicit next setting, recorded below. This
+                            # is a convergence trial, not a claimed validated
+                            # production setting. Per-project overrides can
+                            # supply an already documented numerical ladder.
+                            refined = copy.deepcopy(normal)
+                            options = refined["likelihood"][likelihood_name]
+                            boost = float(likelihood.accuracyboost)
+                            options["accuracyboost"] = max(boost, min(3., 2.*boost))
+                            options["integration_accuracy"] = abs(int(likelihood.integration_accuracy))+1
+                            if hasattr(likelihood, "threepcf_accuracy"):
+                                controls = dict(likelihood.threepcf_accuracy or {})
+                                controls["accuracy_boost"] = 2.*float(controls.get("accuracy_boost", 1.))
+                                controls["integration_accuracy_boost"] = 2.*float(controls.get("integration_accuracy_boost", 1.))
+                                options["threepcf_accuracy"] = controls
+                            options.update(fisher_accuracy_likelihood or {})
+                            fine_camb = refined["theory"]["camb"]["extra_args"]
+                            fine_camb["AccuracyBoost"] = max(2., float(fine_camb.get("AccuracyBoost", 1.)))
+                            fine_camb["k_per_logint"] = max(50, int(fine_camb.get("k_per_logint", 0)))
+                            fine_camb.update(fisher_accuracy_camb or {})
+                        fisher_rows, fisher_covariance = None, None
+                        if fisher_probe is not None:
+                            if fisher_probe != "xi" or get_covariance is None:
+                                raise ValueError("Shear Fisher requires probe xi and a covariance reader.")
+                            nsource = likelihood.source_ntomo
+                            nshear = nsource*(nsource+1)*likelihood.ntheta
+                            fisher_rows = np.flatnonzero((np.diag(reference_precision)>0.)
+                                                         & (np.arange(len(reference_precision))<nshear))
+                            fisher_covariance = np.asarray(get_covariance())
+                        destination = output/"fisher"/"default_accuracy" if stage == "default_accuracy" else output/"fisher"
+                        compute_matter_emulator_fisher(
+                            model=model, likelihood=likelihood,
+                            center=base_point if fisher_center is None else fisher_center,
+                            precision=reference_precision, params=model.info()["params"],
+                            output=destination, sample_power=fisher_sample_power,
+                            parameters=fisher_parameters, steps=fisher_steps,
+                            rows=fisher_rows, covariance=fisher_covariance,
+                            select_vector=select_vector, derivative_provider=derivative_provider,
+                            amplitude_bias_cuts=amplitude_bias_cuts, mpi_comm=mpi_comm,
+                            sample=stage == "refined_accuracy", noise_screen=True,
+                            noise_reference=None if stage == "default_accuracy" else output/"fisher"/"default_accuracy",
                         )
-                        fisher_covariance = np.asarray(get_covariance())
-                    compute_matter_emulator_fisher(
-                        model=model,
-                        likelihood=likelihood,
-                        center=base_point if fisher_center is None else fisher_center,
-                        precision=reference_precision,
-                        # Likelihood defaults can add sampled nuisance
-                        # parameters absent from the user's YAML. Cobaya's
-                        # resolved parameter definitions include their priors.
-                        params=model.info()["params"],
-                        output=output / "fisher",
-                        sample_power=fisher_sample_power,
-                        parameters=fisher_parameters,
-                        steps=fisher_steps,
-                        rows=fisher_rows,
-                        covariance=fisher_covariance,
-                        select_vector=select_vector,
-                    )
+                        if rank == 0:
+                            (destination/"numerical_settings.txt").write_text(
+                                f"stage={stage}\n"
+                                f"likelihood={current['likelihood'][likelihood_name]}\n"
+                                f"CAMB={current['theory']['camb']['extra_args']}\n"
+                                f"FoM relative tolerance={fisher_fom_tolerance}\n"
+                                "Fisher uses the example's physical theory with mnu=0.06 eV.\n"
+                                + (destination/"fiducial_likelihood.txt").read_text()
+                            )
+                        model.close()
+                        model = None
+                    gate_error = None
+                    if rank == 0:
+                        try:
+                            compare_matter_emulator_fisher_accuracy(
+                                base=output/"fisher"/"default_accuracy", refined=output/"fisher",
+                                tolerance=fisher_fom_tolerance,
+                            )
+                        except Exception as caught:
+                            gate_error = f"{type(caught).__name__}: {caught}"
+                    if mpi_comm is not None:
+                        gate_error = mpi_comm.bcast(gate_error, root=0)
+                    if gate_error is not None:
+                        raise ValueError(gate_error)
                 except Exception as error:
                     fisher_failed = True
                     message = f"Fisher FAILED {type(error).__name__}: {error}"
-                    print(message, flush=True)
-                    status.write(message + "\n")
-                    status.flush()
-            model.close()
+                    if rank == 0:
+                        print(message, flush=True)
+                        status.write(message+"\n")
+                        status.flush()
+            if model is not None:
+                model.close()
     finally:
         status.close()
 
-    residuals = vectors["candidate"] - vectors["camb"]
-    distances = np.einsum("ij,jk,ik->i", residuals, reference_precision, residuals)
-    finite = np.isfinite(distances)
-    passed = finite & (distances >= 0.0) & (distances < limit)
-    log_weights = loglikes["camb"] - loglikes["candidate"]
-    result_table = np.column_stack((
-        np.arange(n_models), distances, passed.astype(int), log_weights,
-    ))
-    np.savetxt(
-        fname=output / "distances.txt",
-        X=result_table,
-        header="model_index delta_chi2 passes_strict_limit log_L_CAMB_minus_log_L_emulator",
-    )
-    # Prior draws include points that fit the data very poorly. Compare their
-    # CAMB likelihoods with the best saved point before interpreting an error
-    # as relevant to inference. Nuisance values are prescribed (constant for
-    # prior draws, supplied per row for explicit inputs); they are not fitted.
-    # This is neither a profile likelihood nor a marginalized exclusion test.
-    fit_penalty = np.full(n_models, np.nan)
-    finite_reference = np.isfinite(loglikes["camb"])
-    if finite_reference.any():
-        best_loglike = np.max(loglikes["camb"][finite_reference])
-        fit_penalty[finite_reference] = -2.0 * (
-            loglikes["camb"][finite_reference] - best_loglike
+    if rank == 0:
+        residuals = vectors["candidate"] - vectors["camb"]
+        distances = np.einsum("ij,jk,ik->i", residuals, reference_precision, residuals)
+        finite = np.isfinite(distances)
+        passed = finite & (distances >= 0.0) & (distances < limit)
+        log_weights = loglikes["camb"] - loglikes["candidate"]
+        result_table = np.column_stack((
+            np.arange(n_models), distances, passed.astype(int), log_weights,
+        ))
+        np.savetxt(
+            fname=output / "distances.txt",
+            X=result_table,
+            header="model_index delta_chi2 passes_strict_limit log_L_CAMB_minus_log_L_emulator",
         )
-    np.savetxt(
-        fname=output / "likelihood_relevance.txt",
-        X=np.column_stack((
-            np.arange(n_models), loglikes["camb"], fit_penalty, distances,
-        )),
-        header=("index logL_CAMB "
-                + ("fixed_nuisance_fit_penalty" if points_file is None
-                   else "prescribed_nuisance_fit_penalty")
-                + " emulator_vector_error"),
-    )
-    summary = f"{int(passed.sum())}/{n_models} pass delta_chi2 < {limit}; {int((~finite).sum())} nonfinite\n"
-    if finite.any():
-        summary += f"median={np.median(distances[finite]):.9g}; maximum={np.max(distances[finite]):.9g}\n"
-    for threshold in (0.2, 0.5, 1.0, 4.0):
-        count = np.count_nonzero(finite & (distances >= 0.0) & (distances < threshold))
-        summary += f"delta_chi2 < {threshold}: {count}/{n_models}\n"
-    summary += f"delta_chi2 >= 4: {np.count_nonzero(finite & (distances >= 4.0))}/{n_models}\n"
-    (output / "summary.txt").write_text(summary)
+        # Prior draws include points that fit the data very poorly. Compare their
+        # CAMB likelihoods with the best saved point before interpreting an error
+        # as relevant to inference. Nuisance values are prescribed (constant for
+        # prior draws, supplied per row for explicit inputs); they are not fitted.
+        # This is neither a profile likelihood nor a marginalized exclusion test.
+        fit_penalty = np.full(n_models, np.nan)
+        finite_reference = np.isfinite(loglikes["camb"])
+        if finite_reference.any():
+            best_loglike = np.max(loglikes["camb"][finite_reference])
+            fit_penalty[finite_reference] = -2.0 * (
+                loglikes["camb"][finite_reference] - best_loglike
+            )
+        np.savetxt(
+            fname=output / "likelihood_relevance.txt",
+            X=np.column_stack((
+                np.arange(n_models), loglikes["camb"], fit_penalty, distances,
+            )),
+            header=("index logL_CAMB "
+                    + ("fixed_nuisance_fit_penalty" if points_file is None
+                       else "prescribed_nuisance_fit_penalty")
+                    + " emulator_vector_error"),
+        )
+        summary = f"{int(passed.sum())}/{n_models} pass delta_chi2 < {limit}; {int((~finite).sum())} nonfinite\n"
+        if finite.any():
+            summary += f"median={np.median(distances[finite]):.9g}; maximum={np.max(distances[finite]):.9g}\n"
+        for threshold in (0.2, 0.5, 1.0, 4.0):
+            count = np.count_nonzero(finite & (distances >= 0.0) & (distances < threshold))
+            summary += f"delta_chi2 < {threshold}: {count}/{n_models}\n"
+        summary += f"delta_chi2 >= 4: {np.count_nonzero(finite & (distances >= 4.0))}/{n_models}\n"
+        (output / "summary.txt").write_text(summary)
     focused_failed = 0
-    if fisher and not fisher_failed:
+    local_input = None
+    setup_error = None
+    if rank == 0 and fisher and not fisher_failed:
         try:
-            local_points = None
-            local_distances = None
             if points_file is None and focused_models > 0:
-                # Draw only from the CAMB Fisher, before looking at emulator
-                # errors. Varying all differentiated nuisance parameters keeps
-                # their covariance with cosmology in the focused comparison.
                 local_input = local_points_file
                 if local_input is None:
                     local_input = draw_matter_emulator_focused_points(
-                        output=output / "fisher",
-                        n_models=focused_models,
+                        output=output / "fisher", n_models=focused_models,
                         seed=seed + 10000,
                     )
                 supplied = np.atleast_1d(np.genfromtxt(local_input, names=True))
                 if len(supplied) != focused_models:
                     raise ValueError("Focused table row count differs from focused_models.")
-                focused_failed = run_matter_emulator_prior_check(
-                    project=project,
-                    configuration=configuration,
-                    get_precision=get_precision,
-                    points_file=local_input,
-                    output_dir=output / "local",
-                    limit=limit,
-                    advisory=advisory,
-                    candidate_extra_args=candidate_extra_args,
-                    use_emulator_switch=use_emulator_switch,
-                    select_vector=select_vector,
-                    focused_models=0,
-                )
-                local_points = output / "local/points.txt"
-                local_distances = output / "local/distances.txt"
-                summary += f"Focused comparison: {focused_models} points; see local/summary.txt.\n"
-            plot_matter_emulator_fisher(
-                output=output / "fisher",
-                points_file=output / "points.txt",
-                distances_file=output / "distances.txt",
-                project_name=project.name,
-                local_points_file=local_points,
-                local_distances_file=local_distances,
-            )
+                for name in supplied.dtype.names:
+                    if name not in names and name in base_point:
+                        if not np.all(supplied[name] == base_point[name]):
+                            raise ValueError(f"Focused precision points vary nuisance {name}; "
+                                             "keep its evaluate YAML value fixed.")
         except Exception as error:
+            setup_error = f"{type(error).__name__}: {error}"
+    if mpi_comm is not None:
+        local_input, setup_error = mpi_comm.bcast((local_input, setup_error), root=0)
+    if setup_error is None and local_input is not None:
+        focused_failed = run_matter_emulator_prior_check(
+            project=project, configuration=configuration,
+            get_precision=get_precision, points_file=local_input,
+            output_dir=output / "local", limit=limit, advisory=advisory,
+            candidate_extra_args=candidate_extra_args,
+            use_emulator_switch=use_emulator_switch, select_vector=select_vector,
+            focused_models=0, mpi_comm=mpi_comm,
+        )
+    result = None
+    if rank == 0:
+        if setup_error is not None:
             fisher_failed = True
-            summary += f"Fisher plot FAILED {type(error).__name__}: {error}\n"
-    if fisher_failed:
-        summary += "Fisher overlay incomplete; inspect status and fisher diagnostics.\n"
-    calculation_failed = (fisher_failed or focused_failed or not finite_reference.all()
-                          or not np.any(finite & (distances >= 0.0)))
-    if not finite_reference.all():
-        summary += "CAMB reference evaluations incomplete; comparison cannot pass.\n"
-    if not np.any(finite & (distances >= 0.0)):
-        summary += "No finite nonnegative prediction distances were obtained.\n"
-    (output / "summary.txt").write_text(summary)
-    print(summary, flush=True)
-    return int(calculation_failed) if advisory else int((~passed).sum()) + int(fisher_failed) + focused_failed
+            summary += f"Focused setup FAILED {setup_error}\n"
+        if fisher and not fisher_failed:
+            try:
+                plot_matter_emulator_fisher(
+                    output=output / "fisher", points_file=output / "points.txt",
+                    distances_file=output / "distances.txt", project_name=project.name,
+                    local_points_file=output / "local/points.txt" if local_input is not None else None,
+                    local_distances_file=output / "local/distances.txt" if local_input is not None else None,
+                )
+                if local_input is not None:
+                    summary += f"Focused comparison: {focused_models} points; see local/summary.txt.\n"
+            except Exception as error:
+                fisher_failed = True
+                summary += f"Fisher plot FAILED {type(error).__name__}: {error}\n"
+        if fisher_failed:
+            summary += "Fisher overlay incomplete; inspect status and fisher diagnostics.\n"
+        calculation_failed = (fisher_failed or focused_failed or not finite_reference.all()
+                              or not np.any(finite & (distances >= 0.0)))
+        if not finite_reference.all():
+            summary += "CAMB reference evaluations incomplete; comparison cannot pass.\n"
+        if not np.any(finite & (distances >= 0.0)):
+            summary += "No finite nonnegative prediction distances were obtained.\n"
+        (output / "summary.txt").write_text(summary)
+        print(summary, flush=True)
+        result = int(calculation_failed) if advisory else int((~passed).sum()) + int(fisher_failed) + focused_failed
+    return result if mpi_comm is None else mpi_comm.bcast(result, root=0)
 
 
 def draw_matter_emulator_focused_points(output, n_models=25, seed=10137):
     """Save parameter draws from a validated bounded CAMB Fisher calculation.
 
-    All differentiated parameters, including nuisances, are drawn together.
-    Undifferentiated parameters retain the evaluate example's overrides when
-    the comparison reads this table. The draws are deterministic for a given
+    Sample the full weighted Fisher distribution, then retain cosmological
+    coordinates only. This integrates over nuisance uncertainty in selecting
+    the cosmological region; it does not condition the Fisher on fixed
+    nuisance parameters. The subsequent precision comparison uses the YAML
+    nuisance values in both theories. The draws are deterministic for a given
     archive and seed, and use no emulator errors or observed-data fit scores.
     These are local Fisher draws, not samples from an inferred posterior.
 
@@ -5173,13 +5423,23 @@ def draw_matter_emulator_focused_points(output, n_models=25, seed=10137):
     weights /= np.sum(weights)
     random = np.random.default_rng(seed=seed)
     selected = random.choice(a=len(values), size=n_models, replace=False, p=weights)
+    cosmological = ("As_1e9", "ns", "H0", "omegab", "omegam", "w", "w0pwa", "wa")
+    columns = []
+    selected_names = []
+    for index, name in enumerate(names):
+        if name in cosmological:
+            columns.append(index)
+            selected_names.append(name)
+    if not columns:
+        raise ValueError("The Fisher archive contains no supported cosmological parameters.")
     destination = output / "focused_points.txt"
-    np.savetxt(fname=destination, X=values[selected], header=" ".join(names))
+    np.savetxt(fname=destination, X=values[np.ix_(selected, columns)],
+               header=" ".join(selected_names))
     (output / "focused_definition.txt").write_text(
         f"Weighted bounded Fisher draws; count={n_models}; seed={seed}.\n"
-        "All differentiated nuisance parameters drawn jointly with cosmology.\n"
+        "Cosmological marginal of the full nuisance-marginalized Fisher.\n"
         "0.2 < Omega_m < 0.5; 1e9 As <= 3.5; no selection on emulator error.\n"
-        "Undifferentiated inputs keep the evaluate YAML overrides.\n"
+        "All nuisance inputs keep the evaluate YAML overrides in precision evaluations.\n"
     )
     return destination
 
@@ -5188,6 +5448,8 @@ def compute_matter_emulator_fisher(
     model, likelihood, center, precision, params, output, steps=None,
     rows=None, covariance=None, sample_power=18, seeds=(137, 138),
     min_effective=200, parameters=None, select_vector=None,
+    derivative_provider=None, amplitude_bias_cuts=None, mpi_comm=None,
+    sample=True, noise_reference=None, noise_fraction=0.95, noise_screen=False,
 ):
     """Compute the reference model's local Fisher information and contours.
 
@@ -5203,6 +5465,26 @@ def compute_matter_emulator_fisher(
         Without this override, ordinary NLA excludes its exact TATT-only
         A2_1, A2_2 and BTA_1 coordinates: their independent priors factor out.
       select_vector = optional native mask/compression before derivatives.
+      derivative_provider = optional callable(model, likelihood, center, steps)
+        returning {name: (full derivative at h, full derivative at h/2)}.
+        Supplied columns replace expensive finite differences for those names;
+        the remaining parameters retain the common stencil and all priors.
+      amplitude_bias_cuts = optional {external prior name:
+        (amplitude name, bias name, reference amplitude, reference bias, limit)}.
+        Each explicitly declared hard prior is (amplitude/A0)*(bias/b0)^2
+        <= limit. Its interior curvature is zero; the coupled boundary is
+        retained in every bounded integral. Other external priors are refused.
+      mpi_comm = optional communicator passed to the existing shared
+        mpi_batching.run_owned_jobs. A complete h/h2 derivative column is
+        one job; each rank owns a model, and rank zero assembles the result.
+      sample = integrate bounded contours after saving the full Fisher.
+      noise_reference = optional default-accuracy Fisher directory. Its
+        measured noise contributions choose which refined columns run first.
+        The rest still run once for the final full-matrix convergence check.
+      noise_fraction = fraction of baseline noise contribution prioritized;
+        omitted columns are subsequently checked, never assumed noise-free.
+      noise_screen = save the shared fourth-difference/FoM noise diagnostics;
+        requires a resolved full Fisher matrix and the target cosmology pair.
       rows = optional unmasked data subset; requires the full covariance.
       covariance = full covariance, only used when selecting data rows.
       sample_power, seeds, min_effective = bounded integration controls.
@@ -5220,10 +5502,17 @@ def compute_matter_emulator_fisher(
     import numpy as np
     from cosmolike_notebook_utils import fisher as cf
 
+    from cosmolike_notebook_utils.mpi_batching import run_owned_jobs
+
+    rank = 0 if mpi_comm is None else mpi_comm.Get_rank()
     output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
-    if getattr(model.prior, "external", {}):
-        raise ValueError("External/correlated priors require their full curvature; unsupported here.")
+    if rank == 0:
+        output.mkdir(parents=True, exist_ok=True)
+    cuts = {} if amplitude_bias_cuts is None else dict(amplitude_bias_cuts)
+    external = getattr(model.prior, "external", {})
+    if set(external) != set(cuts):
+        raise ValueError("External priors require explicit matching amplitude-bias hard cuts; "
+                         "other external/correlated prior curvature is unsupported.")
     sampled = list(model.parameterization.sampled_params())
     names = sampled if parameters is None else list(parameters)
     inactive_nla = []
@@ -5282,6 +5571,21 @@ def compute_matter_emulator_fisher(
             raise ValueError(f"Fisher step for {name} must be finite and positive.")
         absolute_steps[name] = step
 
+    cut_parameters, cut_scales = [], []
+    for label, specification in cuts.items():
+        if len(specification) != 5:
+            raise ValueError(f"Hard cut {label} needs two names and three scales.")
+        amplitude, bias, amplitude0, bias0, limit = specification
+        if amplitude not in names or bias not in names:
+            raise ValueError(f"Hard cut {label} must use differentiated parameters.")
+        scales = np.array([amplitude0, bias0, limit], dtype=float)
+        if not np.all(np.isfinite(scales)) or np.any(scales <= 0.):
+            raise ValueError(f"Hard cut {label} needs finite positive scales.")
+        if (center[amplitude]/amplitude0)*(center[bias]/bias0)**2 >= limit:
+            raise ValueError(f"Fisher center must be strictly inside hard cut {label}.")
+        cut_parameters.append([amplitude, bias])
+        cut_scales.append(scales)
+
     precision = np.asarray(precision, dtype=float)
     if precision.ndim != 2 or precision.shape[0] != precision.shape[1]:
         raise ValueError("Native precision must be square.")
@@ -5308,7 +5612,17 @@ def compute_matter_emulator_fisher(
     cf.symmetric_matrix(metric, name="Fisher data metric", positive=True)
 
     def predict(point):
-        result = model.logposterior(params_values=point, cached=False)
+        # Only theory may reuse identical inputs. The likelihood owns native
+        # state and last_datavector, so it must execute on every cache miss.
+        manage_cache = hasattr(likelihood, "set_cache_size") and hasattr(likelihood, "_states")
+        if manage_cache:
+            previous_size = likelihood._states.maxlen
+            likelihood.set_cache_size(0)
+        try:
+            result = model.logposterior(params_values=point, cached=manage_cache)
+        finally:
+            if manage_cache:
+                likelihood.set_cache_size(previous_size)
         if not np.isfinite(result.loglike):
             raise ValueError("Fisher reference likelihood is nonfinite.")
         if hasattr(likelihood, "last_datavector"):
@@ -5336,49 +5650,351 @@ def compute_matter_emulator_fisher(
         center_loglike = float(likelihood.compute_logp(datavector=likelihood.last_datavector))
     else:
         center_loglike = float(model.logposterior(params_values=center, cached=False).loglike)
-    (output / "fiducial_likelihood.txt").write_text(
-        f"Matched CAMB mead2020 reference: logL={center_loglike:.17g}; -2logL={-2*center_loglike:.17g}\n"
-        "This is the YAML fiducial with the comparison's fixed mass and matched nonlinear prescription.\n"
-        "It need not have zero residual against a synthetic vector made with another prescription.\n"
-    )
+    if rank == 0:
+        (output / "fiducial_likelihood.txt").write_text(
+            f"CAMB Fisher reference: logL={center_loglike:.17g}; -2logL={-2*center_loglike:.17g}\n"
+            "This is the declared Fisher fiducial and theory; consult numerical_settings.txt for the runner's choices.\n"
+            "It need not have zero residual against a synthetic vector made with another prescription.\n"
+        )
     # Subtract one fixed vector before differencing. An inactive parameter
     # then gives exactly zero at every stencil point, rather than a tiny
     # artificial slope from adding rounded multiples of the same vector.
     cache = cf.ExactMeanCache(lambda point: predict(point) - reference)
     bounds = dict(zip(names, zip(lower, upper)))
     try:
-        _, _, coarse, fine = cf.differentiate(
-            predict=cache, parameters=center, steps=absolute_steps, bounds=bounds,
+        supplied = {} if derivative_provider is None else derivative_provider(
+            model=model, likelihood=likelihood, center=dict(center),
+            steps=dict(absolute_steps),
         )
+        if set(supplied) - set(names):
+            raise ValueError("Supplied derivative columns must name differentiated parameters.")
+        columns = {}
+        stencil_columns = {}
+        for name, pair in supplied.items():
+            if len(pair) != 2:
+                raise ValueError(f"Supplied derivative {name} needs both h and h/2 columns.")
+            selected_pair = []
+            for vector in pair:
+                vector = np.asarray(vector, dtype=float)
+                if select_vector is not None:
+                    vector = np.asarray(select_vector(vector))
+                if vector.shape != (len(precision),) or not np.all(np.isfinite(vector)):
+                    raise ValueError(f"Supplied derivative {name} does not match the data metric.")
+                selected_pair.append(vector[selected])
+            columns[name] = selected_pair
+        remaining = [name for name in names if name not in columns]
+
+        def evaluate_column(name):
+            """Evaluate both derivative steps together on the owning rank.
+
+            Return an error as data so every rank reaches the shared gather;
+            the caller then refuses the entire Fisher matrix on all ranks.
+            """
+            try:
+                _, _, coarse_column, fine_column = cf.differentiate(
+                    predict=cache,
+                    parameters=center,
+                    steps={name: absolute_steps[name]},
+                    bounds=bounds,
+                )
+                # These points are already in ExactMeanCache. Reading them
+                # retains the fourth difference without another model call.
+                stencils = []
+                for divisor in (1., 2.):
+                    values = []
+                    for multiple in (-2., -1., 0., 1., 2.):
+                        point = dict(center)
+                        if multiple != 0.:
+                            point[name] += multiple * (absolute_steps[name]/divisor)
+                        values.append(cache(point))
+                    stencils.append(np.asarray(values))
+                return None, coarse_column[:, 0], fine_column[:, 0], stencils
+            except Exception as error:
+                return f"{name}: {type(error).__name__}: {error}", None, None, None
+
+        # One default full base supplies both marginalization and ranking.
+        # At refined accuracy evaluate its important columns first; finish
+        # the rest only once for the independent full-Fisher gate below.
+        baseline = None
+        selected_names = []
+        if noise_reference is not None:
+            baseline = np.load(Path(noise_reference)/"fisher.npz")
+            baseline_noise = matter_emulator_fisher_noise(baseline)
+            if not 0. < noise_fraction <= 1.:
+                raise ValueError("noise_fraction must lie in (0,1].")
+            importance = np.maximum(baseline_noise["h"]["terms"],
+                                    baseline_noise["half_h"]["terms"])
+            available = [names.index(name) for name in remaining]
+            order = sorted(available, key=lambda index: importance[index], reverse=True)
+            total = sum(importance[index] for index in order)
+            accumulated = 0.
+            for index in order:
+                selected_names.append(names[index])
+                accumulated += importance[index]
+                if total > 0. and accumulated >= noise_fraction*total:
+                    break
+                if total == 0. and len(selected_names) >= min(2, len(order)):
+                    break
+            # Always inspect the target coordinates, even when a baseline
+            # fourth difference happens to cancel exactly for either one.
+            for name in baseline_noise["pair"]:
+                if name in remaining and name not in selected_names:
+                    selected_names.append(name)
+        groups = [remaining] if baseline is None else [
+            selected_names, [name for name in remaining if name not in selected_names],
+        ]
+        for group_index, group in enumerate(groups):
+            results = {}
+            if group:
+                if mpi_comm is None:
+                    for name in group:
+                        results[name] = evaluate_column(name)
+                else:
+                    results, _ = run_owned_jobs(comm=mpi_comm, jobs=group, evaluate=evaluate_column)
+            derivative_error = None
+            if rank == 0:
+                try:
+                    for name in group:
+                        error, coarse_column, fine_column, stencils = results[name]
+                        if error is not None:
+                            raise ValueError(error)
+                        columns[name] = [coarse_column, fine_column]
+                        stencil_columns[name] = stencils
+                    if baseline is not None and group_index == 0:
+                        partial = dict(baseline)
+                        partial.update(
+                            stencil_names=np.asarray(selected_names),
+                            stencils_h=np.asarray([stencil_columns[n][0] for n in selected_names]),
+                            stencils_half_h=np.asarray([stencil_columns[n][1] for n in selected_names]),
+                            analytic_names=np.asarray(list(supplied)),
+                            steps=np.asarray([absolute_steps[n] for n in names]),
+                        )
+                        screen = matter_emulator_fisher_noise(partial, reference=baseline, complete=False)
+                        # Compare the SAME columns at both accuracies. The
+                        # default setting also contains numerical noise;
+                        # its own inflation must divide the refined one.
+                        baseline_partial = dict(partial)
+                        positions = [baseline["stencil_names"].tolist().index(n)
+                                     for n in selected_names]
+                        for key in ("stencils_h", "stencils_half_h"):
+                            baseline_partial[key] = baseline[key][positions]
+                        default_screen = matter_emulator_fisher_noise(
+                            baseline_partial, reference=baseline, complete=False,
+                        )
+                        ratios = []
+                        for suffix in ("h", "half_h"):
+                            ratios.append(
+                                f"{suffix}: predicted refined/default FoM ratio="
+                                f"{screen[suffix]['ratio']/default_screen[suffix]['ratio']:.17g}; "
+                                f"first-order delta log FoM="
+                                f"{screen[suffix]['dlnFoM']-default_screen[suffix]['dlnFoM']:.17g}\n"
+                            )
+                            score = screen[suffix]
+                            np.savetxt(output/f"selected_noise_{suffix}.txt",
+                                       np.c_[np.arange(len(names)), score["sigma"], score["a"], score["terms"]],
+                                       header="index sigma_evaluation false_information twice_dlnFoM; names="+",".join(names))
+                        omitted = screen["unmeasured"]
+                        (output/"selected_noise_definition.txt").write_text(
+                            "Default full Fisher weights; refined selected stencils.\n"
+                            "Measured: "+", ".join(selected_names)+"\n"
+                            "Not yet measured: "+", ".join(omitted)+"\n"
+                            "Zeros for unmeasured columns omit unknown contributions.\n"
+                            + "".join(ratios)
+                            + "These ratios use the same default full Fisher and selected columns.\n"
+                            "Compare with the measured full ratios in fom_convergence.txt; omitted noise is not bounded.\n"
+                            "The remaining columns run next for the full-Fisher gate.\n"
+                        )
+                except Exception as error:
+                    derivative_error = f"{type(error).__name__}: {error}"
+            if mpi_comm is not None:
+                derivative_error = mpi_comm.bcast(derivative_error, root=0)
+            if derivative_error is not None:
+                raise ValueError(derivative_error)
     finally:
-        model.logposterior(params_values=center, cached=False)
-    first = cf.fisher_matrix(derivatives=coarse, names=names, priors=widths, **arguments)
-    second = cf.fisher_matrix(derivatives=fine, names=names, priors=widths, **arguments)
-    zero = np.all(coarse == 0.0, axis=0) & np.all(fine == 0.0, axis=0)
-    np.savez_compressed(
-        file=output / "fisher.npz", names=names,
-        center=[center[name] for name in names], lower=lower, upper=upper,
-        gaussian_width=[widths.get(name, np.nan) for name in names],
-        steps=[absolute_steps[name] for name in names], rows=selected,
-        reference=reference, metric=metric, metric_is_covariance=rows is not None,
-        derivatives_coarse=coarse, derivatives_fine=fine,
-        fisher_coarse=first, fisher_fine=second, zero_response=zero,
+        predict(center)
+
+    # Only the writer assembles and samples the Fisher matrix. Other ranks
+    # receive its success or failure before continuing the comparison.
+    result = None
+    assembly_error = None
+    if rank == 0:
+        try:
+            coarse = np.column_stack([columns[name][0] for name in names])
+            fine = np.column_stack([columns[name][1] for name in names])
+            first = cf.fisher_matrix(derivatives=coarse, names=names, priors=widths, **arguments)
+            second = cf.fisher_matrix(derivatives=fine, names=names, priors=widths, **arguments)
+            zero = np.all(coarse == 0.0, axis=0) & np.all(fine == 0.0, axis=0)
+            np.savez_compressed(
+                file=output / "fisher.npz", names=names,
+                center=[center[name] for name in names], lower=lower, upper=upper,
+                gaussian_width=[widths.get(name, np.nan) for name in names],
+                steps=[absolute_steps[name] for name in names], rows=selected,
+                reference=reference, metric=metric, metric_is_covariance=rows is not None,
+                derivatives_coarse=coarse, derivatives_fine=fine,
+                stencil_names=remaining,
+                stencils_h=np.asarray([stencil_columns[n][0] for n in remaining]),
+                stencils_half_h=np.asarray([stencil_columns[n][1] for n in remaining]),
+                analytic_names=list(supplied),
+                fisher_coarse=first, fisher_fine=second, zero_response=zero,
+                amplitude_bias_cut_names=list(cuts),
+                amplitude_bias_cut_parameters=np.asarray(cut_parameters, dtype=str).reshape(-1, 2),
+                amplitude_bias_cut_scales=np.asarray(cut_scales, dtype=float).reshape(-1, 3),
+            )
+            (output / "definition.txt").write_text(
+                "Centered local CAMB Fisher diagnostic, not a fitted posterior.\n"
+                "Differentiated parameters: " + ", ".join(names) + "\n"
+                "Fixed in this Fisher calculation: " + ", ".join(n for n in sampled if n not in names) + "\n"
+                "Exact NLA-independent prior factors omitted: " + ", ".join(inactive_nla) + "\n"
+                "Independent Gaussian prior curvature and all selected hard bounds "
+                "retained. Data/prior linear scores not fitted.\n"
+                "Explicit amplitude-bias hard cuts retained: " + ", ".join(cuts) + "\n"
+                "Supplied derivative columns: " + ", ".join(supplied) + "\n"
+                "Fixed data covariance; no covariance derivatives.\n"
+                "Exactly zero local response: " + ", ".join(np.asarray(names)[zero]) + "\n"
+                "A zero response can hide nonlinear dependence, such as an IA slope "
+                "at zero amplitude. These parameters remain in the bounded integral.\n"
+            )
+            if noise_screen or noise_reference is not None:
+                record = np.load(output/"fisher.npz")
+                baseline = None if noise_reference is None else np.load(Path(noise_reference)/"fisher.npz")
+                screen = matter_emulator_fisher_noise(record, reference=baseline)
+                for suffix in ("h", "half_h"):
+                    score = screen[suffix]
+                    np.savetxt(output/f"noise_{suffix}.txt",
+                               np.c_[np.arange(len(names)), score["sigma"], score["a"],
+                                     score["R2"], score["sigma2"], score["terms"]],
+                               header="index sigma_evaluation false_information R2 parameter_variance twice_dlnFoM; names="+",".join(names))
+                (output/"noise_definition.txt").write_text(
+                    f"pair={screen['pair']}; full default Fisher with nuisance priors.\n"
+                    f"h: dlnFoM={screen['h']['dlnFoM']:.17g}; ratio={screen['h']['ratio']:.17g}\n"
+                    f"h/2: dlnFoM={screen['half_h']['dlnFoM']:.17g}; ratio={screen['half_h']['ratio']:.17g}\n"
+                    "Analytic columns: "+", ".join(screen["analytic"])+"\n"
+                    "Smooth curvature and correlated errors can invalidate the noise interpretation.\n"
+                )
+            if sample:
+                result = sample_matter_emulator_fisher(
+                    output=output, sample_power=sample_power, seeds=seeds,
+                    min_effective=min_effective,
+                )
+
+        except Exception as error:
+            assembly_error = f"{type(error).__name__}: {error}"
+    if mpi_comm is not None:
+        assembly_error = mpi_comm.bcast(assembly_error, root=0)
+    if assembly_error is not None:
+        raise ValueError(assembly_error)
+    return result
+
+
+def matter_emulator_fisher_noise(record, reference=None, complete=True):
+    """Score saved stencils using one full, default-accuracy Fisher matrix.
+
+    record and reference are mappings returned by numpy.load(fisher.npz).
+    No physical model is evaluated. reference fixes the marginalization
+    and prior curvature while candidate stencils measure their own noise.
+    Returned arrays use the reference parameter order. Analytic columns
+    are marked separately; their zeros are not measured numerical noise.
+
+    For CPL sampled as (w, w0pwa=w+wa), the pair transformation to (w,wa)
+    has determinant one. Its ellipse area and noise weights are therefore
+    exactly those of (w,w0pwa), with all other parameters marginalized.
+    """
+    import numpy as np
+    from cosmolike_notebook_utils import fisher as cf
+
+    base = record if reference is None else reference
+    names = base["names"].tolist()
+    if "w0" in names and "wa" in names:
+        pair = ("w0", "wa")
+    elif "w" in names and "wa" in names:
+        pair = ("w", "wa")
+    elif "w" in names and "w0pwa" in names:
+        pair = ("w", "w0pwa")
+    elif "As_1e9" in names and "omegam" in names:
+        pair = ("As_1e9", "omegam")
+    else:
+        raise ValueError("FoM screen needs sampled dark-energy coordinates or As_1e9 and omegam.")
+    i, j = (names.index(name) for name in pair)
+    if record["names"].tolist() != names:
+        raise ValueError("Accuracy screening requires the complete matching parameter order.")
+    for key in ("center", "lower", "upper", "gaussian_width", "steps", "rows", "metric"):
+        if not np.array_equal(record[key], base[key], equal_nan=True):
+            raise ValueError(f"Accuracy screening changed {key}; keep the physical test fixed.")
+    for key in ("amplitude_bias_cut_names", "amplitude_bias_cut_parameters",
+                "amplitude_bias_cut_scales"):
+        if not np.array_equal(record[key], base[key]):
+            raise ValueError("Accuracy screening changed a coupled prior boundary.")
+    if bool(record["metric_is_covariance"]) != bool(base["metric_is_covariance"]):
+        raise ValueError("Accuracy screening changed covariance/precision interpretation.")
+    metric = np.asarray(record["metric"])
+    if bool(record["metric_is_covariance"]):
+        factor = np.linalg.cholesky(metric)
+        inverse = np.linalg.solve(factor, np.eye(len(factor)))
+        precision = inverse.T @ inverse
+    else:
+        precision = metric
+    measured_names = record["stencil_names"].tolist()
+    measured = np.array([names.index(name) for name in measured_names], dtype=int)
+    analytic = set(record["analytic_names"].tolist())
+    known = set(measured_names) | analytic
+    if set(measured_names) & analytic or known - set(names) or (complete and known != set(names)):
+        raise ValueError("Every derivative must have a measured stencil or an analytic declaration.")
+    answer = {"names": names, "pair": pair, "measured": measured, "analytic": sorted(analytic),
+              "unmeasured": [name for name in names if name not in known]}
+    for suffix, divisor, field in (("h", 1., "stencils_h"), ("half_h", 2., "stencils_half_h")):
+        steps = np.asarray(record["steps"])/divisor
+        sigma, additions = np.zeros(len(names)), np.zeros(len(names))
+        if len(measured):
+            score = cf.retained_stencil_noise(
+                stencil_values=record[field], steps=steps[measured], invcov=precision,
+            )
+            sigma[measured], additions[measured] = score["sigma"], score["a"]
+        # Both candidate step choices use the SAME full default Fisher.
+        # A refined setting must not alter its own screening weights.
+        prediction = cf.predict_fom_noise(F=base["fisher_fine"], i=i, j=j, a=additions)
+        weights = cf.get_fom_noise_weights(F=base["fisher_fine"], i=i, j=j, eps=steps)
+        answer[suffix] = dict(prediction, sigma=sigma, a=additions, steps=steps,
+                              lever=weights["lever"])
+    return answer
+
+
+def compare_matter_emulator_fisher_accuracy(base, refined, tolerance=0.01):
+    """Require target-pair FoM stability in full h/h2 and accuracy comparisons.
+
+    This test's default tolerance is one percent, not a universal scientific
+    requirement. Priors, fiducial, data rows and covariance remain fixed.
+    A small fourth-difference estimate alone never passes this gate.
+    """
+    from pathlib import Path
+    import numpy as np
+    from cosmolike_notebook_utils import fisher as cf
+
+    base, refined = Path(base), Path(refined)
+    first, second = np.load(base/"fisher.npz"), np.load(refined/"fisher.npz")
+    score = matter_emulator_fisher_noise(second, reference=first)
+    if not np.isfinite(tolerance) or tolerance <= 0.:
+        raise ValueError("FoM convergence tolerance must be positive and finite.")
+    names, pair = score["names"], score["pair"]
+    values = np.array([
+        cf.figure_of_merit(record[key], names=names, pair=pair)
+        for record in (first, second)
+        for key in ("fisher_coarse", "fisher_fine")
+    ])
+    changes = np.array([values[1]/values[0]-1., values[3]/values[2]-1.,
+                        values[2]/values[0]-1., values[3]/values[1]-1.])
+    passed = bool(np.all(np.isfinite(changes)) and np.all(np.abs(changes) < tolerance))
+    np.savetxt(refined/"fom_convergence.txt", np.c_[np.arange(4), values, changes],
+               header="row FoM relative_change; FoMs=base_h,base_h2,refined_h,refined_h2; "
+                      "changes=base_step,refined_step,accuracy_h,accuracy_h2")
+    (refined/"fom_convergence_status.txt").write_text(
+        f"pair={pair}; relative_tolerance={tolerance}; passed={passed}\n"
+        "The full Fisher retains all selected nuisance parameters and priors.\n"
+        "The noise screen is diagnostic; correlated errors can evade it.\n"
     )
-    (output / "definition.txt").write_text(
-        "Centered local CAMB Fisher diagnostic, not a fitted posterior.\n"
-        "Differentiated parameters: " + ", ".join(names) + "\n"
-        "Fixed in this Fisher calculation: " + ", ".join(n for n in sampled if n not in names) + "\n"
-        "Exact NLA-independent prior factors omitted: " + ", ".join(inactive_nla) + "\n"
-        "Independent Gaussian prior curvature and all selected hard bounds "
-        "retained. Data/prior linear scores not fitted.\n"
-        "Fixed data covariance; no covariance derivatives.\n"
-        "Exactly zero local response: " + ", ".join(np.asarray(names)[zero]) + "\n"
-        "A zero response can hide nonlinear dependence, such as an IA slope "
-        "at zero amplitude. These parameters remain in the bounded integral.\n"
-    )
-    return sample_matter_emulator_fisher(
-        output=output, sample_power=sample_power, seeds=seeds, min_effective=min_effective,
-    )
+    if not passed:
+        raise ValueError("Full Fisher FoM is not stable at the requested step/accuracy tolerance; "
+                         "inspect fom_convergence.txt and refine further.")
+    return values
 
 
 def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min_effective=200):
@@ -5403,7 +6019,7 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
     """
     from pathlib import Path
     import numpy as np
-    from scipy.special import ndtri
+    from scipy.special import ndtri, logsumexp
     from scipy.stats import qmc
     from cosmolike_notebook_utils import fisher as cf
 
@@ -5526,12 +6142,47 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
         np.all(diagnostics[:, 1] >= min_effective)
         and width_spread <= 0.2 and mean_spread <= 0.25 and mass_spread <= 0.25
     )
+    # Fine-proposal convergence does not establish coarse reweighting
+    # convergence: a broader coarse Gaussian may need tails absent from
+    # the fine sample. Check its independent scramblings separately.
+    coarse_diagnostics, coarse_masses = [], []
+    for seed, sample, log_weights in zip(seeds, values_list, coarse_logs):
+        finite_here = np.isfinite(log_weights)
+        if not finite_here.any():
+            coarse_diagnostics.append([seed, 0., *([np.nan]*(2*len(names)))])
+            coarse_masses.append(-np.inf)
+            continue
+        norm = logsumexp(log_weights[finite_here])
+        normalized_here = np.zeros(len(sample))
+        normalized_here[finite_here] = np.exp(log_weights[finite_here]-norm)
+        mean_here = normalized_here @ sample
+        sigma_here = np.sqrt(normalized_here @ ((sample-mean_here)**2))
+        coarse_diagnostics.append([seed, 1./np.sum(normalized_here**2), *mean_here, *sigma_here])
+        coarse_masses.append(norm-np.log(len(sample)))
+    coarse_diagnostics = np.asarray(coarse_diagnostics)
+    coarse_average_width = np.mean(coarse_diagnostics[:, 2+len(names):], axis=0)
+    coarse_width_spread = np.max(np.ptp(coarse_diagnostics[:, 2+len(names):], axis=0)/coarse_average_width)
+    coarse_mean_spread = np.max(np.ptp(coarse_diagnostics[:, 2:2+len(names)], axis=0)/coarse_average_width)
+    coarse_masses = np.exp(np.asarray(coarse_masses)-np.max(coarse_masses))
+    coarse_mass_spread = np.ptp(coarse_masses)/np.mean(coarse_masses)
+    coarse_valid = bool(np.all(coarse_diagnostics[:, 1] >= min_effective)
+                        and coarse_width_spread <= .2 and coarse_mean_spread <= .25
+                        and coarse_mass_spread <= .25)
+    np.savetxt(output/"coarse_sampling_convergence.txt", coarse_diagnostics,
+               header="seed effective_count "+" ".join("mean_"+n for n in names)
+                      +" "+" ".join("sigma_"+n for n in names))
+    (output/"coarse_sampling_checks.txt").write_text(
+        f"coarse_sampling_valid={coarse_valid}; minimum_effective={min_effective}\n"
+        f"maximum_relative_seed_width_spread={coarse_width_spread:.8g}\n"
+        f"maximum_seed_mean_spread_in_sigma={coarse_mean_spread:.8g}\n"
+        f"relative_seed_normalization_spread={coarse_mass_spread:.8g}\n"
+    )
     np.savez_compressed(
         file=output / "bounded_samples.npz", names=names, values=values,
         weights=weights, coarse_weights=coarse_weight, seed=np.concatenate(seed_list),
         lower=lower, upper=upper, proposal=proposal,
         uniform_indices=uniform if gaussian_factor is None else np.array([], dtype=int),
-        sampling_valid=sampling_valid,
+        sampling_valid=sampling_valid, coarse_sampling_valid=coarse_valid,
     )
     np.savetxt(
         fname=output / "sampling_convergence.txt", X=diagnostics,
@@ -5547,6 +6198,10 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
     if not sampling_valid:
         raise ValueError("Bounded-Fisher sampling did not converge; increase sample_power "
                          "with sample_matter_emulator_fisher. Derivatives remain saved.")
+    if not coarse_valid:
+        raise ValueError("Coarse-Fisher reweighting is unresolved; fine contours remain saved, "
+                         "but the h/h2 width comparison is not valid. Increase sampling "
+                         "or sample the coarse matrix independently.")
     normalized = weights/np.sum(weights)
     mean = normalized @ values
     delta = values-mean
