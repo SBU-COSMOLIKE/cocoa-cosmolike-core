@@ -4838,7 +4838,7 @@ def _load_matter_emulator_reference(directory):
 
 
 def _matter_emulator_configuration(source):
-    """Read the evaluate YAML and apply the official cosmology support."""
+    """Read the evaluate YAML and apply the fixed benchmark's cosmology cuts."""
     import numpy as np
     from cobaya.yaml import yaml_load_file
 
@@ -4940,6 +4940,7 @@ def run_matter_emulator_prior_check(
     fisher_reference=None,
     validate_fisher_steps=False,
     save_fisher_contours=False,
+    stencil_rows_provider=None,
 ):
     """Compare a candidate matter emulator with CAMB on random cosmologies.
 
@@ -5223,6 +5224,7 @@ def run_matter_emulator_prior_check(
                     parameters=fisher_parameters, steps=fisher_steps,
                     rows=fisher_rows, covariance=fisher_covariance,
                     select_vector=select_vector, derivative_provider=derivative_provider,
+                    stencil_rows_provider=stencil_rows_provider,
                     amplitude_bias_cuts=amplitude_bias_cuts, mpi_comm=mpi_comm,
                     sample=not single_step and stage == stages[-1],
                     noise_screen=True, single_step=single_step,
@@ -5780,7 +5782,7 @@ def compute_matter_emulator_fisher(
     min_effective=200, parameters=None, select_vector=None,
     derivative_provider=None, amplitude_bias_cuts=None, mpi_comm=None,
     sample=True, noise_reference=None, noise_fraction=0.95, noise_screen=False,
-    single_step=False,
+    single_step=False, stencil_rows_provider=None,
 ):
     """Compute the reference model's local Fisher information and contours.
 
@@ -5800,6 +5802,10 @@ def compute_matter_emulator_fisher(
         returning {name: (full derivative at h, full derivative at h/2)}.
         Supplied columns replace expensive finite differences for those names;
         the remaining parameters retain the common stencil and all priors.
+      stencil_rows_provider = optional callable(model, likelihood, center, steps)
+        returning {sampled name: boolean mask in the supplied precision order}
+        for one-step stencils whose response is confined to known rows.
+        Disjoint stencils can share the same model calls.
       amplitude_bias_cuts = optional {external prior name:
         (amplitude name, bias name, reference amplitude, reference bias, limit)}.
         Each explicitly declared hard prior is (amplitude/A0)*(bias/b0)^2
@@ -5835,7 +5841,8 @@ def compute_matter_emulator_fisher(
     import numpy as np
     from cosmolike_notebook_utils import fisher as cf
 
-    from cosmolike_notebook_utils.mpi_batching import run_owned_jobs
+    from itertools import combinations
+    from cosmolike_notebook_utils.mpi_batching import bins_of_color, pair_coloring, run_owned_jobs
 
     rank = 0 if mpi_comm is None else mpi_comm.Get_rank()
     output = Path(output)
@@ -6039,24 +6046,45 @@ def compute_matter_emulator_fisher(
                 selected_pair.append(vector[selected])
             columns[name] = selected_pair
         remaining = [name for name in names if name not in columns]
+        row_support = {}
+        if single_step and stencil_rows_provider is not None:
+            for name, mask in stencil_rows_provider(
+                model=model, likelihood=likelihood, center=dict(center),
+                steps={name: absolute_steps[name] for name in remaining},
+            ).items():
+                mask = np.asarray(mask)
+                if name not in remaining or mask.shape != (len(precision),) or mask.dtype.kind != "b":
+                    raise ValueError(f"Stencil row mask for {name} must match the data metric.")
+                row_support[name] = mask[selected]
+        # The archive stores ascending offsets; five_point expects descending ones.
+        five_point_rows = [int(offset) + 2 for offset in cf.FIVE_POINT_OFFSETS]
 
-        def evaluate_column(name):
-            """Evaluate one parameter's requested stencil on its owning rank.
+        def evaluate_column(job):
+            """Evaluate stencils for one parameter or a group with disjoint rows.
 
             Return an error as data so every rank reaches the shared gather;
             the caller then refuses the entire Fisher matrix on all ranks.
             """
             try:
                 if single_step:
-                    h = absolute_steps[name]
-                    lo, hi = bounds[name]
+                    members = (job,) if isinstance(job, str) else job
                     stencil = []
                     for multiple in (-2, -1, 0, 1, 2):
-                        point = dict(center, **{name: center[name] + multiple*h})
-                        if not lo < point[name] < hi:
-                            raise ValueError(f"Stencil for {name} leaves its prior.")
+                        point = dict(center)
+                        for name in members:
+                            point[name] += multiple * absolute_steps[name]
+                            lo, hi = bounds[name]
+                            if not lo < point[name] < hi:
+                                raise ValueError(f"Stencil for {name} leaves its prior.")
                         stencil.append(cache(point))
-                    return None, cf.five_point([stencil[k] for k in (0, 1, 3, 4)], h), None, [np.asarray(stencil)]
+                    values = np.asarray(stencil)
+                    result = {}
+                    for name in members:
+                        column = values if len(members) == 1 else np.where(row_support[name], values, 0.)
+                        derivative = cf.five_point(column[five_point_rows], absolute_steps[name])
+                        result[name] = derivative, None, [column]
+                    return None, result
+                name = job
                 _, _, coarse_column, fine_column = cf.differentiate(
                     predict=cache,
                     parameters=center,
@@ -6074,9 +6102,9 @@ def compute_matter_emulator_fisher(
                             point[name] += multiple * (absolute_steps[name]/divisor)
                         values.append(cache(point))
                     stencils.append(np.asarray(values))
-                return None, coarse_column[:, 0], fine_column[:, 0], stencils
+                return None, {name: (coarse_column[:, 0], fine_column[:, 0], stencils)}
             except Exception as error:
-                return f"{name}: {type(error).__name__}: {error}", None, None, None
+                return f"{job}: {type(error).__name__}: {error}", {}
 
         # The full baseline supplies both marginalization and ranking.
         # The one-step screen measures only the selected higher-accuracy
@@ -6111,22 +6139,38 @@ def compute_matter_emulator_fisher(
         if baseline is not None and not single_step:
             groups.append([name for name in remaining if name not in selected_names])
         for group_index, group in enumerate(groups):
+            jobs = group
+            candidates = [name for name in group if name in row_support]
+            if len(candidates) > 1:
+                # A spectrum changed by both parameters forbids combining
+                # their displacements in the same exact numerical stencil.
+                pairs = [
+                    (i, j) for i, j in combinations(range(len(candidates)), 2)
+                    if np.any(row_support[candidates[i]] & row_support[candidates[j]])
+                ]
+                colors = pair_coloring(nbins=len(candidates), pairs=pairs)
+                jobs = [name for name in group if name not in row_support]
+                jobs += [
+                    tuple(candidates[i] for i in bins_of_color(color=colors, c=color))
+                    for color in range(max(colors) + 1)
+                ]
             results = {}
-            if group:
+            if jobs:
                 if mpi_comm is None:
-                    for name in group:
-                        results[name] = evaluate_column(name)
+                    for job in jobs:
+                        results[job] = evaluate_column(job)
                 else:
-                    results, _ = run_owned_jobs(comm=mpi_comm, jobs=group, evaluate=evaluate_column)
+                    results, _ = run_owned_jobs(comm=mpi_comm, jobs=jobs, evaluate=evaluate_column)
             derivative_error = None
             if rank == 0:
                 try:
-                    for name in group:
-                        error, coarse_column, fine_column, stencils = results[name]
+                    for job in jobs:
+                        error, job_columns = results[job]
                         if error is not None:
                             raise ValueError(error)
-                        columns[name] = [coarse_column] if single_step else [coarse_column, fine_column]
-                        stencil_columns[name] = stencils
+                        for name, (coarse_column, fine_column, stencils) in job_columns.items():
+                            columns[name] = [coarse_column] if single_step else [coarse_column, fine_column]
+                            stencil_columns[name] = stencils
                     if baseline is not None and group_index == 0:
                         partial = dict(baseline)
                         partial.update(
