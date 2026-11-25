@@ -388,6 +388,12 @@ exits are set to zero throughout the Fisher calculation, since a moving
 exit can create a discontinuous derivative. The separate CAMB/emulator
 mean comparison retains its own matched plain-mead2020 prescription.
 
+Both the broad draws and the bounded Fisher use the example priors
+intersected with $-2<w_0$, $1<10^9 A_s\leq3.5$, $H_0<85$ in
+km/s/Mpc and $0.2<\Omega_m<0.5$. In CPL examples `w` means today's
+$w_0$. The separately sampled $w_0+w_a$ keeps its example prior.
+In fixed-$w$ examples the calculation keeps the specified value.
+
 The base retains its h and h/2 stencils in `fisher/default_accuracy/`.
 `matter_emulator_fisher_noise` calls the shared functions above without
 another model evaluation. At the next numerical setting, columns covering

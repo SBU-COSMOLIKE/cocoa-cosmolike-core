@@ -4756,7 +4756,8 @@ def run_matter_emulator_prior_check(
     Both routes use CAMB distances and plain HMCode2020, with mnu=0.06 eV.
     The candidate uses the project's existing EMUL2 likelihood route.
 
-    Draw the cosmological box priors, intersect Omega_m with (0.2, 0.5),
+    Draw from each project's cosmological box with 0.2 < Omega_m < 0.5,
+    w0 > -2, 1 < 1e9 As <= 3.5 and H0 < 85 for both the mean and Fisher,
     and keep fixed cosmological parameters fixed. Do not redraw failures
     or silently restrict to the emulator training domain. The result is
     delta_model.T @ precision @ delta_model, not a difference between two
@@ -4852,6 +4853,31 @@ def run_matter_emulator_prior_check(
     info.pop("sampler")
     info.pop("output", None)
     info["params"]["mnu"] = {"value": 0.06}
+    # Intersect the example's priors before constructing either theory
+    # or Fisher. In CPL, CAMB's w is today's w0; w0pwa has its own prior.
+    # Move open endpoints inward by one representable float so that a
+    # bounded Fisher draw and an explicitly supplied point obey the same cut.
+    w_today = "w0" if "w0" in info["params"] else "w"
+    test_bounds = {
+        w_today: (float(np.nextafter(-2.0, np.inf)), np.inf),
+        "As_1e9": (float(np.nextafter(1.0, np.inf)), 3.5),
+        "H0": (-np.inf, float(np.nextafter(85.0, -np.inf))),
+        "omegam": (float(np.nextafter(0.2, np.inf)), float(np.nextafter(0.5, -np.inf))),
+    }
+    for name, (lo, hi) in test_bounds.items():
+        spec = info["params"].get(name, -1.0 if name == w_today else None)
+        if isinstance(spec, dict) and "prior" in spec:
+            prior = spec["prior"]
+            lo, hi = max(lo, float(prior["min"])), min(hi, float(prior["max"]))
+            if not lo < hi:
+                raise ValueError(f"Empty emulator-test prior for {name}.")
+            prior.update(min=lo, max=hi)
+            test_bounds[name] = (lo, hi)
+            value = base_point[name]
+        else:
+            value = spec.get("value") if isinstance(spec, dict) else spec
+        if value is None or not lo <= value <= hi:
+            raise ValueError(f"{name} fiducial {value} outside emulator-test bounds.")
     if len(info["likelihood"]) != 1:
         raise ValueError("Choose one project's likelihood for this comparison.")
     likelihood_name = next(iter(info["likelihood"]))
@@ -4869,7 +4895,7 @@ def run_matter_emulator_prior_check(
     camb_args["k_per_logint"] = 50
     # Background parameters and the number of massive species remain the
     # project's choices. Only the mass and nonlinear prescription change.
-    names = ["As_1e9", "ns", "H0", "omegab", "omegam", "w", "w0pwa", "wa"]
+    names = ["As_1e9", "ns", "H0", "omegab", "omegam", w_today, "w0pwa", "wa"]
     points = []
     for index in range(n_models if points_file is None else 0):
         random = np.random.default_rng(seed + index)
@@ -4885,14 +4911,9 @@ def run_matter_emulator_prior_check(
                 raise ValueError(f"Cosmological prior for {name} is not a uniform box.")
             lower = float(prior["min"])
             upper = float(prior["max"])
-            if name == "omegam":
-                lower = max(lower, np.nextafter(0.2, 0.5))
-                upper = min(upper, np.nextafter(0.5, 0.2))
             if lower >= upper:
                 raise ValueError(f"Empty requested prior interval for {name}.")
             point[name] = float(random.uniform(low=lower, high=upper))
-        if not 0.2 < point["omegam"] < 0.5:
-            raise ValueError("The comparison requires 0.2 < Omega_m < 0.5.")
         points.append(point)
 
     if points_file is not None:
@@ -4909,8 +4930,9 @@ def run_matter_emulator_prior_check(
                 point[name] = float(row[name])
             if not all(np.isfinite(value) for value in point.values()):
                 raise ValueError("Supplied parameter points must be finite.")
-            if not 0.2 < point["omegam"] < 0.5:
-                raise ValueError("The comparison requires 0.2 < Omega_m < 0.5.")
+            for name, (lo, hi) in test_bounds.items():
+                if name in point and not lo <= point[name] <= hi:
+                    raise ValueError(f"{name} in supplied table is outside the emulator-test bounds.")
             points.append(point)
         n_models = len(points)
         output = project / "chains/matter_emulator_points" / source.stem / points_path.stem
@@ -4945,6 +4967,7 @@ def run_matter_emulator_prior_check(
             (output / "source.yaml").write_text(source.read_text())
             with io.StringIO() as record:
                 record.write(f"models={n_models}\nseed={seed}\nlimit={limit}\n")
+                record.write(f"effective emulator test bounds={test_bounds}\n")
                 if points_file is not None:
                     record.write(f"explicit parameter table={points_path}; seed unused\n")
                 record.write("mnu=0.06 eV; plain mead2020; CAMB AccuracyBoost=3; k_per_logint=50\n")
@@ -6411,7 +6434,7 @@ def plot_matter_emulator_fisher(
                     setter(*ranges[variable])
             if amplitude == "As_1e9":
                 lo, hi = ranges[amplitude]
-                ticks = np.arange(np.ceil(lo*2)/2, hi, 0.5)
+                ticks = np.arange(np.ceil(np.nextafter(lo, -np.inf)*2)/2, hi, 0.5)
                 axis.set_yticks(np.append(ticks, hi))
         for axis in list(axes.flat)[len(horizontal):]:
             axis.set_visible(False)
