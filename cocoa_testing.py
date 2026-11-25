@@ -6099,8 +6099,10 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
       are never recomputed. Low effective count raises after saving diagnostics.
 
     A resolved positive-definite Fisher matrix supplies a joint Gaussian
-    proposal, including all nuisance correlations. Rejecting outside ALL
-    prior bounds gives the bounded marginal. For unresolved or null directions,
+    proposal, including all nuisance correlations. Finite bounds narrower
+    than a marginal standard deviation tighten the proposal only; exact
+    importance weights restore the target Gaussian before marginalization.
+    For unresolved or null directions,
     retain the uniform cosmological-box and conditional-nuisance proposal;
     proper finite bounds then provide the information absent from the Fisher.
     """
@@ -6151,16 +6153,32 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
             raise ValueError("Fisher Schur complement has negative curvature.")
 
     gaussian_factor = None
+    proposal_curvature = np.zeros(len(names))
+    log_normalization = 0.0
     if not np.any(null):
         try:
-            gaussian_factor = np.linalg.cholesky(
-                cf.parameter_covariance(fisher=fisher, names=names))
+            covariance = cf.parameter_covariance(fisher=fisher, names=names)
+            gaussian_factor = np.linalg.cholesky(covariance)
+            # Weakly constrained directions can span many prior widths.
+            # Direct Gaussian draws then almost never enter the prior box.
+            # Fit the proposal to those finite widths and undo its extra
+            # curvature exactly in the importance weights below.
+            weak = finite & (np.sqrt(np.diag(covariance)) > upper-lower)
+            if np.any(weak):
+                proposal_curvature[weak] = (2.0/(upper[weak]-lower[weak]))**2
+                proposal_fisher = fisher + np.diag(proposal_curvature)
+                gaussian_factor = np.linalg.cholesky(
+                    cf.parameter_covariance(fisher=proposal_fisher, names=names))
+                log_normalization = 0.5*(np.linalg.slogdet(fisher)[1]
+                                         - np.linalg.slogdet(proposal_fisher)[1])
         except (ValueError, np.linalg.LinAlgError):
             # The bounded integral can remain proper even when the full
             # unbounded Gaussian has an unresolved direction. The existing
             # conditional construction above has already checked its blocks.
             pass
     proposal = "joint Gaussian" if gaussian_factor is not None else "uniform and conditional Gaussian"
+    if np.any(proposal_curvature):
+        proposal = "importance-weighted joint Gaussian adapted to finite bounds"
     values_list, weights_list, coarse_logs, seed_list, diagnostics, masses = [], [], [], [], [], []
     for seed in seeds:
         draws = qmc.Sobol(d=len(names), scramble=True, seed=seed).random_base2(sample_power)
@@ -6168,10 +6186,10 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
             normal = ndtri(np.clip(draws, np.finfo(float).eps,
                                    1.0-np.finfo(float).eps))
             values = center + normal @ gaussian_factor.T
-            # The proposal is the full fine-step Fisher Gaussian itself.
-            # Its density cancels from the importance ratio; only the
-            # prior boundaries below reject a point. Nuisances remain joint.
-            log_weight = np.zeros(len(draws))
+            # Target/proposal = sqrt(det(F)/det(G)) exp(dx^T(G-F)dx/2).
+            # This removes all proposal curvature. The target remains the
+            # original Fisher Gaussian restricted by the actual hard bounds.
+            log_weight = log_normalization + 0.5*((values-center)**2) @ proposal_curvature
         else:
             values = np.tile(center, (len(draws), 1))
             values[:, uniform] = lower[uniform] + draws[:, uniform]*(upper[uniform]-lower[uniform])
@@ -6193,7 +6211,10 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
                 amplitude0, bias0, limit = scales
                 accepted &= ((values[:, amplitude]/amplitude0)
                              * (values[:, bias]/bias0)**2 <= limit)
-        weight = np.exp(log_weight) * accepted
+        # Discard outside points before exponentiation, including extreme
+        # proposal tails whose weight would overflow outside the prior box.
+        log_weight = np.where(accepted, log_weight, -np.inf)
+        weight = np.exp(log_weight)
         total = np.sum(weight)
         effective = total**2 / np.sum(weight**2) if total > 0.0 else 0.0
         if total > 0.0:
