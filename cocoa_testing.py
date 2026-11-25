@@ -4791,8 +4791,8 @@ def run_matter_emulator_prior_check(
         use_emulator/non_linear_emul flags. Provider-only likelihoods do not.
       select_vector = optional native mask/compression callable, applied
         after the full vector is checked against its likelihood.
-      advisory = report prediction errors without failing on their size;
-        an incomplete Fisher calculation still fails.
+      advisory = report prediction errors and finite FoM tolerance misses.
+        Invalid sampling or an incomplete Fisher calculation still fails.
       focused_models = additional draws from the bounded Fisher distribution
         after a broad-prior test; zero skips this stage for diagnostics.
       mpi_comm = optional MPI communicator. Each rank owns one live model;
@@ -5322,6 +5322,7 @@ def run_matter_emulator_prior_check(
                             compare_matter_emulator_fisher_accuracy(
                                 base=output/"fisher"/stages[-2], refined=output/"fisher",
                                 tolerance=fisher_fom_tolerance,
+                                require_convergence=not advisory,
                             )
                         except Exception as caught:
                             gate_error = f"{type(caught).__name__}: {caught}"
@@ -5390,7 +5391,7 @@ def run_matter_emulator_prior_check(
     setup_error = None
     if rank == 0 and fisher and not fisher_failed:
         try:
-            if points_file is None and focused_models > 0:
+            if focused_models > 0 and (points_file is None or local_points_file is not None):
                 local_input = local_points_file
                 if local_input is None:
                     local_input = draw_matter_emulator_focused_points(
@@ -5436,6 +5437,11 @@ def run_matter_emulator_prior_check(
             except Exception as error:
                 fisher_failed = True
                 summary += f"Fisher plot FAILED {type(error).__name__}: {error}\n"
+        if fisher and not fisher_failed:
+            gate = output / "fisher/fom_convergence_status.txt"
+            if "passed=False" in gate.read_text().splitlines()[0]:
+                drift = np.max(np.abs(np.loadtxt(output / "fisher/fom_convergence.txt")[:, 2]))
+                summary += f"Approximate Fisher contours: maximum FoM shift {drift:.2%}; target {fisher_fom_tolerance:.2%}.\n"
         if fisher_failed:
             summary += "Fisher overlay incomplete; inspect status and fisher diagnostics.\n"
         calculation_failed = (fisher_failed or focused_failed or not finite_reference.all()
@@ -5497,7 +5503,7 @@ def draw_matter_emulator_focused_points(output, n_models=25, seed=10137):
     weights /= np.sum(weights)
     random = np.random.default_rng(seed=seed)
     selected = random.choice(a=len(values), size=n_models, replace=False, p=weights)
-    cosmological = ("As_1e9", "ns", "H0", "omegab", "omegam", "w", "w0pwa", "wa")
+    cosmological = ("As_1e9", "ns", "H0", "omegab", "omegam", "w", "w0", "w0pwa", "wa")
     columns = []
     selected_names = []
     for index, name in enumerate(names):
@@ -6032,7 +6038,8 @@ def matter_emulator_fisher_noise(record, reference=None, complete=True):
     return answer
 
 
-def compare_matter_emulator_fisher_accuracy(base, refined, tolerance=0.01):
+def compare_matter_emulator_fisher_accuracy(base, refined, tolerance=0.01,
+                                           require_convergence=True):
     """Require target-pair FoM stability in full h/h2 and accuracy comparisons.
 
     This test's default tolerance is one percent, not a universal scientific
@@ -6066,7 +6073,12 @@ def compare_matter_emulator_fisher_accuracy(base, refined, tolerance=0.01):
         "The full Fisher retains all selected nuisance parameters and priors.\n"
         "The noise screen is diagnostic; correlated errors can evade it.\n"
     )
-    if not passed:
+    # E5 uses the ellipse to select test cosmologies. A finite shift in
+    # its area is reported even when the requested accuracy is missed.
+    # A standalone convergence test still enforces its original tolerance.
+    if not np.all(np.isfinite(values) & (values > 0.0)) or not np.all(np.isfinite(changes)):
+        raise ValueError("The Fisher FoM comparison requires positive finite FoMs and finite shifts.")
+    if not passed and require_convergence:
         raise ValueError("Full Fisher FoM is not stable at the requested step/accuracy tolerance; "
                          "inspect fom_convergence.txt and refine further.")
     return values
@@ -6463,6 +6475,10 @@ def plot_matter_emulator_fisher(
         if local_points_file is not None:
             handles.append(Line2D([], [], color="black", marker="o", linestyle="none",
                                   label=f"Local {len(comparisons[1][0])}"))
+        convergence = output / "fom_convergence_status.txt"
+        if convergence.is_file() and "passed=False" in convergence.read_text().splitlines()[0]:
+            shift = np.max(np.abs(np.loadtxt(output / "fom_convergence.txt", ndmin=2)[:, 2]))
+            handles.append(Line2D([], [], linestyle="none", label=f"Max. FoM shift {shift:.2%}"))
         handles.extend([Line2D([], [], color="black", linestyle="-", label="Bounded Fisher 68%"),
                         Line2D([], [], color="black", linestyle="--", label="Bounded Fisher 95%")])
         figure.suptitle(str(project_name).replace("_", " ").upper(), fontsize=18, y=0.995)
