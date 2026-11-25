@@ -14,6 +14,33 @@ description: >-
 
 # CosmoLike Development
 
+## Shared emulator and FoM testing contract
+
+For `cocoa_testing.py` and the shared Fisher helpers, read the Cocoa
+maintenance skill's section "Emulator accuracy and cheap FoM tests".
+Emulator comparisons and numerical FoM convergence are separate tests:
+
+- Emulator accuracy loads a fixed benchmark configuration, fixed broad and
+  focused points, and a saved approximate nuisance-marginalized Fisher.
+  Only the candidate emulator changes. Use ordinary chi-squared/MCMC
+  numerical settings and the direct vector norm `delta_d.T @ C_inverse @
+  delta_d`; do not inject Fisher accuracy boosts into CAMB or the likelihood.
+  Record the effective settings after all overrides, not only the input YAML.
+- Loading this reference must not trigger derivatives, new focused draws,
+  source-tree hashes or live-configuration invalidation. Approximate contours
+  do not gate model comparisons. This fixed benchmark rule does not weaken
+  the native state/cache correctness rules below.
+- The cheap FoM screen computes one full default-accuracy baseline with
+  fixed 2.5% relative steps and explicit absolute steps at zero fiducials.
+  Use the existing shared noise formula and stencil. Higher accuracy applies
+  only to selected sensitive columns; never compute the remaining columns
+  afterward or automatically add a full refined Fisher or half-step ladder.
+  Preserve baseline non-Limber tolerances. Unmeasured corrections are unknown.
+- Keep full Fisher accuracy studies and deliberate chi-squared refinement
+  scans explicit and separate. Do not duplicate this machinery in projects.
+  Verify effective native OpenMP threads, MPI distribution and BLAS limits;
+  time fresh model work separately from saved-reference loading and plotting.
+
 ## Required Cocoa likelihood pattern
 
 The user explicitly requires the LSST Y1 implementation and coding style,
