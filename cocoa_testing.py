@@ -6481,7 +6481,9 @@ def plot_matter_emulator_fisher(
             handles.append(Line2D([], [], linestyle="none", label=f"Max. FoM shift {shift:.2%}"))
         handles.extend([Line2D([], [], color="black", linestyle="-", label="Bounded Fisher 68%"),
                         Line2D([], [], color="black", linestyle="--", label="Bounded Fisher 95%")])
-        figure.suptitle(str(project_name).replace("_", " ").upper(), fontsize=18, y=0.995)
+        titles = {"desy1xplanck": "DES Y1 × Planck", "lssty1xdesi": "LSST Y1 × DESI"}
+        title = titles.get(str(project_name), str(project_name).replace("_", " ").upper())
+        figure.suptitle(title, fontsize=18, y=0.995)
         legend = figure.legend(
             handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.96),
             ncol=min(4, 2 * columns), frameon=False, fontsize=11,
