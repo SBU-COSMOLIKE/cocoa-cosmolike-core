@@ -307,7 +307,7 @@ def parser_for(mode, project, example, hybrid=True, mcmc_config=False, fiducial_
         input_name = f"EXAMPLE_NAUTILUS{example}.yaml"
         output_name = f"EXAMPLE_NAUTILUS{example}"
     if mcmc_config:
-        input_name = f"EXAMPLE_EMUL2_MCMC{example}.yaml"
+        input_name = f"mcmc/EXAMPLE_EMUL2_MCMC{example}.yaml"
         fiducial_example = example if fiducial_example is None else fiducial_example
         parser.add_argument("--fiducial", type=Path,
                             default=project/f"EXAMPLE_EVALUATE{fiducial_example}.yaml",
@@ -472,7 +472,7 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_examp
         example = number in the default input EXAMPLE_EMUL2_EVALUATE<example>.yaml.
         hybrid = False for physical-theory Nautilus examples, whose default
             input is EXAMPLE_NAUTILUS<example>.yaml. Other modes use hybrid=True.
-        mcmc_config = use EXAMPLE_EMUL2_MCMC<example>.yaml for hybrid Nautilus
+        mcmc_config = use mcmc/EXAMPLE_EMUL2_MCMC<example>.yaml for hybrid Nautilus
             and load the fiducial from EXAMPLE_EVALUATE<example>.yaml.
         fiducial_example = evaluate number when two sampling models share a fiducial.
     Side effects:
