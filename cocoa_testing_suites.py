@@ -272,14 +272,13 @@ def _race_method(u, example, number, label, tatt):
             "        the frozen fiducial point (the fresh value), the\n"
             "        nine cosmologies of RACE_PERTURBATIONS, and the\n"
             "        fiducial again, the 10th point of the row.\n"
-            "        Correct code gives the same chi2 both times. A\n"
-            "        table kept from an earlier cosmology (leaked\n"
-            "        state) or two OpenMP threads writing the same\n"
-            "        memory (a race) shift the second value.\n"
-            "        RACE_TOLERANCE = 1e-4: both values come from the\n"
-            "        same code on the same inputs, so only\n"
-            "        floating-point noise is allowed, while leaked\n"
-            "        state shifts the chi2 by much more.\n        ")
+            "        The worker captures the actual scored vectors\n"
+            "        and checks every restored entry at rtol=1e-11.\n"
+            "        This separate scalar check uses RACE_TOLERANCE\n"
+            "        = 1e-4. Equal scores alone would not establish\n"
+            "        equal vectors: different residuals can lie on\n"
+            "        the same chi-squared surface. Agreement tests\n"
+            "        this sequence, not every possible race.\n        ")
     return test
 
 

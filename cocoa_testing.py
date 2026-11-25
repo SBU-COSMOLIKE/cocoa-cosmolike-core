@@ -2766,8 +2766,11 @@ class CocoaTestHarness:
         Raises:
           AssertionError when the sampled-parameter set differs from
           the frozen point (build_point) or a chi2 is not finite
-          (evaluate_chi2).
+          (evaluate_chi2), or when the restored full vector differs.
+          Equal chi-squared values alone do not establish vector equality.
         """
+        import numpy as np
+
         # `"TATT" if tatt else "NLA"` picks the first name when tatt
         # is True, the second otherwise
         ia_label = "TATT" if tatt else "NLA"
@@ -2781,40 +2784,73 @@ class CocoaTestHarness:
             info["likelihood"][self.examples[example]["likelihood"]][
                 "non_linear_emul"] = 1
         model = make_model(info)
-        point = self.build_point(model, example, tatt)
-        # the fresh value: the fiducial evaluated before anything
-        # else touched this model instance
-        fresh = evaluate_chi2(model, point)
-        # :.8f prints the value with a fixed eight decimals (:.4f
-        # below: four); :2d pads the row counter to a width of two
-        print(f"  fresh model, fiducial point:  chi2 = {fresh:.8f}",
-              flush=True)
-        # enumerate yields (counter, entry) pairs; start=1 makes the
-        # printed row numbers begin at 1 instead of 0
-        for i, perturbation in enumerate(RACE_PERTURBATIONS, start=1):
-            # an emulator configuration can sample fewer parameters
-            # than the exact ones (mnu is fixed inside the emulator
-            # training), so a perturbation key the model does not
-            # sample is dropped rather than kept in a separate
-            # perturbation table per configuration. The comprehension
-            # builds a new dictionary from the (name, value) pairs
-            # whose name the point carries.
-            applied = {k: v for k, v in perturbation.items()
-                       if k in point}
-            # {**point, **applied} is a NEW dictionary: point's
-            # entries with the applied ones written over them; point
-            # itself stays untouched for the final fiducial
-            # evaluation
-            chi2 = evaluate_chi2(model, {**point, **applied})
-            # one "name=value" text per changed parameter, glued with
-            # ", " into the progress line
-            changed = ", ".join(f"{k}={v}" for k, v in applied.items())
-            print(f"  row {i:2d}/10 ({changed}):  chi2 = {chi2:.4f}",
+        likelihood = model.likelihood[self.examples[example]["likelihood"]]
+        original_score = likelihood.compute_logp
+        score_was_local = "compute_logp" in vars(likelihood)
+        vectors = []
+
+        def record_score(datavector, *args, **kwargs):
+            # Copy the exact argument being scored, including Python-side
+            # contributions such as baryon PCs. A second native getter could
+            # omit those contributions or rebuild the state under test.
+            # This hook belongs only to this isolated test worker; it always
+            # delegates to the real likelihood and is restored below.
+            vectors.append(np.array(datavector, dtype=float, copy=True))
+            return original_score(datavector, *args, **kwargs)
+
+        likelihood.compute_logp = record_score
+        try:
+            point = self.build_point(model, example, tatt)
+            # the fresh value: the fiducial evaluated before anything
+            # else touched this model instance
+            fresh = evaluate_chi2(model, point)
+            # :.8f prints the value with a fixed eight decimals (:.4f
+            # below: four); :2d pads the row counter to a width of two
+            print(f"  fresh model, fiducial point:  chi2 = {fresh:.8f}",
                   flush=True)
-        tenth = evaluate_chi2(model, point)
-        print(f"  row 10/10 (fiducial again):  chi2 = {tenth:.8f}",
-              flush=True)
-        return fresh, tenth
+            # enumerate yields (counter, entry) pairs; start=1 makes the
+            # printed row numbers begin at 1 instead of 0
+            for i, perturbation in enumerate(RACE_PERTURBATIONS, start=1):
+                # an emulator configuration can sample fewer parameters
+                # than the exact ones (mnu is fixed inside the emulator
+                # training), so a perturbation key the model does not
+                # sample is dropped rather than kept in a separate
+                # perturbation table per configuration. The comprehension
+                # builds a new dictionary from the (name, value) pairs
+                # whose name the point carries.
+                applied = {k: v for k, v in perturbation.items()
+                           if k in point}
+                # {**point, **applied} is a NEW dictionary: point's
+                # entries with the applied ones written over them; point
+                # itself stays untouched for the final fiducial
+                # evaluation
+                chi2 = evaluate_chi2(model, {**point, **applied})
+                # one "name=value" text per changed parameter, glued with
+                # ", " into the progress line
+                changed = ", ".join(f"{k}={v}" for k, v in applied.items())
+                print(f"  row {i:2d}/10 ({changed}):  chi2 = {chi2:.4f}",
+                      flush=True)
+            tenth = evaluate_chi2(model, point)
+            print(f"  row 10/10 (fiducial again):  chi2 = {tenth:.8f}",
+                  flush=True)
+            if len(vectors) != len(RACE_PERTURBATIONS) + 2:
+                raise AssertionError(
+                    "The race sequence did not capture every scored vector.")
+            # The score is a scalar: different residual vectors can lie on
+            # the same chi-squared surface. Check every restored entry too.
+            np.testing.assert_allclose(
+                vectors[-1], vectors[0], rtol=1.e-11, atol=1.e-30,
+                equal_nan=False,
+                err_msg="Returning to the fiducial changed the scored data vector.",
+            )
+            print("  first/final scored vectors agree (rtol=1e-11)", flush=True)
+            return fresh, tenth
+        finally:
+            if score_was_local:
+                likelihood.compute_logp = original_score
+            else:
+                del likelihood.compute_logp
+            model.close()
 
     # ---- baryonic feedback --------------------------------------------------
     def _baryon_accuracy_delta_impl(self, baryon, knob=None):
