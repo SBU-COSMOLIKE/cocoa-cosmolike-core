@@ -110,6 +110,7 @@ call run(mode, project folder, example number).
 
 import argparse
 from contextlib import nullcontext
+from functools import partial
 import hashlib
 import json
 import os
@@ -179,14 +180,27 @@ def log_probability(values, fixed, fixed_value, temperature):
     return (prior+likelihood)/temperature
 
 
-def nested_likelihood(values):
+def nested_likelihood(values, cobaya_output=False):
     """Exclude the independent prior already represented by Nautilus.
 
     `values` is the full sampled point [n_sampled] in the model's order.
     Returns log likelihood plus any external prior factor: Cobaya's full log
     prior minus its independent one-parameter part, which Nautilus samples.
     A point outside the prior returns -inf.
+
+    For Cobaya output, store the prior, likelihood and derived values as
+    Nautilus blobs so the weighted rows can be written without reevaluation.
     """
+    if cobaya_output:
+        result = _MODEL.logposterior(values, cached=False, return_derived=True)
+        if result.logpost == -np.inf:
+            nmissing = len(_MODEL.likelihood) + len(_MODEL.parameterization.derived_params())
+            return (-np.inf, *result.logpriors, *([np.nan] * nmissing))
+        if not np.isfinite(result.logprior) or np.isnan(result.loglike) or result.loglike == np.inf:
+            raise ValueError("the hybrid model returned an invalid score")
+        score = result.loglike + sum(result.logpriors[1:])
+        return (score, *result.logpriors, *result.loglikes, *result.derived)
+
     prior, likelihood = evaluate(model=_MODEL, values=values)
     if prior == -np.inf:
         return -np.inf
@@ -284,7 +298,7 @@ def minimize(start, covariance, steps, pool, rng, fixed=-1):
     return best, -2*best_score
 
 
-def parser_for(mode, project, example, hybrid=True):
+def parser_for(mode, project, example, hybrid=True, mcmc_config=False):
     """Use the same public command options in every survey project."""
     parser = argparse.ArgumentParser(description=__doc__)
     input_name = f"EXAMPLE_EMUL2_EVALUATE{example}.yaml"
@@ -292,6 +306,11 @@ def parser_for(mode, project, example, hybrid=True):
     if not hybrid:
         input_name = f"EXAMPLE_NAUTILUS{example}.yaml"
         output_name = f"EXAMPLE_NAUTILUS{example}"
+    if mcmc_config:
+        input_name = f"EXAMPLE_EMUL2_MCMC{example}.yaml"
+        parser.add_argument("--fiducial", type=Path,
+                            default=project/f"EXAMPLE_EVALUATE{example}.yaml",
+                            help="evaluate YAML that defines the fiducial point")
     parser.add_argument("--input", type=Path,
                         default=project/input_name)
     parser.add_argument("--root", type=Path, default=project)
@@ -318,8 +337,8 @@ def parser_for(mode, project, example, hybrid=True):
     return parser
 
 
-def load_model(filename, hybrid=True):
-    """Load the shared evaluate configuration on CPU without writing its outputs.
+def load_model(filename, hybrid=True, fiducial=None):
+    """Load a Cobaya configuration on CPU without writing its outputs.
 
     Refuses (ValueError) a likelihood without use_emulator: 2, an mnu other
     than the fixed 0.06 eV the emulator networks assume, and a
@@ -329,6 +348,7 @@ def load_model(filename, hybrid=True):
         filename = Path of the project's Cobaya YAML.
         hybrid = enforce emulator restrictions when True; False retains
             the physical theory specified by the YAML without these restrictions.
+        fiducial = optional path to a separate evaluate YAML for the starting point.
     Returns:
         (Cobaya model, sampled parameter names in sampled order,
          start point [n_sampled] from sampler.evaluate.override,
@@ -339,7 +359,8 @@ def load_model(filename, hybrid=True):
     from cobaya.yaml import yaml_load_file
 
     info = yaml_load_file(str(filename))
-    point = info.get("sampler", {}).get("evaluate", {}).get("override", {})
+    point_info = info if fiducial is None else yaml_load_file(str(fiducial))
+    point = point_info.get("sampler", {}).get("evaluate", {}).get("override", {})
     info.pop("sampler", None)
     info.pop("output", None)
     if hybrid:
@@ -365,7 +386,7 @@ def load_model(filename, hybrid=True):
     return model, names, start, fingerprint
 
 
-def run_nautilus(model, pool, args, prefix, names):
+def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
     """Sample with each exact independent prior and save weighted GetDist rows.
 
     Arguments:
@@ -374,6 +395,7 @@ def run_nautilus(model, pool, args, prefix, names):
         args = parsed options: nlive, nnetworks, seed, flive, neff, maxfeval.
         prefix = output path without extension.
         names = sampled parameter names in sampled order.
+        cobaya_output = record weighted rows and model settings for Cobaya post.
     Returns:
         dict for the JSON run record: converged, log_evidence, evaluations,
         posterior_samples and effective_samples.
@@ -389,8 +411,9 @@ def run_nautilus(model, pool, args, prefix, names):
         prior.add_parameter(key=name, dist=distribution)
     # pool=(pool, None): the MPI workers evaluate likelihoods; Nautilus's own
     # calculations, such as network training, stay on this rank.
+    likelihood = partial(nested_likelihood, cobaya_output=True) if cobaya_output else nested_likelihood
     sampler = Sampler(
-        prior=prior, likelihood=nested_likelihood, pass_dict=False,
+        prior=prior, likelihood=likelihood, pass_dict=False,
         pool=(pool, None), n_live=args.nlive, n_networks=args.nnetworks,
         filepath=str(prefix)+"_checkpoint.hdf5", resume=False, seed=args.seed)
     converged = sampler.run(
@@ -402,21 +425,44 @@ def run_nautilus(model, pool, args, prefix, names):
         return {"converged": False, "log_evidence": None,
                 "evaluations": int(sampler.n_like), "posterior_samples": 0,
                 "effective_samples": 0.0}
-    points, log_weight, log_like = sampler.posterior()
-    np.savetxt(str(prefix)+".1.txt",
-               np.column_stack((np.exp(log_weight), -log_like, points)),
-               header="weight neg_log_likelihood "+" ".join(names))
     params = model.info()["params"]
+    if cobaya_output:
+        from cobaya.collection import SampleCollection
+        from cobaya.output import get_output
+
+        points, log_weight, _, blobs = sampler.posterior(return_blobs=True)
+        weights = np.exp(log_weight)
+        npoints = int(np.count_nonzero(weights))
+        nprior = len(model.prior)
+        nscore = nprior + len(model.likelihood)
+        with get_output(prefix=str(prefix)) as output:
+            output.check_and_dump_info(None, model.info(), check_compatible=False)
+            collection = SampleCollection(model, output, name="1", sample_type="nested")
+            for values, weight, blob in zip(points, weights, blobs, strict=True):
+                if weight > 0:
+                    scores = list(blob)
+                    collection.add(values, logpriors=scores[:nprior], loglikes=scores[nprior:nscore],
+                                   derived=scores[nscore:], weight=weight)
+            collection.out_update()
+            columns = collection.columns[2:]
+    else:
+        points, log_weight, log_like = sampler.posterior()
+        npoints = len(points)
+        np.savetxt(str(prefix)+".1.txt",
+                   np.column_stack((np.exp(log_weight), -log_like, points)),
+                   header="weight neg_log_likelihood "+" ".join(names))
+        columns = names
     with open(str(prefix)+".paramnames", "w") as output:
-        for name in names:
-            label = params[name].get("latex", name)
-            output.write(f"{name} {label}\n")
+        for name in columns:
+            label = params.get(name, {}).get("latex", name)
+            derived = "*" if name not in names else ""
+            output.write(f"{name}{derived} {label}\n")
     return {"converged": bool(converged), "log_evidence": float(sampler.log_z),
-            "evaluations": int(sampler.n_like), "posterior_samples": len(points),
+            "evaluations": int(sampler.n_like), "posterior_samples": npoints,
             "effective_samples": float(sampler.n_eff)}
 
 
-def run(mode, project, example=1, hybrid=True):
+def run(mode, project, example=1, hybrid=True, mcmc_config=False):
     """Run a serial or MPI example, with one initialized model per process.
 
     Arguments:
@@ -425,6 +471,8 @@ def run(mode, project, example=1, hybrid=True):
         example = number in the default input EXAMPLE_EMUL2_EVALUATE<example>.yaml.
         hybrid = False for physical-theory Nautilus examples, whose default
             input is EXAMPLE_NAUTILUS<example>.yaml. Other modes use hybrid=True.
+        mcmc_config = use EXAMPLE_EMUL2_MCMC<example>.yaml for hybrid Nautilus
+            and load the fiducial from EXAMPLE_EVALUATE<example>.yaml.
     Side effects:
         Parses the command line and sets the module's _MODEL. Except with
         --check, writes a YAML Nautilus record (JSON for minimize/profile)
@@ -433,7 +481,10 @@ def run(mode, project, example=1, hybrid=True):
     global _MODEL
     if not hybrid and mode != "nautilus":
         raise ValueError("Physical-theory examples must select mode='nautilus'.")
-    parser = parser_for(mode=mode, project=Path(project), example=example, hybrid=hybrid)
+    if mcmc_config and (not hybrid or mode != "nautilus"):
+        raise ValueError("The MCMC configuration is supported by hybrid Nautilus.")
+    parser = parser_for(mode=mode, project=Path(project), example=example,
+                        hybrid=hybrid, mcmc_config=mcmc_config)
     args = parser.parse_args()
     # getattr gives 1 for an option this mode does not define, so the check passes it.
     for key in ("nstw", "numpts", "factor", "nlive", "maxfeval", "neff", "nnetworks"):
@@ -448,7 +499,9 @@ def run(mode, project, example=1, hybrid=True):
     # draws the starting walkers; Nautilus receives the seed directly.
     np.random.seed(args.seed)
     rng = np.random.default_rng(seed=args.seed)
-    _MODEL, names, start, fingerprint = load_model(filename=args.input, hybrid=hybrid)
+    fiducial = getattr(args, "fiducial", None)
+    _MODEL, names, start, fingerprint = load_model(
+        filename=args.input, hybrid=hybrid, fiducial=fiducial)
     # Open MPI, the MPI of the Cocoa environment, exports OMPI_COMM_WORLD_SIZE to
     # every rank. A plain python run lacks it and stays serial: nullcontext then
     # yields pool = None.
@@ -471,7 +524,10 @@ def run(mode, project, example=1, hybrid=True):
             _MODEL.close()
             return
         prefix = args.root/"chains"/args.outroot
-        for suffix in (".json", ".yaml", "_checkpoint.hdf5", ".1.txt", ".paramnames"):
+        suffixes = (".json", ".yaml", "_checkpoint.hdf5", ".1.txt", ".paramnames")
+        if mcmc_config:
+            suffixes += (".updated.yaml",)
+        for suffix in suffixes:
             if Path(str(prefix)+suffix).exists():
                 _MODEL.close()
                 raise FileExistsError(f"{prefix} already exists; select a new --outroot")
@@ -479,9 +535,13 @@ def run(mode, project, example=1, hybrid=True):
         record = {"input": str(args.input.resolve()), "input_sha256": fingerprint,
                   "parameters": names, "mode": mode, "seed": args.seed,
                   "omp_threads": os.environ.get("OMP_NUM_THREADS"), "mpi_ranks": ranks}
+        if fiducial is not None:
+            record["fiducial"] = str(fiducial.resolve())
+            record["fiducial_sha256"] = hashlib.sha256(fiducial.read_bytes()).hexdigest()
         if mode == "nautilus":
             record.update(run_nautilus(
-                model=_MODEL, pool=pool, args=args, prefix=prefix, names=names))
+                model=_MODEL, pool=pool, args=args, prefix=prefix, names=names,
+                cobaya_output=mcmc_config))
         else:
             covariance = _MODEL.prior.covmat(ignore_external=True)
             if args.cov is not None:
