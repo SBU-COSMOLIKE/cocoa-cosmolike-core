@@ -5395,9 +5395,11 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
       Saves weighted samples and seed/step convergence diagnostics. Derivatives
       are never recomputed. Low effective count raises after saving diagnostics.
 
-    Cosmological coordinates with finite bounds are sampled uniformly; other
-    coordinates follow their conditional Gaussian. Applying ALL remaining
-    bounds before projecting gives the bounded marginal, not a clipped ellipse.
+    A resolved positive-definite Fisher matrix supplies a joint Gaussian
+    proposal, including all nuisance correlations. Rejecting outside ALL
+    prior bounds gives the bounded marginal. For unresolved or null directions,
+    retain the uniform cosmological-box and conditional-nuisance proposal;
+    proper finite bounds then provide the information absent from the Fisher.
     """
     from pathlib import Path
     import numpy as np
@@ -5445,21 +5447,49 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
         if eigenvalues[0] < -1.e-10 * max(1.0, eigenvalues[-1]):
             raise ValueError("Fisher Schur complement has negative curvature.")
 
+    gaussian_factor = None
+    if not np.any(null):
+        try:
+            gaussian_factor = np.linalg.cholesky(
+                cf.parameter_covariance(fisher=fisher, names=names))
+        except (ValueError, np.linalg.LinAlgError):
+            # The bounded integral can remain proper even when the full
+            # unbounded Gaussian has an unresolved direction. The existing
+            # conditional construction above has already checked its blocks.
+            pass
+    proposal = "joint Gaussian" if gaussian_factor is not None else "uniform and conditional Gaussian"
     values_list, weights_list, coarse_logs, seed_list, diagnostics, masses = [], [], [], [], [], []
     for seed in seeds:
         draws = qmc.Sobol(d=len(names), scramble=True, seed=seed).random_base2(sample_power)
-        values = np.tile(center, (len(draws), 1))
-        values[:, uniform] = lower[uniform] + draws[:, uniform]*(upper[uniform]-lower[uniform])
-        displacement = values[:, uniform] - center[uniform]
-        if len(conditional):
-            # Inverse-normal transform, followed by Cholesky multiplication,
-            # generates the full conditional nuisance covariance and mean.
-            normal = ndtri(np.clip(draws[:, conditional], np.finfo(float).eps,
+        if gaussian_factor is not None:
+            normal = ndtri(np.clip(draws, np.finfo(float).eps,
                                    1.0-np.finfo(float).eps))
-            values[:, conditional] = center[conditional] + displacement @ response.T + normal @ factor.T
-        distance = np.einsum("ij,jk,ik->i", displacement, schur, displacement)
+            values = center + normal @ gaussian_factor.T
+            # The proposal is the full fine-step Fisher Gaussian itself.
+            # Its density cancels from the importance ratio; only the
+            # prior boundaries below reject a point. Nuisances remain joint.
+            log_weight = np.zeros(len(draws))
+        else:
+            values = np.tile(center, (len(draws), 1))
+            values[:, uniform] = lower[uniform] + draws[:, uniform]*(upper[uniform]-lower[uniform])
+            displacement = values[:, uniform] - center[uniform]
+            if len(conditional):
+                normal = ndtri(np.clip(draws[:, conditional], np.finfo(float).eps,
+                                       1.0-np.finfo(float).eps))
+                values[:, conditional] = center[conditional] + displacement @ response.T + normal @ factor.T
+            distance = np.einsum("ij,jk,ik->i", displacement, schur, displacement)
+            log_weight = -0.5*distance
         accepted = np.all((values >= lower) & (values <= upper), axis=1)
-        log_weight = -0.5*distance
+        # These boundaries couple a cosmological amplitude to a nuisance
+        # bias. Applying them before marginalization keeps the same support
+        # as the explicitly declared external hard priors of the model.
+        if "amplitude_bias_cut_parameters" in record:
+            for pair, scales in zip(record["amplitude_bias_cut_parameters"],
+                                    record["amplitude_bias_cut_scales"]):
+                amplitude, bias = (names.index(name) for name in pair)
+                amplitude0, bias0, limit = scales
+                accepted &= ((values[:, amplitude]/amplitude0)
+                             * (values[:, bias]/bias0)**2 <= limit)
         weight = np.exp(log_weight) * accepted
         total = np.sum(weight)
         effective = total**2 / np.sum(weight**2) if total > 0.0 else 0.0
@@ -5499,7 +5529,9 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
     np.savez_compressed(
         file=output / "bounded_samples.npz", names=names, values=values,
         weights=weights, coarse_weights=coarse_weight, seed=np.concatenate(seed_list),
-        lower=lower, upper=upper, uniform_indices=uniform, sampling_valid=sampling_valid,
+        lower=lower, upper=upper, proposal=proposal,
+        uniform_indices=uniform if gaussian_factor is None else np.array([], dtype=int),
+        sampling_valid=sampling_valid,
     )
     np.savetxt(
         fname=output / "sampling_convergence.txt", X=diagnostics,
@@ -5530,6 +5562,7 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
     )
     (output / "sampling_definition.txt").write_text(
         "All bounds imposed before marginalization; centered local Fisher, not data posterior.\n"
+        f"Proposal: {proposal}.\n"
         "Importance effective count measures weight concentration; Sobol points "
         "are not independent posterior draws. Compare independent scramblings.\n"
         f"sample_power={sample_power}; seeds={seeds}; minimum_effective={min_effective}\n"

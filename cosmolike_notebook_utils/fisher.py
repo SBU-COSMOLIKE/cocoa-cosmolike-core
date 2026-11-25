@@ -1659,6 +1659,53 @@ class ExactMeanCache:
         return self._values[key]
 
 
+def shear_calibration_derivatives(vector, calibration, nangular, real_space=True):
+    """Differentiate the ordinary cosmic-shear vector without new predictions.
+
+    A shear pair (i,j) is multiplied by (1+m_i)(1+m_j). Differentiating
+    either factor therefore gives D_ij/(1+m_b) when b labels that leg;
+    an auto-pair contributes twice. This applies to both xi signs and EE.
+    It does not apply to additive templates or to other active probes.
+
+    Arguments:
+      vector = calibrated, masked native vector, with shear rows first.
+        Rows outside the shear block must be zero; additive PCs are absent.
+      calibration = fiducial m_i in source-bin order.
+      nangular = angular bins per pair (ntheta in real space, ncl in Fourier).
+      real_space = True for successive xi+ and xi- blocks, False for EE.
+    Returns:
+      [ndata, nsource] array of exact shear-calibration derivatives.
+
+    The pair order is the native Z1/Z2 layout: (0,0), (0,1), ..., (1,1),
+    ... . Angular bins vary fastest. Masked zero rows remain zero.
+    """
+    vector = np.asarray(vector, dtype=float)
+    calibration = np.asarray(calibration, dtype=float)
+    if (vector.ndim != 1 or calibration.ndim != 1 or not len(calibration)
+            or not np.all(np.isfinite(vector))
+            or not np.all(np.isfinite(calibration))
+            or np.any(1.0 + calibration == 0.0)):
+        raise ValueError("Shear derivatives need finite vectors and nonzero 1+m.")
+    if isinstance(nangular, bool) or int(nangular) != nangular or nangular < 1:
+        raise ValueError("The angular-bin count must be a positive integer.")
+    nangular = int(nangular)
+    pairs = [(i, j) for i in range(len(calibration))
+             for j in range(i, len(calibration))]
+    block = len(pairs) * nangular
+    nsign = 2 if real_space else 1
+    if len(vector) < nsign * block or np.any(vector[nsign * block:] != 0.0):
+        raise ValueError("Exact shear derivatives require the ordinary shear-only layout.")
+    derivatives = np.zeros((len(vector), len(calibration)))
+    for sign in range(nsign):
+        for pair, (first, second) in enumerate(pairs):
+            start = sign * block + pair * nangular
+            rows = slice(start, start + nangular)
+            # Adding both legs also gives the factor two for an auto-pair.
+            derivatives[rows, first] += vector[rows] / (1.0 + calibration[first])
+            derivatives[rows, second] += vector[rows] / (1.0 + calibration[second])
+    return derivatives
+
+
 def differentiate(predict, parameters, steps, bounds=None):
     """Differentiate every selected parameter with a fourth-order stencil.
 
