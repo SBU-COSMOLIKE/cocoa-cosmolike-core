@@ -4876,6 +4876,16 @@ def run_matter_emulator_prior_check(
     info.pop("sampler")
     info.pop("output", None)
     info["params"]["mnu"] = {"value": 0.06}
+    priors = info.get("prior", {})
+    if "emulator_omegabh2_cap" in priors:
+        # The comparison and bounded sampler enforce this same joint cut.
+        # Keep the likelihood smooth across the boundary for the Fisher stencils.
+        expression = "lambda omegab, H0: 0.0 if omegab*(H0/100)**2 < 0.035 else -np.inf"
+        if priors["emulator_omegabh2_cap"] != expression:
+            raise ValueError("Unknown emulator_omegabh2_cap expression in the comparison YAML.")
+        del priors["emulator_omegabh2_cap"]
+        if not priors:
+            del info["prior"]
     # Intersect the example's priors before constructing either theory
     # or Fisher. In CPL, CAMB's w is today's w0; w0pwa has its own prior.
     # Move open endpoints inward by one representable float so that a
@@ -6473,9 +6483,10 @@ def plot_matter_emulator_fisher(
         if (len(points) != len(distances)
                 or not np.array_equal(distances[:, 0], np.arange(len(points)))):
             raise ValueError("Comparison points and distance row indices disagree.")
-        if all(name in points.dtype.names for name in ("omegab", "H0")):
-            if not np.all(_emulator_baryon_density_allowed(points["omegab"], points["H0"])):
-                raise ValueError("Comparison points must satisfy omegabh2 < 0.035.")
+        baryon_names = [name for name in ("omegab", "H0") if name in points.dtype.names]
+        baryon_values = np.column_stack([points[name] for name in baryon_names]) if baryon_names else None
+        if not np.all(_emulator_baryon_sample_mask(baryon_names, baryon_values, record)):
+            raise ValueError("Comparison points must satisfy omegabh2 < 0.035.")
         comparisons.append((points, distances[:, 1], local))
     if names is None:
         names = [name for name in ("As_1e9", "omegam", "H0", "omegab", "ns", "w", "wa", "w0pwa")
