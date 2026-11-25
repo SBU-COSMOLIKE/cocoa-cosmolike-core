@@ -1576,8 +1576,11 @@ void init_accuracy_boost(
       fname, accuracy_boost);
     exit(1);
   }
-  if (integration_accuracy < 0 || integration_accuracy > 7) {
-    critical("{}: integration_accuracy = {} must be in [0, 7]",
+  // The emulator uses level -1, and integrals use the absolute level.
+  // The cross-bin rule continues to refine above level 7, reaching its
+  // 8192-node cap at 126. Bound both signs before taking an absolute value.
+  if (integration_accuracy < -126 || integration_accuracy > 126) {
+    critical("{}: integration_accuracy = {} must be in [-126, 126]",
       fname, integration_accuracy);
     exit(1);
   }
