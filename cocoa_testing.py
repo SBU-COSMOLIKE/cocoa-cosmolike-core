@@ -6869,16 +6869,12 @@ def plot_matter_emulator_fisher(
         if local_points_file is not None:
             handles.append(Line2D([], [], color="black", marker="o", linestyle="none",
                                   label=f"Local {len(comparisons[1][0])}"))
-        convergence = output / "fom_convergence_status.txt"
-        if contours.get("quality_note"):
-            handles.append(Line2D([], [], linestyle="none", label=contours["quality_note"]))
-        elif convergence.is_file() and "passed=False" in convergence.read_text().splitlines()[0]:
-            shift = np.max(np.abs(np.loadtxt(output / "fom_convergence.txt", ndmin=2)[:, 2]))
-            handles.append(Line2D([], [], linestyle="none", label=f"Max. FoM shift {shift:.2%}"))
         handles.extend([Line2D([], [], color="black", linestyle="-", label="Bounded Fisher 68%"),
                         Line2D([], [], color="black", linestyle="--", label="Bounded Fisher 95%")])
-        titles = {"desy1xplanck": "DES Y1 × Planck", "lssty1xdesi": "LSST Y1 × DESI"}
-        title = titles.get(str(project_name), str(project_name).replace("_", " ").upper())
+        titles = {"desy1xplanck": "DES Y3 × Planck PR4", "lssty1xdesi": "LSST Y1 × DESI"}
+        title = contours.get("plot_title")
+        if title is None:
+            title = titles.get(str(project_name), str(project_name).replace("_", " ").upper())
         figure.suptitle(title, fontsize=18, y=0.995)
         legend = figure.legend(
             handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.96),
