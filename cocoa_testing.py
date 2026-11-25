@@ -5276,7 +5276,7 @@ def run_matter_emulator_prior_check(
                             destination, n_models=25, seed=seed + 10000)
                     freeze_matter_emulator_reference(
                         output, output / "reference", points_file,
-                        local_points_file, include_contours=not failed)
+                        local_points_file)
                 total = perf_counter() - start
                 (output / "wall_time.txt").write_text(f"total: {total:.6f} seconds\n")
                 print(f"Total standalone Fisher calibration: {total:.3f} s", flush=True)
