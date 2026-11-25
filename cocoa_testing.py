@@ -4734,141 +4734,110 @@ def _emulator_baryon_sample_mask(names, values, record):
     return _emulator_baryon_density_allowed(coordinates["omegab"], coordinates["H0"])
 
 
-def run_matter_emulator_prior_check(
-    project,
-    configuration,
-    get_precision,
-    n_models=50,
-    seed=137,
-    limit=1.0,
-    points_file=None,
-    fisher=False,
-    output_dir=None,
-    fisher_sample_power=18,
-    fisher_center=None,
-    fisher_parameters=None,
-    fisher_steps=None,
-    fisher_probe=None,
-    get_covariance=None,
-    advisory=False,
-    candidate_extra_args=None,
-    use_emulator_switch=True,
-    select_vector=None,
-    focused_models=25,
-    local_points_file=None,
-    derivative_provider=None,
-    amplitude_bias_cuts=None,
-    mpi_comm=None,
-    fisher_accuracy_likelihood=None,
-    fisher_accuracy_camb=None,
-    fisher_confirmation_settings=None,
-    fisher_fom_tolerance=0.01,
-):
-    """Compare a candidate matter emulator with CAMB on random cosmologies.
+def _write_matter_emulator_json(path, value):
+    import json
+    path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
 
-    Project tests call this routine with their ordinary Cobaya evaluate
-    example and native precision reader, as the other shared Cocoa tests
-    do. Each cosmology changes the theory state; cached=False forces the
-    likelihood to run. Random draws retain the example's nuisance override;
-    an explicit points_file may also specify the nuisance parameters.
-    Both routes use CAMB distances and plain HMCode2020, with mnu=0.06 eV.
-    The candidate uses the project's existing EMUL2 likelihood route.
 
-    Draw from each project's cosmological box with 0.2 < Omega_m < 0.5,
-    w0 > -2, 1 < 1e9 As <= 3.5, H0 < 85 and omegab*(H0/100)^2 < 0.035
-    for both the mean and Fisher,
-    and keep fixed cosmological parameters fixed. Do not redraw failures
-    or silently restrict to the emulator training domain. The result is
-    delta_model.T @ precision @ delta_model, not a difference between two
-    chi-squared values against the measured data. A value below limit is
-    the requested agreement criterion at that point, not a proof that
-    importance weights have adequate effective sample size.
+def freeze_matter_emulator_reference(output, destination, broad, focused,
+                                     include_contours=True):
+    """Copy compact Gaussian Fisher evidence from a completed CAMB calibration."""
+    import shutil
+    from pathlib import Path
+    import numpy as np
 
-    Arguments:
-      project = project directory below Cocoa/projects.
-      configuration = existing evaluate YAML, including its nuisance point.
-      get_precision = the initialized native masked precision reader.
-      n_models = number of random cosmologies; default 50.
-      seed = model i uses numpy.random.default_rng(seed + i).
-      limit = strict upper bound on the prediction-distance statistic.
-      points_file = optional named-column text table of explicit parameter
-        points; supplied values replace the example's overrides. Its row
-        count replaces n_models and no random cosmologies are drawn.
-      fisher = also compute the CAMB Fisher matrix and bounded-prior plot.
-        Its physical theory follows the example, with mnu fixed to 0.06 eV;
-        the plain-mead2020 matching applies to mean comparisons only.
-      output_dir = optional destination below the project chains directory.
-      fisher_sample_power = log2 proposal count per bounded-Fisher repetition.
-      fisher_center, fisher_parameters, fisher_steps = optional reference
-        point, differentiated parameter names and absolute derivative steps.
-      fisher_probe = None for the complete vector, or "xi" for the initial
-        real-space shear rows. The latter requires get_covariance.
-      get_covariance = initialized native full covariance reader.
-      candidate_extra_args = explicit additional emulator theory options.
-      use_emulator_switch = whether the likelihood uses the ordinary
-        use_emulator/non_linear_emul flags. Provider-only likelihoods do not.
-      select_vector = optional native mask/compression callable, applied
-        after the full vector is checked against its likelihood.
-      advisory = report prediction errors and finite FoM tolerance misses.
-        Invalid sampling or an incomplete Fisher calculation still fails.
-      focused_models = additional draws from the bounded Fisher distribution
-        after a broad-prior test; zero skips this stage for diagnostics.
-      mpi_comm = optional MPI communicator. Each rank owns one live model;
-        point indices are distributed in rank order and only rank zero writes.
-        Completed checkpoint rows are retained on resubmission.
-      local_points_file = optional predetermined focused sample, replacing
-        the Fisher draws. It must contain focused_models rows.
-      fisher_accuracy_likelihood, fisher_accuracy_camb = optional overrides
-        of the explicit next numerical setting used for the Fisher check.
-        Without them, native sampling doubles up to the established boost
-        cap of three, integration advances one level, CAMB AccuracyBoost
-        reaches at least two and k_per_logint at least fifty. 3PCF's separate
-        sampling/integration controls double. Existing larger boosts stay.
-      fisher_fom_tolerance = relative target-pair FoM tolerance, default 1%,
-        required at both derivative steps and between numerical settings.
-        This is the test criterion, not a universal science requirement.
-      fisher_confirmation_settings = optional pair of likelihood and CAMB
-        refinements for a third grid. Compare the two finest grids when the
-        default grid is too coarse. The cheap weights still come from the
-        full default-accuracy Fisher, and the intermediate archive is kept.
+    output, destination = Path(output), Path(destination)
+    fisher_dir = output / "fisher"
+    sample_path = fisher_dir / "bounded_samples.npz"
+    with np.load(fisher_dir / "fisher.npz") as record, np.load(sample_path) as samples:
+        single_step = "fisher" in record.files
+        if not bool(samples["sampling_valid"]):
+            raise ValueError("The saved bounded Fisher contour is unresolved.")
+        if single_step:
+            gate = (fisher_dir / "refined_accuracy/selected_noise_definition.txt").read_text()
+            max_change = abs(float(np.loadtxt(fisher_dir / "refined_accuracy/estimated_fom_shift.txt")))
+            quality = "approximate" if include_contours else "unreliable"
+            quality_note = f"Saved Fisher reference {quality}, estimated FoM shift {max_change:.2%}."
+        else:
+            gate = (fisher_dir / "fom_convergence_status.txt").read_text().splitlines()[0]
+            compared = np.loadtxt(fisher_dir / "fom_convergence.txt", ndmin=2)
+            max_change = float(np.max(np.abs(compared[:, 2])))
+            quality = "converged" if "passed=True" in gate else (
+                "approximate" if include_contours else "unreliable")
+            quality_note = f"Saved Fisher reference {quality}, maximum FoM shift {max_change:.2%}."
+        if not np.isfinite(max_change):
+            raise ValueError("The saved FoM diagnostics are nonfinite.")
+        if not include_contours:
+            quality_note += " Contour omitted."
+        names = record["names"].tolist()
+        covariance_weights = samples["weights"]
+        positive = covariance_weights > 0
+        values = samples["values"][positive]
+        normalized = covariance_weights[positive] / covariance_weights[positive].sum()
+        centered = values - normalized @ values
+        bounded_covariance = centered.T @ (normalized[:, None] * centered)
+        result = {
+            "quality": quality, "quality_note": quality_note,
+            "names": names, "center": record["center"].tolist(),
+            "lower": [float(x) if np.isfinite(x) else None for x in record["lower"]],
+            "upper": [float(x) if np.isfinite(x) else None for x in record["upper"]],
+            "gaussian_width": [float(w) if np.isfinite(w) else None for w in record["gaussian_width"]],
+            "steps": record["steps"].tolist(),
+            "rows": record["rows"].tolist(), "max_fom_change": max_change,
+            "accuracy_checks": gate,
+        }
+        figures = None
+        if include_contours:
+            with Path(broad).open() as table:
+                point_names = table.readline().lstrip("#").split()
+            plot_names = [name for name in _matter_emulator_plot_names
+                          if name in names and name in point_names]
+            figures = _matter_emulator_contours(samples, plot_names)
+            figures["quality_note"] = quality_note
+        destination.mkdir(parents=True, exist_ok=True)
+        matrices = {"bounded_covariance": bounded_covariance}
+        for key in (("fisher",) if single_step else ("fisher_fine", "fisher_coarse")):
+            matrices[key] = record[key]
+        for key, matrix in matrices.items():
+            np.savetxt(destination / f"{key}.txt", matrix, header=" ".join(names), fmt="%.17g")
+    for path, filename in ((broad, "prior_50.txt"), (focused, "focused_25.txt")):
+        if Path(path).resolve() != (destination / filename).resolve():
+            shutil.copyfile(path, destination / filename)
+    for name in ("numerical_settings.txt", "noise_definition.txt", "noise_h.txt",
+                 "noise_half_h.txt", "fom_convergence.txt", "sampling_checks.txt",
+                 "coarse_sampling_checks.txt"):
+        candidate = fisher_dir / name
+        if candidate.is_file():
+            shutil.copyfile(candidate, destination / name)
+    for directory in fisher_dir.glob("*_accuracy"):
+        for name in ("numerical_settings.txt", "selected_noise_definition.txt",
+                     "selected_noise_h.txt", "estimated_fom_shift.txt"):
+            settings = directory / name
+            if settings.is_file():
+                shutil.copyfile(settings, destination / f"{directory.name}_{name}")
+    if figures is not None:
+        _write_matter_emulator_json(destination / "contours.json", figures)
+    shutil.copyfile(output / "source.yaml", destination / "benchmark.yaml")
+    _write_matter_emulator_json(destination / "reference.json", result)
 
-    Returns:
-      number of failed or nonfinite comparisons. Generated vectors, points,
-      status records and a summary are written under the project's chains/.
-      EMULATOR_CODE_DIR and EMULATOR_DATA_DIR select candidate checkouts.
-      The project driver selects the native interface before calling this
-      routine; production configuration files remain unchanged.
-    """
-    import copy
-    import io
-    import subprocess
-    import sys
+
+def _load_matter_emulator_reference(directory):
+    """Load the chosen benchmark's previously calculated plot geometry."""
+    import json
     from pathlib import Path
 
+    directory = Path(directory)
+    result = json.loads((directory / "reference.json").read_text())
+    result["contours"] = None
+    if result["quality"] != "unreliable":
+        result["contours"] = json.loads((directory / "contours.json").read_text())
+    return result
+
+
+def _matter_emulator_configuration(source):
+    """Read the evaluate YAML and apply the official cosmology support."""
     import numpy as np
-    from cobaya.model import get_model
     from cobaya.yaml import yaml_load_file
-    from cosmolike_notebook_utils.mpi_batching import run_owned_jobs
-
-    rank = 0 if mpi_comm is None else mpi_comm.Get_rank()
-    size = 1 if mpi_comm is None else mpi_comm.Get_size()
-
-    if not isinstance(focused_models, int) or focused_models < 0:
-        raise ValueError("focused_models must be a nonnegative integer.")
-
-    project = Path(project).resolve()
-    root = project.parents[1]
-    source = project / configuration
-    code_dir = Path(os.environ.get(
-        "EMULATOR_CODE_DIR",
-        root / "external_modules/code/emulators/emultrf",
-    ))
-    data_dir = Path(os.environ.get(
-        "EMULATOR_DATA_DIR",
-        root / "external_modules/data/emultrf",
-    ))
-    sys.path.insert(0, str(code_dir))
-    from emulmps.emulmps import emulmps
 
     info = yaml_load_file(str(source))
     base_point = dict(info["sampler"]["evaluate"]["override"])
@@ -4922,20 +4891,171 @@ def run_matter_emulator_prior_check(
     if len(info["likelihood"]) != 1:
         raise ValueError("Choose one project's likelihood for this comparison.")
     likelihood_name = next(iter(info["likelihood"]))
-    # Preserve the example's physical theory and ordinary accuracy for
-    # Fisher. Only the requested fixed neutrino mass above is shared with
-    # the separate matched-mead2020 emulator comparison below.
-    fisher_settings = copy.deepcopy(info)
+    return info, base_point, test_bounds, fixed_baryon_coordinates, w_today
+
+
+def _match_matter_emulator_prescription(info, likelihood_name, use_emulator_switch):
+    """Match physical power prescriptions while retaining benchmark accuracy."""
     if use_emulator_switch:
         info["likelihood"][likelihood_name]["non_linear_emul"] = 2
         info["likelihood"][likelihood_name]["print_datavector"] = False
     camb_args = info["theory"]["camb"]["extra_args"]
     camb_args["halofit_version"] = "mead2020"
     camb_args.pop("HMCode_logT_AGN", None)
-    camb_args["AccuracyBoost"] = 3.0
-    camb_args["k_per_logint"] = 50
-    # Background parameters and the number of massive species remain the
-    # project's choices. Only the mass and nonlinear prescription change.
+    return camb_args
+
+
+def run_matter_emulator_prior_check(
+    project,
+    configuration,
+    get_precision,
+    n_models=50,
+    seed=137,
+    limit=1.0,
+    points_file=None,
+    fisher=False,
+    output_dir=None,
+    fisher_sample_power=18,
+    fisher_center=None,
+    fisher_parameters=None,
+    fisher_steps=None,
+    fisher_probe=None,
+    get_covariance=None,
+    advisory=False,
+    candidate_extra_args=None,
+    use_emulator_switch=True,
+    select_vector=None,
+    focused_models=25,
+    local_points_file=None,
+    derivative_provider=None,
+    amplitude_bias_cuts=None,
+    mpi_comm=None,
+    fisher_accuracy_likelihood=None,
+    fisher_accuracy_camb=None,
+    fisher_confirmation_settings=None,
+    fisher_fom_tolerance=0.01,
+    fisher_reference=None,
+    validate_fisher_steps=False,
+    save_fisher_contours=False,
+):
+    """Compare a candidate matter emulator with CAMB on random cosmologies.
+
+    Project tests call this routine with their ordinary Cobaya evaluate
+    example and native precision reader, as the other shared Cocoa tests
+    do. Each cosmology changes the theory state; cached=False forces the
+    likelihood to run. Random draws retain the example's nuisance override;
+    an explicit points_file may also specify the nuisance parameters.
+    Both routes use CAMB distances and plain HMCode2020, with mnu=0.06 eV.
+    The candidate uses the project's existing EMUL2 likelihood route.
+
+    Draw from each project's cosmological box with 0.2 < Omega_m < 0.5,
+    w0 > -2, 1 < 1e9 As <= 3.5, H0 < 85 and omegab*(H0/100)^2 < 0.035
+    for both the mean and Fisher,
+    and keep fixed cosmological parameters fixed. Do not redraw failures
+    or silently restrict to the emulator training domain. The result is
+    delta_model.T @ precision @ delta_model, not a difference between two
+    chi-squared values against the measured data. A value below limit is
+    the requested agreement criterion at that point, not a proof that
+    importance weights have adequate effective sample size.
+
+    Arguments:
+      project = project directory below Cocoa/projects.
+      configuration = existing evaluate YAML, including its nuisance point.
+      get_precision = the initialized native masked precision reader.
+      n_models = number of random cosmologies; default 50.
+      seed = model i uses numpy.random.default_rng(seed + i).
+      limit = strict upper bound on the prediction-distance statistic.
+      points_file = optional named-column text table of explicit parameter
+        points; supplied values replace the example's overrides. Its row
+        count replaces n_models and no random cosmologies are drawn.
+      fisher = run the separate CAMB-only Fisher and FoM convergence test.
+        It does not evaluate or score the candidate emulator.
+      validate_fisher_steps = explicitly compare h and h/2 and the full improved accuracy matrix.
+      save_fisher_contours = optional offline bounded integration after the screen.
+      fisher_reference = optional directory of a saved bounded Fisher model
+        and contour geometry. Its validity affects only the displayed contour.
+        Its physical theory follows the example, with mnu fixed to 0.06 eV;
+        the plain-mead2020 matching applies to mean comparisons only.
+      output_dir = optional destination below the project chains directory.
+      fisher_sample_power = log2 proposal count per bounded-Fisher repetition.
+      fisher_center, fisher_parameters, fisher_steps = optional reference
+        point, differentiated parameter names and absolute derivative steps.
+      fisher_probe = None for the complete vector, or "xi" for the initial
+        real-space shear rows. The latter requires get_covariance.
+      get_covariance = initialized native full covariance reader.
+      candidate_extra_args = explicit additional emulator theory options.
+      use_emulator_switch = whether the likelihood uses the ordinary
+        use_emulator/non_linear_emul flags. Provider-only likelihoods do not.
+      select_vector = optional native mask/compression callable, applied
+        after the full vector is checked against its likelihood.
+      advisory = report prediction errors and finite FoM tolerance misses.
+        Invalid sampling or an incomplete Fisher calculation still fails.
+      focused_models = additional draws from the bounded Fisher distribution
+        after a broad-prior test; zero skips this stage for diagnostics.
+      mpi_comm = optional MPI communicator. Each rank owns one live model;
+        point indices are distributed in rank order and only rank zero writes.
+        Completed checkpoint rows are retained on resubmission.
+      local_points_file = optional fixed focused sample. It must contain
+        focused_models rows. The emulator check does not generate new draws.
+      fisher_accuracy_likelihood, fisher_accuracy_camb = optional overrides
+        of the explicit next numerical setting used for the Fisher check.
+        Without them, native sampling doubles up to the established boost
+        cap of three, integration advances one level, CAMB AccuracyBoost
+        reaches at least two and k_per_logint at least fifty. 3PCF's separate
+        sampling/integration controls double. Existing larger boosts stay.
+      fisher_fom_tolerance = relative target-pair FoM tolerance, default 1%,
+        required at both derivative steps and between numerical settings.
+        This is the test criterion, not a universal science requirement.
+      fisher_confirmation_settings = optional pair of likelihood and CAMB
+        refinements for a third grid. Compare the two finest grids when the
+        default grid is too coarse. The cheap weights still come from the
+        full default-accuracy Fisher, and the intermediate archive is kept.
+
+    Returns:
+      number of failed or nonfinite comparisons. Generated vectors, points,
+      status records and a summary are written under the project's chains/.
+      EMULATOR_CODE_DIR and EMULATOR_DATA_DIR select candidate checkouts.
+      The project driver selects the native interface before calling this
+      routine; production configuration files remain unchanged.
+    """
+    import copy
+    import io
+    import subprocess
+    import sys
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from time import perf_counter
+
+    import numpy as np
+    from cobaya.model import get_model
+    from cobaya.yaml import yaml_dump
+    from cosmolike_notebook_utils.mpi_batching import run_owned_jobs
+
+    rank = 0 if mpi_comm is None else mpi_comm.Get_rank()
+    size = 1 if mpi_comm is None else mpi_comm.Get_size()
+
+    if not isinstance(focused_models, int) or focused_models < 0:
+        raise ValueError("focused_models must be a nonnegative integer.")
+
+    project = Path(project).resolve()
+    root = project.parents[1]
+    source = project / configuration
+    code_dir = Path(os.environ.get(
+        "EMULATOR_CODE_DIR",
+        root / "external_modules/code/emulators/emultrf",
+    ))
+    data_dir = Path(os.environ.get(
+        "EMULATOR_DATA_DIR",
+        root / "external_modules/data/emultrf",
+    ))
+    info, base_point, test_bounds, fixed_baryon_coordinates, w_today = (
+        _matter_emulator_configuration(source))
+    likelihood_name = next(iter(info["likelihood"]))
+    # Preserve the example's physical theory and ordinary accuracy for
+    # Fisher. Only the requested fixed neutrino mass above is shared with
+    # the separate matched-mead2020 emulator comparison below.
+    fisher_settings = copy.deepcopy(info)
+    camb_args = _match_matter_emulator_prescription(info, likelihood_name, use_emulator_switch)
     names = ["As_1e9", "ns", "H0", "omegab", "omegam", w_today, "w0pwa", "wa"]
     points = []
     for index in range(n_models if points_file is None else 0):
@@ -4989,11 +5109,199 @@ def run_matter_emulator_prior_check(
     else:
         output = project / "chains/matter_emulator_prior" / source.stem
     if fisher:
-        output = output / "with_fisher"
+        output = output / "fisher_calibration"
+    if output_dir is None:
+        output = output / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        if mpi_comm is not None:
+            output = mpi_comm.bcast(output if rank == 0 else None, root=0)
     if output_dir is not None:
         output = Path(output_dir).resolve()
         if not output.is_relative_to(project / "chains"):
             raise ValueError("Comparison output must stay below project chains/.")
+    reference = None
+    if fisher:
+        from cobaya.input import update_info
+
+        native_defaults = update_info(fisher_settings)["likelihood"][likelihood_name]
+        single_step = not validate_fisher_steps
+        reference_precision = None
+        model = None
+        start = perf_counter()
+        try:
+            setup_error = None
+            if rank == 0:
+                try:
+                    output.mkdir(parents=True, exist_ok=True)
+                    (output / "source.yaml").write_text(source.read_text())
+                    if points_file is None:
+                        columns = sorted(points[0])
+                        points_file = output / "points.txt"
+                        np.savetxt(points_file, [[point[name] for name in columns] for point in points],
+                                   header=" ".join(columns))
+                except Exception as error:
+                    setup_error = f"{type(error).__name__}: {error}"
+            if mpi_comm is not None:
+                setup_error = mpi_comm.bcast(setup_error, root=0)
+            if setup_error is not None:
+                raise ValueError(setup_error)
+            normal = copy.deepcopy(fisher_settings)
+            if use_emulator_switch:
+                normal["likelihood"][likelihood_name]["use_emulator"] = 0
+            # A parameter-dependent early exit creates jumps in a
+            # derivative. Disable it for both Fisher accuracies;
+            # the separate mean comparisons keep the YAML values.
+            for key in ("nonlimber_tolerance_gg", "nonlimber_tolerance_gs"):
+                if not single_step and key in native_defaults:
+                    normal["likelihood"][likelihood_name][key] = 0.0
+            refined = None
+            stages = ["default_accuracy", "refined_accuracy"]
+            if fisher_confirmation_settings is not None and not single_step:
+                stages.append("confirmation_accuracy")
+            for stage in stages:
+                stage_start = perf_counter()
+                current = normal if refined is None else refined
+                if stage == "confirmation_accuracy":
+                    current = copy.deepcopy(refined)
+                    native_controls, camb_controls = fisher_confirmation_settings
+                    current["likelihood"][likelihood_name].update(native_controls)
+                    current["theory"]["camb"]["extra_args"].update(camb_controls)
+                error = None
+                try:
+                    model = get_model(info_or_yaml_or_file=current)
+                    likelihood = model.likelihood[likelihood_name]
+                    native_precision = np.asarray(get_precision())
+                    if reference_precision is None:
+                        reference_precision = native_precision.copy()
+                    else:
+                        np.testing.assert_array_equal(native_precision, reference_precision)
+                except Exception as caught:
+                    error = f"{type(caught).__name__}: {caught}"
+                errors = [error] if mpi_comm is None else mpi_comm.allgather(error)
+                if any(item is not None for item in errors):
+                    raise ValueError(f"Fisher model setup failed: {errors}")
+                if stage == "default_accuracy":
+                    # One explicit next setting, recorded below. This
+                    # is a convergence trial, not a claimed validated
+                    # production setting. Per-project overrides can
+                    # supply an already documented numerical ladder.
+                    refined = copy.deepcopy(normal)
+                    options = refined["likelihood"][likelihood_name]
+                    boost = float(likelihood.accuracyboost)
+                    options["accuracyboost"] = max(boost, min(3., 2.*boost))
+                    options["integration_accuracy"] = abs(int(likelihood.integration_accuracy))+1
+                    if hasattr(likelihood, "threepcf_accuracy"):
+                        controls = dict(likelihood.threepcf_accuracy or {})
+                        controls["accuracy_boost"] = 2.*float(controls.get("accuracy_boost", 1.))
+                        controls["integration_accuracy_boost"] = 2.*float(controls.get("integration_accuracy_boost", 1.))
+                        options["threepcf_accuracy"] = controls
+                    options.update(fisher_accuracy_likelihood or {})
+                    fine_camb = refined["theory"]["camb"]["extra_args"]
+                    fine_camb["AccuracyBoost"] = max(2., float(fine_camb.get("AccuracyBoost", 1.)))
+                    fine_camb["k_per_logint"] = max(50, int(fine_camb.get("k_per_logint", 0)))
+                    fine_camb.update(fisher_accuracy_camb or {})
+                fisher_rows, fisher_covariance = None, None
+                if fisher_probe is not None:
+                    if fisher_probe != "xi" or get_covariance is None:
+                        raise ValueError("Shear Fisher requires probe xi and a covariance reader.")
+                    nsource = likelihood.source_ntomo
+                    nshear = nsource*(nsource+1)*likelihood.ntheta
+                    fisher_rows = np.flatnonzero((np.diag(reference_precision)>0.)
+                                                 & (np.arange(len(reference_precision))<nshear))
+                    fisher_covariance = np.asarray(get_covariance())
+                destination = output/"fisher"
+                baseline_stage = stage == "default_accuracy"
+                if (single_step and not baseline_stage) or (not single_step and stage != stages[-1]):
+                    destination = destination/stage
+                compute_matter_emulator_fisher(
+                    model=model, likelihood=likelihood,
+                    center=base_point if fisher_center is None else fisher_center,
+                    precision=reference_precision, params=model.info()["params"],
+                    output=destination, sample_power=fisher_sample_power,
+                    parameters=fisher_parameters, steps=fisher_steps,
+                    rows=fisher_rows, covariance=fisher_covariance,
+                    select_vector=select_vector, derivative_provider=derivative_provider,
+                    amplitude_bias_cuts=amplitude_bias_cuts, mpi_comm=mpi_comm,
+                    sample=not single_step and stage == stages[-1],
+                    noise_screen=True, single_step=single_step,
+                    noise_reference=None if baseline_stage else (
+                        output/"fisher" if single_step else output/"fisher"/"default_accuracy"),
+                )
+                if rank == 0:
+                    seconds = perf_counter() - stage_start
+                    counts = (destination / "evaluation_counts.txt").read_text().rstrip()
+                    (destination / "wall_time.txt").write_text(f"{stage}: {seconds:.6f} seconds\n")
+                    print(f"{stage}: {seconds:.3f} s. {counts}", flush=True)
+                    (destination/"numerical_settings.txt").write_text(
+                        f"stage={stage}\n"
+                        f"likelihood={current['likelihood'][likelihood_name]}\n"
+                        f"CAMB={current['theory']['camb']['extra_args']}\n"
+                        f"FoM relative tolerance={fisher_fom_tolerance}\n"
+                        "Fisher uses the example's physical theory with mnu=0.06 eV.\n"
+                        + (destination/"fiducial_likelihood.txt").read_text()
+                    )
+                model.close()
+                model = None
+            gate_error = None
+            if rank == 0 and not single_step:
+                try:
+                    compare_matter_emulator_fisher_accuracy(
+                        base=output/"fisher"/stages[-2], refined=output/"fisher",
+                        tolerance=fisher_fom_tolerance,
+                        require_convergence=False,
+                    )
+                except Exception as caught:
+                    gate_error = f"{type(caught).__name__}: {caught}"
+            if mpi_comm is not None:
+                gate_error = mpi_comm.bcast(gate_error, root=0)
+            if gate_error is not None:
+                raise ValueError(gate_error)
+            if rank == 0:
+                destination = output / "fisher"
+                if single_step:
+                    estimate = float(np.loadtxt(destination / "refined_accuracy/estimated_fom_shift.txt"))
+                    failed = int(not np.isfinite(estimate) or abs(estimate) >= fisher_fom_tolerance)
+                    print(f"Estimated FoM shift from selected columns: {estimate:.2%}; "
+                          f"tolerance={fisher_fom_tolerance:.2%}.", flush=True)
+                else:
+                    gate = (destination / "fom_convergence_status.txt").read_text()
+                    failed = int("passed=True" not in gate.splitlines()[0])
+                if save_fisher_contours:
+                    if single_step:
+                        sample_matter_emulator_fisher(destination, sample_power=fisher_sample_power)
+                    if local_points_file is None:
+                        local_points_file = draw_matter_emulator_focused_points(
+                            destination, n_models=25, seed=seed + 10000)
+                    freeze_matter_emulator_reference(
+                        output, output / "reference", points_file,
+                        local_points_file, include_contours=not failed)
+                total = perf_counter() - start
+                (output / "wall_time.txt").write_text(f"total: {total:.6f} seconds\n")
+                print(f"Total standalone Fisher calibration: {total:.3f} s", flush=True)
+            else:
+                failed = None
+        except Exception as error:
+            if model is not None:
+                model.close()
+            print(f"Fisher calibration failed: {error}", flush=True)
+            failed = 1
+        return failed if mpi_comm is None else mpi_comm.bcast(failed, root=0)
+
+    reference_note = ""
+    if rank == 0 and (focused_models > 0 or fisher_reference is not None):
+        reference_start = perf_counter()
+        try:
+            if fisher_reference is None or not (Path(fisher_reference) / "reference.json").is_file():
+                raise FileNotFoundError(f"no saved reference at {fisher_reference}")
+            reference = _load_matter_emulator_reference(fisher_reference)
+            reference_note = reference["quality_note"]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            reference_note = f"Fisher contour unavailable: {error}. Vector errors remain applicable."
+        print(reference_note, flush=True)
+        print(f"Fisher reference lookup: {perf_counter() - reference_start:.3f} s.", flush=True)
+
+    sys.path.insert(0, str(code_dir))
+    from emulmps.emulmps import emulmps
+
     metadata_error = None
     if rank == 0:
         try:
@@ -5020,16 +5328,17 @@ def run_matter_emulator_prior_check(
                 record.write(f"effective emulator test bounds={test_bounds}; omegabh2 < 0.035\n")
                 if points_file is not None:
                     record.write(f"explicit parameter table={points_path}; seed unused\n")
-                record.write("mnu=0.06 eV; plain mead2020; CAMB AccuracyBoost=3; k_per_logint=50\n")
+                record.write(f"mnu=0.06 eV; plain mead2020; CAMB extra_args={camb_args}\n")
                 record.write("CAMB background in both; candidate replaces the requested power spectra\n")
                 record.write(f"candidate_extra_args={candidate_extra_args}; native_selection={select_vector is not None}\n")
                 record.write(f"use_emulator_switch={use_emulator_switch}; "
                              f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}\n")
                 for directory in (project, Path(__file__).parent, code_dir, data_dir):
-                    revision = subprocess.check_output(
+                    result = subprocess.run(
                         ["git", "-C", str(directory), "rev-parse", "HEAD"],
-                        text=True,
-                    ).strip()
+                        text=True, capture_output=True, check=False,
+                    )
+                    revision = result.stdout.strip() if result.returncode == 0 else "unversioned"
                     record.write(f"{directory}: {revision}\n")
                 # A Git revision survives local edits. Hash the survey inputs,
                 # including the measured vector (its score is checkpointed),
@@ -5093,13 +5402,13 @@ def run_matter_emulator_prior_check(
     vectors = {}
     loglikes = {}
     reference_precision = None
-    fisher_failed = False
     status = (output / "status.txt").open("a") if rank == 0 else io.StringIO()
     try:
         # Finish one model before initializing the next: the C library has
         # one global state. Holding two live likelihood instances would make
         # their setters and caches interfere with each other.
         for route in ("camb", "candidate"):
+            route_start = perf_counter()
             settings = copy.deepcopy(info)
             if use_emulator_switch:
                 settings["likelihood"][likelihood_name]["use_emulator"] = 0
@@ -5136,6 +5445,9 @@ def run_matter_emulator_prior_check(
             if any(error is not None for error in errors):
                 raise RuntimeError(f"MPI model initialization failed: {errors}")
             likelihood = model.likelihood[likelihood_name]
+            if rank == 0 and route == "camb":
+                (output / "effective_reference.yaml").write_text(yaml_dump(settings))
+                print(f"Effective matched CAMB settings: {camb_args}", flush=True)
             precision = np.asarray(get_precision())
             precision_error = None
             try:
@@ -5182,6 +5494,8 @@ def run_matter_emulator_prior_check(
                 rows, loglike_rows, done = mpi_comm.bcast((rows, loglike_rows, done), root=0)
             if resume_error is not None:
                 raise ValueError(resume_error)
+            reused = int(np.count_nonzero(done))
+
             def evaluate_point(job):
                 index = job[0]
                 point = points[index]
@@ -5270,120 +5584,12 @@ def run_matter_emulator_prior_check(
             if mpi_comm is not None:
                 rows, loglike_rows = mpi_comm.bcast((rows, loglike_rows), root=0)
             vectors[route], loglikes[route] = rows, loglike_rows
-            if route == "camb" and fisher:
-                # Close the matched-mean reference before changing native
-                # accuracy. CosmoLike has one global model state per rank.
-                model.close()
-                model = None
-                try:
-                    normal = copy.deepcopy(fisher_settings)
-                    if use_emulator_switch:
-                        normal["likelihood"][likelihood_name]["use_emulator"] = 0
-                    # A parameter-dependent early exit creates jumps in a
-                    # derivative. Disable it for both Fisher accuracies;
-                    # the separate mean comparisons keep the YAML values.
-                    for key in ("nonlimber_tolerance_gg", "nonlimber_tolerance_gs"):
-                        if hasattr(likelihood, key):
-                            normal["likelihood"][likelihood_name][key] = 0.0
-                    refined = None
-                    stages = ["default_accuracy", "refined_accuracy"]
-                    if fisher_confirmation_settings is not None:
-                        stages.append("confirmation_accuracy")
-                    for stage in stages:
-                        current = normal if refined is None else refined
-                        if stage == "confirmation_accuracy":
-                            current = copy.deepcopy(refined)
-                            native_controls, camb_controls = fisher_confirmation_settings
-                            current["likelihood"][likelihood_name].update(native_controls)
-                            current["theory"]["camb"]["extra_args"].update(camb_controls)
-                        error = None
-                        try:
-                            model = get_model(info_or_yaml_or_file=current)
-                            likelihood = model.likelihood[likelihood_name]
-                            np.testing.assert_array_equal(get_precision(), reference_precision)
-                        except Exception as caught:
-                            error = f"{type(caught).__name__}: {caught}"
-                        errors = [error] if mpi_comm is None else mpi_comm.allgather(error)
-                        if any(item is not None for item in errors):
-                            raise ValueError(f"Fisher model setup failed: {errors}")
-                        if stage == "default_accuracy":
-                            # One explicit next setting, recorded below. This
-                            # is a convergence trial, not a claimed validated
-                            # production setting. Per-project overrides can
-                            # supply an already documented numerical ladder.
-                            refined = copy.deepcopy(normal)
-                            options = refined["likelihood"][likelihood_name]
-                            boost = float(likelihood.accuracyboost)
-                            options["accuracyboost"] = max(boost, min(3., 2.*boost))
-                            options["integration_accuracy"] = abs(int(likelihood.integration_accuracy))+1
-                            if hasattr(likelihood, "threepcf_accuracy"):
-                                controls = dict(likelihood.threepcf_accuracy or {})
-                                controls["accuracy_boost"] = 2.*float(controls.get("accuracy_boost", 1.))
-                                controls["integration_accuracy_boost"] = 2.*float(controls.get("integration_accuracy_boost", 1.))
-                                options["threepcf_accuracy"] = controls
-                            options.update(fisher_accuracy_likelihood or {})
-                            fine_camb = refined["theory"]["camb"]["extra_args"]
-                            fine_camb["AccuracyBoost"] = max(2., float(fine_camb.get("AccuracyBoost", 1.)))
-                            fine_camb["k_per_logint"] = max(50, int(fine_camb.get("k_per_logint", 0)))
-                            fine_camb.update(fisher_accuracy_camb or {})
-                        fisher_rows, fisher_covariance = None, None
-                        if fisher_probe is not None:
-                            if fisher_probe != "xi" or get_covariance is None:
-                                raise ValueError("Shear Fisher requires probe xi and a covariance reader.")
-                            nsource = likelihood.source_ntomo
-                            nshear = nsource*(nsource+1)*likelihood.ntheta
-                            fisher_rows = np.flatnonzero((np.diag(reference_precision)>0.)
-                                                         & (np.arange(len(reference_precision))<nshear))
-                            fisher_covariance = np.asarray(get_covariance())
-                        destination = output/"fisher"
-                        if stage != stages[-1]:
-                            destination = destination/stage
-                        compute_matter_emulator_fisher(
-                            model=model, likelihood=likelihood,
-                            center=base_point if fisher_center is None else fisher_center,
-                            precision=reference_precision, params=model.info()["params"],
-                            output=destination, sample_power=fisher_sample_power,
-                            parameters=fisher_parameters, steps=fisher_steps,
-                            rows=fisher_rows, covariance=fisher_covariance,
-                            select_vector=select_vector, derivative_provider=derivative_provider,
-                            amplitude_bias_cuts=amplitude_bias_cuts, mpi_comm=mpi_comm,
-                            sample=stage == stages[-1], noise_screen=True,
-                            noise_reference=None if stage == "default_accuracy" else output/"fisher"/"default_accuracy",
-                        )
-                        if rank == 0:
-                            (destination/"numerical_settings.txt").write_text(
-                                f"stage={stage}\n"
-                                f"likelihood={current['likelihood'][likelihood_name]}\n"
-                                f"CAMB={current['theory']['camb']['extra_args']}\n"
-                                f"FoM relative tolerance={fisher_fom_tolerance}\n"
-                                "Fisher uses the example's physical theory with mnu=0.06 eV.\n"
-                                + (destination/"fiducial_likelihood.txt").read_text()
-                            )
-                        model.close()
-                        model = None
-                    gate_error = None
-                    if rank == 0:
-                        try:
-                            compare_matter_emulator_fisher_accuracy(
-                                base=output/"fisher"/stages[-2], refined=output/"fisher",
-                                tolerance=fisher_fom_tolerance,
-                                require_convergence=not advisory,
-                            )
-                        except Exception as caught:
-                            gate_error = f"{type(caught).__name__}: {caught}"
-                    if mpi_comm is not None:
-                        gate_error = mpi_comm.bcast(gate_error, root=0)
-                    if gate_error is not None:
-                        raise ValueError(gate_error)
-                except Exception as error:
-                    fisher_failed = True
-                    message = f"Fisher FAILED {type(error).__name__}: {error}"
-                    if rank == 0:
-                        print(message, flush=True)
-                        status.write(message+"\n")
-                        status.flush()
             if model is not None:
                 model.close()
+            if rank == 0:
+                elapsed = perf_counter() - route_start
+                print(f"{output.name} {route}: {elapsed:.3f} s; "
+                      f"{n_models - reused} new points; {reused} reused.", flush=True)
     finally:
         status.close()
 
@@ -5434,24 +5640,19 @@ def run_matter_emulator_prior_check(
     focused_failed = 0
     local_input = None
     setup_error = None
-    if rank == 0 and fisher and not fisher_failed:
+    if rank == 0 and focused_models > 0 and local_points_file is not None:
         try:
-            if focused_models > 0 and (points_file is None or local_points_file is not None):
-                local_input = local_points_file
-                if local_input is None:
-                    local_input = draw_matter_emulator_focused_points(
-                        output=output / "fisher", n_models=focused_models,
-                        seed=seed + 10000,
-                    )
-                supplied = np.atleast_1d(np.genfromtxt(local_input, names=True))
-                if len(supplied) != focused_models:
-                    raise ValueError("Focused table row count differs from focused_models.")
-                for name in supplied.dtype.names:
-                    if name not in names and name in base_point:
-                        if not np.all(supplied[name] == base_point[name]):
-                            raise ValueError(f"Focused precision points vary nuisance {name}; "
-                                             "keep its evaluate YAML value fixed.")
+            local_input = local_points_file
+            supplied = np.atleast_1d(np.genfromtxt(local_input, names=True))
+            if len(supplied) != focused_models:
+                raise ValueError("Focused table row count differs from focused_models.")
+            for name in supplied.dtype.names:
+                if name not in names and name in base_point:
+                    if not np.all(supplied[name] == base_point[name]):
+                        raise ValueError(f"Focused precision points vary nuisance {name}; "
+                                         "keep its evaluate YAML value fixed.")
         except Exception as error:
+            local_input = None
             setup_error = f"{type(error).__name__}: {error}"
     if mpi_comm is not None:
         local_input, setup_error = mpi_comm.bcast((local_input, setup_error), root=0)
@@ -5467,29 +5668,28 @@ def run_matter_emulator_prior_check(
     result = None
     if rank == 0:
         if setup_error is not None:
-            fisher_failed = True
             summary += f"Focused setup FAILED {setup_error}\n"
-        if fisher and not fisher_failed:
+        elif local_input is not None:
+            summary += f"Focused comparison: {focused_models} points; see local/summary.txt.\n"
+        elif focused_models:
+            summary += "Focused table unavailable; only the supplied broad points were compared.\n"
+        summary += reference_note + "\n"
+        contour_file = output / "fisher" / "contours.json"
+        if reference is not None and reference.get("contours") is not None:
             try:
+                plot_start = perf_counter()
+                contour_file.parent.mkdir(exist_ok=True)
+                _write_matter_emulator_json(contour_file, reference["contours"])
                 plot_matter_emulator_fisher(
-                    output=output / "fisher", points_file=output / "points.txt",
+                    output=contour_file.parent, points_file=output / "points.txt",
                     distances_file=output / "distances.txt", project_name=project.name,
                     local_points_file=output / "local/points.txt" if local_input is not None else None,
                     local_distances_file=output / "local/distances.txt" if local_input is not None else None,
                 )
-                if local_input is not None:
-                    summary += f"Focused comparison: {focused_models} points; see local/summary.txt.\n"
+                print(f"Saved Fisher contour replot: {perf_counter() - plot_start:.3f} s.", flush=True)
             except Exception as error:
-                fisher_failed = True
-                summary += f"Fisher plot FAILED {type(error).__name__}: {error}\n"
-        if fisher and not fisher_failed:
-            gate = output / "fisher/fom_convergence_status.txt"
-            if "passed=False" in gate.read_text().splitlines()[0]:
-                drift = np.max(np.abs(np.loadtxt(output / "fisher/fom_convergence.txt")[:, 2]))
-                summary += f"Approximate Fisher contours: maximum FoM shift {drift:.2%}; target {fisher_fom_tolerance:.2%}.\n"
-        if fisher_failed:
-            summary += "Fisher overlay incomplete; inspect status and fisher diagnostics.\n"
-        calculation_failed = (fisher_failed or focused_failed or not finite_reference.all()
+                summary += f"Fisher plot unavailable: {type(error).__name__}: {error}\n"
+        calculation_failed = (setup_error is not None or focused_failed or not finite_reference.all()
                               or not np.any(finite & (distances >= 0.0)))
         if not finite_reference.all():
             summary += "CAMB reference evaluations incomplete; comparison cannot pass.\n"
@@ -5497,7 +5697,7 @@ def run_matter_emulator_prior_check(
             summary += "No finite nonnegative prediction distances were obtained.\n"
         (output / "summary.txt").write_text(summary)
         print(summary, flush=True)
-        result = int(calculation_failed) if advisory else int((~passed).sum()) + int(fisher_failed) + focused_failed
+        result = int(calculation_failed) if advisory else int((~passed).sum()) + int(setup_error is not None) + focused_failed
     return result if mpi_comm is None else mpi_comm.bcast(result, root=0)
 
 
@@ -5576,6 +5776,7 @@ def compute_matter_emulator_fisher(
     min_effective=200, parameters=None, select_vector=None,
     derivative_provider=None, amplitude_bias_cuts=None, mpi_comm=None,
     sample=True, noise_reference=None, noise_fraction=0.95, noise_screen=False,
+    single_step=False,
 ):
     """Compute the reference model's local Fisher information and contours.
 
@@ -5609,6 +5810,8 @@ def compute_matter_emulator_fisher(
         The rest still run once for the final full-matrix convergence check.
       noise_fraction = fraction of baseline noise contribution prioritized;
         omitted columns are subsequently checked, never assumed noise-free.
+      single_step = use only the fixed h stencil. With a noise reference,
+        measure only sensitive columns and report the estimated FoM shift.
       noise_screen = save the shared fourth-difference/FoM noise diagnostics;
         requires a resolved full Fisher matrix and the target cosmology pair.
       rows = optional unmasked data subset; requires the full covariance.
@@ -5702,7 +5905,14 @@ def compute_matter_emulator_fisher(
         proposal = specification.get("proposal", scale)
         proposal = scale if proposal is None else float(proposal)
         step = float(steps.get(name, 0.1 * proposal))
-        if name not in steps:
+        if single_step:
+            # Nonzero coordinates use the fixed relative prescription.
+            # Zero coordinates use their explicit absolute step or 0.1*proposal.
+            if center[name] != 0.0:
+                step = 0.025 * abs(center[name])
+            # The five-point stencil needs room for two steps on both sides.
+            step = min(step, 0.49 * min(center[name] - lo, hi - center[name]))
+        elif name not in steps:
             step = min(step, 0.2*(center[name]-lo), 0.2*(hi-center[name]))
         if not np.isfinite(step) or step <= 0.0:
             raise ValueError(f"Fisher step for {name} must be finite and positive.")
@@ -5748,7 +5958,11 @@ def compute_matter_emulator_fisher(
         arguments = {"covariance": metric}
     cf.symmetric_matrix(metric, name="Fisher data metric", positive=True)
 
+    evaluations = 0
+
     def predict(point):
+        nonlocal evaluations
+        evaluations += 1
         # Only theory may reuse identical inputs. The likelihood owns native
         # state and last_datavector, so it must execute on every cache miss.
         manage_cache = hasattr(likelihood, "set_cache_size") and hasattr(likelihood, "_states")
@@ -5786,6 +6000,7 @@ def compute_matter_emulator_fisher(
     if hasattr(likelihood, "last_datavector"):
         center_loglike = float(likelihood.compute_logp(datavector=likelihood.last_datavector))
     else:
+        evaluations += 1
         center_loglike = float(model.logposterior(params_values=center, cached=False).loglike)
     if rank == 0:
         (output / "fiducial_likelihood.txt").write_text(
@@ -5809,9 +6024,9 @@ def compute_matter_emulator_fisher(
         stencil_columns = {}
         for name, pair in supplied.items():
             if len(pair) != 2:
-                raise ValueError(f"Supplied derivative {name} needs both h and h/2 columns.")
+                raise ValueError(f"Supplied derivative {name} needs its h and h/2 entries.")
             selected_pair = []
-            for vector in pair:
+            for vector in pair[:1] if single_step else pair:
                 vector = np.asarray(vector, dtype=float)
                 if select_vector is not None:
                     vector = np.asarray(select_vector(vector))
@@ -5822,12 +6037,22 @@ def compute_matter_emulator_fisher(
         remaining = [name for name in names if name not in columns]
 
         def evaluate_column(name):
-            """Evaluate both derivative steps together on the owning rank.
+            """Evaluate one parameter's requested stencil on its owning rank.
 
             Return an error as data so every rank reaches the shared gather;
             the caller then refuses the entire Fisher matrix on all ranks.
             """
             try:
+                if single_step:
+                    h = absolute_steps[name]
+                    lo, hi = bounds[name]
+                    stencil = []
+                    for multiple in (-2, -1, 0, 1, 2):
+                        point = dict(center, **{name: center[name] + multiple*h})
+                        if not lo < point[name] < hi:
+                            raise ValueError(f"Stencil for {name} leaves its prior.")
+                        stencil.append(cache(point))
+                    return None, cf.five_point([stencil[k] for k in (0, 1, 3, 4)], h), None, [np.asarray(stencil)]
                 _, _, coarse_column, fine_column = cf.differentiate(
                     predict=cache,
                     parameters=center,
@@ -5849,18 +6074,19 @@ def compute_matter_emulator_fisher(
             except Exception as error:
                 return f"{name}: {type(error).__name__}: {error}", None, None, None
 
-        # One default full base supplies both marginalization and ranking.
-        # At refined accuracy evaluate its important columns first; finish
-        # the rest only once for the independent full-Fisher gate below.
+        # The full baseline supplies both marginalization and ranking.
+        # The one-step screen measures only the selected higher-accuracy
+        # columns. The explicit full audit then measures the remaining ones.
         baseline = None
         selected_names = []
         if noise_reference is not None:
             baseline = np.load(Path(noise_reference)/"fisher.npz")
-            baseline_noise = matter_emulator_fisher_noise(baseline)
+            baseline_noise = matter_emulator_fisher_noise(baseline, single_step=single_step)
             if not 0. < noise_fraction <= 1.:
                 raise ValueError("noise_fraction must lie in (0,1].")
-            importance = np.maximum(baseline_noise["h"]["terms"],
-                                    baseline_noise["half_h"]["terms"])
+            importance = baseline_noise["h"]["terms"]
+            if not single_step:
+                importance = np.maximum(importance, baseline_noise["half_h"]["terms"])
             available = [names.index(name) for name in remaining]
             order = sorted(available, key=lambda index: importance[index], reverse=True)
             total = sum(importance[index] for index in order)
@@ -5877,9 +6103,9 @@ def compute_matter_emulator_fisher(
             for name in baseline_noise["pair"]:
                 if name in remaining and name not in selected_names:
                     selected_names.append(name)
-        groups = [remaining] if baseline is None else [
-            selected_names, [name for name in remaining if name not in selected_names],
-        ]
+        groups = [remaining] if baseline is None else [selected_names]
+        if baseline is not None and not single_step:
+            groups.append([name for name in remaining if name not in selected_names])
         for group_index, group in enumerate(groups):
             results = {}
             if group:
@@ -5895,31 +6121,37 @@ def compute_matter_emulator_fisher(
                         error, coarse_column, fine_column, stencils = results[name]
                         if error is not None:
                             raise ValueError(error)
-                        columns[name] = [coarse_column, fine_column]
+                        columns[name] = [coarse_column] if single_step else [coarse_column, fine_column]
                         stencil_columns[name] = stencils
                     if baseline is not None and group_index == 0:
                         partial = dict(baseline)
                         partial.update(
                             stencil_names=np.asarray(selected_names),
                             stencils_h=np.asarray([stencil_columns[n][0] for n in selected_names]),
-                            stencils_half_h=np.asarray([stencil_columns[n][1] for n in selected_names]),
                             analytic_names=np.asarray(list(supplied)),
                             steps=np.asarray([absolute_steps[n] for n in names]),
                         )
-                        screen = matter_emulator_fisher_noise(partial, reference=baseline, complete=False)
+                        if not single_step:
+                            partial["stencils_half_h"] = np.asarray(
+                                [stencil_columns[n][1] for n in selected_names])
+                        screen = matter_emulator_fisher_noise(
+                            partial, reference=baseline, complete=False, single_step=single_step)
                         # Compare the SAME columns at both accuracies. The
                         # default setting also contains numerical noise;
                         # its own inflation must divide the refined one.
                         baseline_partial = dict(partial)
                         positions = [baseline["stencil_names"].tolist().index(n)
                                      for n in selected_names]
-                        for key in ("stencils_h", "stencils_half_h"):
+                        suffixes = ("h",) if single_step else ("h", "half_h")
+                        for suffix in suffixes:
+                            key = f"stencils_{suffix}"
                             baseline_partial[key] = baseline[key][positions]
                         default_screen = matter_emulator_fisher_noise(
                             baseline_partial, reference=baseline, complete=False,
+                            single_step=single_step,
                         )
                         ratios = []
-                        for suffix in ("h", "half_h"):
+                        for suffix in suffixes:
                             ratios.append(
                                 f"{suffix}: predicted refined/default FoM ratio="
                                 f"{screen[suffix]['ratio']/default_screen[suffix]['ratio']:.17g}; "
@@ -5934,13 +6166,16 @@ def compute_matter_emulator_fisher(
                         (output/"selected_noise_definition.txt").write_text(
                             "Default full Fisher weights; refined selected stencils.\n"
                             "Measured: "+", ".join(selected_names)+"\n"
-                            "Not yet measured: "+", ".join(omitted)+"\n"
+                            + ("Omitted: " if single_step else "Not yet measured: ")+", ".join(omitted)+"\n"
                             "Zeros for unmeasured columns omit unknown contributions.\n"
                             + "".join(ratios)
                             + "These ratios use the same default full Fisher and selected columns.\n"
-                            "Compare with the measured full ratios in fom_convergence.txt; omitted noise is not bounded.\n"
-                            "The remaining columns run next for the full-Fisher gate.\n"
+                            "Omitted noise is not bounded.\n"
                         )
+                        if single_step:
+                            np.savetxt(output/"estimated_fom_shift.txt",
+                                       [screen["h"]["ratio"]/default_screen["h"]["ratio"] - 1.],
+                                       header="estimated fractional FoM shift from selected columns")
                 except Exception as error:
                     derivative_error = f"{type(error).__name__}: {error}"
             if mpi_comm is not None:
@@ -5950,6 +6185,13 @@ def compute_matter_emulator_fisher(
     finally:
         predict(center)
 
+    counts = [evaluations] if mpi_comm is None else mpi_comm.gather(evaluations, root=0)
+    if rank == 0:
+        (output / "evaluation_counts.txt").write_text(
+            f"Model evaluations per rank: {counts}; total={sum(counts)}.\n")
+    if single_step and noise_reference is not None:
+        return None
+
     # Only the writer assembles and samples the Fisher matrix. Other ranks
     # receive its success or failure before continuing the comparison.
     result = None
@@ -5957,26 +6199,32 @@ def compute_matter_emulator_fisher(
     if rank == 0:
         try:
             coarse = np.column_stack([columns[name][0] for name in names])
-            fine = np.column_stack([columns[name][1] for name in names])
             first = cf.fisher_matrix(derivatives=coarse, names=names, priors=widths, **arguments)
-            second = cf.fisher_matrix(derivatives=fine, names=names, priors=widths, **arguments)
-            zero = np.all(coarse == 0.0, axis=0) & np.all(fine == 0.0, axis=0)
+            zero = np.all(coarse == 0.0, axis=0)
+            if single_step:
+                derivatives = {"derivatives": coarse, "fisher": first}
+            else:
+                fine = np.column_stack([columns[name][1] for name in names])
+                second = cf.fisher_matrix(derivatives=fine, names=names, priors=widths, **arguments)
+                zero &= np.all(fine == 0.0, axis=0)
+                derivatives = dict(
+                    derivatives_coarse=coarse, derivatives_fine=fine,
+                    fisher_coarse=first, fisher_fine=second,
+                    stencils_half_h=np.asarray([stencil_columns[n][1] for n in remaining]),
+                )
             np.savez_compressed(
                 file=output / "fisher.npz", names=names,
                 center=[center[name] for name in names], lower=lower, upper=upper,
                 gaussian_width=[widths.get(name, np.nan) for name in names],
                 steps=[absolute_steps[name] for name in names], rows=selected,
                 reference=reference, metric=metric, metric_is_covariance=rows is not None,
-                derivatives_coarse=coarse, derivatives_fine=fine,
                 stencil_names=remaining,
                 stencils_h=np.asarray([stencil_columns[n][0] for n in remaining]),
-                stencils_half_h=np.asarray([stencil_columns[n][1] for n in remaining]),
-                analytic_names=list(supplied),
-                fisher_coarse=first, fisher_fine=second, zero_response=zero,
+                analytic_names=list(supplied), zero_response=zero,
                 amplitude_bias_cut_names=list(cuts),
                 amplitude_bias_cut_parameters=np.asarray(cut_parameters, dtype=str).reshape(-1, 2),
                 amplitude_bias_cut_scales=np.asarray(cut_scales, dtype=float).reshape(-1, 3),
-                **fixed_baryon_coordinates,
+                **fixed_baryon_coordinates, **derivatives,
             )
             (output / "definition.txt").write_text(
                 "Centered local CAMB Fisher diagnostic, not a fitted posterior.\n"
@@ -5995,8 +6243,9 @@ def compute_matter_emulator_fisher(
             if noise_screen or noise_reference is not None:
                 record = np.load(output/"fisher.npz")
                 baseline = None if noise_reference is None else np.load(Path(noise_reference)/"fisher.npz")
-                screen = matter_emulator_fisher_noise(record, reference=baseline)
-                for suffix in ("h", "half_h"):
+                suffixes = ("h",) if single_step else ("h", "half_h")
+                screen = matter_emulator_fisher_noise(record, reference=baseline, single_step=single_step)
+                for suffix in suffixes:
                     score = screen[suffix]
                     np.savetxt(output/f"noise_{suffix}.txt",
                                np.c_[np.arange(len(names)), score["sigma"], score["a"],
@@ -6004,9 +6253,9 @@ def compute_matter_emulator_fisher(
                                header="index sigma_evaluation false_information R2 parameter_variance twice_dlnFoM; names="+",".join(names))
                 (output/"noise_definition.txt").write_text(
                     f"pair={screen['pair']}; full default Fisher with nuisance priors.\n"
-                    f"h: dlnFoM={screen['h']['dlnFoM']:.17g}; ratio={screen['h']['ratio']:.17g}\n"
-                    f"h/2: dlnFoM={screen['half_h']['dlnFoM']:.17g}; ratio={screen['half_h']['ratio']:.17g}\n"
-                    "Analytic columns: "+", ".join(screen["analytic"])+"\n"
+                    + "".join(f"{suffix}: dlnFoM={screen[suffix]['dlnFoM']:.17g}; "
+                              f"ratio={screen[suffix]['ratio']:.17g}\n" for suffix in suffixes)
+                    + "Analytic columns: "+", ".join(screen["analytic"])+"\n"
                     "Smooth curvature and correlated errors can invalidate the noise interpretation.\n"
                 )
             if sample:
@@ -6024,7 +6273,7 @@ def compute_matter_emulator_fisher(
     return result
 
 
-def matter_emulator_fisher_noise(record, reference=None, complete=True):
+def matter_emulator_fisher_noise(record, reference=None, complete=True, single_step=False):
     """Score saved stencils using one full, default-accuracy Fisher matrix.
 
     record and reference are mappings returned by numpy.load(fisher.npz).
@@ -6082,7 +6331,11 @@ def matter_emulator_fisher_noise(record, reference=None, complete=True):
         raise ValueError("Every derivative must have a measured stencil or an analytic declaration.")
     answer = {"names": names, "pair": pair, "measured": measured, "analytic": sorted(analytic),
               "unmeasured": [name for name in names if name not in known]}
-    for suffix, divisor, field in (("h", 1., "stencils_h"), ("half_h", 2., "stencils_half_h")):
+    stencils = [("h", 1., "stencils_h")]
+    if not single_step:
+        stencils.append(("half_h", 2., "stencils_half_h"))
+    fisher = base["fisher"] if single_step else base["fisher_fine"]
+    for suffix, divisor, field in stencils:
         steps = np.asarray(record["steps"])/divisor
         sigma, additions = np.zeros(len(names)), np.zeros(len(names))
         if len(measured):
@@ -6092,8 +6345,8 @@ def matter_emulator_fisher_noise(record, reference=None, complete=True):
             sigma[measured], additions[measured] = score["sigma"], score["a"]
         # Both candidate step choices use the SAME full default Fisher.
         # A refined setting must not alter its own screening weights.
-        prediction = cf.predict_fom_noise(F=base["fisher_fine"], i=i, j=j, a=additions)
-        weights = cf.get_fom_noise_weights(F=base["fisher_fine"], i=i, j=j, eps=steps)
+        prediction = cf.predict_fom_noise(F=fisher, i=i, j=j, a=additions)
+        weights = cf.get_fom_noise_weights(F=fisher, i=i, j=j, eps=steps)
         answer[suffix] = dict(prediction, sigma=sigma, a=additions, steps=steps,
                               lever=weights["lever"])
     return answer
@@ -6179,8 +6432,9 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
     center, lower, upper = (record[key] for key in ("center", "lower", "upper"))
     if not _emulator_baryon_sample_mask(names, center, record):
         raise ValueError("Saved Fisher center must satisfy omegabh2 < 0.035.")
-    fisher = cf.symmetric_matrix(record["fisher_fine"], name="Fisher")
-    coarse = cf.symmetric_matrix(record["fisher_coarse"], name="Coarse Fisher")
+    single_step = "fisher" in record.files
+    fisher = cf.symmetric_matrix(record["fisher" if single_step else "fisher_fine"], name="Fisher")
+    coarse = fisher if single_step else cf.symmetric_matrix(record["fisher_coarse"], name="Coarse Fisher")
     seeds = tuple(seeds)
     if len(seeds) < 2 or len(set(seeds)) != len(seeds):
         raise ValueError("Use at least two distinct sampling seeds.")
@@ -6340,10 +6594,11 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
     coarse_valid = bool(np.all(coarse_diagnostics[:, 1] >= min_effective)
                         and coarse_width_spread <= .2 and coarse_mean_spread <= .25
                         and coarse_mass_spread <= .25)
-    np.savetxt(output/"coarse_sampling_convergence.txt", coarse_diagnostics,
+    if not single_step:
+        np.savetxt(output/"coarse_sampling_convergence.txt", coarse_diagnostics,
                header="seed effective_count "+" ".join("mean_"+n for n in names)
                       +" "+" ".join("sigma_"+n for n in names))
-    (output/"coarse_sampling_checks.txt").write_text(
+        (output/"coarse_sampling_checks.txt").write_text(
         f"coarse_sampling_valid={coarse_valid}; minimum_effective={min_effective}\n"
         f"maximum_relative_seed_width_spread={coarse_width_spread:.8g}\n"
         f"maximum_seed_mean_spread_in_sigma={coarse_mean_spread:.8g}\n"
@@ -6404,6 +6659,61 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
             "covariance": bounded_covariance, "diagnostics": diagnostics}
 
 
+_matter_emulator_plot_names = (
+    "As_1e9", "omegam", "H0", "omegab", "ns", "w", "wa", "w0pwa",
+)
+
+
+def _matter_emulator_contours(record, names, amplitude_max=3.5, omega_m_bounds=(0.2, 0.5)):
+    """Compute portable contour vertices from the already-integrated Fisher draws."""
+    import numpy as np
+    from contourpy import contour_generator
+    from getdist import MCSamples
+
+    if not bool(record["sampling_valid"]):
+        raise ValueError("Bounded sampling has not passed its convergence checks.")
+    all_names = record["names"].tolist()
+    lower, upper = record["lower"].copy(), record["upper"].copy()
+    if "As_1e9" in all_names:
+        i = all_names.index("As_1e9")
+        if not np.isfinite(amplitude_max) or amplitude_max <= lower[i]:
+            raise ValueError("Amplitude cap must exceed the saved lower bound.")
+        upper[i] = min(upper[i], amplitude_max)
+    if "omegam" in all_names:
+        i = all_names.index("omegam")
+        lower[i], upper[i] = max(lower[i], omega_m_bounds[0]), min(upper[i], omega_m_bounds[1])
+        if not lower[i] < upper[i]:
+            raise ValueError("No overlap with the Omega_m comparison interval.")
+    # All constraints apply before integrating over omitted nuisance parameters.
+    weights = record["weights"]
+    values = record["values"]
+    positive = (weights > 0) & np.all((values >= lower) & (values <= upper), axis=1)
+    positive &= _emulator_baryon_sample_mask(all_names, values, record)
+    if np.count_nonzero(positive) < 3:
+        raise ValueError("Too few Fisher samples remain within the plot bounds.")
+    index = [all_names.index(name) for name in names]
+    ranges = {name: [float(lower[i]), float(upper[i])] for name, i in zip(names, index)}
+    samples = MCSamples(samples=values[positive][:, index], weights=weights[positive],
+                        names=names, ranges=ranges, sampler="uncorrelated",
+                        settings={"ignore_rows": 0})
+    amplitude = "As_1e9" if "As_1e9" in names else names[0]
+    panels = {}
+    for name in names:
+        if name == amplitude:
+            continue
+        density = samples.get2DDensity(name, amplitude)
+        levels = np.sort(density.getContourLevels([0.68, 0.95]))
+        generator = contour_generator(x=density.x, y=density.y, z=density.P, name="mpl2014")
+        panels[name] = [[segment.tolist() for segment in generator.lines(level)[0]]
+                        for level in levels]
+    return {
+        "parameters": all_names, "names": names, "panels": panels,
+        "lower": [float(x) if np.isfinite(x) else None for x in lower],
+        "upper": [float(x) if np.isfinite(x) else None for x in upper],
+        **{key: float(record[key]) for key in ("fixed_omegab", "fixed_H0") if key in record},
+    }
+
+
 def plot_matter_emulator_fisher(
     output,
     points_file,
@@ -6436,43 +6746,34 @@ def plot_matter_emulator_fisher(
     Returns:
       saved PNG and PDF paths. No model evaluations occur.
     """
+    import json
     from pathlib import Path
     import numpy as np
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
-    from getdist import MCSamples
 
     output = Path(output)
     if project_name is None:
         project_name = next((p.name for p in output.parents if p.parent.name == "projects"), "Project")
     if (local_points_file is None) != (local_distances_file is None):
         raise ValueError("The local comparison requires both points and distances.")
-    record = np.load(file=output / "bounded_samples.npz")
-    if not bool(record["sampling_valid"]):
-        raise ValueError("Bounded sampling has not passed its convergence checks.")
-    all_names = record["names"].tolist()
-    lower, upper = record["lower"].copy(), record["upper"].copy()
-    if "As_1e9" in all_names:
-        i = all_names.index("As_1e9")
-        if not np.isfinite(amplitude_max) or amplitude_max <= lower[i]:
-            raise ValueError("Amplitude cap must exceed the saved lower bound.")
-        upper[i] = min(upper[i], amplitude_max)
-    if "omegam" in all_names:
-        i = all_names.index("omegam")
-        lower[i] = max(lower[i], omega_m_bounds[0])
-        upper[i] = min(upper[i], omega_m_bounds[1])
-        if not lower[i] < upper[i]:
-            raise ValueError("No overlap with the Omega_m comparison interval.")
-    # Impose a revised amplitude prior on the full-dimensional samples
-    # before selecting columns. Cropping an already marginalized ellipse
-    # would omit the change in its probability normalization.
-    weights = record["weights"]
-    positive = ((weights > 0.0)
-                & np.all((record["values"] >= lower)
-                         & (record["values"] <= upper), axis=1))
-    positive &= _emulator_baryon_sample_mask(all_names, record["values"], record)
-    if np.count_nonzero(positive) < 3:
-        raise ValueError("Too few Fisher samples remain within the plot bounds.")
+    contour_path = output / "contours.json"
+    if contour_path.is_file():
+        contours = json.loads(contour_path.read_text())
+        if names is not None and list(names) != contours["names"]:
+            raise ValueError("Use the saved plot coordinates for frozen contours.")
+        if amplitude_max != 3.5 or tuple(omega_m_bounds) != (0.2, 0.5):
+            raise ValueError("New bounds require the original bounded Fisher samples.")
+        names = contours["names"]
+        all_names = contours["parameters"]
+        record = contours
+    else:
+        record = np.load(output / "bounded_samples.npz")
+        if not bool(record["sampling_valid"]):
+            record.close()
+            raise ValueError("Bounded sampling has not passed its convergence checks.")
+        all_names = record["names"].tolist()
+        contours = None
     comparison_files = [(points_file, distances_file, False)]
     if local_points_file is not None:
         comparison_files.append((local_points_file, local_distances_file, True))
@@ -6489,28 +6790,24 @@ def plot_matter_emulator_fisher(
             raise ValueError("Comparison points must satisfy omegabh2 < 0.035.")
         comparisons.append((points, distances[:, 1], local))
     if names is None:
-        names = [name for name in ("As_1e9", "omegam", "H0", "omegab", "ns", "w", "wa", "w0pwa")
+        names = [name for name in _matter_emulator_plot_names
                  if name in all_names and name in comparisons[0][0].dtype.names]
     if len(names) < 2 or any(name not in all_names for name in names):
         raise ValueError("Select at least two cosmological names in the Fisher sample.")
     for points, _, _ in comparisons:
         if any(name not in points.dtype.names for name in names):
             raise ValueError("Every comparison must contain the displayed parameters.")
+    if contours is None:
+        contours = _matter_emulator_contours(record, names, amplitude_max, omega_m_bounds)
+        record.close()
+    lower = np.array([-np.inf if v is None else v for v in contours["lower"]])
+    upper = np.array([np.inf if v is None else v for v in contours["upper"]])
     index = [all_names.index(name) for name in names]
     ranges = {name: [float(lower[i]), float(upper[i])] for name, i in zip(names, index)}
     labels = {"As_1e9": r"10^9 A_s", "omegam": r"\Omega_m",
               "H0": r"H_0\;[\mathrm{km\,s^{-1}\,Mpc^{-1}}]",
               "omegab": r"\Omega_b", "ns": r"n_s", "w": r"w_0",
               "wa": r"w_a", "w0pwa": r"w_0+w_a"}
-    samples = MCSamples(
-        samples=record["values"][positive][:, index],
-        weights=weights[positive],
-        names=names,
-        labels=[labels.get(name, name) for name in names],
-        ranges=ranges,
-        sampler="uncorrelated",
-        settings={"ignore_rows": 0},
-    )
     colors = ["#0072B2", "#009E73", "#8B5AA7", "#E69F00", "#333333"]
     markers = ["o", "s", "D", "^", "P"]
     error_labels = [r"$E<0.2$", r"$0.2\leq E<0.5$", r"$0.5\leq E<1$",
@@ -6524,10 +6821,9 @@ def plot_matter_emulator_fisher(
         figure, axes = plt.subplots(rows, columns, squeeze=False,
                                     figsize=(5.5*columns, 4.4*rows), sharey=True)
         for panel, (axis, name) in enumerate(zip(axes.flat, horizontal)):
-            density = samples.get2DDensity(name, amplitude)
-            levels = np.sort(density.getContourLevels([0.68, 0.95]))
-            axis.contour(density.x, density.y, density.P, levels=levels,
-                         colors="black", linestyles=["--", "-"], linewidths=1.5)
+            for segments, linestyle in zip(contours["panels"][name], ("--", "-")):
+                for x, y in (np.asarray(segment).T for segment in segments if segment):
+                    axis.plot(x, y, color="black", linestyle=linestyle, linewidth=1.5)
             for points, error, local in comparisons:
                 valid = np.isfinite(error) & (error >= 0.0)
                 within = np.ones(len(points), dtype=bool)
@@ -6570,7 +6866,9 @@ def plot_matter_emulator_fisher(
             handles.append(Line2D([], [], color="black", marker="o", linestyle="none",
                                   label=f"Local {len(comparisons[1][0])}"))
         convergence = output / "fom_convergence_status.txt"
-        if convergence.is_file() and "passed=False" in convergence.read_text().splitlines()[0]:
+        if contours.get("quality_note"):
+            handles.append(Line2D([], [], linestyle="none", label=contours["quality_note"]))
+        elif convergence.is_file() and "passed=False" in convergence.read_text().splitlines()[0]:
             shift = np.max(np.abs(np.loadtxt(output / "fom_convergence.txt", ndmin=2)[:, 2]))
             handles.append(Line2D([], [], linestyle="none", label=f"Max. FoM shift {shift:.2%}"))
         handles.extend([Line2D([], [], color="black", linestyle="-", label="Bounded Fisher 68%"),
