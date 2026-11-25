@@ -1,11 +1,10 @@
 """Hybrid-emulator minimization, profile and Nautilus runs for one project.
 
-In a hybrid example (use_emulator: 2 in every likelihood), trained emulators
-replace the Boltzmann code for the background expansion and the matter power
-spectra; CosmoLike still computes the survey projections. Each entry point
-reads its project's evaluate YAML. Its sampler.evaluate.override block is
-the fiducial point: every mode evaluates it first, --check stops there, and
-a minimization starts from it.
+In a hybrid example, trained emulators supply the matter power spectra and
+CosmoLike computes the survey projections. The default input is a project's
+evaluate YAML, with the initial point in sampler.evaluate.override. The
+MCMC configuration option can also load a joint model and find a point from
+its Cobaya references. Every mode evaluates its initial point first.
 
 Physical-theory Nautilus examples call the same run() with hybrid=False.
 They read EXAMPLE_NAUTILUS<n>.yaml and keep its theory and likelihood
@@ -56,8 +55,7 @@ nautilus   Nested sampling with the Nautilus package: a set of live points
 
 OPTIONS (all modes)
 
---input    Evaluate YAML to read (default: the project's
-           EXAMPLE_EMUL2_EVALUATE<n>.yaml).
+--input    Cobaya YAML to read. The default depends on the launcher.
 --root     Folder whose chains/ subfolder receives every output file
            (default: the project folder).
 --outroot  Basename of the output files (default: EXAMPLE_EMUL2_<MODE><n>).
@@ -308,10 +306,12 @@ def parser_for(mode, project, example, hybrid=True, mcmc_config=False, fiducial_
         output_name = f"EXAMPLE_NAUTILUS{example}"
     if mcmc_config:
         input_name = f"mcmc/EXAMPLE_EMUL2_MCMC{example}.yaml"
-        fiducial_example = example if fiducial_example is None else fiducial_example
+        fiducial_path = None
+        if fiducial_example is not None:
+            fiducial_path = project/f"EXAMPLE_EVALUATE{fiducial_example}.yaml"
         parser.add_argument("--fiducial", type=Path,
-                            default=project/f"EXAMPLE_EVALUATE{fiducial_example}.yaml",
-                            help="evaluate YAML that defines the fiducial point")
+                            default=fiducial_path,
+                            help="evaluate YAML for the initial point, if supplied")
     parser.add_argument("--input", type=Path,
                         default=project/input_name)
     parser.add_argument("--root", type=Path, default=project)
@@ -338,7 +338,7 @@ def parser_for(mode, project, example, hybrid=True, mcmc_config=False, fiducial_
     return parser
 
 
-def load_model(filename, hybrid=True, fiducial=None):
+def load_model(filename, hybrid=True, fiducial=None, mcmc_config=False):
     """Load a Cobaya configuration on CPU without writing its outputs.
 
     Refuses (ValueError) a likelihood without use_emulator: 2, an mnu other
@@ -350,6 +350,8 @@ def load_model(filename, hybrid=True, fiducial=None):
         hybrid = enforce emulator restrictions when True; False retains
             the physical theory specified by the YAML without these restrictions.
         fiducial = optional path to a separate evaluate YAML for the starting point.
+        mcmc_config = allow joint likelihoods and obtain a reference point from
+            Cobaya when the MCMC input has no explicit evaluate override.
     Returns:
         (Cobaya model, sampled parameter names in sampled order,
          start point [n_sampled] from sampler.evaluate.override,
@@ -362,10 +364,17 @@ def load_model(filename, hybrid=True, fiducial=None):
     info = yaml_load_file(str(filename))
     point_info = info if fiducial is None else yaml_load_file(str(fiducial))
     point = point_info.get("sampler", {}).get("evaluate", {}).get("override", {})
+    use_reference = mcmc_config and fiducial is None and "mcmc" in info.get("sampler", {})
     info.pop("sampler", None)
     info.pop("output", None)
     if hybrid:
-        for options in info["likelihood"].values():
+        likelihoods = list(info["likelihood"].values())
+        if mcmc_config:
+            likelihoods = [options for options in likelihoods
+                           if options is not None and "use_emulator" in options]
+            if not likelihoods:
+                raise ValueError("the MCMC configuration needs a hybrid survey likelihood")
+        for options in likelihoods:
             if options.get("use_emulator") != 2:
                 raise ValueError("hybrid examples require use_emulator: 2 in every likelihood")
             options["print_datavector"] = False
@@ -378,11 +387,18 @@ def load_model(filename, hybrid=True, fiducial=None):
             info["theory"]["emulbaosn"]["extra_args"]["device"] = "cpu"
     model = get_model(info)
     names = list(model.parameterization.sampled_params())
-    missing = [name for name in names if name not in point]
-    if missing:
+    try:
+        if use_reference:
+            start, _ = model.get_valid_point(
+                max_tries=5*len(names), random_state=np.random.default_rng(42))
+        else:
+            missing = [name for name in names if name not in point]
+            if missing:
+                raise ValueError(f"sampler.evaluate.override must specify {missing}")
+            start = np.array([point[name] for name in names], dtype=float)
+    except Exception:
         model.close()
-        raise ValueError(f"sampler.evaluate.override must specify {missing}")
-    start = np.array([point[name] for name in names], dtype=float)
+        raise
     fingerprint = hashlib.sha256(filename.read_bytes()).hexdigest()
     return model, names, start, fingerprint
 
@@ -472,8 +488,7 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_examp
         example = number in the default input EXAMPLE_EMUL2_EVALUATE<example>.yaml.
         hybrid = False for physical-theory Nautilus examples, whose default
             input is EXAMPLE_NAUTILUS<example>.yaml. Other modes use hybrid=True.
-        mcmc_config = use mcmc/EXAMPLE_EMUL2_MCMC<example>.yaml for hybrid Nautilus
-            and load the fiducial from EXAMPLE_EVALUATE<example>.yaml.
+        mcmc_config = use mcmc/EXAMPLE_EMUL2_MCMC<example>.yaml for hybrid runs.
         fiducial_example = evaluate number when two sampling models share a fiducial.
     Side effects:
         Parses the command line and sets the module's _MODEL. Except with
@@ -483,8 +498,8 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_examp
     global _MODEL
     if not hybrid and mode != "nautilus":
         raise ValueError("Physical-theory examples must select mode='nautilus'.")
-    if mcmc_config and (not hybrid or mode != "nautilus"):
-        raise ValueError("The MCMC configuration is supported by hybrid Nautilus.")
+    if mcmc_config and not hybrid:
+        raise ValueError("The MCMC configuration option requires hybrid mode.")
     parser = parser_for(mode=mode, project=Path(project), example=example,
                         hybrid=hybrid, mcmc_config=mcmc_config,
                         fiducial_example=fiducial_example)
@@ -504,7 +519,7 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_examp
     rng = np.random.default_rng(seed=args.seed)
     fiducial = getattr(args, "fiducial", None)
     _MODEL, names, start, fingerprint = load_model(
-        filename=args.input, hybrid=hybrid, fiducial=fiducial)
+        filename=args.input, hybrid=hybrid, fiducial=fiducial, mcmc_config=mcmc_config)
     # Open MPI, the MPI of the Cocoa environment, exports OMPI_COMM_WORLD_SIZE to
     # every rank. A plain python run lacks it and stays serial: nullcontext then
     # yields pool = None.
