@@ -5007,13 +5007,14 @@ def run_matter_emulator_prior_check(
         cap of three, integration advances one level, CAMB AccuracyBoost
         reaches at least two and k_per_logint at least fifty. 3PCF's separate
         sampling/integration controls double. Existing larger boosts stay.
-      fisher_fom_tolerance = relative target-pair FoM tolerance, default 1%,
-        required at both derivative steps and between numerical settings.
-        This is the test criterion, not a universal science requirement.
+      fisher_fom_tolerance = relative target-pair FoM tolerance, default 1%.
+        The cheap test compares the last two selected-column estimates.
+        The explicit full audit also checks both derivative steps.
       fisher_confirmation_settings = optional pair of likelihood and CAMB
-        refinements for a third grid. Compare the two finest grids when the
-        default grid is too coarse. The cheap weights still come from the
-        full default-accuracy Fisher, and the intermediate archive is kept.
+        refinements for the third numerical setting. The cheap test estimates
+        the change at both higher settings using the same selected columns
+        and full default-accuracy Fisher weights. The explicit full audit
+        runs the third setting only if these overrides are supplied.
 
     Returns:
       number of failed or nonfinite comparisons. Generated vectors, points,
@@ -5152,21 +5153,41 @@ def run_matter_emulator_prior_check(
             if use_emulator_switch:
                 normal["likelihood"][likelihood_name]["use_emulator"] = 0
             # A parameter-dependent early exit creates jumps in a
-            # derivative. Disable it for both Fisher accuracies;
-            # the separate mean comparisons keep the YAML values.
+            # derivative. Only the explicit full audit disables it.
             for key in ("nonlimber_tolerance_gg", "nonlimber_tolerance_gs"):
                 if not single_step and key in native_defaults:
                     normal["likelihood"][likelihood_name][key] = 0.0
             refined = None
             stages = ["default_accuracy", "refined_accuracy"]
-            if fisher_confirmation_settings is not None and not single_step:
+            if single_step or fisher_confirmation_settings is not None:
                 stages.append("confirmation_accuracy")
+            table_rows = []
+            previous_ratio = 1.
+            valid_ratios = True
             for stage in stages:
                 stage_start = perf_counter()
                 current = normal if refined is None else refined
                 if stage == "confirmation_accuracy":
                     current = copy.deepcopy(refined)
-                    native_controls, camb_controls = fisher_confirmation_settings
+                    if fisher_confirmation_settings is None:
+                        options = refined["likelihood"][likelihood_name]
+                        boost = float(options["accuracyboost"])
+                        native_controls = {
+                            "accuracyboost": max(boost, min(3., 1.5*boost)),
+                            "integration_accuracy": abs(int(options["integration_accuracy"])) + 1,
+                        }
+                        if "threepcf_accuracy" in options:
+                            controls = dict(options["threepcf_accuracy"] or {})
+                            for key in ("accuracy_boost", "integration_accuracy_boost"):
+                                controls[key] = 1.5*float(controls.get(key, 1.))
+                            native_controls["threepcf_accuracy"] = controls
+                        args = refined["theory"]["camb"]["extra_args"]
+                        camb_controls = {
+                            "AccuracyBoost": 1.5*float(args["AccuracyBoost"]),
+                            "k_per_logint": int(np.ceil(1.5*args["k_per_logint"])),
+                        }
+                    else:
+                        native_controls, camb_controls = fisher_confirmation_settings
                     current["likelihood"][likelihood_name].update(native_controls)
                     current["theory"]["camb"]["extra_args"].update(camb_controls)
                 error = None
@@ -5184,10 +5205,7 @@ def run_matter_emulator_prior_check(
                 if any(item is not None for item in errors):
                     raise ValueError(f"Fisher model setup failed: {errors}")
                 if stage == "default_accuracy":
-                    # One explicit next setting, recorded below. This
-                    # is a convergence trial, not a claimed validated
-                    # production setting. Per-project overrides can
-                    # supply an already documented numerical ladder.
+                    # Advance the numerical controls from their ordinary values.
                     refined = copy.deepcopy(normal)
                     options = refined["likelihood"][likelihood_name]
                     boost = float(likelihood.accuracyboost)
@@ -5236,14 +5254,33 @@ def run_matter_emulator_prior_check(
                     counts = (destination / "evaluation_counts.txt").read_text().rstrip()
                     (destination / "wall_time.txt").write_text(f"{stage}: {seconds:.6f} seconds\n")
                     print(f"{stage}: {seconds:.3f} s. {counts}", flush=True)
-                    (destination/"numerical_settings.txt").write_text(
+                    settings_file = destination / "numerical_settings.txt"
+                    effective = model.info()
+                    native_options = effective["likelihood"][likelihood_name]
+                    camb_options = effective["theory"]["camb"]["extra_args"]
+                    settings_file.write_text(
                         f"stage={stage}\n"
-                        f"likelihood={current['likelihood'][likelihood_name]}\n"
-                        f"CAMB={current['theory']['camb']['extra_args']}\n"
+                        f"likelihood={native_options}\n"
+                        f"CAMB={camb_options}\n"
                         f"FoM relative tolerance={fisher_fom_tolerance}\n"
                         "Fisher uses the example's physical theory with mnu=0.06 eV.\n"
                         + (destination/"fiducial_likelihood.txt").read_text()
                     )
+                    if single_step:
+                        ratio = 1. if baseline_stage else 1. + float(np.loadtxt(
+                            destination / "estimated_fom_shift.txt"))
+                        valid_ratios &= bool(np.isfinite(ratio) and ratio > 0.)
+                        successive_shift = ratio / previous_ratio - 1. if previous_ratio > 0. else np.nan
+                        table_rows.append("\t".join(map(str, (
+                            stage, native_options["accuracyboost"],
+                            native_options["integration_accuracy"],
+                            native_options.get("nonlimber_accuracyboost", ""),
+                            camb_options.get("AccuracyBoost", 1.),
+                            camb_options.get("k_per_logint", 0),
+                            f"{ratio:.17g}", f"{successive_shift:.17g}",
+                            settings_file.relative_to(output / "fisher"),
+                        ))))
+                        previous_ratio = ratio
                 model.close()
                 model = None
             gate_error = None
@@ -5263,10 +5300,19 @@ def run_matter_emulator_prior_check(
             if rank == 0:
                 destination = output / "fisher"
                 if single_step:
-                    estimate = float(np.loadtxt(destination / "refined_accuracy/estimated_fom_shift.txt"))
-                    failed = int(not np.isfinite(estimate) or abs(estimate) >= fisher_fom_tolerance)
-                    print(f"Estimated FoM shift from selected columns: {estimate:.2%}; "
-                          f"tolerance={fisher_fom_tolerance:.2%}.", flush=True)
+                    (destination / "fom_accuracy.tsv").write_text(
+                        "# Same selected stencil columns and full ordinary Fisher at every setting.\n"
+                        "# Unmeasured higher-accuracy contributions are unknown.\n"
+                        "stage\tlikelihood_accuracyboost\tintegration_accuracy\t"
+                        "nonlimber_accuracyboost\tCAMB_AccuracyBoost\tk_per_logint\t"
+                        "estimated_FoM_over_ordinary\testimated_fractional_change_from_previous\t"
+                        "numerical_settings_file\n"
+                        + "\n".join(table_rows) + "\n"
+                    )
+                    failed = int(not valid_ratios or not np.isfinite(successive_shift)
+                                 or abs(successive_shift) >= fisher_fom_tolerance)
+                    print(f"Estimated FoM shift from refined to confirmation (selected columns): "
+                          f"{successive_shift:.2%}; tolerance={fisher_fom_tolerance:.2%}.", flush=True)
                 else:
                     gate = (destination / "fom_convergence_status.txt").read_text()
                     failed = int("passed=True" not in gate.splitlines()[0])
@@ -5816,10 +5862,10 @@ def compute_matter_emulator_fisher(
         one job; each rank owns a model, and rank zero assembles the result.
       sample = integrate bounded contours after saving the full Fisher.
       noise_reference = optional default-accuracy Fisher directory. Its
-        measured noise contributions choose which refined columns run first.
-        The rest still run once for the final full-matrix convergence check.
+        measured noise contributions select the higher-accuracy columns.
+        Only the explicit full audit then evaluates the remaining columns.
       noise_fraction = fraction of baseline noise contribution prioritized;
-        omitted columns are subsequently checked, never assumed noise-free.
+        omitted higher-accuracy contributions are unknown in the cheap test.
       single_step = use only the fixed h stencil. With a noise reference,
         measure only sensitive columns and report the estimated FoM shift.
       noise_screen = save the shared fourth-difference/FoM noise diagnostics;
@@ -6221,6 +6267,9 @@ def compute_matter_emulator_fisher(
                             "Omitted noise is not bounded.\n"
                         )
                         if single_step:
+                            np.savez_compressed(output/"selected_stencils.npz",
+                                                stencil_names=partial["stencil_names"],
+                                                stencils_h=partial["stencils_h"])
                             np.savetxt(output/"estimated_fom_shift.txt",
                                        [screen["h"]["ratio"]/default_screen["h"]["ratio"] - 1.],
                                        header="estimated fractional FoM shift from selected columns")
