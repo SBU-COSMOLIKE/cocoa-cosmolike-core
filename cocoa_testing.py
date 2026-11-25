@@ -4744,6 +4744,7 @@ def run_matter_emulator_prior_check(
     mpi_comm=None,
     fisher_accuracy_likelihood=None,
     fisher_accuracy_camb=None,
+    fisher_confirmation_settings=None,
     fisher_fom_tolerance=0.01,
 ):
     """Compare a candidate matter emulator with CAMB on random cosmologies.
@@ -4808,6 +4809,10 @@ def run_matter_emulator_prior_check(
       fisher_fom_tolerance = relative target-pair FoM tolerance, default 1%,
         required at both derivative steps and between numerical settings.
         This is the test criterion, not a universal science requirement.
+      fisher_confirmation_settings = optional pair of likelihood and CAMB
+        refinements for a third grid. Compare the two finest grids when the
+        default grid is too coarse. The cheap weights still come from the
+        full default-accuracy Fisher, and the intermediate archive is kept.
 
     Returns:
       number of failed or nonfinite comparisons. Generated vectors, points,
@@ -5236,8 +5241,16 @@ def run_matter_emulator_prior_check(
                         if hasattr(likelihood, key):
                             normal["likelihood"][likelihood_name][key] = 0.0
                     refined = None
-                    for stage in ("default_accuracy", "refined_accuracy"):
+                    stages = ["default_accuracy", "refined_accuracy"]
+                    if fisher_confirmation_settings is not None:
+                        stages.append("confirmation_accuracy")
+                    for stage in stages:
                         current = normal if refined is None else refined
+                        if stage == "confirmation_accuracy":
+                            current = copy.deepcopy(refined)
+                            native_controls, camb_controls = fisher_confirmation_settings
+                            current["likelihood"][likelihood_name].update(native_controls)
+                            current["theory"]["camb"]["extra_args"].update(camb_controls)
                         error = None
                         try:
                             model = get_model(info_or_yaml_or_file=current)
@@ -5277,7 +5290,9 @@ def run_matter_emulator_prior_check(
                             fisher_rows = np.flatnonzero((np.diag(reference_precision)>0.)
                                                          & (np.arange(len(reference_precision))<nshear))
                             fisher_covariance = np.asarray(get_covariance())
-                        destination = output/"fisher"/"default_accuracy" if stage == "default_accuracy" else output/"fisher"
+                        destination = output/"fisher"
+                        if stage != stages[-1]:
+                            destination = destination/stage
                         compute_matter_emulator_fisher(
                             model=model, likelihood=likelihood,
                             center=base_point if fisher_center is None else fisher_center,
@@ -5287,7 +5302,7 @@ def run_matter_emulator_prior_check(
                             rows=fisher_rows, covariance=fisher_covariance,
                             select_vector=select_vector, derivative_provider=derivative_provider,
                             amplitude_bias_cuts=amplitude_bias_cuts, mpi_comm=mpi_comm,
-                            sample=stage == "refined_accuracy", noise_screen=True,
+                            sample=stage == stages[-1], noise_screen=True,
                             noise_reference=None if stage == "default_accuracy" else output/"fisher"/"default_accuracy",
                         )
                         if rank == 0:
@@ -5305,7 +5320,7 @@ def run_matter_emulator_prior_check(
                     if rank == 0:
                         try:
                             compare_matter_emulator_fisher_accuracy(
-                                base=output/"fisher"/"default_accuracy", refined=output/"fisher",
+                                base=output/"fisher"/stages[-2], refined=output/"fisher",
                                 tolerance=fisher_fom_tolerance,
                             )
                         except Exception as caught:
@@ -6047,6 +6062,7 @@ def compare_matter_emulator_fisher_accuracy(base, refined, tolerance=0.01):
                       "changes=base_step,refined_step,accuracy_h,accuracy_h2")
     (refined/"fom_convergence_status.txt").write_text(
         f"pair={pair}; relative_tolerance={tolerance}; passed={passed}\n"
+        f"Compared settings: {base}/numerical_settings.txt and {refined}/numerical_settings.txt\n"
         "The full Fisher retains all selected nuisance parameters and priors.\n"
         "The noise screen is diagnostic; correlated errors can evade it.\n"
     )
