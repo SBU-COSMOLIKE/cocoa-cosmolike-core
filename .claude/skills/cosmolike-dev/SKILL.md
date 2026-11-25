@@ -36,6 +36,8 @@ Emulator comparisons and numerical FoM convergence are separate tests:
   only to selected sensitive columns; never compute the remaining columns
   afterward or automatically add a full refined Fisher or half-step ladder.
   Preserve baseline non-Limber tolerances. Unmeasured corrections are unknown.
+  Reuse shared nuisance batching and theory caching rather than recomputing
+  CAMB for nuisance-only changes; preserve native-vector cache correctness.
 - Keep full Fisher accuracy studies and deliberate chi-squared refinement
   scans explicit and separate. Do not duplicate this machinery in projects.
   Verify effective native OpenMP threads, MPI distribution and BLAS limits;
