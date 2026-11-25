@@ -298,7 +298,7 @@ def minimize(start, covariance, steps, pool, rng, fixed=-1):
     return best, -2*best_score
 
 
-def parser_for(mode, project, example, hybrid=True, mcmc_config=False):
+def parser_for(mode, project, example, hybrid=True, mcmc_config=False, fiducial_example=None):
     """Use the same public command options in every survey project."""
     parser = argparse.ArgumentParser(description=__doc__)
     input_name = f"EXAMPLE_EMUL2_EVALUATE{example}.yaml"
@@ -308,8 +308,9 @@ def parser_for(mode, project, example, hybrid=True, mcmc_config=False):
         output_name = f"EXAMPLE_NAUTILUS{example}"
     if mcmc_config:
         input_name = f"EXAMPLE_EMUL2_MCMC{example}.yaml"
+        fiducial_example = example if fiducial_example is None else fiducial_example
         parser.add_argument("--fiducial", type=Path,
-                            default=project/f"EXAMPLE_EVALUATE{example}.yaml",
+                            default=project/f"EXAMPLE_EVALUATE{fiducial_example}.yaml",
                             help="evaluate YAML that defines the fiducial point")
     parser.add_argument("--input", type=Path,
                         default=project/input_name)
@@ -462,7 +463,7 @@ def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
             "effective_samples": float(sampler.n_eff)}
 
 
-def run(mode, project, example=1, hybrid=True, mcmc_config=False):
+def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_example=None):
     """Run a serial or MPI example, with one initialized model per process.
 
     Arguments:
@@ -473,6 +474,7 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False):
             input is EXAMPLE_NAUTILUS<example>.yaml. Other modes use hybrid=True.
         mcmc_config = use EXAMPLE_EMUL2_MCMC<example>.yaml for hybrid Nautilus
             and load the fiducial from EXAMPLE_EVALUATE<example>.yaml.
+        fiducial_example = evaluate number when two sampling models share a fiducial.
     Side effects:
         Parses the command line and sets the module's _MODEL. Except with
         --check, writes a YAML Nautilus record (JSON for minimize/profile)
@@ -484,7 +486,8 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False):
     if mcmc_config and (not hybrid or mode != "nautilus"):
         raise ValueError("The MCMC configuration is supported by hybrid Nautilus.")
     parser = parser_for(mode=mode, project=Path(project), example=example,
-                        hybrid=hybrid, mcmc_config=mcmc_config)
+                        hybrid=hybrid, mcmc_config=mcmc_config,
+                        fiducial_example=fiducial_example)
     args = parser.parse_args()
     # getattr gives 1 for an option this mode does not define, so the check passes it.
     for key in ("nstw", "numpts", "factor", "nlive", "maxfeval", "neff", "nnetworks"):
