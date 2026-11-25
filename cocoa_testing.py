@@ -4717,6 +4717,23 @@ def conftest_configure(config):
     os.environ["COCOA_FASTPT_MASK"] = str(config.getoption("--mask"))
 
 
+def _emulator_baryon_density_allowed(omegab, hubble):
+    return omegab * (hubble / 100.0)**2 < 0.035
+
+
+def _emulator_baryon_sample_mask(names, values, record):
+    coordinates = {}
+    for name in ("omegab", "H0"):
+        if name in names:
+            coordinates[name] = values[..., names.index(name)]
+        elif f"fixed_{name}" in record:
+            coordinates[name] = float(record[f"fixed_{name}"])
+        else:
+            # Analytic fixtures and legacy archives can omit these coordinates.
+            return True
+    return _emulator_baryon_density_allowed(coordinates["omegab"], coordinates["H0"])
+
+
 def run_matter_emulator_prior_check(
     project,
     configuration,
@@ -4758,7 +4775,8 @@ def run_matter_emulator_prior_check(
     The candidate uses the project's existing EMUL2 likelihood route.
 
     Draw from each project's cosmological box with 0.2 < Omega_m < 0.5,
-    w0 > -2, 1 < 1e9 As <= 3.5 and H0 < 85 for both the mean and Fisher,
+    w0 > -2, 1 < 1e9 As <= 3.5, H0 < 85 and omegab*(H0/100)^2 < 0.035
+    for both the mean and Fisher,
     and keep fixed cosmological parameters fixed. Do not redraw failures
     or silently restrict to the emulator training domain. The result is
     delta_model.T @ precision @ delta_model, not a difference between two
@@ -4883,6 +4901,14 @@ def run_matter_emulator_prior_check(
             value = spec.get("value") if isinstance(spec, dict) else spec
         if value is None or not lo <= value <= hi:
             raise ValueError(f"{name} fiducial {value} outside emulator-test bounds.")
+    fixed_baryon_coordinates = {}
+    for name in ("omegab", "H0"):
+        if name not in base_point:
+            spec = info["params"][name]
+            fixed_baryon_coordinates[name] = float(spec["value"] if isinstance(spec, dict) else spec)
+    fiducial = fixed_baryon_coordinates | base_point
+    if not _emulator_baryon_density_allowed(fiducial["omegab"], fiducial["H0"]):
+        raise ValueError("Emulator-test fiducial must satisfy omegabh2 < 0.035.")
     if len(info["likelihood"]) != 1:
         raise ValueError("Choose one project's likelihood for this comparison.")
     likelihood_name = next(iter(info["likelihood"]))
@@ -4904,22 +4930,28 @@ def run_matter_emulator_prior_check(
     points = []
     for index in range(n_models if points_file is None else 0):
         random = np.random.default_rng(seed + index)
-        point = dict(base_point)
-        for name in names:
-            specification = info["params"].get(name)
-            if not isinstance(specification, dict):
-                continue
-            prior = specification.get("prior")
-            if prior is None:
-                continue
-            if "min" not in prior or "max" not in prior:
-                raise ValueError(f"Cosmological prior for {name} is not a uniform box.")
-            lower = float(prior["min"])
-            upper = float(prior["max"])
-            if lower >= upper:
-                raise ValueError(f"Empty requested prior interval for {name}.")
-            point[name] = float(random.uniform(low=lower, high=upper))
-        points.append(point)
+        for _ in range(10_000):
+            point = dict(base_point)
+            for name in names:
+                specification = info["params"].get(name)
+                if not isinstance(specification, dict):
+                    continue
+                prior = specification.get("prior")
+                if prior is None:
+                    continue
+                if "min" not in prior or "max" not in prior:
+                    raise ValueError(f"Cosmological prior for {name} is not a uniform box.")
+                lower = float(prior["min"])
+                upper = float(prior["max"])
+                if lower >= upper:
+                    raise ValueError(f"Empty requested prior interval for {name}.")
+                point[name] = float(random.uniform(low=lower, high=upper))
+            trial = fixed_baryon_coordinates | point
+            if _emulator_baryon_density_allowed(trial["omegab"], trial["H0"]):
+                points.append(point)
+                break
+        else:
+            raise ValueError("Could not draw an emulator-test point with omegabh2 < 0.035.")
 
     if points_file is not None:
         points_path = Path(points_file).resolve()
@@ -4938,6 +4970,9 @@ def run_matter_emulator_prior_check(
             for name, (lo, hi) in test_bounds.items():
                 if name in point and not lo <= point[name] <= hi:
                     raise ValueError(f"{name} in supplied table is outside the emulator-test bounds.")
+            trial = fixed_baryon_coordinates | point
+            if not _emulator_baryon_density_allowed(trial["omegab"], trial["H0"]):
+                raise ValueError("Supplied parameter points must satisfy omegabh2 < 0.035.")
             points.append(point)
         n_models = len(points)
         output = project / "chains/matter_emulator_points" / source.stem / points_path.stem
@@ -4972,7 +5007,7 @@ def run_matter_emulator_prior_check(
             (output / "source.yaml").write_text(source.read_text())
             with io.StringIO() as record:
                 record.write(f"models={n_models}\nseed={seed}\nlimit={limit}\n")
-                record.write(f"effective emulator test bounds={test_bounds}\n")
+                record.write(f"effective emulator test bounds={test_bounds}; omegabh2 < 0.035\n")
                 if points_file is not None:
                     record.write(f"explicit parameter table={points_path}; seed unused\n")
                 record.write("mnu=0.06 eV; plain mead2020; CAMB AccuracyBoost=3; k_per_logint=50\n")
@@ -5491,6 +5526,7 @@ def draw_matter_emulator_focused_points(output, n_models=25, seed=10137):
         valid = np.all(np.isfinite(values), axis=1)
         valid &= np.all((values >= lower) & (values <= upper), axis=1)
         valid &= np.isfinite(weights) & (weights > 0.0)
+        valid &= _emulator_baryon_sample_mask(names, values, record)
         if "omegam" in names:
             omega_m = values[:, names.index("omegam")]
             valid &= (omega_m > 0.2) & (omega_m < 0.5)
@@ -5518,7 +5554,7 @@ def draw_matter_emulator_focused_points(output, n_models=25, seed=10137):
     (output / "focused_definition.txt").write_text(
         f"Weighted bounded Fisher draws; count={n_models}; seed={seed}.\n"
         "Cosmological marginal of the full nuisance-marginalized Fisher.\n"
-        "0.2 < Omega_m < 0.5; 1e9 As <= 3.5; no selection on emulator error.\n"
+        "0.2 < Omega_m < 0.5; 1e9 As <= 3.5; omegabh2 < 0.035; no selection on emulator error.\n"
         "All nuisance inputs keep the evaluate YAML overrides in precision evaluations.\n"
     )
     return destination
@@ -5612,6 +5648,17 @@ def compute_matter_emulator_fisher(
     if not names or len(set(names)) != len(names) or set(names) - set(sampled):
         raise ValueError("Differentiated parameters must be unique sampled names.")
     center = {name: float(center[name]) for name in sampled}
+    fixed_baryon_coordinates = {}
+    for name in ("omegab", "H0"):
+        if name in names or name not in params:
+            continue
+        spec = params[name]
+        value = center.get(name, spec.get("value") if isinstance(spec, dict) else spec)
+        if value is not None and not callable(value) and not isinstance(value, str):
+            fixed_baryon_coordinates[f"fixed_{name}"] = float(value)
+    if not _emulator_baryon_sample_mask(names, np.array([center[n] for n in names]),
+                                       fixed_baryon_coordinates):
+        raise ValueError("Fisher center must satisfy omegabh2 < 0.035.")
     lower, upper, widths, absolute_steps = [], [], {}, {}
     steps = {} if steps is None else dict(steps)
     if set(steps) - set(names):
@@ -5919,6 +5966,7 @@ def compute_matter_emulator_fisher(
                 amplitude_bias_cut_names=list(cuts),
                 amplitude_bias_cut_parameters=np.asarray(cut_parameters, dtype=str).reshape(-1, 2),
                 amplitude_bias_cut_scales=np.asarray(cut_scales, dtype=float).reshape(-1, 3),
+                **fixed_baryon_coordinates,
             )
             (output / "definition.txt").write_text(
                 "Centered local CAMB Fisher diagnostic, not a fitted posterior.\n"
@@ -6004,6 +6052,9 @@ def matter_emulator_fisher_noise(record, reference=None, complete=True):
                 "amplitude_bias_cut_scales"):
         if not np.array_equal(record[key], base[key]):
             raise ValueError("Accuracy screening changed a coupled prior boundary.")
+    for key in ("fixed_omegab", "fixed_H0"):
+        if record.get(key) != base.get(key):
+            raise ValueError("Accuracy screening changed a fixed baryon-density coordinate.")
     if bool(record["metric_is_covariance"]) != bool(base["metric_is_covariance"]):
         raise ValueError("Accuracy screening changed covariance/precision interpretation.")
     metric = np.asarray(record["metric"])
@@ -6116,6 +6167,8 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
     record = np.load(file=output / "fisher.npz")
     names = record["names"].tolist()
     center, lower, upper = (record[key] for key in ("center", "lower", "upper"))
+    if not _emulator_baryon_sample_mask(names, center, record):
+        raise ValueError("Saved Fisher center must satisfy omegabh2 < 0.035.")
     fisher = cf.symmetric_matrix(record["fisher_fine"], name="Fisher")
     coarse = cf.symmetric_matrix(record["fisher_coarse"], name="Coarse Fisher")
     seeds = tuple(seeds)
@@ -6201,6 +6254,7 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
             distance = np.einsum("ij,jk,ik->i", displacement, schur, displacement)
             log_weight = -0.5*distance
         accepted = np.all((values >= lower) & (values <= upper), axis=1)
+        accepted &= _emulator_baryon_sample_mask(names, values, record)
         # These boundaries couple a cosmological amplitude to a nuisance
         # bias. Applying them before marginalization keeps the same support
         # as the explicitly declared external hard priors of the model.
@@ -6285,12 +6339,15 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
         f"maximum_seed_mean_spread_in_sigma={coarse_mean_spread:.8g}\n"
         f"relative_seed_normalization_spread={coarse_mass_spread:.8g}\n"
     )
+    fixed_baryon_coordinates = {key: record[key] for key in ("fixed_omegab", "fixed_H0")
+                                if key in record}
     np.savez_compressed(
         file=output / "bounded_samples.npz", names=names, values=values,
         weights=weights, coarse_weights=coarse_weight, seed=np.concatenate(seed_list),
         lower=lower, upper=upper, proposal=proposal,
         uniform_indices=uniform if gaussian_factor is None else np.array([], dtype=int),
         sampling_valid=sampling_valid, coarse_sampling_valid=coarse_valid,
+        **fixed_baryon_coordinates,
     )
     np.savetxt(
         fname=output / "sampling_convergence.txt", X=diagnostics,
@@ -6325,6 +6382,7 @@ def sample_matter_emulator_fisher(output, sample_power=18, seeds=(137, 138), min
     )
     (output / "sampling_definition.txt").write_text(
         "All bounds imposed before marginalization; centered local Fisher, not data posterior.\n"
+        "Cosmological support includes omegabh2 < 0.035.\n"
         f"Proposal: {proposal}.\n"
         "Importance effective count measures weight concentration; Sobol points "
         "are not independent posterior draws. Compare independent scramblings.\n"
@@ -6402,6 +6460,7 @@ def plot_matter_emulator_fisher(
     positive = ((weights > 0.0)
                 & np.all((record["values"] >= lower)
                          & (record["values"] <= upper), axis=1))
+    positive &= _emulator_baryon_sample_mask(all_names, record["values"], record)
     if np.count_nonzero(positive) < 3:
         raise ValueError("Too few Fisher samples remain within the plot bounds.")
     comparison_files = [(points_file, distances_file, False)]
@@ -6414,6 +6473,9 @@ def plot_matter_emulator_fisher(
         if (len(points) != len(distances)
                 or not np.array_equal(distances[:, 0], np.arange(len(points)))):
             raise ValueError("Comparison points and distance row indices disagree.")
+        if all(name in points.dtype.names for name in ("omegab", "H0")):
+            if not np.all(_emulator_baryon_density_allowed(points["omegab"], points["H0"])):
+                raise ValueError("Comparison points must satisfy omegabh2 < 0.035.")
         comparisons.append((points, distances[:, 1], local))
     if names is None:
         names = [name for name in ("As_1e9", "omegam", "H0", "omegab", "ns", "w", "wa", "w0pwa")
