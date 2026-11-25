@@ -5312,7 +5312,8 @@ def run_matter_emulator_prior_check(
                     failed = int(not valid_ratios or not np.isfinite(successive_shift)
                                  or abs(successive_shift) >= fisher_fom_tolerance)
                     print(f"Estimated FoM shift from refined to confirmation (selected columns): "
-                          f"{successive_shift:.2%}; tolerance={fisher_fom_tolerance:.2%}.", flush=True)
+                          f"{100*successive_shift:+.6g}%; tolerance={fisher_fom_tolerance:.2%}.",
+                          flush=True)
                 else:
                     gate = (destination / "fom_convergence_status.txt").read_text()
                     failed = int("passed=True" not in gate.splitlines()[0])
