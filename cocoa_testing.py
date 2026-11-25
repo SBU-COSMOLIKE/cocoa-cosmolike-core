@@ -4829,8 +4829,11 @@ def _load_matter_emulator_reference(directory):
     directory = Path(directory)
     result = json.loads((directory / "reference.json").read_text())
     result["contours"] = None
-    if result["quality"] != "unreliable":
-        result["contours"] = json.loads((directory / "contours.json").read_text())
+    # The saved geometry locates the focused comparison region even when
+    # its FoM is approximate. Keep the quality note visible, not a gate.
+    geometry = directory / "contours.json"
+    if geometry.is_file():
+        result["contours"] = json.loads(geometry.read_text())
     return result
 
 
