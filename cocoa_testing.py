@@ -4869,11 +4869,33 @@ def _matter_emulator_configuration(source):
         "H0": (-np.inf, float(np.nextafter(85.0, -np.inf))),
         "omegam": (float(np.nextafter(0.2, np.inf)), float(np.nextafter(0.5, -np.inf))),
     }
+    camb_extra = (info.get("theory", {}).get("camb") or {}).get("extra_args", {})
+    wa = info["params"].get("wa", camb_extra.get("wa", 0.))
+    wa = wa.get("value") if isinstance(wa, dict) else wa
+    sum_coordinate, offset = w_today, 0.
+    if isinstance(wa, (int, float)) and np.isfinite(wa):
+        offset = wa
+    elif isinstance(wa, str) and "".join(wa.split()) in {
+        f"lambdaw0pwa,{w_today}:w0pwa-{w_today}",
+        f"lambda{w_today},w0pwa:w0pwa-{w_today}",
+    } and "w0pwa" in info["params"]:
+        pair = info["params"]["w0pwa"]
+        value = pair.get("value") if isinstance(pair, dict) else pair
+        if not isinstance(value, str) or "".join(value.split()) != f"lambda{w_today}:{w_today}":
+            sum_coordinate = "w0pwa"
+    else:
+        raise ValueError("The emulator test requires fixed wa or wa derived from w0pwa.")
+    lo = test_bounds.get(sum_coordinate, (-np.inf, np.inf))[0]
+    test_bounds[sum_coordinate] = (lo, float(np.nextafter(-0.4 - offset, -np.inf)))
     for name, (lo, hi) in test_bounds.items():
-        spec = info["params"].get(name, -1.0 if name == w_today else None)
+        default = camb_extra.get(w_today, -1.) if name == w_today else None
+        spec = info["params"].get(name, default)
         if isinstance(spec, dict) and "prior" in spec:
             prior = spec["prior"]
             lo, hi = max(lo, float(prior["min"])), min(hi, float(prior["max"]))
+            if name == sum_coordinate and lo + (hi - lo) + offset >= -0.4:
+                # Cobaya reconstructs uniform endpoints from loc and scale.
+                hi = min(hi, float(lo + np.nextafter(hi - lo, -np.inf)))
             if not lo < hi:
                 raise ValueError(f"Empty emulator-test prior for {name}.")
             prior.update(min=lo, max=hi)
@@ -4881,7 +4903,7 @@ def _matter_emulator_configuration(source):
             value = base_point[name]
         else:
             value = spec.get("value") if isinstance(spec, dict) else spec
-        if value is None or not lo <= value <= hi:
+        if not isinstance(value, (int, float)) or not lo <= value <= hi:
             raise ValueError(f"{name} fiducial {value} outside emulator-test bounds.")
     fixed_baryon_coordinates = {}
     for name in ("omegab", "H0"):
