@@ -389,8 +389,10 @@ def load_model(filename, hybrid=True, fiducial=None, mcmc_config=False):
     names = list(model.parameterization.sampled_params())
     try:
         if use_reference:
+            # Cobaya divides max_tries by the sampled dimension when finding
+            # a finite posterior. Allow 50 reference points to be evaluated.
             start, _ = model.get_valid_point(
-                max_tries=5*len(names), random_state=np.random.default_rng(42))
+                max_tries=50*len(names), random_state=np.random.default_rng(42))
         else:
             missing = [name for name in names if name not in point]
             if missing:
