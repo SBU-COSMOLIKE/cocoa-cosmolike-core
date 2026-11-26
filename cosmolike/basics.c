@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -305,6 +306,25 @@ gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n)
   }
 
   return w;
+}
+
+gsl_integration_glfixed_table* malloc_gslint_glfixed_scaled(
+    const int base_nodes,
+    const double factor,
+    const int max_panels,
+    const char* accuracy_name
+  )
+{
+  const double nodes_per_panel = ceil(base_nodes*factor);
+  const int max_nodes_per_panel = INT_MAX/max_panels;
+  if (!(factor > 0.0) || !(nodes_per_panel <= max_nodes_per_panel)) {
+    log_fatal("%s = %.17g with %d base nodes exceeds the representable "
+              "order of %d nodes per panel or is invalid",
+              accuracy_name, factor, base_nodes, max_nodes_per_panel);
+    exit(EXIT_FAILURE);
+  }
+  const int nodes = (nodes_per_panel < 1.0) ? 1 : (int) nodes_per_panel;
+  return malloc_gslint_glfixed(nodes);
 }
 
 // ---------------------------------------------------------------------------

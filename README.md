@@ -768,13 +768,43 @@ the project ships. The settings and what they control:
 | setting | what it controls |
 |---------|------------------|
 | `accuracyboost` (cosmolike) | sizes of cosmolike's internal lookup tables, including the dyadic z grid of the power-spectrum tables: every coarser grid's nodes are a subset of every finer grid's, so a higher boost tightens the same interpolation instead of moving the nodes |
-| `integration_accuracy` (cosmolike) | the quadrature level: each integral family selects a fixed Gauss-Legendre rule from its own ladder, so one level means different node counts in different families. The standard ladders ([cosmo2D.c](cosmolike/cosmo2D.c)) use 96/128/256/512/1,024/2,048/4,096 nodes at levels 0-6 and 8,192 from level 7 up (projects push 10). The cross-bin pair rule instead grows by 64 nodes per level from 128 (level 7 is 576 nodes, level 10 is 768) per line-of-sight panel, with the same 8,192 cap |
+| `integration_accuracy` (cosmolike) | global quadrature level. Each integral family selects a base Gauss–Legendre rule from its ladder. [Projection rules](cosmolike/cosmo2D.c) |
 | `internal_accuracyboost` (cosmolike) | density of the C-FAST-PT convolution grid relative to the output table the likelihood interpolates; the default 1 keeps the two grids equal (the exact single-grid path) |
 | `lmax` (cosmolike) | highest multipole of the internal harmonic-space tables transformed into the real-space correlation functions; arcminute scales need very high multipoles |
 | `kmax_boltzmann` (cosmolike) | the k cutoff of the power spectrum the likelihood requests from CAMB |
 | `AccuracyBoost` (CAMB) | CAMB's overall accuracy multiplier: denser sampling in every internal CAMB grid, the most expensive setting |
 | `k_per_logint` (CAMB) | k samples CAMB computes per logarithmic interval of the transfer functions |
 | `kmax` (CAMB) | highest k of CAMB's matter power spectrum; one physical cutoff with `kmax_boltzmann`, seen from the CAMB side |
+
+At levels 0–3, shear uses 96, 128, 256 and 512 nodes. Galaxy–shear uses
+64, 128, 256 and 512. The galaxy clustering auto rule uses 128, 256, 512
+and 1,024, and level 4 also uses 1,024. The cross-bin galaxy pair base
+rule starts at 128 nodes per radial panel and adds 64 per unit of the
+absolute level, up to 8,192.
+
+The likelihood YAMLs expose radial integration factors for their active
+probes. Each factor must be positive and finite and defaults to `1.0`.
+The quadrature order rounds up after multiplying by the factor. For
+example, level `0` selects 128 nodes for the galaxy clustering pair rule.
+Setting `integration_accuracy_gg: 2.0` increases it to 256 nodes. Shared lensing
+efficiency, halo and FFTLog grids keep their existing global controls.
+
+| Likelihood setting | Radial integral |
+| --- | --- |
+| `integration_accuracy_ss` | Shear correlations |
+| `integration_accuracy_gs` | Galaxy–shear correlations |
+| `integration_accuracy_gg` | Galaxy clustering |
+| `integration_accuracy_gk` | Galaxy–CMB lensing correlations |
+| `integration_accuracy_ks` | CMB lensing–shear correlations |
+| `integration_accuracy_kk` | CMB lensing autocorrelation |
+| `integration_accuracy_cg` | Cluster–galaxy correlations |
+| `integration_accuracy_cc` | Cluster clustering |
+| `integration_accuracy_cs` | Cluster–shear correlations |
+| `integration_accuracy_n` | Cluster counts |
+
+The outer cluster-count redshift rule has a base resolution of at least
+1,024 nodes before its factor is applied. At level `0`, a counts factor
+of `1.0` uses 1,024 nodes and a factor of `2.0` uses 2,048.
 
 These settings differ in kind: `accuracyboost`, `integration_accuracy`,
 `internal_accuracyboost`, `lmax` and the CAMB sampling settings refine

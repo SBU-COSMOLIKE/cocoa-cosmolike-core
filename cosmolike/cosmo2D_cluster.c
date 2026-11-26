@@ -188,20 +188,30 @@ static double ell_prefactor_shear(const double l)
 }
 
 
-// ---------------------------------------------------------------------------
-// Gauss-Legendre table shared by every quadrature of this file (both
-// Limber panels and the counts). Ntable.high_def_integration selects the
-// rule size. Even the smallest rule must resolve the erf edges of the
-// selection kernels <phi_i|z> (width sigma_z ~ 0.006 (1+z)) on a cluster bin.
-//
-// Cache invalidation: rebuilt when Ntable.random changes.
-// ---------------------------------------------------------------------------
-static const gsl_integration_glfixed_table* limber_gl_table_cluster(void)
-{
-  static gsl_integration_glfixed_table* w = NULL;
-  static uint64_t cache_ntable = 0;
+enum {
+  CLUSTER_CC = 0,
+  CLUSTER_CG,
+  CLUSTER_CS,
+  CLUSTER_COUNTS,
+  CLUSTER_NSTATS
+};
 
-  if (NULL == w || fdiff2(cache_ntable, Ntable.random)) {
+// ---------------------------------------------------------------------------
+// Each cluster statistic scales the global Gauss-Legendre order by its own
+// multiplier. The angular panels resolve the erf edges of the selection
+// kernels <phi_i|z> (width sigma_z ~ 0.006 (1+z)). The counts integrate once
+// in redshift per bin and use a higher base order to resolve the slope
+// changes at the tabulated selection's redshift samples.
+//
+// Rebuild the cached rule when Ntable.random changes. Call serially before
+// the parallel sums that read the nodes.
+// ---------------------------------------------------------------------------
+static const gsl_integration_glfixed_table* limber_gl_table_cluster(const int stat)
+{
+  static gsl_integration_glfixed_table* w[CLUSTER_NSTATS];
+  static uint64_t cache_ntable[CLUSTER_NSTATS];
+
+  if (NULL == w[stat] || fdiff2(cache_ntable[stat], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
 
     // Levels 0-4 retain their original rules.
@@ -218,15 +228,41 @@ static const gsl_integration_glfixed_table* limber_gl_table_cluster(void)
       nodes_per_panel = 512;
     }
 
-    if (w != NULL) {
-      gsl_integration_glfixed_table_free(w);
+    int max_panels = 2;
+    double factor;
+    const char* accuracy_name;
+    if (CLUSTER_CC == stat) {
+      factor = Ntable.integration_accuracy_cc;
+      accuracy_name = "integration_accuracy_cc";
     }
-    w = malloc_gslint_glfixed(nodes_per_panel);
-    cache_ntable = Ntable.random;
-  }
-  return w;
-}
+    else if (CLUSTER_CG == stat) {
+      factor = Ntable.integration_accuracy_cg;
+      accuracy_name = "integration_accuracy_cg";
+    }
+    else if (CLUSTER_CS == stat) {
+      factor = Ntable.integration_accuracy_cs;
+      accuracy_name = "integration_accuracy_cs";
+    }
+    else {
+      // For the middle DES Y6 bin, 512 nodes shift the counts integral
+      // by 20 parts per million relative to 1024.
+      if (nodes_per_panel < 1024) {
+        nodes_per_panel = 1024;
+      }
+      max_panels = 1;
+      factor = Ntable.integration_accuracy_n;
+      accuracy_name = "integration_accuracy_n";
+    }
 
+    if (w[stat] != NULL) {
+      gsl_integration_glfixed_table_free(w[stat]);
+    }
+    w[stat] = malloc_gslint_glfixed_scaled(
+        nodes_per_panel, factor, max_panels, accuracy_name);
+    cache_ntable[stat] = Ntable.random;
+  }
+  return w[stat];
+}
 
 
 // ============================================================================
@@ -512,11 +548,12 @@ static cosmo_nodes create_cosmo_nodes_cluster(
 // per-node array of the work functions)
 // ---------------------------------------------------------------------------
 static int create_cosmo_nodes_cluster_all(
-    cosmo_nodes* cn_all,        // output [cluster.zdist_nbin]
-    const int with_foreground   // 1: add the foreground (magnification) panel
+    cosmo_nodes* cn_all,         // output [cluster.zdist_nbin]
+    const int with_foreground,   // 1: add the foreground (magnification) panel
+    const int stat               // CLUSTER_CC, CLUSTER_CG or CLUSTER_CS
   )
 {
-  const gsl_integration_glfixed_table* w = limber_gl_table_cluster();
+  const gsl_integration_glfixed_table* w = limber_gl_table_cluster(stat);
 
   int npts_max = 0;
   for (int ni = 0; ni < cluster.zdist_nbin; ni++) {
@@ -1525,7 +1562,8 @@ static void C_cs_tomo_limber_batch_rows(
   const int with_foreground = (0.0 != cluster.magnification);
 
   cosmo_nodes cn_all[cluster.zdist_nbin];
-  const int npts_max = create_cosmo_nodes_cluster_all(cn_all, with_foreground);
+  const int npts_max = create_cosmo_nodes_cluster_all(
+      cn_all, with_foreground, CLUSTER_CS);
 
   double* ep_mag   = (double*) malloc1d(nell);
   double* ep_shear = (double*) malloc1d(nell);
@@ -1806,7 +1844,8 @@ static void C_cc_tomo_limber_batch_rows(
   const int with_foreground = (0.0 != cluster.magnification);
 
   cosmo_nodes cn_all[cluster.zdist_nbin];
-  const int npts_max = create_cosmo_nodes_cluster_all(cn_all, with_foreground);
+  const int npts_max = create_cosmo_nodes_cluster_all(
+      cn_all, with_foreground, CLUSTER_CC);
 
   double* ep_mag = (double*) malloc1d(nell);
   for (int i = 0; i < nell; i++) {
@@ -2144,7 +2183,8 @@ static void C_cg_tomo_limber_batch_rows(
   const int with_foreground = (0.0 != cluster.magnification);
 
   cosmo_nodes cn_all[cluster.zdist_nbin];
-  const int npts_max = create_cosmo_nodes_cluster_all(cn_all, with_foreground);
+  const int npts_max = create_cosmo_nodes_cluster_all(
+      cn_all, with_foreground, CLUSTER_CG);
 
   double* ep_mag = (double*) malloc1d(nell);
   for (int i = 0; i < nell; i++) {
@@ -2431,9 +2471,6 @@ static double** legendre_kernel_cluster(const int spin)
 //   (Cell_memorized in clusters_DES_nonlimber.c), so its cross-richness
 //   pairs differ from these by that approximation.
 
-#define CLUSTER_NL_CC 0  // statistic of C_cluster_nonlimber_core: w_cc
-#define CLUSTER_NL_CG 1  // w_cg
-
 // next_fft_size (basics.c) rounds the FFTLog grid length below up to
 // the next number whose only prime factors are 2, 3, 5 and 7, the
 // sizes FFTW transforms fastest; the call site takes its even length
@@ -2482,7 +2519,7 @@ static void cluster_pivot_a(
 // foreground when C_c != 0), so rows_nl equals the exact Limber values.
 // ---------------------------------------------------------------------------
 static void cluster_limber_split_rows(
-    const int stat,       // CLUSTER_NL_CC or CLUSTER_NL_CG
+    const int stat,       // CLUSTER_CC or CLUSTER_CG
     const double* ells,   // multipoles (length nell)
     const int nell,       // number of multipoles
     const double* apiv,   // growth pivot of each cluster bin
@@ -2495,14 +2532,15 @@ static void cluster_limber_split_rows(
   const int with_foreground = (0.0 != cluster.magnification);
 
   cosmo_nodes cn_all[cluster.zdist_nbin];
-  const int npts_max = create_cosmo_nodes_cluster_all(cn_all, with_foreground);
+  const int npts_max = create_cosmo_nodes_cluster_all(
+      cn_all, with_foreground, stat);
 
   double* ep_mag = (double*) malloc1d(nell);
   for (int i = 0; i < nell; i++) {
     ep_mag[i] = ell_prefactor_magnification(ells[i]);
   }
 
-  if (CLUSTER_NL_CC == stat) {
+  if (CLUSTER_CC == stat) {
     C_cc_tomo_limber_work(cn_all, npts_max, ells, ep_mag, nell, NULL, rows_nl);
     C_cc_tomo_limber_work(cn_all, npts_max, ells, ep_mag, nell, apiv, rows_lin);
   }
@@ -2533,7 +2571,7 @@ static void cluster_limber_split_rows(
 // caller, real_space_cluster_update, caches its output instead).
 //
 // Parameters:
-//   stat - CLUSTER_NL_CC or CLUSTER_NL_CG
+//   stat - CLUSTER_CC or CLUSTER_CG
 //   Cl   - out [nrows][LMAX_NOLIMBER]: the non-Limber C_l at the multipoles
 //          a row reached before converging (the others are not written)
 //   LMAX - out [nrows]: the first multipole at which the row takes the
@@ -2541,7 +2579,7 @@ static void cluster_limber_split_rows(
 //   tol  - early-exit tolerance (step 5); tol <= 0 runs every block
 // ---------------------------------------------------------------------------
 static void C_cluster_nonlimber_core(
-    const int stat,       // CLUSTER_NL_CC or CLUSTER_NL_CG
+    const int stat,       // CLUSTER_CC or CLUSTER_CG
     double** Cl,          // out [nrows][LMAX_NOLIMBER]
     int* LMAX,            // out [nrows]
     const double tol      // early-exit tolerance
@@ -2567,7 +2605,7 @@ static void C_cluster_nonlimber_core(
   const double C_c        = cluster.magnification;
 
   const int npairs_cc = cc_richness_npairs();
-  const int nrows = (CLUSTER_NL_CC == stat) ?
+  const int nrows = (CLUSTER_CC == stat) ?
     cluster.cc_npowerspectra*npairs_cc :
     cluster.cg_npowerspectra*nbin_richness;
 
@@ -2642,7 +2680,7 @@ static void C_cluster_nonlimber_core(
   double row_c1[nrows];
   double row_c2[nrows];
   for (int row = 0; row < nrows; row++) {
-    if (CLUSTER_NL_CC == stat) {
+    if (CLUSTER_CC == stat) {
       const int ni = row/npairs_cc;
       const int n  = row - ni*npairs_cc;
       row_ni[row] = ni;
@@ -2689,7 +2727,7 @@ static void C_cluster_nonlimber_core(
     zlo[ng] = 1./amax_lens(ng) - 1.;
     zhi[ng] = 1./amin_lens(ng) - 1.;
   }
-  const int with_lens = (CLUSTER_NL_CG == stat);
+  const int with_lens = (CLUSTER_CG == stat);
   if (1 == with_lens) {
     // the lens row carries b1 and f, no selection term (gsel, bias.c)
     selection_unsupported("the non-Limber cluster-galaxy spectra");
@@ -2924,7 +2962,7 @@ static void C_cluster_nonlimber_core(
 // the Limber value from there, and the step it leaves is at most tol.
 // ---------------------------------------------------------------------------
 static void cluster_nonlimber_overwrite(
-    const int stat,  // CLUSTER_NL_CC or CLUSTER_NL_CG
+    const int stat,  // CLUSTER_CC or CLUSTER_CG
     double** Cl,     // in/out [nrows][Ntable.LMAX]
     const int nrows  // rows of the statistic
   )
@@ -2947,12 +2985,12 @@ static void cluster_nonlimber_overwrite(
 
 static void cc_nonlimber_rows(double** Cl, const int nrows)
 {
-  cluster_nonlimber_overwrite(CLUSTER_NL_CC, Cl, nrows);
+  cluster_nonlimber_overwrite(CLUSTER_CC, Cl, nrows);
 }
 
 static void cg_nonlimber_rows(double** Cl, const int nrows)
 {
-  cluster_nonlimber_overwrite(CLUSTER_NL_CG, Cl, nrows);
+  cluster_nonlimber_overwrite(CLUSTER_CG, Cl, nrows);
 }
 
 
@@ -3422,9 +3460,9 @@ double w_cg_tomo(
 //      The deg^2 conversion is a local constant:
 //      survey.area_conversion_factor is set only by reset_survey_struct,
 //      which the interface never calls, so it is 0 at run time.
-//   5. Gauss-Legendre in z on the support: the same tabulated-size rule
-//      (hdi ladder) as the Limber support panel; a top-hat kernel is
-//      smooth inside its support, an erf kernel has its edges resolved.
+//   5. Gauss-Legendre in z over the support. The base order follows the
+//      global ladder with a 1024-node minimum. integration_accuracy_n
+//      multiplies this base order.
 
 // ---------------------------------------------------------------------------
 // Survey area at redshift z in deg^2: linear interpolation of
@@ -3460,9 +3498,8 @@ static double cluster_area_deg2(
 }
 
 // ---------------------------------------------------------------------------
-// Fill counts[ni][nl] for every cluster bin and richness bin (eq 16),
-// serially: a few hundred node evaluations per bin, and no thread can
-// change the summation order.
+// Fill counts[ni][nl] for every cluster bin and richness bin (eq 16).
+// Each sum runs serially in redshift-node order.
 // ---------------------------------------------------------------------------
 static void cluster_counts_fill(
     double** counts  // out [zdist_nbin][richness_nbin]
@@ -3471,7 +3508,7 @@ static void cluster_counts_fill(
   const int nbin_cluster  = cluster.zdist_nbin;
   const int nbin_richness = cluster.richness_nbin;
 
-  const gsl_integration_glfixed_table* w = limber_gl_table_cluster();
+  const gsl_integration_glfixed_table* w = limber_gl_table_cluster(CLUSTER_COUNTS);
   const int nodes = (int) w->n;
 
   // survey solid angle in steradians

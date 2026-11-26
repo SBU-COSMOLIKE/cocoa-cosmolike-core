@@ -1,6 +1,7 @@
 #include "cosmolike/generic_interface.hpp"
 #include <dlfcn.h>
 #include <string_view>
+#include <utility>
 using namespace std::literals; // enables "sv" literal
 
 // Python Binding
@@ -1559,13 +1560,25 @@ void init_nonlinear_kaiser_gg(const int flag)
 // Parameters:
 //   accuracy_boost       - multiplier on the baseline table sizes (ceil)
 //   integration_accuracy - written to Ntable.high_def_integration
+//   integration_accuracy_* - multipliers on the probe quadrature orders
+//                            selected by integration_accuracy
 //
 // Returns:
 //   void
 // ---------------------------------------------------------------------------
 void init_accuracy_boost(
     const double accuracy_boost,
-    const int integration_accuracy
+    const int integration_accuracy,
+    const double integration_accuracy_ss,
+    const double integration_accuracy_gs,
+    const double integration_accuracy_gg,
+    const double integration_accuracy_gk,
+    const double integration_accuracy_ks,
+    const double integration_accuracy_kk,
+    const double integration_accuracy_cg,
+    const double integration_accuracy_cc,
+    const double integration_accuracy_cs,
+    const double integration_accuracy_n
   )
 {
   static constexpr std::string_view fname = "init_accuracy_boost"sv;
@@ -1583,6 +1596,25 @@ void init_accuracy_boost(
     critical("{}: integration_accuracy = {} must be in [-126, 126]",
       fname, integration_accuracy);
     exit(1);
+  }
+
+  const std::pair<std::string_view, double> probe_factors[] = {
+    {"integration_accuracy_ss"sv, integration_accuracy_ss},
+    {"integration_accuracy_gs"sv, integration_accuracy_gs},
+    {"integration_accuracy_gg"sv, integration_accuracy_gg},
+    {"integration_accuracy_gk"sv, integration_accuracy_gk},
+    {"integration_accuracy_ks"sv, integration_accuracy_ks},
+    {"integration_accuracy_kk"sv, integration_accuracy_kk},
+    {"integration_accuracy_cg"sv, integration_accuracy_cg},
+    {"integration_accuracy_cc"sv, integration_accuracy_cc},
+    {"integration_accuracy_cs"sv, integration_accuracy_cs},
+    {"integration_accuracy_n"sv, integration_accuracy_n},
+  };
+  for (const auto& [name, factor] : probe_factors) {
+    if (!std::isfinite(factor) || factor <= 0.0) {
+      critical("{}: {} = {} must be finite and positive", fname, name, factor);
+      exit(1);
+    }
   }
 
   // N_a: the a grid of the lensing-efficiency tables (g_tomo and its
@@ -1709,6 +1741,16 @@ void init_accuracy_boost(
   */
 
   Ntable.high_def_integration = int(integration_accuracy);
+  Ntable.integration_accuracy_ss = integration_accuracy_ss;
+  Ntable.integration_accuracy_gs = integration_accuracy_gs;
+  Ntable.integration_accuracy_gg = integration_accuracy_gg;
+  Ntable.integration_accuracy_gk = integration_accuracy_gk;
+  Ntable.integration_accuracy_ks = integration_accuracy_ks;
+  Ntable.integration_accuracy_kk = integration_accuracy_kk;
+  Ntable.integration_accuracy_cg = integration_accuracy_cg;
+  Ntable.integration_accuracy_cc = integration_accuracy_cc;
+  Ntable.integration_accuracy_cs = integration_accuracy_cs;
+  Ntable.integration_accuracy_n = integration_accuracy_n;
   Ntable.random = RandomNumber::get_instance().get();
   debug("{}: {}", fname, errends);
   return;

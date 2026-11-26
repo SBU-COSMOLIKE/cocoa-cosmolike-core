@@ -199,6 +199,15 @@ gsl_spline* malloc_gsl_spline(const int n);
 // ---------------------------------------------------------------------------
 gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n);
 
+// Scale the nodes per panel, rounding up to at least one. The combined
+// node count of every projected row must fit its int-indexed arrays.
+gsl_integration_glfixed_table* malloc_gslint_glfixed_scaled(
+    const int base_nodes,
+    const double factor,
+    const int max_panels,
+    const char* accuracy_name
+  );
+
 // ---------------------------------------------------------------------------
 // Sum all elements of a double array using AVX2 SIMD intrinsics (via
 // SIMDe for portability).

@@ -749,9 +749,26 @@ void init_nonlinear_kaiser_gg(
     const int flag
   );
 
+// integration_accuracy selects the global quadrature ladders. The probe
+// factors multiply each projected quadrature order per panel, rounded
+// up to at least one node. The gg factor also divides the shared chi
+// step of its windowed white-noise correction. The counts factor
+// multiplies the global counts order after its 1024-node minimum.
+// The shared lensing-efficiency, halo and FFTLog grids follow the
+// global controls.
 void init_accuracy_boost(
     const double accuracy_boost,
-    const int integration_accuracy
+    const int integration_accuracy,
+    const double integration_accuracy_ss = 1.0,
+    const double integration_accuracy_gs = 1.0,
+    const double integration_accuracy_gg = 1.0,
+    const double integration_accuracy_gk = 1.0,
+    const double integration_accuracy_ks = 1.0,
+    const double integration_accuracy_kk = 1.0,
+    const double integration_accuracy_cg = 1.0,
+    const double integration_accuracy_cc = 1.0,
+    const double integration_accuracy_cs = 1.0,
+    const double integration_accuracy_n = 1.0
   );
 
 void init_baryons_contamination(std::string sim, std::string all_sims_file); // NEW API

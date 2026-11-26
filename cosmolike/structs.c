@@ -317,6 +317,16 @@ void reset_Ntable_struct(void)
   Ntable.NL_tol_gs = 0.01;
   Ntable.accuracy_boost = 1.0; // init_accuracy_boost
   Ntable.high_def_integration = 0;
+  Ntable.integration_accuracy_ss = 1.0;
+  Ntable.integration_accuracy_gs = 1.0;
+  Ntable.integration_accuracy_gg = 1.0;
+  Ntable.integration_accuracy_gk = 1.0;
+  Ntable.integration_accuracy_ks = 1.0;
+  Ntable.integration_accuracy_kk = 1.0;
+  Ntable.integration_accuracy_cg = 1.0;
+  Ntable.integration_accuracy_cc = 1.0;
+  Ntable.integration_accuracy_cs = 1.0;
+  Ntable.integration_accuracy_n = 1.0;
   Ntable.FPTboost=0;
   Ntable.dCX_dlnk_nlnk[NODES_DENSE] = 256;
   Ntable.dCX_dlnk_k[RANGE_MIN] = 1.e-5;

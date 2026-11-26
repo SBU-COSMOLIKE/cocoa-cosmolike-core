@@ -130,6 +130,17 @@ typedef struct
   // ---------------------------------------------------
   // ---------------------------------------------------
   int high_def_integration;
+  // Multipliers of the global quadrature orders for projected probes.
+  double integration_accuracy_ss;
+  double integration_accuracy_gs;
+  double integration_accuracy_gg;
+  double integration_accuracy_gk;
+  double integration_accuracy_ks;
+  double integration_accuracy_kk;
+  double integration_accuracy_cg;
+  double integration_accuracy_cc;
+  double integration_accuracy_cs;
+  double integration_accuracy_n;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CONTROL NUM POINTS EVALUATED ON LIMBER DERIVATIVES

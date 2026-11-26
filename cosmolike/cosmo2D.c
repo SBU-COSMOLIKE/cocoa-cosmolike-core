@@ -2706,8 +2706,8 @@ enum {
 //
 // The quadrature points and weights come from the GSL fixed-order table w,
 // which is shared with the Limber integration routines. The number of points
-// is selected by Ntable.high_def_integration. Increasing this setting
-// refines the integral without changing its physical support.
+// follows Ntable.high_def_integration and the probe multiplier. Both
+// refine the integral while keeping its physical support fixed.
 //
 // Thread safety: the loop over nodes runs single-threaded, so it safely
 // performs the first (lazy) initialization of the static interpolation
@@ -2825,8 +2825,7 @@ static double amax_lens_nz(const int ni)
 //                     support, where the magnification kernel carries the
 //                     signal
 //
-// Both panels take the size of w, so each scales with
-// Ntable.high_def_integration exactly as the single rule does, and the
+// Both panels take the same order from the probe's quadrature rule. The
 // resolution of the density kernel no longer depends on the extent of the
 // foreground.
 //
@@ -3484,7 +3483,7 @@ void C_ss_tomo_limber_nointerp_ells(
     // Gauss-Legendre order in the ladder below; only abs() is ever
     // read - here and in every other ladder of this form.
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 96 :
+    const int szint = (0 == hdi) ? 96 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
@@ -3492,7 +3491,8 @@ void C_ss_tomo_limber_nointerp_ells(
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_ss,
+        1, "integration_accuracy_ss");
     cache[0] = Ntable.random;
   }
 
@@ -3699,14 +3699,15 @@ void dC_ss_dlnk_tomo_limber_work(
   double** CBB = NULL;
   if (1 == normalize) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 96 :
+    const int szint = (0 == hdi) ? 96 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 :
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_ss,
+        1, "integration_accuracy_ss");
     cn = create_cosmo_nodes(amin, amax, w);
     WCq = (double***) malloc3d(5, redshift.shear_nbin, cn.npts);
     KIAq = (double***) malloc3d(11, nell, cn.npts);
@@ -4079,7 +4080,7 @@ double C_ss_tomo_limber(
     ss_.nell = nell;  
 
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 96 :
+    const int szint = (0 == hdi) ? 96 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
@@ -4087,7 +4088,8 @@ double C_ss_tomo_limber(
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_ss,
+        1, "integration_accuracy_ss");
 
     if (lx != NULL) free(lx);
     lx = (double*) malloc1d(nell);
@@ -5214,7 +5216,7 @@ void C_gs_tomo_limber_nl_lin_nointerp_ells(
   static uint64_t cache[MAX_SIZE_ARRAYS];
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
+    const int szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
@@ -5222,7 +5224,8 @@ void C_gs_tomo_limber_nl_lin_nointerp_ells(
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_gs,
+        2, "integration_accuracy_gs");
     cache[0] = Ntable.random;
   }
 
@@ -5508,7 +5511,7 @@ double C_gs_tomo_limber(
     gs_.nell   = nell;
 
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
+    const int szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
@@ -5516,7 +5519,8 @@ double C_gs_tomo_limber(
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_gs,
+        2, "integration_accuracy_gs");
 
     if (lx != NULL) free(lx);
     lx = (double*) malloc1d(nell);
@@ -6702,14 +6706,15 @@ void C_gg_tomo_limber_nl_lin_dd_nointerp_ells(
   static uint64_t cache[MAX_SIZE_ARRAYS];
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 :
+    const int szint = (0 == hdi) ? 128 :
                          (1 == hdi) ? 256 :
                          (2 == hdi) ? 512 :
                          (hdi <= 4) ? 1024 :
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_gg,
+        2, "integration_accuracy_gg");
     cache[0] = Ntable.random;
   }
   if (NSIZE != redshift.clustering_nbin) {
@@ -7391,7 +7396,7 @@ void C_gk_tomo_limber_nointerp_ells(
   static uint64_t cache[MAX_SIZE_ARRAYS];
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
+    const int szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 :
                          (3 == hdi) ? 512 :
@@ -7399,7 +7404,8 @@ void C_gk_tomo_limber_nointerp_ells(
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_gk,
+        2, "integration_accuracy_gk");
     cache[0] = Ntable.random;
   }
 
@@ -8105,7 +8111,7 @@ void C_ks_tomo_limber_nointerp_ells(
   static uint64_t cache[MAX_SIZE_ARRAYS];
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
+    const int szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 :
                          (3 == hdi) ? 512 :
@@ -8113,7 +8119,8 @@ void C_ks_tomo_limber_nointerp_ells(
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_ks,
+        1, "integration_accuracy_ks");
     cache[0] = Ntable.random;
   }
 
@@ -8326,14 +8333,15 @@ void dC_ks_dlnk_tomo_limber_work(
   double** CKS = NULL;
   if (1 == normalize) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
+    const int szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 :
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
                          (5 == hdi) ? 2048 :
                          (6 == hdi) ? 4096 : 8192;
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_ks,
+        1, "integration_accuracy_ks");
     for (int b = 0; b < redshift.shear_nbin; b++) {
       cn_all[b] = create_cosmo_nodes(aminb[b], amaxb[b], w);
     }
@@ -8927,7 +8935,7 @@ double C_kk_limber_nointerp(const double l, const int init)
   
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 : 
+    const int szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 : 
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
@@ -8937,7 +8945,8 @@ double C_kk_limber_nointerp(const double l, const int init)
     if (w != NULL) {
       gsl_integration_glfixed_table_free(w);
     }
-    w = malloc_gslint_glfixed(szint);
+    w = malloc_gslint_glfixed_scaled(szint, Ntable.integration_accuracy_kk,
+        1, "integration_accuracy_kk");
     cache[0] = Ntable.random;
   }
 
@@ -14242,14 +14251,20 @@ void C_gg_kwindow_white_noise_ells(
 
   // One uniform chi grid serves every bin: a step of 0.5 Mpc/h (in
   // c/H0 units here), halved per level of integration_accuracy up to
-  // level 2. A shared grid is load-bearing twice over. Two bins' nodes
+  // level 2, then divided by integration_accuracy_gg. Two bins' nodes
   // coincide on their support overlap, so the a = b closed-form limit
   // applies there instead of the 0/0 of the general form; and N_K and
   // L_K below are discretized on the same nodes, so the part they share
   // cancels node by node in the difference.
   const int hdi = abs(Ntable.high_def_integration);
   const int halvings = (hdi < 2) ? hdi : 2;
-  const double h = (0.5/cosmology.coverH0)/((double) (1 << halvings));
+  const double h = (0.5/cosmology.coverH0)/((double) (1 << halvings))/
+                   Ntable.integration_accuracy_gg;
+  if (!(h > 0.0) || !isfinite(h)) {
+    log_fatal("integration_accuracy_gg = %.17g gives an invalid chi step",
+      Ntable.integration_accuracy_gg);
+    exit(EXIT_FAILURE);
+  }
 
   // Sample f_b = W_gal D^2 (b2 + (2/3) bs2) on each bin's support: the
   // radial kernel of the constant, one factor D^2 c per side of the
@@ -14266,9 +14281,18 @@ void C_gg_kwindow_white_noise_ells(
   for (int b=0; b<nbins; b++) {
     // the chi = 0 node carries no volume, and its Bessel recurrence would
     // divide by x = 0: the grid starts at node 1 at the latest
-    const int qa_lens = (int) ceil(chi(amax_lens(b))/h);
-    const int qa = (qa_lens < 1) ? 1 : qa_lens;
-    const int qb = (int) floor(chi(amin_lens(b))/h);
+    const double qa_lens = ceil(chi(amax_lens(b))/h);
+    const double qb_lens = floor(chi(amin_lens(b))/h);
+    // Keep the exclusive upper index qb + 1 representable as well.
+    if (!(qa_lens >= INT_MIN && qa_lens < INT_MAX &&
+          qb_lens >= INT_MIN && qb_lens < INT_MAX)) {
+      log_fatal("integration_accuracy_gg = %.17g gives unrepresentable "
+                "white-noise chi indices [%.17g, %.17g] for lens bin %d",
+                Ntable.integration_accuracy_gg, qa_lens, qb_lens, b);
+      exit(EXIT_FAILURE);
+    }
+    const int qa = (qa_lens < 1.0) ? 1 : (int) qa_lens;
+    const int qb = (int) qb_lens;
     const int n  = (qb >= qa) ? qb - qa + 1 : 0;
     double* f  = (double*) malloc(sizeof(double)*((n > 0) ? n : 1));
     double* gf = (double*) malloc(sizeof(double)*((n > 0) ? n : 1));
@@ -14566,10 +14590,11 @@ static const gsl_integration_glfixed_table* gg_pair_glrule(void)
   static uint64_t cache[MAX_SIZE_ARRAYS];
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    // capped at 8192 nodes like every other ladder (reached at level 126)
-    const size_t nsize_integration = (hdi < 126) ? 128 + 64*hdi : 8192;
+    // The base ladder reaches 8192 nodes per panel at level 126.
+    const int nsize_integration = (hdi < 126) ? 128 + 64*hdi : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(nsize_integration);
+    w = malloc_gslint_glfixed_scaled(nsize_integration,
+        Ntable.integration_accuracy_gg, 4, "integration_accuracy_gg");
     cache[0] = Ntable.random;
   }
   return w;
