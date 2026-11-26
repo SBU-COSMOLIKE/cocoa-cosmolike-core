@@ -634,8 +634,6 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
     if current:
         _, fiducial = nmodels_current_info(u=u, example=example)
         label = case
-        color_ceiling = 1.0
-        data_path = os.path.splitext(path)[0] + ".txt"
     else:
         fiducial = u.load_frozen_point(example)
         project = os.path.basename(os.path.dirname(u.TESTS_DIR))
@@ -647,6 +645,9 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
         fisher_panel = figures.saved_nmodels_fisher_panel(
             path=os.path.join(u.TESTS_DIR, reference),
         )
+    if current or fisher_panel is not None:
+        color_ceiling = 1.0
+        data_path = os.path.splitext(path)[0] + ".txt"
     with matplotlib.rc_context():
         if current:
             # Match the other current survey figures without changing the legacy style.
