@@ -541,30 +541,38 @@ def compute_references(u, stamp, chi2_format):
     write_json(u.REFERENCE_FILE, reference)
 
 
-def _configure_nmodels_generation_threads(u):
-    """Load the compiled interface with one BLAS thread before generation.
+def configure_nmodels_threads(u, allow_missing=False):
+    """Load the compiled interface with one BLAS thread before computing.
 
     OpenMP-linked OpenBLAS caps its teams at the limit in force when it
     first loads. Restore the requested OpenMP team for CosmoLike after
-    importing the project library and before constructing the model.
+    importing the project library during pytest setup or reference generation.
 
     Arguments:
       u = the project's cocoa_test_utils module.
+      allow_missing = let tests that do not need the compiled library collect.
 
     Returns:
       None. Sets the BLAS environment and the native OpenMP team.
     """
     from importlib import import_module
+    from pathlib import Path
 
-    requested_threads = os.environ["OMP_NUM_THREADS"]
+    interface_dir = Path(u.TESTS_DIR).parent / "interface"
+    module = u._H.interface_module
+    if allow_missing and not (interface_dir / f"{module}.so").is_file():
+        return
+    requested_threads = u._cct.REQUIRED_OMP_THREADS
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_DEFAULT_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
     os.environ["OMP_NUM_THREADS"] = "1"
+    sys.path.insert(0, str(interface_dir))
     try:
-        interface = import_module(u._H.interface_module)
+        interface = import_module(module)
     finally:
+        sys.path.remove(str(interface_dir))
         os.environ["OMP_NUM_THREADS"] = requested_threads
     interface.set_omp_threads(n=int(requested_threads))
 
@@ -770,7 +778,7 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
         u.require_cocoa_environment()
         example = sys.argv[sys.argv.index("--nmodels-one") + 1]
         if getattr(u, "NMODELS_CURRENT_PRIOR", False):
-            _configure_nmodels_generation_threads(u=u)
+            configure_nmodels_threads(u=u)
         generate_nmodels_vectors(u, example)
         return 0
     for incremental_flag, worker_flag, needs_stamp, run in extra_steps:

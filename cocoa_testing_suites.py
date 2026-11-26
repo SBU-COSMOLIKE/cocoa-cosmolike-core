@@ -557,6 +557,11 @@ def nmodels_vectors(u, example, points, high_accuracy, expected_precision=None):
                 blas = {pool["num_threads"] for pool in threadpool_info()
                         if pool["user_api"] == "blas"}
                 print(f"  native OpenMP={native_threads}, BLAS={sorted(blas)}", flush=True)
+                expected_threads = int(os.environ["OMP_NUM_THREADS"])
+                assert native_threads == expected_threads and blas == {1}, (
+                    f"{example}: measured OpenMP={native_threads}, BLAS={sorted(blas)}. "
+                    f"Expected OpenMP={expected_threads} and BLAS=[1]."
+                )
             print(f"  model {index + 1}/{len(points)}: {label} vector "
                   f"({time.time() - start:.1f} s)", flush=True)
     return np.array(vectors), inv_cov
