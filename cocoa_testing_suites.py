@@ -2292,6 +2292,28 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                                                 1.0)),
                 "integration_accuracy": int(getattr(
                     cls.like, "integration_accuracy", 0)),
+                "probe_integration_factors": {
+                    "integration_accuracy_ss": float(getattr(
+                        cls.like, "integration_accuracy_ss", 1.0)),
+                    "integration_accuracy_gs": float(getattr(
+                        cls.like, "integration_accuracy_gs", 1.0)),
+                    "integration_accuracy_gg": float(getattr(
+                        cls.like, "integration_accuracy_gg", 1.0)),
+                    "integration_accuracy_gk": float(getattr(
+                        cls.like, "integration_accuracy_gk", 1.0)),
+                    "integration_accuracy_ks": float(getattr(
+                        cls.like, "integration_accuracy_ks", 1.0)),
+                    "integration_accuracy_kk": float(getattr(
+                        cls.like, "integration_accuracy_kk", 1.0)),
+                    "integration_accuracy_cg": float(getattr(
+                        cls.like, "integration_accuracy_cg", 1.0)),
+                    "integration_accuracy_cc": float(getattr(
+                        cls.like, "integration_accuracy_cc", 1.0)),
+                    "integration_accuracy_cs": float(getattr(
+                        cls.like, "integration_accuracy_cs", 1.0)),
+                    "integration_accuracy_n": float(getattr(
+                        cls.like, "integration_accuracy_n", 1.0)),
+                },
             }
             # the emulator path of the likelihoods replaces the yaml
             # accuracy by a fixed low one (boost 0.35, level -1)
@@ -2311,7 +2333,7 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
 
         @classmethod
         def _restore_production(cls):
-            """Put back the boost, tolerances, FKEM cap and gg engine.
+            """Restore the accuracy settings, tolerances, FKEM cap and gg engine.
 
             init_accuracy_boost rescales every boosted table size from the
             baselines the likelihood's own call captured, so the production
@@ -2320,7 +2342,9 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             production = cls.production
             cls.ci.init_accuracy_boost(
                 accuracy_boost=production["accuracy_boost"],
-                integration_accuracy=production["integration_accuracy"])
+                integration_accuracy=production["integration_accuracy"],
+                **production["probe_integration_factors"],
+            )
             cls.ci.init_nonlimber_tolerance(gg_tol=production["gg_tol"],
                                             gs_tol=production["gs_tol"])
             cls.ci.init_lmax_nonlimber(lmax=production["lmax_nonlimber"])
@@ -2767,7 +2791,9 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                     self.ci.init_accuracy_boost(
                         accuracy_boost=boost,
                         integration_accuracy=production[
-                            "integration_accuracy"])
+                            "integration_accuracy"],
+                        **production["probe_integration_factors"],
+                    )
                     self.ci.init_nonlimber_tolerance(gg_tol=settings[0],
                                                      gs_tol=settings[1])
                     effective = self.ci.get_nonlimber_tolerance()
@@ -2822,7 +2848,9 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                     self.ci.init_accuracy_boost(
                         accuracy_boost=boost,
                         integration_accuracy=production[
-                            "integration_accuracy"])
+                            "integration_accuracy"],
+                        **production["probe_integration_factors"],
+                    )
                     self.ci.init_nonlimber_tolerance(gg_tol=0.0, gs_tol=0.0)
                     zero = np.array(self.masked_vector())
                     # 1 + 2 (AB - 1): the divisor of the scaled tolerance
