@@ -641,6 +641,12 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
         project = os.path.basename(os.path.dirname(u.TESTS_DIR))
         label = (f"{project}, {case.replace('Delta z', 'Δz')}: "
                  f"{len(points)} models, seed base {seed}")
+    fisher_panel = None
+    reference = u.EXAMPLES[example].get("nmodels_fisher")
+    if reference is not None:
+        fisher_panel = figures.saved_nmodels_fisher_panel(
+            path=os.path.join(u.TESTS_DIR, reference),
+        )
     with matplotlib.rc_context():
         if current:
             # Match the other current survey figures without changing the legacy style.
@@ -667,7 +673,7 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
             fiducial=fiducial, path=path, limit=limit,
             held=held, label=label,
             colorbarlabel=r"$\Delta\chi^2$", color_ceiling=color_ceiling,
-            data_path=data_path)
+            data_path=data_path, fisher_panel=fisher_panel)
     return path
 
 

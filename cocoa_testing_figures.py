@@ -352,10 +352,28 @@ def random_models_amplitude(point, fiducial):
     return largest_amplitude_ratio(point, fiducial)
 
 
+def saved_nmodels_fisher_panel(path):
+    """Read the stored Ωm–10⁹Aₛ contours of the matching emulator reference.
+
+    Arguments:
+      path = contours.json from the chosen hybrid-emulator benchmark.
+
+    Returns:
+      The saved 95% and 68% lists of (Ωm, 10⁹Aₛ) polylines, in that order.
+    """
+    import json
+
+    with open(path, encoding="utf-8") as stream:
+        contours = json.load(stream)
+    if contours["names"][0] != "As_1e9" or "omegam" not in contours["names"]:
+        raise ValueError(f"{path} does not contain the Ωm–10⁹Aₛ Fisher plane.")
+    return contours["panels"]["omegam"]
+
+
 def random_models_triangle(points, deltas, fiducial, path, limit,
                            colorbarlabel, held=None, label=None,
                            color_ceiling=NMODELS_COLOR_CEILING,
-                           data_path=None):
+                           data_path=None, fisher_panel=None):
     """Draw the N-random-models delta chi2 as an Omega_m - amplitude triangle.
 
     The figure examines how the numerical error of a point associates
@@ -413,6 +431,9 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
                       scale. Larger distances keep the top color.
       data_path     = optional text path for the plotted coordinates and
                       original distances, in model order.
+      fisher_panel  = optional saved 95% and 68% polylines in
+                      (Omega_m, 10^9 A_s) coordinates. In a clustering
+                      figure they occupy the upper-right panel.
 
     Returns:
       nothing; the PNG and optional table are written.
@@ -451,6 +472,8 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
     for point in points:
         amplitudes.append(random_models_amplitude(point, fiducial))
     has_amplitude = amplitudes[0] is not None
+    if fisher_panel is not None and not has_amplitude:
+        raise ValueError("A saved Fisher panel requires the clustering layout.")
     omegam_label = r"$\Omega_\mathrm{m}$"
     amplitude_label = r"$A_\mathrm{s} b^2/(A_\mathrm{s} b^2)_\mathrm{fid}$"
 
@@ -506,9 +529,11 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
         title_height = 0.98
     else:
         amplitude = np.array(amplitudes)
+        spacing = {"wspace": 0.06, "hspace": 0.06}
+        if fisher_panel is not None:
+            spacing = {"wspace": 0.26, "hspace": 0.25}
         fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(9.5, 9),
-                                 gridspec_kw={"wspace": 0.06,
-                                              "hspace": 0.06})
+                                 gridspec_kw=spacing)
         # top left: delta chi2 against Omega_m, sharing the x range of
         # the plane below it
         delta_panel(axes[0][0], omegam)
@@ -525,17 +550,42 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
         delta_panel(axes[1][1], amplitude)
         axes[1][1].yaxis.tick_right()
         axes[1][1].set_xlabel(amplitude_label, fontsize=13)
-        # the empty upper-right corner holds the color bar (figure
-        # coordinates: left, bottom, width, height)
-        axes[0][1].axis("off")
-        colorbar_axes = fig.add_axes([0.60, 0.58, 0.03, 0.30])
+        if fisher_panel is None:
+            # The upper-right corner holds the shared color bar.
+            axes[0][1].axis("off")
+            colorbar_axes = fig.add_axes([0.60, 0.58, 0.03, 0.30])
+            title_height = 0.93
+        else:
+            # The saved contour coordinates are Ωm and 10⁹ Aₛ. The
+            # other parameter plane retains the sampled galaxy biases.
+            axis = axes[0][1]
+            primordial_amplitude = np.array([point["As_1e9"] for point in points])
+            scatter_kinds(axis, omegam, primordial_amplitude)
+            for level, segments, linestyle, width in zip(
+                ("95%", "68%"), fisher_panel, ("--", "-"), (1.4, 1.8), strict=True,
+            ):
+                visible = [segment for segment in segments if len(segment)]
+                for index, segment in enumerate(visible):
+                    coordinates = np.asarray(segment, dtype=float)
+                    axis.plot(
+                        coordinates[:, 0], coordinates[:, 1],
+                        color="0.25", linewidth=width, linestyle=linestyle,
+                        label=level if index == 0 else None,
+                    )
+            axis.set_xlabel(omegam_label, fontsize=13)
+            axis.set_ylabel(r"$10^9 A_\mathrm{s}$", fontsize=13)
+            axis.legend(
+                loc="lower right", bbox_to_anchor=(1, 1.01), ncol=2,
+                frameon=False, fontsize=10,
+            )
+            fig.subplots_adjust(right=0.84, top=0.87)
+            colorbar_axes = fig.add_axes([0.91, 0.30, 0.023, 0.40])
+            title_height = 0.96
         colorbar = fig.colorbar(mappable, cax=colorbar_axes,
                                 extend="max")
         # the legend sits in the same empty corner, under the color bar
         legend_axes = axes[0][1]
         legend_place = "lower left"
-        # the default top of the panels is 0.88: the title sits just above
-        title_height = 0.93
     colorbar.set_label(colorbarlabel, fontsize=12)
     if label is not None:
         fig.suptitle(label, fontsize=13, y=title_height)
@@ -547,9 +597,16 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
             handles.append(Line2D([], [], linestyle="", marker=marker,
                                   markersize=8, markerfacecolor="0.6",
                                   markeredgecolor=edge, label=kind_label))
-        legend_axes.legend(handles=handles, loc=legend_place,
-                           frameon=False, fontsize=10)
-    fig.savefig(path, dpi=110, bbox_inches="tight")
+        if fisher_panel is None or not has_amplitude:
+            legend_axes.legend(handles=handles, loc=legend_place,
+                               frameon=False, fontsize=10)
+        else:
+            fig.legend(
+                handles=handles, loc="lower left", bbox_to_anchor=(0.12, 0.87),
+                frameon=False, fontsize=9,
+            )
+    dpi = 180 if fisher_panel is not None else 110
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"wrote {path}")
     if data_path is not None:
