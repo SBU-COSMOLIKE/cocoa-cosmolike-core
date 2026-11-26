@@ -438,9 +438,11 @@ def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
     converged = sampler.run(
         f_live=args.flive, n_eff=args.neff, n_like_max=args.maxfeval,
         verbose=True, discard_exploration=True)
-    if sampler.n_eff == 0:
-        print("Budget exhausted before retaining posterior samples; "
-              "the checkpoint is saved, but there is no posterior chain.", flush=True)
+    effective_samples = float(sampler.n_eff)
+    if not np.isfinite(effective_samples) or effective_samples <= 0:
+        print(f"Nautilus effective sample size is {effective_samples:g}. "
+              "A posterior chain requires a finite positive value. "
+              "The checkpoint is saved.", flush=True)
         return {"converged": False, "log_evidence": None,
                 "evaluations": int(sampler.n_like), "posterior_samples": 0,
                 "effective_samples": 0.0}
@@ -478,7 +480,7 @@ def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
             output.write(f"{name}{derived} {label}\n")
     return {"converged": bool(converged), "log_evidence": float(sampler.log_z),
             "evaluations": int(sampler.n_like), "posterior_samples": npoints,
-            "effective_samples": float(sampler.n_eff)}
+            "effective_samples": effective_samples}
 
 
 def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_example=None):
