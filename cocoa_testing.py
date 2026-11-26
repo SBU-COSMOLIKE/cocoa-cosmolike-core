@@ -6932,8 +6932,13 @@ def plot_matter_emulator_fisher(
               "wa": r"w_a", "w0pwa": r"w_0+w_a"}
     colors = ["#0072B2", "#009E73", "#8B5AA7", "#E69F00", "#333333"]
     markers = ["o", "s", "D", "^", "P"]
-    error_labels = [r"$E<0.2$", r"$0.2\leq E<0.5$", r"$0.5\leq E<1$",
-                    r"$1\leq E<4$", r"$E\geq4$"]
+    error_labels = [
+        r"$\Delta\chi^2<0.2$",
+        r"$0.2\leq\Delta\chi^2<0.5$",
+        r"$0.5\leq\Delta\chi^2<1$",
+        r"$1\leq\Delta\chi^2<4$",
+        r"$\Delta\chi^2\geq4$",
+    ]
     with plt.rc_context():
         plt.rcParams.update({"font.family": "DejaVu Sans", "mathtext.fontset": "dejavusans"})
         amplitude = "As_1e9" if "As_1e9" in names else names[0]
