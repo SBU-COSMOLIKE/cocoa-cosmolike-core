@@ -832,7 +832,7 @@ This check repeats the accuracy measurement at 50 reproducible random
 points drawn across the prior. Per point it compares the masked theory
 vector at the default settings, $`v_{\rm def}`$, with a stored vector
 at the pushed settings (every setting of the accuracy checks raised at
-once), $`v_{\rm high}`$, through the frozen covariance $C$:
+once), $`v_{\rm high}`$, through the covariance of the retained rows $`C`$:
 
 ```math
 \Delta\chi^2 = (v_{\rm high} - v_{\rm def})^T C^{-1} (v_{\rm high} - v_{\rm def}),
@@ -845,7 +845,16 @@ seeded, so every run draws exactly the same points and the numbers
 compare across reruns and machines: model $m$ uses the seed $137 + m$,
 and the count and the seed base are the same in every project.
 
-The draw settings live in each project's `tests/cocoa_test_utils.py`,
+Current-prior checks draw every sampled cosmological and nuisance
+parameter from the numbered evaluation's priors with the specified
+likelihood. A point outside the joint prior cuts is redrawn with the same
+model's random stream. The saved file includes the accepted parameters,
+resolved ordinary and pushed configurations, and masked precision. The
+check verifies the accepted points, the pushed configuration and the
+precision before evaluating the ordinary predictions.
+
+For checks using frozen configurations, the draw settings live in each
+project's `tests/cocoa_test_utils.py`,
 read by the check and by the generator alike: `NMODELS_EXAMPLES` names
 the configurations checked, and `NMODELS_LIMIT` sets a pass limit on
 the deltas (`None` keeps the check advisory: the deltas only have to
@@ -863,11 +872,9 @@ $(A_s/A_{s,\rm fid})(b_i/b_{i,\rm fid})^2$ exceeds the cut in any bin
 is replaced by the next draw of the same generator, so the points
 sample the box restricted to the cut, still reproducibly.
 
-The result is a finite, conditional stress sample: 50 points over the
-parameters the frozen configuration samples, under the stated box,
-hold and cut rules, with every other parameter at the fiducial. Its
-minimum, median and maximum describe that sample; they are not global
-error bounds over the prior.
+The minimum, median and maximum describe the 50-point sample under the
+stated priors and draw rules. Errors elsewhere in the prior can exceed
+the measured maximum.
 
 The pushed-settings vectors are the expensive half (one model build at
 the pushed settings, then one evaluation per point), so they are
@@ -876,18 +883,15 @@ computed once by
     python ./projects/<project>/tests/generate_frozen_reference.py --nmodels
 
 and stored in `tests/frozen/nmodels_<example>.npz`, which the manifest
-pins with the rest of `frozen/`. The file holds the parameter names,
-the 50 points and their held flags, the 50 masked vectors, the seed,
-the draw settings, and a SHA-256 fingerprint of the pushed
-configuration (the likelihood and theory blocks, with path entries
-left out). The full refreeze (`--overwrite`) keeps existing
+pins with the rest of `frozen/`. For checks using frozen configurations,
+the file also holds the draw settings and a SHA-256 fingerprint of the
+pushed configuration. The full refreeze (`--overwrite`) keeps existing
 `nmodels_*.npz` files rather than recomputing them; `--nmodels` is
 their only writer. The check itself costs one model build at the
 default settings and one evaluation per point. Before evaluating, it
-redraws the points and requires them to equal the stored ones exactly,
-and requires the fingerprint to match: a changed prior, draw setting,
-fiducial, pushed setting or likelihood default fails the check with
-the instruction to regenerate the stored vectors with
+redraws the points and requires them to equal the stored ones exactly.
+The frozen-configuration checks also require the fingerprint to match.
+An input mismatch prompts regeneration with
 `generate_frozen_reference.py --nmodels`. Without a stored file the
 check is skipped with the same instruction. The fingerprint covers the
 resolved likelihood and theory blocks (path entries left out); it does
@@ -919,6 +923,8 @@ folder
 folder when the variable is unset, so an ordinary run changes no
 project file; its name carries the example and the seed base
 (`accuracy_nmodels_<example>_seed137.png`).
+Current-prior checks save the plotted values alongside the PNG and
+saturate the color scale at Δχ² = 1.
 
 ### Halo-model checks (opt-in) <a name="dv_halo_slow"></a>
 
