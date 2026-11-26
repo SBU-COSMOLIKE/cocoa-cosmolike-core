@@ -541,6 +541,34 @@ def compute_references(u, stamp, chi2_format):
     write_json(u.REFERENCE_FILE, reference)
 
 
+def _configure_nmodels_generation_threads(u):
+    """Load the compiled interface with one BLAS thread before generation.
+
+    OpenMP-linked OpenBLAS caps its teams at the limit in force when it
+    first loads. Restore the requested OpenMP team for CosmoLike after
+    importing the project library and before constructing the model.
+
+    Arguments:
+      u = the project's cocoa_test_utils module.
+
+    Returns:
+      None. Sets the BLAS environment and the native OpenMP team.
+    """
+    from importlib import import_module
+
+    requested_threads = os.environ["OMP_NUM_THREADS"]
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_DEFAULT_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
+    try:
+        interface = import_module(u._H.interface_module)
+    finally:
+        os.environ["OMP_NUM_THREADS"] = requested_threads
+    interface.set_omp_threads(n=int(requested_threads))
+
+
 def generate_nmodels_vectors(u, example):
     """Compute and store the high-accuracy vectors of the N-models points.
 
@@ -741,6 +769,8 @@ def freeze_main(u, script_file, usage, vectors, mask_variants=None,
     if "--nmodels-one" in sys.argv:
         u.require_cocoa_environment()
         example = sys.argv[sys.argv.index("--nmodels-one") + 1]
+        if getattr(u, "NMODELS_CURRENT_PRIOR", False):
+            _configure_nmodels_generation_threads(u=u)
         generate_nmodels_vectors(u, example)
         return 0
     for incremental_flag, worker_flag, needs_stamp, run in extra_steps:
