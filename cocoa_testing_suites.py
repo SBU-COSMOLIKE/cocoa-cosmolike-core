@@ -615,31 +615,54 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
     Returns:
       the PNG path.
     """
+    import matplotlib
+
     import cocoa_testing_figures as figures
 
     path = os.path.join(figure_dir,
                         f"accuracy_nmodels_{example}_seed{seed}.png")
-    # the project is the folder that holds the tests/ folder
-    project = os.path.basename(os.path.dirname(u.TESTS_DIR))
     if case is None:
         case = example
-    # test labels stay ASCII; the figure title may use the symbol
-    label = (f"{project}, {case.replace('Delta z', 'Δz')}: "
-             f"{len(points)} models, seed base {seed}")
     color_ceiling = figures.NMODELS_COLOR_CEILING
     data_path = None
-    if getattr(u, "NMODELS_CURRENT_PRIOR", False):
+    current = getattr(u, "NMODELS_CURRENT_PRIOR", False)
+    if current:
         _, fiducial = nmodels_current_info(u=u, example=example)
+        label = case
         color_ceiling = 1.0
         data_path = os.path.splitext(path)[0] + ".txt"
     else:
         fiducial = u.load_frozen_point(example)
-    figures.random_models_triangle(
-        points=points, deltas=deltas,
-        fiducial=fiducial, path=path, limit=limit,
-        held=held, label=label,
-        colorbarlabel=r"$\Delta\chi^2$", color_ceiling=color_ceiling,
-        data_path=data_path)
+        project = os.path.basename(os.path.dirname(u.TESTS_DIR))
+        label = (f"{project}, {case.replace('Delta z', 'Δz')}: "
+                 f"{len(points)} models, seed base {seed}")
+    with matplotlib.rc_context():
+        if current:
+            # Match the other current survey figures without changing the legacy style.
+            matplotlib.rcParams['mathtext.fontset'] = 'stix'
+            matplotlib.rcParams['font.family'] = 'STIXGeneral'
+            matplotlib.rcParams['mathtext.rm'] = 'Bitstream Vera Sans'
+            matplotlib.rcParams['mathtext.it'] = 'Bitstream Vera Sans:italic'
+            matplotlib.rcParams['mathtext.bf'] = 'Bitstream Vera Sans:bold'
+            matplotlib.rcParams['xtick.bottom'] = True
+            matplotlib.rcParams['xtick.top'] = False
+            matplotlib.rcParams['ytick.right'] = False
+            matplotlib.rcParams['axes.edgecolor'] = 'black'
+            matplotlib.rcParams['axes.linewidth'] = '1.0'
+            matplotlib.rcParams['axes.labelsize'] = 'medium'
+            matplotlib.rcParams['axes.grid'] = True
+            matplotlib.rcParams['grid.linewidth'] = '0.0'
+            matplotlib.rcParams['grid.alpha'] = '0.18'
+            matplotlib.rcParams['grid.color'] = 'lightgray'
+            matplotlib.rcParams['legend.labelspacing'] = 0.77
+            matplotlib.rcParams['savefig.bbox'] = 'tight'
+            matplotlib.rcParams['savefig.format'] = 'pdf'
+        figures.random_models_triangle(
+            points=points, deltas=deltas,
+            fiducial=fiducial, path=path, limit=limit,
+            held=held, label=label,
+            colorbarlabel=r"$\Delta\chi^2$", color_ceiling=color_ceiling,
+            data_path=data_path)
     return path
 
 
