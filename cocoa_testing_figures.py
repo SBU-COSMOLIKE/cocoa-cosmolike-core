@@ -353,7 +353,9 @@ def random_models_amplitude(point, fiducial):
 
 
 def random_models_triangle(points, deltas, fiducial, path, limit,
-                           colorbarlabel, held=None, label=None):
+                           colorbarlabel, held=None, label=None,
+                           color_ceiling=NMODELS_COLOR_CEILING,
+                           data_path=None):
     """Draw the N-random-models delta chi2 as an Omega_m - amplitude triangle.
 
     The figure examines how the numerical error of a point associates
@@ -407,13 +409,18 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
       label         = None, or the text naming the case (project,
                       example, number of models, seed base), drawn
                       above the panels.
+      color_ceiling = positive upper limit of the delta chi2 color
+                      scale. Larger distances keep the top color.
+      data_path     = optional text path for the plotted coordinates and
+                      original distances, in model order.
 
     Returns:
-      nothing; the PNG file is written and the figure closed.
+      nothing; the PNG and optional table are written.
 
     Raises:
       ValueError when the points and the deltas differ in number, when
-      a delta is not finite, or when the points do not sample omegam.
+      a delta is not finite, the color ceiling is not positive and
+      finite, or the points do not sample omegam.
     """
     from matplotlib.colors import LogNorm
     from matplotlib.lines import Line2D
@@ -431,6 +438,8 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
         raise ValueError(
             f"the points do not sample omegam (names {list(points[0])}): "
             "the figure needs the drawn matter density")
+    if not np.isfinite(color_ceiling) or color_ceiling <= 0.0:
+        raise ValueError(f"color_ceiling must be positive and finite, got {color_ceiling}")
     # The expected input is the quadratic form of the docstring,
     # negative only by round-off. abs() and the floor are display
     # operations for the log axes; they would also silently flip a
@@ -447,10 +456,8 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
 
     delta_low = min(float(np.min(delta_plot)), limit) / 3.0
     delta_high = max(float(np.max(delta_plot)), limit) * 3.0
-    # the scale stops at NMODELS_COLOR_CEILING: larger deltas saturate
-    color_high = NMODELS_COLOR_CEILING
-    color_low = min(float(np.min(delta_plot)), color_high / 10.0)
-    norm = LogNorm(vmin=color_low, vmax=color_high, clip=True)
+    color_low = min(float(np.min(delta_plot)), color_ceiling / 10.0)
+    norm = LogNorm(vmin=color_low, vmax=color_ceiling, clip=True)
     if held is None:
         held_mask = np.zeros(len(points), dtype=bool)
     else:
@@ -545,3 +552,12 @@ def random_models_triangle(points, deltas, fiducial, path, limit,
     fig.savefig(path, dpi=110, bbox_inches="tight")
     plt.close(fig)
     print(f"wrote {path}")
+    if data_path is not None:
+        if has_amplitude:
+            values = np.column_stack((omegam, amplitudes, delta_values))
+            header = "omegam max_As_b2_ratio delta_chi2"
+        else:
+            values = np.column_stack((omegam, delta_values))
+            header = "omegam delta_chi2"
+        np.savetxt(fname=data_path, X=values, fmt="%.17g", header=header)
+        print(f"wrote {data_path}")

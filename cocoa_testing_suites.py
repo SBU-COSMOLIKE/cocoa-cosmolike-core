@@ -45,6 +45,32 @@ def _interface(u):
     return importlib.import_module(u._H.interface_module)
 
 
+def _make_evaluate_model(evaluate_inputs, example, tatt):
+    """Build a single-survey model from the input and point of an Evaluate test.
+
+    Arguments:
+      evaluate_inputs = callable accepting example and tatt keyword arguments
+                        and returning a Cobaya configuration and its point.
+      example = configuration name passed through to the caller.
+      tatt = select the TATT variant when the test supplies two IA models.
+
+    Returns:
+      The Cobaya model, its likelihood name and a sampled-parameter dictionary
+      in the order resolved by Cobaya. The caller closes the model.
+    """
+    from cocoa_testing import make_model
+
+    info, point = evaluate_inputs(example=example, tatt=tatt)
+    likelihood_name, = info["likelihood"]
+    model = make_model(info=info)
+    try:
+        sampled = {name: point[name] for name in model.parameterization.sampled_params()}
+    except KeyError:
+        model.close()
+        raise
+    return model, likelihood_name, sampled
+
+
 def _native_space(u, ci):
     """The binning space the project's frozen examples score in.
 
@@ -362,28 +388,81 @@ def nmodels_file(u, example):
     return os.path.join(u.FROZEN_DIR, f"nmodels_{example}.npz")
 
 
+def nmodels_current_info(u, example, high_accuracy=False):
+    """The current-prior check uses the NLA version of the live evaluation.
+
+    Keep its survey files, parameter prescriptions and physical theory.
+    The ordinary prediction uses the common CAMB resolution. The pushed
+    prediction uses the project's established likelihood accuracy settings
+    and the shared higher CAMB transfer resolution.
+
+    Arguments:
+      u = the project's cocoa_test_utils module.
+      example = an EXAMPLES key whose provenance names the evaluation YAML.
+      high_accuracy = use all the numerical refinements together.
+
+    Returns:
+      The fully resolved Cobaya input and the evaluation's fiducial overrides.
+    """
+    from pathlib import Path
+
+    from cobaya.input import update_info
+    from cobaya.yaml import yaml_load_file
+    from cocoa_testing import HIGH_ACCURACY_CAMB_EXTRA_ARGS
+
+    project = Path(u.TESTS_DIR).parent
+    case = u.EXAMPLES[example]
+    path = project / case["provenance"]
+    info = yaml_load_file(str(path))
+    fiducial = info.pop("sampler")["evaluate"]["override"]
+    info.pop("output", None)
+    info["debug"] = 30
+    info["timing"] = False
+    info["stop_at_error"] = True
+    likelihood = info["likelihood"][case["likelihood"]]
+    likelihood["IA_model"] = 0
+    likelihood["print_datavector"] = False
+    camb = info["theory"]["camb"]
+    camb["stop_at_error"] = True
+    arguments = camb["extra_args"]
+    arguments["AccuracyBoost"] = 1.05
+    arguments["k_per_logint"] = 10
+    arguments["kmax"] = 10.0
+    if high_accuracy:
+        likelihood.update(u.HIGH_ACCURACY_LIKELIHOOD)
+        arguments.update(HIGH_ACCURACY_CAMB_EXTRA_ARGS)
+    return update_info(info), fiducial
+
+
 def nmodels_draw(u, example):
     """Return the fixed N-random-models points of one example.
 
-    The draw settings live in the project's cocoa_test_utils
-    (NMODELS_BOX, NMODELS_HOLD, NMODELS_AMPLITUDE_CUT), the one place
-    that both the check and generate_frozen_reference.py --nmodels
-    read, so the two always draw the same points.
+    The current-prior projects sample every coordinate from the
+    resolved Cobaya prior. Historical suites use their recorded
+    box-draw, hold and amplitude settings. The check and explicit
+    reference generator share this function.
 
     Arguments:
       u       = the project's cocoa_test_utils module.
       example = a key of u.EXAMPLES.
 
     Returns:
-      (points, held) of u.nmodels_points.
+      (points, held), sampled parameter dictionaries and hold flags.
     """
+    if getattr(u, "NMODELS_CURRENT_PRIOR", False):
+        from cocoa_testing import draw_nmodels_prior_rows
+
+        info, _ = nmodels_current_info(u=u, example=example)
+        names, values = draw_nmodels_prior_rows(info=info)
+        points = [dict(zip(names, row, strict=True)) for row in values]
+        return points, [False] * len(points)
     return u.nmodels_points(
         example, box_overrides=getattr(u, "NMODELS_BOX", None),
         hold=getattr(u, "NMODELS_HOLD", None),
         amplitude_cut=getattr(u, "NMODELS_AMPLITUDE_CUT", None))
 
 
-def nmodels_vectors(u, example, points, high_accuracy):
+def nmodels_vectors(u, example, points, high_accuracy, expected_precision=None):
     """Return the masked theory vector of every point, from one model.
 
     One cobaya model is built for the whole list and each point costs
@@ -396,8 +475,9 @@ def nmodels_vectors(u, example, points, high_accuracy):
       example       = a key of u.EXAMPLES.
       points        = the {sampled name: value} points.
       high_accuracy = True builds the model with the project's pushed
-                      accuracy settings (load_frozen_info's
-                      high_accuracy), False with the frozen defaults.
+                      accuracy settings, False with ordinary settings.
+      expected_precision = saved masked inverse covariance. The current-prior
+                           replay checks this before calculating any vectors.
 
     Returns:
       (vectors, inv_cov): a (len(points), n) float64 array of masked
@@ -409,40 +489,76 @@ def nmodels_vectors(u, example, points, high_accuracy):
       sampled parameters (the likelihood or theory code changed its
       parameters since the freeze).
     """
+    from contextlib import chdir, nullcontext
     import time
+
     import numpy as np
 
     ci = _interface(u)
     masked_vector = _masked_vector_fn(u, ci)
-    info = u.load_frozen_info(example, tatt=False, high_accuracy=high_accuracy)
+    current = getattr(u, "NMODELS_CURRENT_PRIOR", False)
+    if current:
+        info, _ = nmodels_current_info(u=u, example=example, high_accuracy=high_accuracy)
+        where = chdir(os.environ["ROOTDIR"])
+    else:
+        info = u.load_frozen_info(example, tatt=False, high_accuracy=high_accuracy)
+        where = nullcontext()
     if high_accuracy:
         label = "high-accuracy"
     else:
         label = "default-settings"
     print(f"  building the {label} model of {example} ...", flush=True)
     start = time.time()
-    model = u.make_model(info)
-    print(f"  built in {time.time() - start:.0f} s", flush=True)
-    sampled = set(model.parameterization.sampled_params())
-    vectors = []
-    for index in range(len(points)):
-        point = points[index]
-        if sampled != set(point):
-            raise AssertionError(
-                "sampled-parameter set differs from the frozen point "
-                "(the likelihood/theory code changed its parameters):\n"
-                f"  new since freeze: {sorted(sampled - set(point))}\n"
-                f"  gone since freeze: {sorted(set(point) - sampled)}")
-        start = time.time()
-        u.evaluate_chi2(model, point)
-        vectors.append(np.array(masked_vector(), dtype="float64"))
-        print(f"  model {index + 1}/{len(points)}: {label} vector "
-              f"({time.time() - start:.1f} s)", flush=True)
-    inv_cov = np.array(ci.get_inv_cov_masked(), dtype="float64")
-    # drop the reference before returning: the compiled interface
-    # holds one configuration at a time, and the caller may build the
-    # next model right after this call
-    del model
+    with where, u.make_model(info) as model:
+        print(f"  built in {time.time() - start:.0f} s", flush=True)
+        inv_cov = np.array(ci.get_inv_cov_masked(), dtype="float64")
+        if expected_precision is not None:
+            np.testing.assert_allclose(inv_cov, expected_precision, rtol=1e-10, atol=1e-12)
+        if current:
+            like_name = u.EXAMPLES[example]["likelihood"]
+            like = model.likelihood[like_name]
+            options = info["likelihood"][like_name]
+            effective = {}
+            for name in u.HIGH_ACCURACY_LIKELIHOOD:
+                effective[name] = getattr(like, name)
+                assert effective[name] == options[name], (example, name, effective[name])
+            print(f"  native controls {effective}", flush=True)
+        sampled = set(model.parameterization.sampled_params())
+        vectors = []
+        for index, point in enumerate(points):
+            if sampled != set(point):
+                raise AssertionError(
+                    "sampled-parameter set differs from the saved point:\n"
+                    f"  new: {sorted(sampled - set(point))}\n"
+                    f"  gone: {sorted(set(point) - sampled)}")
+            start = time.time()
+            u.evaluate_chi2(model, point)
+            vector = np.array(masked_vector(), dtype="float64")
+            if vector.shape != (len(inv_cov),) or not np.isfinite(vector).all():
+                raise ValueError(f"{example} model {index + 1} returned an invalid vector.")
+            vectors.append(vector)
+            if current and index == 0:
+                from ctypes import CDLL
+
+                from threadpoolctl import threadpool_info
+
+                _, transfer = model.theory["camb.transfers"].get_CAMB_transfers()
+                params = transfer.Params
+                requested = info["theory"]["camb"]["extra_args"]
+                boost = params.Accuracy.AccuracyBoost
+                spacing = params.Transfer.k_per_logint
+                assert boost == requested["AccuracyBoost"]
+                assert spacing == requested["k_per_logint"]
+                assert params.Transfer.kmax >= requested["kmax"]
+                print(f"  CAMB boost={boost:g}, k_per_logint={spacing}, "
+                      f"requested/effective kmax={requested['kmax']:g}/"
+                      f"{params.Transfer.kmax:g}", flush=True)
+                native_threads = CDLL(ci.__file__).omp_get_max_threads()
+                blas = {pool["num_threads"] for pool in threadpool_info()
+                        if pool["user_api"] == "blas"}
+                print(f"  native OpenMP={native_threads}, BLAS={sorted(blas)}", flush=True)
+            print(f"  model {index + 1}/{len(points)}: {label} vector "
+                  f"({time.time() - start:.1f} s)", flush=True)
     return np.array(vectors), inv_cov
 
 
@@ -510,11 +626,20 @@ def _nmodels_figure(u, example, points, deltas, figure_dir, seed, limit,
     # test labels stay ASCII; the figure title may use the symbol
     label = (f"{project}, {case.replace('Delta z', 'Δz')}: "
              f"{len(points)} models, seed base {seed}")
+    color_ceiling = figures.NMODELS_COLOR_CEILING
+    data_path = None
+    if getattr(u, "NMODELS_CURRENT_PRIOR", False):
+        _, fiducial = nmodels_current_info(u=u, example=example)
+        color_ceiling = 1.0
+        data_path = os.path.splitext(path)[0] + ".txt"
+    else:
+        fiducial = u.load_frozen_point(example)
     figures.random_models_triangle(
         points=points, deltas=deltas,
-        fiducial=u.load_frozen_point(example), path=path, limit=limit,
+        fiducial=fiducial, path=path, limit=limit,
         held=held, label=label,
-        colorbarlabel="squared model distance\nin the fixed covariance")
+        colorbarlabel=r"$\Delta\chi^2$", color_ceiling=color_ceiling,
+        data_path=data_path)
     return path
 
 
@@ -553,6 +678,8 @@ def accuracy_suite(u, name, checks, knob_scan=None):
       NMODELS_LIMIT         = None keeps the check advisory (finite
                               deltas only); a number makes every
                               model's |delta chi2| stay below it.
+      NMODELS_CURRENT_PRIOR = True uses the corresponding current NLA
+                              evaluation and all its sampled priors.
       NMODELS_BOX, NMODELS_HOLD, NMODELS_AMPLITUDE_CUT
                             = the draw settings of nmodels_points.
 
@@ -725,16 +852,12 @@ def accuracy_suite(u, name, checks, knob_scan=None):
             frozen covariance. Storing the expensive half keeps the
             check to one model build and one evaluation per point.
 
-            The points are fixed: model m draws with the seed
-            RANDOM_MODEL_SEED + m from the project's draw settings
-            (NMODELS_BOX, NMODELS_HOLD and NMODELS_AMPLITUDE_CUT in
-            cocoa_test_utils). The check redraws them and requires
-            the stored points and the fingerprint of the
-            high-accuracy configuration (nmodels_config_hash) to
-            match, so a changed prior, draw or configuration asks
-            for regenerated vectors instead of comparing the wrong
-            ones. Without a stored file the check is skipped with
-            that instruction.
+            Model m draws with seed RANDOM_MODEL_SEED + m. Current
+            checks use the full Cobaya prior and historical checks
+            use their recorded stress settings. The test verifies
+            that the points and reference settings match the saved
+            file. Current checks also compare the precision matrix
+            before calculating their ordinary predictions.
 
             The deltas have to be finite. With NMODELS_LIMIT set,
             each |delta| must also stay below it; with the limit
@@ -746,8 +869,13 @@ def accuracy_suite(u, name, checks, knob_scan=None):
             sorts this check after the A-checks (unittest runs
             methods in name order).
             """
+            import json
             import math
+
             import numpy as np
+            from cocoa_testing import (
+                RANDOM_MODEL_SEED, report_random_model, report_random_model_summary,
+            )
 
             path = nmodels_file(u, nm_example)
             if not os.path.isfile(path):
@@ -758,7 +886,7 @@ def accuracy_suite(u, name, checks, knob_scan=None):
                     "--nmodels")
             # checked before the models run, which take minutes
             figure_dir = _nmodels_figure_dir()
-            seed = u.RANDOM_MODEL_SEED
+            seed = RANDOM_MODEL_SEED
             points, held = nmodels_draw(u, nm_example)
             n_models = len(points)
             print(f"\n  N-random-models check: {n_models} models, "
@@ -783,6 +911,7 @@ def accuracy_suite(u, name, checks, knob_scan=None):
             stored = np.load(path, allow_pickle=False)
             regenerate = ("regenerate the stored vectors with "
                           "generate_frozen_reference.py --nmodels")
+            self.assertEqual(int(stored["seed"]), seed)
             names = []
             for name in stored["names"]:
                 names.append(str(name))
@@ -799,15 +928,26 @@ def accuracy_suite(u, name, checks, knob_scan=None):
                 msg="the stored points differ from today's draw (the "
                     "prior, the draw settings or the fiducial "
                     f"changed); {regenerate}")
-            self.assertEqual(
-                str(stored["config_hash"]),
-                u.nmodels_config_hash(nm_example),
-                msg="the high-accuracy configuration changed since "
-                    f"the stored vectors were computed; {regenerate}")
+            expected_precision = None
+            if getattr(u, "NMODELS_CURRENT_PRIOR", False):
+                pushed, _ = nmodels_current_info(u=u, example=nm_example, high_accuracy=True)
+                configuration = json.dumps(pushed, sort_keys=True)
+                self.assertEqual(str(stored["pushed_configuration"]), configuration,
+                                 msg=f"the pushed reference configuration changed; {regenerate}")
+                expected_precision = stored["precision"]
+            else:
+                self.assertEqual(
+                    str(stored["config_hash"]),
+                    u.nmodels_config_hash(nm_example),
+                    msg=f"the pushed reference configuration changed; {regenerate}")
+            high_vectors = stored["vectors"]
+            stored.close()
+            self.assertTrue(high_vectors.ndim == 2 and len(high_vectors) == n_models)
+            self.assertTrue(np.isfinite(high_vectors).all())
 
             default_vectors, inv_cov = nmodels_vectors(
-                u, nm_example, points, high_accuracy=False)
-            high_vectors = stored["vectors"]
+                u, nm_example, points, high_accuracy=False,
+                expected_precision=expected_precision)
             self.assertEqual(
                 high_vectors.shape, default_vectors.shape,
                 msg="the stored vectors have another length than "
@@ -816,8 +956,7 @@ def accuracy_suite(u, name, checks, knob_scan=None):
             for index in range(n_models):
                 difference = high_vectors[index] - default_vectors[index]
                 delta = float(difference @ inv_cov @ difference)
-                u.report_random_model(index, n_models, points[index],
-                                      delta)
+                report_random_model(index, n_models, points[index], delta)
                 deltas.append(delta)
             # enumerate pairs each delta with its position, counted
             # from 0, so a broken model is named by number
@@ -826,10 +965,10 @@ def accuracy_suite(u, name, checks, knob_scan=None):
                 # call, but a non-finite one means the evaluation
                 # itself broke
                 self.assertTrue(
-                    math.isfinite(delta),
-                    msg=f"model {index}: non-finite delta chi2 "
+                    math.isfinite(delta) and delta >= 0.0,
+                    msg=f"model {index}: invalid delta chi2 "
                         f"{delta!r}")
-            u.report_random_model_summary(deltas)
+            report_random_model_summary(deltas)
             if nmodels_hold is not None:
                 drawn_deltas = []
                 held_deltas = []
@@ -839,12 +978,12 @@ def accuracy_suite(u, name, checks, knob_scan=None):
                     else:
                         drawn_deltas.append(deltas[index])
                 print("  models drawn across the prior:", flush=True)
-                u.report_random_model_summary(drawn_deltas)
+                report_random_model_summary(drawn_deltas)
                 if len(held_deltas) > 0:
                     print("  models holding "
                           f"{', '.join(nmodels_hold)} at the fiducial:",
                           flush=True)
-                    u.report_random_model_summary(held_deltas)
+                    report_random_model_summary(held_deltas)
             # drawn before the limit applies, so a failing run still
             # shows where in the prior its deltas sit; an advisory
             # check draws the 0.2 band of the reference tests
@@ -2095,7 +2234,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                               expected_defaults, change_bound=None,
                               noise_bound=None, handoff_margin=None,
                               svd_rule=None, svd_margin=None,
-                              expected_lmax_nonlimber=None):
+                              expected_lmax_nonlimber=None, *,
+                              evaluate_inputs=None, interface=None):
     """Build the class of the non-Limber early-exit and hand-off checks.
 
     The non-Limber real-space C_l (w_gg_tomo for w(theta), w_gammat_tomo
@@ -2128,9 +2268,9 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
     w0 and wa (Cobaya names w = w0 and w0pwa = w0 + wa, so varying w0
     at fixed wa moves both names together) and the bias of the highest
     lens bin, with the notebooks' step h = 0.025 (absolute for wa = 0).
-    The data vector is the frozen example's masked vector at the frozen
-    accuracy settings; CAMB's settings are those of the frozen
-    configuration.
+    The data vector is the example's masked vector. A frozen example
+    keeps its recorded settings. An Evaluate input uses the settings
+    selected by its configuration loader.
 
     One model is built for the class; every test restores the production
     settings (the tolerances, the FKEM cap and the gg engine the
@@ -2139,7 +2279,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
     bit. The early exit of tests 2-4 and 8 is the one of the core
     defaults, whatever the production tolerances. The tests:
 
-      1. the production settings reproduce the frozen reference chi2,
+      1. the production settings reproduce the frozen reference chi2
+         or the native masked quadratic for an Evaluate input,
          the likelihood applied this project's production tolerances
          (expected_defaults), and the binding's default arguments give
          the vector of the core defaults bit for bit;
@@ -2209,6 +2350,12 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
       svd_margin     = relative margin of the "not_larger" rule.
       expected_lmax_nonlimber = optional production FKEM cap checked
                        against the resolved likelihood configuration.
+      evaluate_inputs = optional callable receiving example and tatt
+                       keywords and returning a Cobaya configuration
+                       and fiducial. This uses the live native masked
+                       quadratic for check 1.
+      interface      = the compiled survey module when evaluate_inputs
+                       is supplied.
 
     Returns:
       a unittest.TestCase subclass named `name`.
@@ -2220,6 +2367,8 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
     """
     import math
 
+    if (evaluate_inputs is None) != (interface is None):
+        raise ValueError("supply evaluate_inputs and interface together")
     if len(expected_defaults) != 2:
         raise ValueError(
             f"nonlimber_tolerance_suite: expected_defaults = "
@@ -2243,6 +2392,11 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             "svd_margin (the relative margin of sigma_SVD over sigma_FKEM)")
     columns = ("w0", "wa", bias_parameter)
     reference_key = f"{example}_nla"
+    if evaluate_inputs is None:
+        evaluate_chi2 = u.evaluate_chi2
+        require_cocoa_environment = u.require_cocoa_environment
+    else:
+        from cocoa_testing import evaluate_chi2, require_cocoa_environment
 
     class TestNonLimberTolerance(unittest.TestCase):
         """Early-exit tolerance, FKEM hand-off and SVD noise checks."""
@@ -2252,20 +2406,26 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             """Build the model, evaluate the fiducial, keep the state."""
             import numpy as np
 
-            u.require_cocoa_environment()
-            u.verify_frozen()
-            cls.reference = u.load_reference()
-            cls.ci = _interface(u)
+            require_cocoa_environment()
+            print(f"\n  building model ({example}, NLA) ...", flush=True)
+            if evaluate_inputs is None:
+                u.verify_frozen()
+                cls.reference = u.load_reference()
+                cls.ci = _interface(u)
+                info = u.load_frozen_info(example, tatt=False)
+                lk_name = u.EXAMPLES[example]["likelihood"]
+                cls.model = u.make_model(info)
+                cls.point = u.build_point(cls.model, example, tatt=False)
+            else:
+                cls.ci = interface
+                cls.model, lk_name, cls.point = _make_evaluate_model(
+                    evaluate_inputs=evaluate_inputs, example=example, tatt=False)
+                cls.addClassCleanup(cls.model.close)
             # staticmethod: a plain function stored on the class would be
             # bound to the instance (called with self) when a test method
             # reads it as self.masked_vector
             cls.masked_vector = staticmethod(_masked_vector_fn(u, cls.ci))
-            print(f"\n  building model ({example}, NLA) ...", flush=True)
-            info = u.load_frozen_info(example, tatt=False)
-            lk_name = u.EXAMPLES[example]["likelihood"]
-            cls.model = u.make_model(info)
             cls.like = cls.model.likelihood[lk_name]
-            cls.point = u.build_point(cls.model, example, tatt=False)
             for key in ("w", "w0pwa", bias_parameter):
                 if key not in cls.point:
                     raise ValueError(
@@ -2321,7 +2481,7 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                 cls.production["accuracy_boost"] = 0.35
                 cls.production["integration_accuracy"] = -1
             cls.space = _native_space(u, cls.ci)
-            cls.chi2 = u.evaluate_chi2(cls.model, cls.point)
+            cls.chi2 = evaluate_chi2(cls.model, cls.point)
             cls.vector = np.array(cls.masked_vector())
             cls.icov = np.array(cls.ci.get_inv_cov_masked())
             # {(engine, cap, tolerance): record} shared by tests 4-6, so
@@ -2370,7 +2530,12 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             point["w"] = float(param[0])
             point["w0pwa"] = float(param[0] + param[1])
             point[bias_parameter] = float(param[2])
-            u.evaluate_chi2(cls.model, point)
+            if evaluate_inputs is not None:
+                names = cls.model.parameterization.sampled_params()
+                values = np.array([point[name] for name in names])
+                assert np.isfinite(cls.model.prior.logps_internal(values)), (
+                    f"the (w0, wa, bias) stencil point {param} must lie in the sampled prior")
+            evaluate_chi2(cls.model, point)
             vector = np.array(cls.masked_vector())
             cls.last_vector = vector
             return vector
@@ -2380,7 +2545,7 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
             """Evaluate the fiducial and return its masked vector."""
             import numpy as np
 
-            u.evaluate_chi2(cls.model, cls.point)
+            evaluate_chi2(cls.model, cls.point)
             return np.array(cls.masked_vector())
 
         @classmethod
@@ -2480,22 +2645,16 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                                  for c in columns)
                 print(f"    {label:34s}{values}")
 
-        def test_1_default_reproduces_frozen_reference(self):
-            """The production settings: frozen chi2 and the binding defaults.
+        def _check_default_tolerances(self):
+            """Check the production score and the Python binding defaults.
 
-            The likelihood applied this project's production tolerances
-            (expected_defaults), the chi2 is within CHI2_TOLERANCE of
-            the frozen reference, and init_nonlimber_tolerance() with
-            its default arguments, after a detour through 0, gives the
-            vector of the core defaults (NONLIMBER_TOL_CORE_DEFAULTS)
-            bit for bit.
+            A frozen model reproduces its stored chi2. An Evaluate model
+            reproduces the native masked quadratic against the survey data.
+            The default setter restores the core-default vector bit for bit.
             """
             import numpy as np
 
-            reference = self.reference[reference_key]
-            print(f"\n  chi2 = {self.chi2:.6f} (frozen reference "
-                  f"{reference:.6f}, difference "
-                  f"{self.chi2 - reference:+.6f}); production tolerances "
+            print(f"\n  chi2 = {self.chi2:.6f}; production tolerances "
                   f"(gg, gs) = ({self.production['gg_tol']}, "
                   f"{self.production['gs_tol']}), expected "
                   f"{expected_defaults}")
@@ -2510,6 +2669,22 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                     expected_lmax_nonlimber,
                     "the likelihood applied a different FKEM cap from "
                     "the one this project's test file expects")
+            if evaluate_inputs is None:
+                reference = self.reference[reference_key]
+                print(f"  frozen reference {reference:.6f}, "
+                      f"difference {self.chi2 - reference:+.6f}")
+                self.assertLess(
+                    abs(self.chi2 - reference), u.CHI2_TOLERANCE,
+                    f"chi2 = {self.chi2:.6f} vs frozen reference {reference:.6f}")
+            else:
+                data = np.asarray(self.ci.get_dv_masked())
+                residual = self.vector - data
+                quadratic = float(residual @ self.icov @ residual)
+                np.testing.assert_allclose(self.chi2, quadratic, rtol=1e-12, atol=1e-9)
+                boost = self.production["accuracy_boost"]
+                divisor = max(1.0, 1.0 + 2.0 * (boost - 1.0))
+                expected = np.asarray(expected_defaults) / divisor
+                np.testing.assert_array_equal(self.ci.get_nonlimber_tolerance(), expected)
             core = NONLIMBER_TOL_CORE_DEFAULTS
             try:
                 self._fiducial_vector()
@@ -2527,10 +2702,11 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
                 "init_nonlimber_tolerance() with its default arguments "
                 f"did not give the vector of the core defaults {core}: "
                 "the binding defaults differ from the core's")
-            self.assertLess(
-                abs(self.chi2 - reference), u.CHI2_TOLERANCE,
-                f"chi2 = {self.chi2:.6f} vs frozen reference "
-                f"{reference:.6f}")
+
+        if evaluate_inputs is None:
+            test_1_default_reproduces_frozen_reference = _check_default_tolerances
+        else:
+            test_1_default_reproduces_native_chi2 = _check_default_tolerances
 
         @classmethod
         def _tolerance_zero_vectors(cls):
@@ -2748,7 +2924,7 @@ def nonlimber_tolerance_suite(u, name, example, bias_parameter,
 
             code = (
                 "import sys\n"
-                f"import {u._H.interface_module} as ci\n"
+                f"import {self.ci.__name__} as ci\n"
                 "ci.initial_setup()\n"
                 "ci.init_nonlimber_tolerance(gg_tol=float(sys.argv[1]), "
                 "gs_tol=float(sys.argv[2]))\n"
@@ -4267,6 +4443,8 @@ LADDER_SECTORS = (
     ("ia", re.compile(r"_A1_|_A2_|_BTA_")),
     ("dz_source", re.compile(r"_DZ_S")),
     ("dz_lens", re.compile(r"_DZ_L")),
+    ("nz_source_modes", re.compile(r"_U_S[0-9]+$")),
+    ("nz_lens_modes", re.compile(r"_U_L[0-9]+_[0-9]+$")),
     ("m", re.compile(r"_M[0-9]+$")),
     ("bias", re.compile(r"_B1_|_B2_|_BMAG_")),
     ("fog", re.compile(r"_SIGV_")),
@@ -4288,6 +4466,10 @@ LADDER_DELTAS = {
            re.compile(r"_BTA_1$"): 0.05},
     "dz_source": {re.compile(r"_DZ_S"): 0.001},
     "dz_lens": {re.compile(r"_DZ_L"): 0.001},
+    # The n(z) coefficients are in units of a standard-normal draw. The
+    # furthest point, the four-step scramble, moves each mode by 0.20.
+    "nz_source_modes": {re.compile(r"_U_S[0-9]+$"): 0.05},
+    "nz_lens_modes": {re.compile(r"_U_L[0-9]+_[0-9]+$"): 0.05},
     "m": {re.compile(r"_M[0-9]+$"): 0.005},
     "bias": {re.compile(r"_B1_"): 0.05},
     "fog": {re.compile(r"_SIGV_"): 5.0},  # km/s
@@ -4347,7 +4529,7 @@ def _ladder_deltas_for(sector, names):
 
 def cache_ladder_suite(u, name, example="example2",
                        required_sectors=("cosmo", "dz_source", "m"),
-                       phases=LADDER_PHASES):
+                       phases=LADDER_PHASES, *, evaluate_inputs=None, interface=None):
     """Build the sector-wise cache-invalidation class (the ladder).
 
     cosmolike keeps the result of every expensive stage in memory and
@@ -4382,19 +4564,32 @@ def cache_ladder_suite(u, name, example="example2",
                 mirrored walk reverses it); every other sector moves
                 only at the scramble point. A clustering-only project
                 walks ("cosmo", "bias", "fog").
+      evaluate_inputs = optional callable receiving example and tatt
+                keywords and returning a Cobaya configuration and
+                fiducial. Supply this for a ladder on live Evaluate inputs.
+      interface = the compiled survey module when evaluate_inputs is supplied.
 
     Returns:
       a unittest.TestCase subclass named `name`.
     """
 
+    if (evaluate_inputs is None) != (interface is None):
+        raise ValueError("supply evaluate_inputs and interface together")
+    if evaluate_inputs is None:
+        evaluate_chi2 = u.evaluate_chi2
+        require_cocoa_environment = u.require_cocoa_environment
+    else:
+        from cocoa_testing import evaluate_chi2, require_cocoa_environment
+
     class TestCacheLadder(unittest.TestCase):
-        """Sector-ladder cache-invalidation check on the frozen fiducial."""
+        """Sector-ladder cache check at the configuration's fiducial."""
 
         @classmethod
         def setUpClass(cls):
-            """Move to ROOTDIR and verify the frozen state, once per class."""
-            u.require_cocoa_environment()
-            u.verify_frozen()
+            """Move to ROOTDIR and verify frozen inputs when supplied."""
+            require_cocoa_environment()
+            if evaluate_inputs is None:
+                u.verify_frozen()
 
         def _point_at(self, fid, steps):
             """Return the ladder point with each sector at its step count.
@@ -4435,7 +4630,7 @@ def cache_ladder_suite(u, name, example="example2",
               (for gamma_t the row is (-1, source bin); for
               clustering both are -1).
             """
-            ci = _interface(u)
+            ci = _interface(u) if evaluate_inputs is None else interface
             real = _native_space(u, ci) == "real"
             sizes = [int(x) for x in
                      (ci.compute_data_vector_3x2pt_real_sizes()
@@ -4454,10 +4649,12 @@ def cache_ladder_suite(u, name, example="example2",
             excluded = _ggl_excluded(like)
             # gglpairs = every (lens, source) pair kept in gamma_t,
             # lens bin outer, source bin inner
-            gglpairs = [(zl, zs)
-                        for zl in range(int(like.lens_ntomo))
-                        for zs in range(nsrc)
-                        if (zl, zs) not in excluded]
+            gglpairs = []
+            if sizes[1] > 0:
+                gglpairs = [(zl, zs)
+                            for zl in range(int(like.lens_ntomo))
+                            for zs in range(nsrc)
+                            if (zl, zs) not in excluded]
             # start with -1 ("no factor") everywhere; the loops below
             # fill the shear and gamma_t rows block by block
             # an appended gg-cross block carries no factor: its rows
@@ -4500,15 +4697,20 @@ def cache_ladder_suite(u, name, example="example2",
               nothing; a failed check raises AssertionError.
             """
             import numpy as np
-            ci = _interface(u)
+            ci = _interface(u) if evaluate_inputs is None else interface
             masked_vector = _masked_vector_fn(u, ci)
 
-            lk_name = u.EXAMPLES[example]["likelihood"]
             results = {}
             for order in ("forward", "mirrored"):
-                info = u.load_frozen_info(example, tatt=tatt)
-                model = u.make_model(info)
-                fid = dict(u.build_point(model, example, tatt=tatt))
+                if evaluate_inputs is None:
+                    lk_name = u.EXAMPLES[example]["likelihood"]
+                    info = u.load_frozen_info(example, tatt=tatt)
+                    model = u.make_model(info)
+                    fid = dict(u.build_point(model, example, tatt=tatt))
+                else:
+                    model, lk_name, fid = _make_evaluate_model(
+                        evaluate_inputs=evaluate_inputs, example=example, tatt=tatt)
+                    self.addCleanup(model.close)
                 # sector_deltas = {sector: {parameter: per-step
                 # delta}}; the inner comprehension lists the
                 # fiducial's names that belong to sector s
@@ -4532,7 +4734,17 @@ def cache_ladder_suite(u, name, example="example2",
                         else tuple(reversed(active)))
                 # every sector starts at step 0 (the fiducial point)
                 steps = {s: 0 for s in self.sector_deltas}
-                u.evaluate_chi2(model, self._point_at(fid, steps))
+                if evaluate_inputs is not None:
+                    # The endpoints bound the independent scalar priors along
+                    # the ladder. The evaluations also check the coupled priors.
+                    scramble = dict.fromkeys(self.sector_deltas, LADDER_SCRAMBLE_STEP)
+                    for point in (fid, self._point_at(fid, scramble)):
+                        names = model.parameterization.sampled_params()
+                        values = np.array([point[name] for name in names])
+                        self.assertTrue(
+                            np.isfinite(model.prior.logps_internal(values)),
+                            f"the ladder endpoint {point} must lie in the sampled prior")
+                evaluate_chi2(model, self._point_at(fid, steps))
                 # compute_data_vector_masked returns the theory
                 # vector of the state the last evaluation left in
                 # cosmolike
@@ -4547,7 +4759,7 @@ def cache_ladder_suite(u, name, example="example2",
                             self.sector_deltas["m"].items()}
                         steps[sector] = r
                         point = self._point_at(fid, steps)
-                        u.evaluate_chi2(model, point)
+                        evaluate_chi2(model, point)
                         dv = np.array(masked_vector())
                         self.assertFalse(
                             np.array_equal(dv, prev),
@@ -4588,11 +4800,11 @@ def cache_ladder_suite(u, name, example="example2",
                         prev = dv
 
                 final_point = self._point_at(fid, steps)
-                final_chi2 = u.evaluate_chi2(model, final_point)
+                final_chi2 = evaluate_chi2(model, final_point)
                 final_dv = np.array(masked_vector())
 
                 # no-op probe: identical point again, bitwise
-                u.evaluate_chi2(model, dict(final_point))
+                evaluate_chi2(model, dict(final_point))
                 self.assertTrue(
                     np.array_equal(
                         np.array(masked_vector()),
@@ -4603,11 +4815,11 @@ def cache_ladder_suite(u, name, example="example2",
                 # scramble: every sector at once, bias included
                 scr = {s: LADDER_SCRAMBLE_STEP
                        for s in self.sector_deltas}
-                u.evaluate_chi2(model, self._point_at(fid, scr))
+                evaluate_chi2(model, self._point_at(fid, scr))
 
                 # return: the ladder's final point must reproduce
                 # bitwise
-                back_chi2 = u.evaluate_chi2(model, final_point)
+                back_chi2 = evaluate_chi2(model, final_point)
                 back_dv = np.array(masked_vector())
                 self.assertTrue(
                     np.array_equal(back_dv, final_dv),
@@ -4636,7 +4848,7 @@ def cache_ladder_suite(u, name, example="example2",
 
         def test_cache_consistency_tatt(self):
             """The ladder checks 1-5 hold for the TATT configuration."""
-            if not getattr(u, "TATT_POINT", None):
+            if evaluate_inputs is None and not getattr(u, "TATT_POINT", None):
                 self.skipTest(
                     "the project declares no TATT parameters")
             self._run_ladder(tatt=True)
@@ -5004,9 +5216,10 @@ def setting_sequence_suite(u, name, sequences):
 
         @classmethod
         def setUpClass(cls):
-            """Move to ROOTDIR and verify the frozen state."""
+            """Move to ROOTDIR and verify saved inputs when the project uses them."""
             u.require_cocoa_environment()
-            u.verify_frozen()
+            if u._H.sequence_inputs is None:
+                u.verify_frozen()
 
     def make_test(sequence):
         def test(self):

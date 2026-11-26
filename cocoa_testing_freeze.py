@@ -557,9 +557,13 @@ def generate_nmodels_vectors(u, example):
       held          = one bool per model, True for a held model;
       vectors       = the (models x n) masked high-accuracy vectors;
       config_hash   = the fingerprint of the high-accuracy
-                      configuration (nmodels_config_hash);
+                      configuration for a historical check;
       seed, draw    = the seed base and the draw settings, as text,
                       for the reader of the file.
+
+    Current-prior checks record both resolved Cobaya configurations
+    and the masked precision from the pushed model. Their ordinary
+    replay compares the precision before evaluating any points.
 
     The file is written to a temporary name outside frozen/ and moved
     in at the end, so a manifest written meanwhile (by a parallel
@@ -573,6 +577,7 @@ def generate_nmodels_vectors(u, example):
       nothing; frozen/nmodels_<example>.npz is written.
     """
     import numpy as np
+    from cocoa_testing import RANDOM_MODEL_SEED
     import cocoa_testing_suites as suites
 
     points, held = suites.nmodels_draw(u, example)
@@ -582,21 +587,35 @@ def generate_nmodels_vectors(u, example):
         for column in range(len(names)):
             values[index, column] = points[index][names[column]]
     print(f"N-models {example}: {len(points)} points, seed base "
-          f"{u.RANDOM_MODEL_SEED}", flush=True)
-    vectors, _ = suites.nmodels_vectors(u, example, points,
-                                        high_accuracy=True)
-    draw = {"box": getattr(u, "NMODELS_BOX", None),
+          f"{RANDOM_MODEL_SEED}", flush=True)
+    current = getattr(u, "NMODELS_CURRENT_PRIOR", False)
+    vectors, precision = suites.nmodels_vectors(u, example, points, high_accuracy=True)
+    stored = {
+        "names": np.array(names),
+        "values": values,
+        "held": np.array(held),
+        "vectors": vectors,
+        "seed": np.array(RANDOM_MODEL_SEED),
+    }
+    if current:
+        ordinary, _ = suites.nmodels_current_info(u=u, example=example)
+        pushed, _ = suites.nmodels_current_info(u=u, example=example, high_accuracy=True)
+        stored["ordinary_configuration"] = np.array(json.dumps(ordinary, sort_keys=True))
+        stored["pushed_configuration"] = np.array(json.dumps(pushed, sort_keys=True))
+        stored["precision"] = precision
+    else:
+        draw = {
+            "box": getattr(u, "NMODELS_BOX", None),
             "hold": getattr(u, "NMODELS_HOLD", None),
-            "amplitude_cut": getattr(u, "NMODELS_AMPLITUDE_CUT", None)}
+            "amplitude_cut": getattr(u, "NMODELS_AMPLITUDE_CUT", None),
+        }
+        stored["draw"] = np.array(json.dumps(draw, sort_keys=True))
+        stored["config_hash"] = np.array(u.nmodels_config_hash(example))
     path = suites.nmodels_file(u, example)
     temporary = os.path.join(u.TESTS_DIR, f".nmodels_{example}.npz.tmp")
     # an open file object keeps numpy from appending ".npz" to the name
     with open(temporary, "wb") as f:
-        np.savez(f, names=np.array(names), values=values,
-                 held=np.array(held), vectors=vectors,
-                 config_hash=np.array(u.nmodels_config_hash(example)),
-                 seed=np.array(u.RANDOM_MODEL_SEED),
-                 draw=np.array(json.dumps(draw, sort_keys=True)))
+        np.savez_compressed(file=f, **stored)
     os.replace(temporary, path)
     print(f"N-models {example}: stored {vectors.shape[0]} vectors of "
           f"{vectors.shape[1]} entries in frozen/{os.path.basename(path)}",

@@ -1398,12 +1398,59 @@ TEST {number}: {label}
     return delta
 
 
-# The most draws the amplitude cut of nmodels_points may spend
-# on one model before it stops: a box of which the cut keeps at
-# least 0.1% needs far fewer, so reaching this ceiling means the cut
-# excludes almost the whole box (a cut below the fiducial ratio of 1,
-# or a typo)
+# Rejection sampling needs far fewer trials when the joint cuts retain
+# at least 0.1% of the prior volume. This limit identifies cuts that
+# keep almost none of the trial distribution.
 NMODELS_MAX_DRAWS = 100000
+
+
+def draw_nmodels_prior_rows(info, n_models=NMODELS_COUNT, seed=RANDOM_MODEL_SEED):
+    """Draw the random-model stress points from a resolved Cobaya prior.
+
+    Each model uses its own random generator to draw every sampled
+    coordinate, including nuisance parameters. Joint hard cuts reject
+    points after the one-dimensional priors generate them, so a rejection
+    changes only that model's draw.
+
+    Arguments:
+      info = resolved Cobaya configuration with its params and prior blocks.
+      n_models = number of stress points.
+      seed = base of the per-model seeds, which increase from zero.
+
+    Returns:
+      (names, values), the sampled column names in Cobaya order and
+      the (n_models, len(names)) float64 array in that order.
+
+    Raises:
+      ValueError if a seed exhausts the draw budget or a finite external
+      prior contributes a nonzero weight instead of a hard cut.
+    """
+    import numpy as np
+    from cobaya.parameterization import Parameterization
+    from cobaya.prior import Prior
+
+    parameterization = Parameterization(info_params=info["params"])
+    prior = Prior(parameterization=parameterization, info_prior=info.get("prior"))
+    names = tuple(prior.params)
+    values = np.empty((n_models, len(names)))
+    for index in range(n_models):
+        model_seed = seed + index
+        rng = np.random.default_rng(model_seed)
+        for _ in range(NMODELS_MAX_DRAWS):
+            row = prior.sample(ignore_external=True, random_state=rng)[0]
+            log_priors = prior.logps(x=row)
+            if np.isfinite(log_priors).all():
+                if np.any(np.asarray(log_priors[1:]) != 0.0):
+                    raise ValueError(
+                        "The random-model draw needs external priors with hard cuts. "
+                        f"Seed {model_seed} returned external weights {log_priors[1:]}."
+                    )
+                values[index] = row
+                break
+        else:
+            raise ValueError(f"No prior draw accepted for random-model seed {model_seed}.")
+    return names, values
+
 
 # Every project names its linear galaxy-bias parameters
 # <SURVEY>_B1_<bin> (LSST_B1_1, DESI_B1_3, ...), and its amplitude
@@ -2145,13 +2192,18 @@ class CocoaTestHarness:
                          names the chosen mask (e.g. "ones" for the
                          no-scale-cuts all-ones mask). The default
                          offers "frozen" alone.
+      sequence_inputs  = optional callable taking an EXAMPLES key
+                         and a TATT flag and returning a live Cobaya
+                         configuration and its sampled parameter point.
+                         With no callable, setting sequences use the
+                         saved configurations and manifest.
     """
 
     def __init__(self, worker_file, interface_module, examples,
                  tatt_point, accuracy_knobs, high_accuracy_likelihood,
                  fastpt_low_settings, fastpt_high_settings,
                  fastpt_points, nla_dataset=None,
-                 fastpt_masks=("frozen",)):
+                 fastpt_masks=("frozen",), sequence_inputs=None):
         """Bind the shared machinery to one project's data.
 
         Arguments:
@@ -2163,8 +2215,13 @@ class CocoaTestHarness:
           paths derived from worker_file.
 
         Raises:
-          nothing.
+          TypeError when sequence_inputs is given but is not callable.
         """
+        if sequence_inputs is not None and not callable(sequence_inputs):
+            raise TypeError(
+                f"sequence_inputs must be callable, got {type(sequence_inputs).__name__}. "
+                "Pass a function returning the sequence configuration and point."
+            )
         # Everything the tests read or write lives relative to the
         # project's tests folder, so the suite works no matter which
         # directory pytest is launched from.
@@ -2185,6 +2242,7 @@ class CocoaTestHarness:
         self.fastpt_points = fastpt_points
         self.nla_dataset = nla_dataset
         self.fastpt_masks = tuple(fastpt_masks)
+        self.sequence_inputs = sequence_inputs
 
     # ---- frozen-state integrity ---------------------------------------------
     def compute_manifest(self):
@@ -3502,23 +3560,36 @@ class CocoaTestHarness:
             json.dump(value, f)
 
     def _sequence_build(self, ctx, example, overrides=None, tatt=False):
-        """Build one frozen example's model into the worker context.
+        """Build one example's model into the worker context.
 
         Arguments:
           ctx       = the worker context; model, like, point and space
                       are (re)placed.
           example   = a key of the project's EXAMPLES table.
           overrides = optional {likelihood key: value}.
-          tatt      = True builds the TATT variant (frozen TATT point).
+          tatt      = True builds the TATT variant and its parameter point.
         """
         import importlib
-        info = self.load_frozen_info(example, tatt=tatt)
+        if self.sequence_inputs is None:
+            info = self.load_frozen_info(example, tatt=tatt)
+        else:
+            info, point = self.sequence_inputs(example=example, tatt=tatt)
         lk_name = self.examples[example]["likelihood"]
         for key, value in (overrides or {}).items():
             info["likelihood"][lk_name][key] = value
-        ctx["model"] = make_model(info)
-        ctx["like"] = ctx["model"].likelihood[lk_name]
-        ctx["point"] = self.build_point(ctx["model"], example, tatt=tatt)
+        model = make_model(info)
+        try:
+            if self.sequence_inputs is None:
+                sampled_point = self.build_point(model, example, tatt=tatt)
+            else:
+                names = model.parameterization.sampled_params()
+                sampled_point = {key: point[key] for key in names}
+        except Exception:
+            model.close()
+            raise
+        ctx["model"] = model
+        ctx["like"] = model.likelihood[lk_name]
+        ctx["point"] = sampled_point
         ctx["ci"] = importlib.import_module(self.interface_module)
         # the native space of the example: a Fourier likelihood carries
         # band centers or an n_cl count
