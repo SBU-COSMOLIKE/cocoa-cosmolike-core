@@ -2957,9 +2957,10 @@ static void C_cluster_nonlimber_core(
 // ---------------------------------------------------------------------------
 // Non-Limber hook of real_space_cluster_update: on entry Cl holds the Limber
 // C_l of every row at every multipole; each row's multipoles 1 .. LMAX - 1
-// below its freeze point are replaced by the non-Limber values. The
-// tolerance is the gg one of w_gg_tomo: a row that freezes at l_s keeps
-// the Limber value from there, and the step it leaves is at most tol.
+// below its freeze point are replaced by the non-Limber values.
+// The base gg tolerance keeps the ordinary cluster threshold at 0.002.
+// Setting it to zero keeps the same multipole range across a Fisher
+// stencil, where a changing freeze point can appear as information.
 // ---------------------------------------------------------------------------
 static void cluster_nonlimber_overwrite(
     const int stat,  // CLUSTER_CC or CLUSTER_CG
@@ -2967,7 +2968,7 @@ static void cluster_nonlimber_overwrite(
     const int nrows  // rows of the statistic
   )
 {
-  const double tolerance = 0.002;
+  const double tolerance = Ntable.NL_tol_gg;
   const int LNL = limits.LMAX_NOLIMBER;
   double** Cnl = (double**) malloc2d(nrows, LNL);
   int LMAX[nrows];
@@ -3366,6 +3367,7 @@ double w_cc_tomo(
   uint64_t keys[CLUSTER_NKEYS_MAX];
   int nkeys = cluster_keys_cc(keys);
   keys[nkeys++] = (uint64_t) limber; // the block holds one projection
+  keys[nkeys++] = double_bits_key(0 == limber ? Ntable.NL_tol_gg : 0.0);
 
   const int nrows = cluster.cc_npowerspectra*cc_richness_npairs();
   const int spin  = 0;
@@ -3418,6 +3420,7 @@ double w_cg_tomo(
   uint64_t keys[CLUSTER_NKEYS_MAX];
   int nkeys = cluster_keys_cg(keys);
   keys[nkeys++] = (uint64_t) limber; // the block holds one projection
+  keys[nkeys++] = double_bits_key(0 == limber ? Ntable.NL_tol_gg : 0.0);
 
   const int nrows = cluster.cg_npowerspectra*cluster.richness_nbin;
   const int spin  = 0;

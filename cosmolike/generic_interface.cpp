@@ -1215,6 +1215,8 @@ void init_lmax_nonlimber(const int lmax)
 // the next multipole up to the non-Limber cap. structs.c sets the
 // defaults, 0.002 (gg) and 0.01 (gs); the likelihood yaml keys are
 // nonlimber_tolerance_gg and nonlimber_tolerance_gs.
+// The cluster–cluster and cluster–galaxy projections use the base
+// gg tolerance without the accuracy-boost scaling below.
 //
 // The global accuracy boost AB of init_accuracy_boost refines these
 // settings too: above AB = 1 the C_l use tolerance/(1 + 2 (AB - 1)), a
@@ -1231,10 +1233,10 @@ void init_lmax_nonlimber(const int lmax)
 // values do not reach them.
 //
 // Cache invalidation:
-// nothing is bumped here. w_gg_tomo and w_gammat_tomo key their cached
-// C_l and real-space vectors on the tolerance values themselves, so
-// changing a tolerance and changing it back gives the original vector
-// bit for bit, and the tables of every other probe stay valid.
+// No table nonce changes here. w_gg_tomo and w_gammat_tomo key their
+// caches on the scaled tolerances, and non-Limber w_cc_tomo and
+// w_cg_tomo key theirs on the base gg tolerance. Returning a tolerance
+// to its previous value restores the original vector bit for bit.
 //
 // Validation: both tolerances finite and >= 0, else critical() + exit(1).
 //
@@ -1266,7 +1268,7 @@ void init_nonlimber_tolerance(const double gg_tol, const double gs_tol)
 }
 
 // ---------------------------------------------------------------------------
-// Return the early-exit tolerances the real-space non-Limber C_l use now:
+// Return the early-exit tolerances the real-space galaxy C_l use now:
 // the settings of init_nonlimber_tolerance after the accuracy-boost
 // division (cosmo2D.c nonlimber_tolerance_gg and _gs, the same functions
 // w_gg_tomo and w_gammat_tomo call).

@@ -102,7 +102,7 @@ FIVE_POINT_WEIGHTS = (-1.0/12.0, 8.0/12.0, -8.0/12.0, 1.0/12.0)
 
 @contextmanager
 def nonlimber_derivative_mode(interface, production_gg, production_gs):
-    """Disable galaxy early exits while evaluating numerical derivatives.
+    """Disable real-space non-Limber early exits during derivatives.
 
     The real-space galaxy projections can stop their non-Limber calculation
     when it agrees with Limber within a tolerance. The stopping multipole is
@@ -110,6 +110,8 @@ def nonlimber_derivative_mode(interface, production_gg, production_gs):
     enter a finite difference as false information. Zero tolerances keep the
     non-Limber calculation through the configured multipole cap at every
     stencil point, including when the global accuracy boost changes.
+    The cluster-clustering and cluster–galaxy projections also use the base
+    gg tolerance. Their ordinary threshold remains 0.002.
 
     Arguments:
       interface = the caller's compiled interface, providing
@@ -126,8 +128,7 @@ def nonlimber_derivative_mode(interface, production_gg, production_gs):
       Sets both base tolerances to zero on entry and restores the supplied
       production bases in finally, including when the evaluation raises.
       It does not restore the accuracy boost or change the multipole cap.
-      Fourier galaxy spectra do not use this early exit. Cluster-specific
-      projection tolerances are separate and are not changed here.
+      Fourier galaxy spectra do not use this early exit.
 
     Raises:
       ValueError before mutation if either production tolerance is invalid.
