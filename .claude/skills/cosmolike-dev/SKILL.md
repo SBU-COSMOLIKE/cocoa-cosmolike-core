@@ -18,6 +18,13 @@ description: >-
 
 For `cocoa_testing.py` and the shared Fisher helpers, read the Cocoa
 maintenance skill's section "Emulator accuracy and cheap FoM tests".
+EMUL2 must never calculate with CAMB, including background distances,
+acoustic-scale conversion or derived sigma8/S8. Use the existing emulators
+for each requested quantity. Check resolved providers and nested backends
+in all sampler, minimization, profile and EMUL2 candidate routes. A CAMB
+reference or postprocessing calculation is separate; a matter-only emulator
+comparison retaining CAMB elsewhere does not validate the EMUL2 pipeline.
+
 Emulator comparisons and numerical FoM convergence are separate tests:
 
 - Emulator accuracy loads a fixed benchmark configuration, fixed broad and

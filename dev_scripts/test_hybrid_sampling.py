@@ -1,4 +1,4 @@
-"""Check the shared Nautilus launcher's stopping options and saved output.
+"""Check the shared sampler's theory selection and Nautilus outputs.
 
 Nautilus can save evaluated points to its checkpoint even when it cannot
 assign posterior weights. Run the launcher with two analytic likelihoods
@@ -14,6 +14,82 @@ import h5py
 import numpy as np
 import pytest
 import yaml
+
+
+@pytest.mark.parametrize(
+    "theory,reason",
+    [
+        ({"camb": {"extra_args": {"WantTransfer": False}}}, "emulator theory providers"),
+        ({"background": {"class": "camb.camb"}}, "emulator theory providers"),
+        ({"emulmps": {"extra_args": {"lin_source": "camb"}}}, "lin_source and boost_source"),
+        ({"emulmps": {"extra_args": {"boost_source": "CAMB"}}}, "lin_source and boost_source"),
+    ],
+)
+def test_emul2_rejects_camb_before_building_model(tmp_path, theory, reason):
+    """The sampler refuses both direct and nested CAMB even for background."""
+    core = Path(__file__).resolve().parents[1]
+    config = {
+        "likelihood": {"survey": {"use_emulator": 2}},
+        "params": {"mnu": {"value": 0.06}},
+        "theory": theory,
+    }
+    source = tmp_path / "input.yaml"
+    source.write_text(yaml.safe_dump(config))
+    code = (
+        "from pathlib import Path\n"
+        "import sys\n"
+        "from cocoa_hybrid_sampling import load_model\n"
+        "load_model(filename=Path(sys.argv[1]))\n"
+    )
+    command = [sys.executable, "-c", code, str(source)]
+    completed = subprocess.run(
+        args=command, cwd=core, capture_output=True, text=True, timeout=10,
+    )
+    assert completed.returncode != 0
+    assert "ValueError: EMUL2" in completed.stderr, completed.stderr
+    assert reason in completed.stderr, completed.stderr
+
+
+def test_emul2_comparison_candidate_has_no_camb():
+    """The same point can compare all-emulator theory with a CAMB reference."""
+    from cocoa_testing import _matter_emulator_candidate
+
+    root = Path(__file__).resolve().parents[4]
+    info = {
+        "likelihood": {"survey": {"use_emulator": 0, "non_linear_emul": 2}},
+        "params": {
+            "As_1e9": {"value": 2.1, "drop": True},
+            "omegal": {"derived": True},
+            "omegan2": {"derived": True},
+            "omegan": {"derived": "lambda omegan2, H0: omegan2/((H0/100)**2)"},
+            "sigma8": {"derived": True},
+            "tau": {"value": 0.054},
+        },
+        "theory": {"camb": {"extra_args": {}}},
+    }
+    matter_theory = "emulmps.emulmps.emulmps"
+    candidate = _matter_emulator_candidate(
+        info=info,
+        likelihood_name="survey",
+        root=root,
+        data_dir=root / "external_modules/data/emultrf",
+        matter_theory=matter_theory,
+        candidate_extra_args=None,
+        use_emulator_switch=True,
+    )
+    assert list(info["theory"]) == ["camb"]
+    assert info["likelihood"]["survey"]["use_emulator"] == 0
+    assert "omegal" in info["params"]
+    assert set(candidate["theory"]) == {"emulmps", "emulbaosn", "emulrdrag"}
+    assert candidate["likelihood"]["survey"]["use_emulator"] == 2
+    assert "sigma8" in candidate["theory"]["emulmps"]["provides"]
+    assert "comoving_radial_distance" in candidate["theory"]["emulbaosn"]["provides"]
+    assert candidate["theory"]["emulrdrag"]["provides"] == ["rdrag"]
+    assert "omegal" not in candidate["params"]
+    assert "omegan2" not in candidate["params"]
+    assert "omegan" not in candidate["params"]
+    assert candidate["params"]["tau"] == {"value": 0.054, "drop": True}
+    assert info["params"]["tau"] == {"value": 0.054}
 
 
 def test_nautilus_effective_sample_target():

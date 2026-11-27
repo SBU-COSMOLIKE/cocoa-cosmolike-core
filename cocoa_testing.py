@@ -5001,6 +5001,143 @@ def _match_matter_emulator_prescription(info, likelihood_name, use_emulator_swit
     return camb_args
 
 
+def _matter_emulator_candidate(
+    info, likelihood_name, root, data_dir, matter_theory,
+    candidate_extra_args, use_emulator_switch,
+):
+    """Build the candidate from the shared comparison's fixed model inputs.
+
+    Arguments:
+      info = reference Cobaya configuration with the benchmark cuts applied.
+      likelihood_name = key of the survey likelihood in info.
+      root = Cocoa root, where the common background and linear models live.
+      data_dir = data directory of the candidate nonlinear emulator.
+      matter_theory = Cobaya theory class for the selected matter emulator.
+      candidate_extra_args = optional model-specific matter emulator options.
+      use_emulator_switch = True for EMUL2, False for the spectra-only check.
+
+    Returns:
+      candidate model settings, with the reference dictionary left intact.
+    """
+    import copy
+
+    settings = copy.deepcopy(info)
+    params = settings["params"]
+    theories = settings["theory"]
+    provides = ["Pk_interpolator", "Pk_grid"]
+    if use_emulator_switch:
+        settings["likelihood"][likelihood_name]["use_emulator"] = 2
+        del theories["camb"]
+        provides.append("sigma8")
+        # The survey-only candidate has no reionization calculation.
+        # Keep the benchmark's value without sending it to a provider.
+        if "tau" in params:
+            if isinstance(params["tau"], dict):
+                params["tau"]["drop"] = True
+            else:
+                params["tau"] = {"value": params["tau"], "drop": True}
+        # The comparison records vectors and their scores. These CAMB-only
+        # columns are reporting outputs, never inputs of the EMUL2 probes.
+        for name in ("omegal", "age", "yheused", "omegan2"):
+            specification = params.get(name)
+            if specification is None or (
+                isinstance(specification, dict)
+                and "value" not in specification
+                and "prior" not in specification
+                and specification.get("derived", True) is True
+            ):
+                params.pop(name, None)
+        # The benchmark also reports Omega_nu from CAMB's Omega_nu h^2.
+        # Omit this reporting column when its source column is gone.
+        neutrino_fraction = params.get("omegan")
+        if "omegan2" not in params and isinstance(neutrino_fraction, dict):
+            if neutrino_fraction.get("derived") == "lambda omegan2, H0: omegan2/((H0/100)**2)":
+                del params["omegan"]
+
+        background = root / "external_modules/data/emultrf/BAO_SN_RES"
+        cpl = background / "w0wa"
+        # Use the H(z) network of the EMUL2 examples. emulbaosn integrates
+        # it for distances and also requires the separate rdrag provider.
+        theories["emulbaosn"] = {
+            "path": "./cobaya/cobaya/theories/",
+            "stop_at_error": True,
+            "provides": [
+                "comoving_radial_distance",
+                "angular_diameter_distance",
+                "Hubble",
+            ],
+            "extra_args": {
+                "device": "cpu",
+                "file": [None, str(cpl / "emul_w0wa_H.pt")],
+                "extra": [None, str(cpl / "extra_w0wa_H.npy")],
+                "ord": [None, ["omegam", "H0", "w", "wa"]],
+                "extrapar": [
+                    {
+                        "MLA": "INT",
+                        "ZMIN": 0.0001,
+                        "ZMAX": 3,
+                        "NZ": 600,
+                    },
+                    {
+                        "MLA": "ResMLP",
+                        "offset": 0.0,
+                        "INTDIM": 4,
+                        "NLAYER": 6,
+                        "TMAT": str(cpl / "PCA_w0wa_H.npy"),
+                        "ZLIN": str(cpl / "z_lin_w0wa.npy"),
+                    },
+                ],
+            },
+        }
+        theories["emulrdrag"] = {
+            "path": "./cobaya/cobaya/theories/",
+            "provides": ["rdrag"],
+            "extra_args": {
+                "file": [str(background / "emul_lcdm_rdrag_GP.joblib")],
+                "extra": [str(background / "extra_lcdm_rdrag.npy")],
+                "ord": [["omegabh2", "omegach2"]],
+            },
+        }
+
+    linear = root / "external_modules/data/emultrf/emulmps/npce_emul"
+    nonlinear = data_dir / "emulmps/w0wa_mead2020"
+    matter_args = {
+        "model_file": str(linear / "emulator_npce.keras"),
+        "metadata_file": str(linear / "metadata.joblib"),
+        "nl_model_file": str(nonlinear / "emulator_mead2020.keras"),
+        "nl_metadata_file": str(nonlinear / "metadata.joblib"),
+        "param_order": [
+            "As_1e9",
+            "ns",
+            "H0",
+            "omegab",
+            "omegam",
+            "w",
+            "wa",
+        ],
+        "fixed_params": {"mnu": 0.06},
+    }
+    if candidate_extra_args is not None:
+        matter_args.update(candidate_extra_args)
+    lin_source = str(matter_args.get("lin_source", "emul")).lower()
+    boost_source = str(matter_args.get("boost_source", "emul")).lower()
+    if use_emulator_switch and (lin_source == "camb" or boost_source == "camb"):
+        raise ValueError("EMUL2 requires emulmps lin_source and boost_source to be 'emul'")
+    theories["emulmps"] = {
+        "external": matter_theory,
+        "stop_at_error": True,
+        "provides": provides,
+        "extra_args": matter_args,
+    }
+    # CAMB-only examples drop these values before passing inputs to CAMB.
+    # The emulator networks consume them directly.
+    params["As_1e9"]["drop"] = False
+    for name in ("omegam", "omegab"):
+        if isinstance(params.get(name), dict):
+            params[name]["drop"] = False
+    return settings
+
+
 def run_matter_emulator_prior_check(
     project,
     configuration,
@@ -5042,8 +5179,9 @@ def run_matter_emulator_prior_check(
     do. Each cosmology changes the theory state; cached=False forces the
     likelihood to run. Random draws retain the example's nuisance override;
     an explicit points_file may also specify the nuisance parameters.
-    Both routes use CAMB distances and plain HMCode2020, with mnu=0.06 eV.
-    The candidate uses the project's existing EMUL2 likelihood route.
+    Both routes use plain HMCode2020 with mnu=0.06 eV. The EMUL2
+    candidate uses emulated distances and spectra. The provider-only
+    matter-spectrum comparison keeps CAMB distances on both routes.
 
     Draw from each project's cosmological box with 0.2 < Omega_m < 0.5,
     w0 > -2, 1 < 1e9 As <= 3.5, H0 < 85 and omegab*(H0/100)^2 < 0.035
@@ -5081,8 +5219,9 @@ def run_matter_emulator_prior_check(
         real-space shear rows. The latter requires get_covariance.
       get_covariance = initialized native full covariance reader.
       candidate_extra_args = explicit additional emulator theory options.
-      use_emulator_switch = whether the likelihood uses the ordinary
-        use_emulator/non_linear_emul flags. Provider-only likelihoods do not.
+      use_emulator_switch = True for an EMUL2 comparison with emulated
+        background and spectra. False isolates the matter spectra in a
+        provider-only likelihood whose other theory products still use CAMB.
       select_vector = optional native mask/compression callable, applied
         after the full vector is checked against its likelihood.
       advisory = report prediction errors and finite FoM tolerance misses.
@@ -5447,6 +5586,15 @@ def run_matter_emulator_prior_check(
     sys.path.insert(0, str(code_dir))
     from emulmps.emulmps import emulmps
 
+    candidate_settings = _matter_emulator_candidate(
+        info=info,
+        likelihood_name=likelihood_name,
+        root=root,
+        data_dir=data_dir,
+        matter_theory=emulmps,
+        candidate_extra_args=candidate_extra_args,
+        use_emulator_switch=use_emulator_switch,
+    )
     metadata_error = None
     if rank == 0:
         try:
@@ -5474,7 +5622,10 @@ def run_matter_emulator_prior_check(
                 if points_file is not None:
                     record.write(f"explicit parameter table={points_path}; seed unused\n")
                 record.write(f"mnu=0.06 eV; plain mead2020; CAMB extra_args={camb_args}\n")
-                record.write("CAMB background in both; candidate replaces the requested power spectra\n")
+                if use_emulator_switch:
+                    record.write("CAMB reference; EMUL2 candidate uses emulated distances and spectra\n")
+                else:
+                    record.write("Spectra-only comparison with CAMB background on both routes\n")
                 record.write(f"candidate_extra_args={candidate_extra_args}; native_selection={select_vector is not None}\n")
                 record.write(f"use_emulator_switch={use_emulator_switch}; "
                              f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}\n")
@@ -5555,33 +5706,12 @@ def run_matter_emulator_prior_check(
         # their setters and caches interfere with each other.
         for route in ("camb", "candidate"):
             route_start = perf_counter()
-            settings = copy.deepcopy(info)
-            if use_emulator_switch:
-                settings["likelihood"][likelihood_name]["use_emulator"] = 0
-            if route == "candidate":
+            if route == "camb":
+                settings = copy.deepcopy(info)
                 if use_emulator_switch:
-                    settings["likelihood"][likelihood_name]["use_emulator"] = 2
-                settings["params"]["As_1e9"]["drop"] = False
-                settings["theory"]["emulmps"] = {
-                    "external": emulmps,
-                    "stop_at_error": True,
-                    "provides": ["Pk_interpolator", "Pk_grid"],
-                    "extra_args": {
-                        "model_file": str(root / "external_modules/data/emultrf/emulmps/npce_emul/emulator_npce.keras"),
-                        "metadata_file": str(root / "external_modules/data/emultrf/emulmps/npce_emul/metadata.joblib"),
-                        "nl_model_file": str(data_dir / "emulmps/w0wa_mead2020/emulator_mead2020.keras"),
-                        "nl_metadata_file": str(data_dir / "emulmps/w0wa_mead2020/metadata.joblib"),
-                        "param_order": ["As_1e9", "ns", "H0", "omegab", "omegam", "w", "wa"],
-                        "fixed_params": {"mnu": 0.06},
-                    },
-                }
-                if candidate_extra_args is not None:
-                    settings["theory"]["emulmps"]["extra_args"].update(candidate_extra_args)
-                # These inputs are dropped by CAMB-only project examples,
-                # but the matter emulator consumes them directly.
-                for name in ("omegam", "omegab"):
-                    if isinstance(settings["params"].get(name), dict):
-                        settings["params"][name]["drop"] = False
+                    settings["likelihood"][likelihood_name]["use_emulator"] = 0
+            else:
+                settings = candidate_settings
             model_error = None
             try:
                 model = get_model(info_or_yaml_or_file=settings)

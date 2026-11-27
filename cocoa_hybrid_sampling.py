@@ -351,8 +351,9 @@ def parser_for(mode, project, example, hybrid=True, mcmc_config=False, fiducial_
 def load_model(filename, hybrid=True, fiducial=None, mcmc_config=False):
     """Load a Cobaya configuration on CPU without writing its outputs.
 
-    Refuses (ValueError) a likelihood without use_emulator: 2, an mnu other
-    than the fixed 0.06 eV the emulator networks assume, and a
+    Refuses (ValueError) a hybrid likelihood without use_emulator: 2,
+    a CAMB theory or CAMB matter source, an mnu other than the fixed
+    0.06 eV the emulator networks assume, and a
     sampler.evaluate.override block that misses a sampled parameter.
 
     Arguments:
@@ -378,6 +379,17 @@ def load_model(filename, hybrid=True, fiducial=None, mcmc_config=False):
     info.pop("sampler", None)
     info.pop("output", None)
     if hybrid:
+        theories = info.get("theory", {})
+        camb_names = ("camb", "camb.camb", "cobaya.theories.camb.camb.camb")
+        for name, options in theories.items():
+            theory_class = (options or {}).get("class")
+            if name in camb_names or theory_class in camb_names:
+                raise ValueError("EMUL2 needs emulator theory providers in place of CAMB")
+        matter_args = (theories.get("emulmps") or {}).get("extra_args") or {}
+        lin_source = str(matter_args.get("lin_source", "emul")).lower()
+        boost_source = str(matter_args.get("boost_source", "emul")).lower()
+        if lin_source == "camb" or boost_source == "camb":
+            raise ValueError("EMUL2 requires emulmps lin_source and boost_source to be 'emul'")
         likelihoods = list(info["likelihood"].values())
         if mcmc_config:
             likelihoods = [options for options in likelihoods
