@@ -452,8 +452,8 @@ extern "C" void reset_threepcf_core_bridge(void) __attribute__((weak));
 // baselines (reset_boost_baselines), the gg cross-pair list and the k
 // window of cosmo2D.c, the run-mode latch of Pdelta (cosmo3D.c), the
 // baryon scenario (reset_bary_struct), the cosmo2D.c model switches,
-// the non-Limber multipole cap, the point masses and the CMB-lensing
-// options (IPCMB::reset).
+// the non-Limber multipole cap, the point masses, measurement products,
+// baryon principal components and CMB-lensing options.
 // The cluster probe flags (cluster.probe[]) are reset by reset_cluster
 // (generic_interface_cluster.cpp), not here.
 //
@@ -515,7 +515,9 @@ void initial_setup()
   set_nonlinear_kaiser_GG(0);
   // the non-Limber multipole cap, at its value in structs.c (limits)
   limits.LMAX_NOLIMBER = 150;
-  // the point masses and the CMB-lensing options live in singletons
+  // A second model must load its own measurements and baryon PCs.
+  IP::get_instance().reset();
+  BaryonScenario::get_instance().reset();
   PointMass::get_instance().set_pm_vector(arma::Col<double>());
   IPCMB::get_instance().reset();
   // the Python FAST-PT origin flags (pt_cfastpt.c) also outlive the
@@ -5337,6 +5339,66 @@ vector compute_add_baryons_pcs(vector Q, vector dv)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+void IP::reset()
+{
+  this->is_mask_set_ = false;
+  this->is_data_set_ = false;
+  this->is_inv_cov_set_ = false;
+  this->ndata_ = 0;
+  this->ndata_sqzd_ = 0;
+  this->ndata_blocks_ = 0;
+  std::fill_n(this->probe_, NPROBES, 0);
+  this->space_ = -1;
+  this->ntheta_ = 0;
+  this->theta_range_ = {};
+  this->band_centers_.clear();
+  this->mask_filename_.clear();
+  this->cov_filename_.clear();
+  this->data_filename_.clear();
+  this->mask_.reset();
+  this->index_sqzd_.reset();
+  this->data_masked_.reset();
+  this->cov_masked_.reset();
+  this->inv_cov_masked_.reset();
+  this->data_masked_sqzd_.reset();
+  this->cov_masked_sqzd_.reset();
+  this->inv_cov_masked_sqzd_.reset();
+}
+
+void BaryonScenario::reset()
+{
+  this->is_allsims_file_set_ = false;
+  this->is_pcs_set_ = false;
+  this->is_scenarios_set_ = false;
+  this->nscenarios_ = 0;
+  this->allsims_file_.clear();
+  this->scenarios_.clear();
+  this->eigenvectors_.reset();
+}
+
+void IP::check_binning(const int space) const
+{
+  // A measured row represents an angular bin or band center. Changing the
+  // quadrature or interpolation resolution leaves that correspondence intact.
+  if (this->is_mask_set_ && space == this->space_) {
+    if (0 == space &&
+        Ntable.Ntheta == this->ntheta_ &&
+        Ntable.vt[RANGE_MIN] == this->theta_range_[0] &&
+        Ntable.vt[RANGE_MAX] == this->theta_range_[1]) {
+      return;
+    }
+    if (1 == space &&
+        static_cast<std::size_t>(like.Ncl) == this->band_centers_.size() &&
+        std::equal(this->band_centers_.begin(), this->band_centers_.end(),
+                   like.ell)) {
+      return;
+    }
+  }
+  critical("IP: the measurement binning changed or no mask is loaded: "
+           "re-run init_data");
+  exit(1);
+}
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -5699,6 +5761,7 @@ double IP::get_chi2(vector datavector) const
   if (!(this->is_inv_cov_set_)) [[unlikely]] {
     critical(errornset, fname, "inv_cov"); exit(1);
   }
+  this->check_binning(this->space_);
   if (static_cast<int>(datavector.n_elem) != like.Ndata) [[unlikely]] { 
     critical(errorsz1d, fname, erriiwz, datavector.n_elem, like.Ndata); exit(1);
   }

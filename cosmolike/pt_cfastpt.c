@@ -114,7 +114,7 @@ static void fpt_regrid(
 // recomputed whenever cosmology.random changes (each cosmology setter of
 // generic_interface.cpp draws a new value when its input changes), when
 // Ntable.random changes (grid and accuracy settings), and when
-// FPTbias.tab is not the table this function allocated. Row 5 comes from
+// Python installed a table or the allocation changed. Row 5 comes from
 // the fixed table tab_d1d3 of pt_cfastpt.h: it does not change with
 // cosmology.
 //
@@ -223,12 +223,12 @@ void get_FPT_bias(void)
     2.*(4./45.), 2.*(8./63.), 2.*(8./35.)
   };
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  // FPTbias.tab as allocated here. set_bias_PS (python FAST-PT, IA_code = 1)
-  // replaces the table with its own grid; the next call from this function
-  // must then rebuild the grid and recompute, even if Ntable.random and
-  // cosmology.random did not change.
+  // Python can install its table at the same address as the native one.
+  // Its producer flag requests a rebuild even when the address and the
+  // cosmology and grid keys did not change.
   static double** owned_tab = NULL;
-  const int new_tables = (fdiff2(cache[1], Ntable.random) ||
+  const int new_tables = (FPTbias_tab_from_python ||
+                          fdiff2(cache[1], Ntable.random) ||
                           FPTbias.tab != owned_tab);
  
   if (new_tables)
@@ -823,7 +823,7 @@ static int Nmax_from_terms(int N, int (*terms)[NCOLS]) {
 // setter of generic_interface.cpp draws a new value when its input
 // changes: parameters, distances, growth, linear or nonlinear power),
 // when Ntable.random changes (grids, FAST-PT accuracy boosts), and when
-// FPTIA.tab is not the table this function allocated.
+// Python installed a table or the allocation changed.
 //
 // Two producers share FPTIA.tab. With nuisance.IA_code = 1, set_IA_PS
 // (generic_interface.cpp) frees the table and installs the Python
@@ -841,11 +841,11 @@ void get_FPT_IA(void)
   static double** regrid_coeff = NULL;  // fpt_regrid spline scratch [10][N_int]
   static fastpt_config fpt_config;      // FFTLog padding/window setup (nu = 0)
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  // FPTIA.tab as allocated here. set_IA_PS (python FAST-PT, IA_code = 1)
-  // replaces the table with its own grid; the next call from this function
-  // must then rebuild the grid and recompute (see get_FPT_bias).
+  // Python can reuse the native table address. Its producer flag also
+  // catches that switch, as in get_FPT_bias.
   static double** owned_tab = NULL;
-  const int new_tables = (fdiff2(cache[1], Ntable.random) ||
+  const int new_tables = (FPTIA_tab_from_python ||
+                          fdiff2(cache[1], Ntable.random) ||
                           FPTIA.tab != owned_tab);
   if (new_tables)
   {

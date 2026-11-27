@@ -710,6 +710,12 @@ the terms from one grid onto the other. Both boosts are rebased so 1.0
 is the converged configuration; each project records its own
 convergence evidence.
 
+Python and CFASTPT can fill the same table storage. A replacement table
+can occupy the same memory address, so CFASTPT checks which backend
+produced the table and rebuilds when it finds a Python table. To use
+Python FAST-PT after a CFASTPT calculation replaces its tables, install
+the Python tables again with `set_IA_PS` and `set_bias_PS`.
+
 Two shared pytest options steer the sweep (registered by each
 project's conftest): `--high=1` applies the pushed camb/cosmolike
 settings of the accuracy checks to every sweep block, and `--mask`
@@ -1070,10 +1076,25 @@ only the final settings: a cached table that did not follow a change
 fails the comparison. A change the loaded data layout cannot follow
 (the binning or the probe selection after the data files are loaded)
 must instead stop with a message naming the re-initialization to run,
-and the test asserts that message. Every project binds the shared
-sequences in `test_setting_sequences.py` and appends the sequences of
-its own features (CMB lensing, cluster probes, the gg cross-bin
-pairs and the non-Limber caps).
+and the test asserts that message.
+
+The data, mask and covariance describe the same measured angular bins
+or Fourier band centers. Changing an angular limit or a band center can
+move a prediction to another bin even when the row count stays the same.
+Reload the matching measurements with `init_data` or `init_data_cluster`
+before scoring the new bins. Changing the number of integration nodes
+refines the prediction for the same measured rows.
+
+When building another likelihood in the same notebook session, follow
+the project's initialization sequence. The core `initial_setup` clears
+the previous data, mask and covariance, along with loaded baryon
+principal components, the templates for changes caused by feedback.
+Load the next model's measurements and any templates it uses.
+
+Each `test_setting_sequences.py` binds the shared tests and any
+project-specific sequences for CMB lensing, cluster probes, galaxy
+cross-bin pairs or the non-Limber caps.
+[Native cache and reset rules](.claude/skills/cosmolike-dev/references/state_invalidation.md)
 
 # Appendix <a name="appendix"></a>
 

@@ -137,12 +137,10 @@ lists the commit that closed it.
   reset structs: a second model in one process inherits the first
   model's point masses or bandpower layout. Pitfall 13's rule,
   extended to C++ singletons.
-- **A derived mask that is not stamped.** `IPCluster::set_mask`
-  (generic_interface_cluster.cpp) does not record the probe flags and
-  the Y-transform switch that shaped the mask, and `IP`'s evaluation
-  never re-checks the data-vector layout against the current binning
-  and probe flags, so an `init_binning_*` or `init_probes` call after
-  `init_data` silently scores the wrong layout.
+- **A measured row whose meaning changes.** A change to an angular
+  limit or Fourier band center moves the prediction to another bin.
+  If the vector length stays the same, the old mask and covariance
+  still fit the array shape and can be applied to the wrong bins.
 
 ## The idioms to copy
 
@@ -154,14 +152,24 @@ lists the commit that closed it.
   `Ntable.random + SIZE1 + NSIZE`; the FKEM pairs twin and the
   low-rank cross-pair storage (`C_cl_tomo_lowrank_core`) key npairs,
   nbins, nchi and the cap in dedicated cache slots.
-- **A reset the interface calls:** `IPCluster::reset`, and
-  `initial_setup`'s existing `set_gg_cross_pairs(NULL, NULL, 0)`,
-  `unset_gg_kwindow()` and `reset_boost_baselines` calls. A new
-  static setter adds its reset there in the same patch.
-- **A layout check at evaluation time:**
-  `compute_data_vector_cluster_masked` recomputes the expected data
-  length and stops with a named message when it disagrees with the
-  stored mask - the pattern every masked-evaluation path should run.
+- **Table producer.** `set_IA_PS` and `set_bias_PS` mark tables
+  supplied by Python. The CFASTPT builders use those marks alongside
+  the grid and allocation checks. A Python table can be allocated at
+  the address of the former C table, so a matching address alone
+  cannot establish which backend filled it.
+- **Model reset.** `initial_setup` invokes
+  `IP::reset` to clear measurements and `BaryonScenario::reset` to
+  clear loaded baryon scenarios and principal-component templates.
+  Cluster projects clear their joint measurement state through
+  `reset_cluster`. Add the reset for any model-specific static where
+  its initialization sequence calls it.
+- **Measured bins.** `IP::set_mask` records the real-space angular bin
+  count and limits or the Fourier band centers. `IPCluster::set_mask`
+  records the angular count and limits for the joint vector. The
+  masked calculations and likelihood score check those values before
+  using the loaded measurements. If the bins differ, the error names
+  `init_data` or `init_data_cluster`. Integration resolution is a
+  separate setting.
 
 ## How to test it
 

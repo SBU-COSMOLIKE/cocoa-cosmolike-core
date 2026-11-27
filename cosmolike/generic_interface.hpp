@@ -192,6 +192,10 @@ private:
       static IP instance;
       return instance;
     }
+    void reset();
+
+    void check_binning(int space) const;
+
     bool is_mask_set() const {
       return this->is_mask_set_;
     }
@@ -311,6 +315,10 @@ private:
     int ndata_sqzd_ = 0;
     int ndata_blocks_ = 0;
     int probe_[NPROBES] = {0};
+    int space_ = -1; // 0 real, 1 Fourier
+    int ntheta_ = 0;
+    std::array<double, 2> theta_range_ = {};
+    std::vector<double> band_centers_;
     std::string mask_filename_;
     std::string cov_filename_;
     std::string data_filename_;
@@ -551,6 +559,8 @@ class BaryonScenario
       return instance;
     }
     ~BaryonScenario() = default;
+
+    void reset();
 
     int nscenarios() const {
       static constexpr std::string_view fn = "BaryonScenario::nscenarios"sv;
@@ -1354,6 +1364,7 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
   static_assert(P == 0 || P == 1, "P must be 0/1 (include PM))");
+  IP::get_instance().check_binning(N);
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
   add_calib_and_set_mask_X_N<N,0,P>(data_vector, start(0));
   add_calib_and_set_mask_X_N<N,1,P>(data_vector, start(1));
@@ -1653,10 +1664,11 @@ arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
   static_assert(0 == N || 1 == N, "N must be 0 (real) or 1 (fourier)");
   static_assert(3 == M || 6 == M, "M must be 3 (3x2pt) or 6 (6x2pt)");
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
-  // the layout (bins, binning, pair lists) must still be the one the
-  // mask, data and covariance were loaded with
+  // The measurement binning and total block length must still match
+  // the loaded mask, data and covariance.
   arma::Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
   IP& ip = IP::get_instance();
+  ip.check_binning(N);
   if (arma::accu(sizes) != ip.get_ndata_blocks()) [[unlikely]] {
     spdlog::critical("{}<{},{}>: the data-vector layout has {} entries but "
                      "the loaded mask has {}: re-run init_data",
@@ -1848,6 +1860,15 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
   this->ndata_blocks_ = arma::accu(sizes);
   for (int i=0; i<NPROBES; i++) {
     this->probe_[i] = like.probe[i];
+  }
+  this->space_ = N;
+  if constexpr (0 == N) {
+    this->ntheta_ = Ntable.Ntheta;
+    this->theta_range_ = {Ntable.vt[RANGE_MIN], Ntable.vt[RANGE_MAX]};
+  }
+  else {
+    this->band_centers_.resize(like.Ncl);
+    std::copy_n(like.ell, like.Ncl, this->band_centers_.begin());
   }
   if (0 == like.probe[PROBE_SS]) {
     const int A = start(0);

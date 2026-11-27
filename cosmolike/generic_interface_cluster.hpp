@@ -130,6 +130,8 @@ class IPCluster
     // forget mask, data and covariance (a new model in the same process)
     void reset();
 
+    void check_binning() const;
+
     bool is_mask_set() const {
       return this->is_mask_set_;
     }
@@ -216,6 +218,8 @@ class IPCluster
     arma::Col<int>::fixed<cluster_block::count> enabled_ =
       arma::Col<int>::fixed<cluster_block::count>(arma::fill::zeros);
     int ytransform_ = 0;
+    int ntheta_ = 0;
+    std::array<double, 2> theta_range_ = {};
     std::string mask_filename_;
     std::string cov_filename_;
     std::string data_filename_;

@@ -1454,6 +1454,7 @@ vector compute_data_vector_cluster_masked()
     critical(errornset, fname, "mask (init_data_cluster)");
     exit(1);
   }
+  ipc.check_binning();
   check_cluster_state(fname);
 
   const arma::Col<int>::fixed<cluster_block::count> sizes =
@@ -1538,6 +1539,8 @@ void IPCluster::reset()
   this->ndata_sqzd_ = 0;
   this->enabled_.zeros();
   this->ytransform_ = 0;
+  this->ntheta_ = 0;
+  this->theta_range_ = {};
   this->mask_filename_.clear();
   this->cov_filename_.clear();
   this->data_filename_.clear();
@@ -1549,6 +1552,19 @@ void IPCluster::reset()
   this->data_masked_sqzd_.reset();
   this->cov_masked_sqzd_.reset();
   this->inv_cov_masked_sqzd_.reset();
+}
+
+void IPCluster::check_binning() const
+{
+  // The angular rows of the joint measurement refer to fixed bin edges.
+  // Changing theory integration settings does not change those edges.
+  if (Ntable.Ntheta != this->ntheta_ ||
+      Ntable.vt[RANGE_MIN] != this->theta_range_[0] ||
+      Ntable.vt[RANGE_MAX] != this->theta_range_[1]) [[unlikely]] {
+    critical("IPCluster: the measurement binning changed: "
+             "call init_data_cluster again");
+    exit(1);
+  }
 }
 
 
@@ -1611,6 +1627,8 @@ void IPCluster::set_mask(std::string mask_filename)
     cluster_enabled_blocks();
   this->enabled_ = enabled;
   this->ytransform_ = cluster.ytransform;
+  this->ntheta_ = Ntable.Ntheta;
+  this->theta_range_ = {Ntable.vt[RANGE_MIN], Ntable.vt[RANGE_MAX]};
   for (int b=0; b<cluster_block::count; b++) {
     if (0 == enabled(b)) {
       for (int i=start(b); i<start(b) + sizes(b); i++) {
@@ -2021,6 +2039,7 @@ double IPCluster::get_chi2(vector datavector) const
     critical(errornset, fname, "inv_cov");
     exit(1);
   }
+  this->check_binning();
   if (static_cast<int>(datavector.n_elem) != this->ndata_) [[unlikely]] {
     critical(errorsz1d, fname, erriiwz, datavector.n_elem, this->ndata_);
     exit(1);
