@@ -59,7 +59,7 @@ OPTIONS (all modes)
 --root     Folder whose chains/ subfolder receives every output file
            (default: the project folder).
 --outroot  Basename of the output files (default: EXAMPLE_EMUL2_<MODE><n>).
-           The run refuses to overwrite an existing record.
+           An existing Nautilus prefix requires --resume.
 --check    Evaluate the YAML fiducial, print the sampled-parameter order
            and both scores, then stop without sampling.
 --seed     Random seed for the walker draws and for Nautilus (default 42).
@@ -86,11 +86,15 @@ OPTIONS (profile)
 
 OPTIONS (nautilus)
 
---nlive    Live points (default 1000). --maxfeval caps likelihood calls
-           (default 100000). --neff is the target effective posterior
-           sample count (default 10000). --flive is the stopping fraction
-           of evidence in the live set (default 0.01). --nnetworks is the
-           number of boundary networks (default 4).
+--nlive    Live points (default 1000). --neff is the target effective
+           posterior sample count (default 15000). --maxfeval caps the
+           total likelihood calls (default 5000000), including earlier calls on resume.
+           --flive is the stopping fraction of evidence in the live set
+           (default 0.01). --nnetworks is the number of boundary networks
+           (default 4).
+--resume   Continue an unfinished checkpoint at the same output prefix.
+           The input, sampled order, seed, ranks and exploration settings
+           must match the recorded run. --neff and --maxfeval may change.
 
 RUNNING
 
@@ -331,10 +335,16 @@ def parser_for(mode, project, example, hybrid=True, mcmc_config=False, fiducial_
                             help="JSON record written by the matching minimization example")
     if mode == "nautilus":
         parser.add_argument("--nlive", type=int, default=1000)
-        parser.add_argument("--maxfeval", type=int, default=100000)
-        parser.add_argument("--neff", type=int, default=10000)
+        parser.add_argument("--maxfeval", type=int, default=5_000_000,
+                            help="total likelihood evaluation cap (default: %(default)s)")
+        parser.add_argument(
+            "--neff", type=int, default=15000,
+            help="minimum effective posterior sample count (default %(default)s)",
+        )
         parser.add_argument("--flive", type=float, default=0.01)
         parser.add_argument("--nnetworks", type=int, default=4)
+        parser.add_argument("--resume", action="store_true",
+                            help="continue this prefix's unfinished Nautilus checkpoint")
     return parser
 
 
@@ -405,7 +415,7 @@ def load_model(filename, hybrid=True, fiducial=None, mcmc_config=False):
     return model, names, start, fingerprint
 
 
-def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
+def run_nautilus(model, pool, args, prefix, names, cobaya_output=False, resume=False):
     """Sample with each exact independent prior and save weighted GetDist rows.
 
     Arguments:
@@ -415,6 +425,7 @@ def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
         prefix = output path without extension.
         names = sampled parameter names in sampled order.
         cobaya_output = record weighted rows and model settings for Cobaya post.
+        resume = restore an existing compatible Nautilus checkpoint.
     Returns:
         dict for the JSON run record: converged, log_evidence, evaluations,
         posterior_samples and effective_samples.
@@ -434,19 +445,30 @@ def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
     sampler = Sampler(
         prior=prior, likelihood=likelihood, pass_dict=False,
         pool=(pool, None), n_live=args.nlive, n_networks=args.nnetworks,
-        filepath=str(prefix)+"_checkpoint.hdf5", resume=False, seed=args.seed)
+        filepath=str(prefix)+"_checkpoint.hdf5", resume=resume, seed=args.seed)
     converged = sampler.run(
         f_live=args.flive, n_eff=args.neff, n_like_max=args.maxfeval,
         verbose=True, discard_exploration=True)
+    chain = Path(str(prefix)+".1.txt")
+    parameter_names = Path(str(prefix)+".paramnames")
     effective_samples = float(sampler.n_eff)
     if not np.isfinite(effective_samples) or effective_samples <= 0:
         print(f"Nautilus effective sample size is {effective_samples:g}. "
               "A posterior chain requires a finite positive value. "
               "The checkpoint is saved.", flush=True)
+        if resume:
+            # The old weights describe an earlier checkpoint. Keep the
+            # native samples, but do not present those weights as current.
+            chain.unlink(missing_ok=True)
+            parameter_names.unlink(missing_ok=True)
         return {"converged": False, "log_evidence": None,
                 "evaluations": int(sampler.n_like), "posterior_samples": 0,
                 "effective_samples": 0.0}
     params = model.info()["params"]
+    # Resuming reweights every retained sample. Replace the whole derived
+    # chain after writing it, so old and new weights are never appended.
+    temporary_chain = chain.with_suffix(".txt.tmp")
+    temporary_chain.unlink(missing_ok=True)
     if cobaya_output:
         from cobaya.collection import SampleCollection
         from cobaya.output import get_output
@@ -458,7 +480,8 @@ def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
         nscore = nprior + len(model.likelihood)
         with get_output(prefix=str(prefix)) as output:
             output.check_and_dump_info(None, model.info(), check_compatible=False)
-            collection = SampleCollection(model, output, name="1", sample_type="nested")
+            collection = SampleCollection(model, output, name="1", sample_type="nested",
+                                          file_name=str(temporary_chain))
             for values, weight, blob in zip(points, weights, blobs, strict=True):
                 if weight > 0:
                     scores = list(blob)
@@ -469,11 +492,12 @@ def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
     else:
         points, log_weight, log_like = sampler.posterior()
         npoints = len(points)
-        np.savetxt(str(prefix)+".1.txt",
+        np.savetxt(temporary_chain,
                    np.column_stack((np.exp(log_weight), -log_like, points)),
                    header="weight neg_log_likelihood "+" ".join(names))
         columns = names
-    with open(str(prefix)+".paramnames", "w") as output:
+    temporary_chain.replace(chain)
+    with parameter_names.open("w") as output:
         for name in columns:
             label = params.get(name, {}).get("latex", name)
             derived = "*" if name not in names else ""
@@ -481,6 +505,91 @@ def run_nautilus(model, pool, args, prefix, names, cobaya_output=False):
     return {"converged": bool(converged), "log_evidence": float(sampler.log_z),
             "evaluations": int(sampler.n_like), "posterior_samples": npoints,
             "effective_samples": effective_samples}
+
+
+def _run_nautilus_record(model, pool, args, prefix, record, hybrid, mcmc_config):
+    """Keep a run record beside its checkpoint and verify it before resuming.
+
+    Arguments:
+        model, pool, args, prefix = the arguments passed to run_nautilus.
+        record = output metadata, including input fingerprints and sampled order.
+        hybrid, mcmc_config = the launcher choices affecting the model and rows.
+    Returns:
+        None. The run's final status goes in record and on disk.
+    Side effects:
+        Locks the output prefix for the sampler, writes its YAML record, and
+        lets run_nautilus save the checkpoint and weighted posterior.
+    """
+    from cobaya.output import FileLock
+
+    record_path = Path(str(prefix)+".yaml")
+    checkpoint = Path(str(prefix)+"_checkpoint.hdf5")
+    record["hybrid"] = hybrid
+    record["mcmc_config"] = mcmc_config
+    record["nlive"] = args.nlive
+    record["flive"] = args.flive
+    record["nnetworks"] = args.nnetworks
+    record["neff"] = args.neff
+    record["maxfeval"] = args.maxfeval
+    with FileLock(filename=str(record_path)):
+        if args.resume:
+            if not record_path.is_file() or not checkpoint.is_file():
+                raise FileNotFoundError(
+                    f"--resume requires both {record_path} and {checkpoint}"
+                )
+            saved = yaml.safe_load(record_path.read_text())
+            if not isinstance(saved, dict) or saved.get("converged") is True:
+                raise ValueError(
+                    f"{record_path} must describe an unfinished Nautilus run"
+                )
+            # Nautilus restores its RNG and trained bounds, but it builds
+            # the live-point and batch settings from the new invocation.
+            fixed_keys = (
+                "input_sha256",
+                "fiducial_sha256",
+                "parameters",
+                "mode",
+                "seed",
+                "mpi_ranks",
+                "omp_threads",
+                "hybrid",
+                "mcmc_config",
+                "nlive",
+                "flive",
+                "nnetworks",
+            )
+            for key in fixed_keys:
+                previous = saved.get(key)
+                requested = record.get(key)
+                if previous != requested:
+                    raise ValueError(
+                        f"Cannot resume {prefix}: {key} was {previous!r}, "
+                        f"requested {requested!r}. Use the original setting or a new prefix."
+                    )
+        else:
+            suffixes = (
+                ".json",
+                ".yaml",
+                "_checkpoint.hdf5",
+                ".1.txt",
+                ".paramnames",
+                ".updated.yaml",
+            )
+            for suffix in suffixes:
+                if Path(str(prefix)+suffix).exists():
+                    raise FileExistsError(
+                        f"{prefix} already exists; select a new --outroot"
+                    )
+            # Record the model before the first batch creates a checkpoint.
+            with record_path.open("x") as output:
+                yaml.safe_dump(record, output, sort_keys=False)
+        result = run_nautilus(model=model, pool=pool, args=args, prefix=prefix,
+                              names=record["parameters"], cobaya_output=mcmc_config,
+                              resume=args.resume)
+        record.update(result)
+        final_record = record_path.with_suffix(".yaml.tmp")
+        final_record.write_text(yaml.safe_dump(record, sort_keys=False))
+        final_record.replace(record_path)
 
 
 def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_example=None):
@@ -497,7 +606,8 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_examp
     Side effects:
         Parses the command line and sets the module's _MODEL. Except with
         --check, writes a YAML Nautilus record (JSON for minimize/profile)
-        and result files. Existing records or chains are never overwritten.
+        and result files. Nautilus --resume updates the unfinished run at
+        the requested prefix.
     """
     global _MODEL
     if not hybrid and mode != "nautilus":
@@ -546,13 +656,16 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_examp
             _MODEL.close()
             return
         prefix = args.root/"chains"/args.outroot
-        suffixes = (".json", ".yaml", "_checkpoint.hdf5", ".1.txt", ".paramnames")
-        if mcmc_config:
-            suffixes += (".updated.yaml",)
-        for suffix in suffixes:
-            if Path(str(prefix)+suffix).exists():
-                _MODEL.close()
-                raise FileExistsError(f"{prefix} already exists; select a new --outroot")
+        if mode != "nautilus":
+            suffixes = (".json", ".yaml", "_checkpoint.hdf5", ".1.txt", ".paramnames")
+            if mcmc_config:
+                suffixes += (".updated.yaml",)
+            for suffix in suffixes:
+                if Path(str(prefix)+suffix).exists():
+                    _MODEL.close()
+                    raise FileExistsError(
+                        f"{prefix} already exists; select a new --outroot"
+                    )
         prefix.parent.mkdir(parents=True, exist_ok=True)
         record = {"input": str(args.input.resolve()), "input_sha256": fingerprint,
                   "parameters": names, "mode": mode, "seed": args.seed,
@@ -561,9 +674,8 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_examp
             record["fiducial"] = str(fiducial.resolve())
             record["fiducial_sha256"] = hashlib.sha256(fiducial.read_bytes()).hexdigest()
         if mode == "nautilus":
-            record.update(run_nautilus(
-                model=_MODEL, pool=pool, args=args, prefix=prefix, names=names,
-                cobaya_output=mcmc_config))
+            _run_nautilus_record(model=_MODEL, pool=pool, args=args, prefix=prefix,
+                                 record=record, hybrid=hybrid, mcmc_config=mcmc_config)
         else:
             covariance = _MODEL.prior.covmat(ignore_external=True)
             if args.cov is not None:
@@ -624,8 +736,6 @@ def run(mode, project, example=1, hybrid=True, mcmc_config=False, fiducial_examp
                            header=names[fixed]+" minus2_log_posterior "+" ".join(names))
                 record.update({"profile": names[fixed], "grid": grid.tolist(),
                                "minfile": str(args.minfile), "nstw": args.nstw})
-        if mode == "nautilus":
-            Path(str(prefix)+".yaml").write_text(yaml.safe_dump(record, sort_keys=False))
-        else:
+        if mode != "nautilus":
             Path(str(prefix)+".json").write_text(json.dumps(record, indent=2)+"\n")
     _MODEL.close()
